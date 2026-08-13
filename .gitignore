@@ -1,0 +1,40 @@
+# Rust
+/target
+**/target
+# Cargo.lock 入库：Polaris 是 app（非 lib），提交 lock 保证 CI/发布可复现构建。
+# 见 https://doc.rust-lang.org/cargo/faq.html#why-do-binaries-have-cargo-lock-in-version-control-but-not-libraries
+
+# Node / 前端
+node_modules/
+ui/dist/
+dist/
+dist-package/
+*.tsbuildinfo
+
+# 下载的内核 / 资源二进制（由 scripts/ 拉取，不入库）
+/resources/*
+!/resources/.gitkeep
+# geo 规则集随包入库（对齐 上游 resources/data/）：28 个 .srs ≈ 472K（= builtin_geo_rulesets()
+# 的 28 条），另有 2 个 README ⇒ 目录内共 30 个文件。数量以 builtin_geo_rulesets() 为准，
+# src-tauri/build.rs 的 release 打包期断言盯着它。
+# 必须先放行 data/ 目录本身——`/resources/*` 直接匹配该目录，
+# 目录被忽略时其内文件无法用 `!` 重新纳入。
+# 缺失后果：runtime_rules_dir 恒空 → is_valid_srs_fn 恒 false → 全部 geo 规则被
+# fail-closed 剪枝 → 智能分流失效；叠加回国模式即全量明文直连。
+!/resources/data/
+
+# 杂项
+.DS_Store
+*.log
+.env
+*.pem
+*.p12
+
+# Tauri 生成物（generate_context 产出）
+src-tauri/gen/
+
+# codegraph 索引（本地导航用）
+.codegraph/
+
+# agent worktree 宿主目录（Claude Code 并行子代理用，纯本地、不入库）
+.claude/worktrees/

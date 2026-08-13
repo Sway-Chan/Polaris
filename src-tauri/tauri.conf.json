@@ -1,0 +1,119 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Polaris",
+  "version": "0.1.0",
+  "identifier": "com.polaris.app",
+  "build": {
+    "frontendDist": "../ui/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "pnpm --dir ../ui dev",
+    "beforeBuildCommand": "pnpm --dir ../ui build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Polaris",
+        "width": 925,
+        "height": 740,
+        "minWidth": 925,
+        "minHeight": 740,
+        "decorations": false,
+        "transparent": false,
+        "backgroundColor": "#0B0F14",
+        "hiddenTitle": true,
+        "titleBarStyle": "Overlay",
+        "create": false
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "trayIcon": {
+      "id": "main",
+      "iconPath": "icons/tray-off-black.png",
+      "iconAsTemplate": true,
+      "tooltip": "Polaris"
+    },
+    "macOSPrivateApi": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "deb",
+      "appimage",
+      "app",
+      "dmg",
+      "nsis"
+    ],
+    "publisher": "Sway-Chan",
+    "category": "public.app-category.utilities",
+    "copyright": "Copyright (c) 2026 Sway-Chan",
+    "shortDescription": "Polaris — 基于 sing-box 的现代跨平台代理客户端",
+    "longDescription": "Polaris（北极星）是一款基于 sing-box 内核的现代网络代理工具，专注于简化代理控制与连接管理。跨平台桌面客户端（Tauri 2 + Rust）。",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "core-manifest.json",
+      "../resources/dashboard/",
+      "../resources/data/",
+      "../THIRD-PARTY-LICENSES.md"
+    ],
+    "linux": {
+      "deb": {
+        "recommends": [
+          "pkexec | policykit-1"
+        ],
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0",
+          "libayatana-appindicator3-1",
+          "librsvg2-2",
+          "libglib2.0-0",
+          "libsoup-3.0-0",
+          "libjavascriptcoregtk-4.1-0",
+          "libdbus-1-3"
+        ]
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "signingIdentity": null,
+      "entitlements": null,
+      "exceptionDomain": "",
+      "frameworks": [],
+      "providerShortName": null
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "English",
+          "SimpChinese",
+          "TradChinese"
+        ],
+        "displayLanguageSelector": true,
+        "headerImage": null,
+        "sidebarImage": null,
+        "installerIcon": "icons/icon.ico",
+        "compression": "lzma",
+        "template": null,
+        "installerHooks": "nsis-hooks.nsh",
+        "startMenuFolder": "Polaris"
+      },
+      "allowDowngrades": false,
+      "wix": null,
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "",
+      "tsp": false
+    }
+  }
+}

@@ -1,0 +1,92 @@
+name: UI
+
+# 前端门禁：typecheck + IPC 参数校验 + vitest（1726 条）。
+#
+# 为什么独立成一个 workflow 而不是往 ci.yml 加一个 job（2026-07-31）：
+#   ci.yml 的 `on.push.paths-ignore` 里有 `ui/**` —— 那是**workflow 级**过滤，纯 UI 改动
+#   整个 ci.yml 都不触发，往里加 job 也一样不跑。要在 ci.yml 内解，得把 paths-ignore 拆成
+#   每 job 的 dorny/paths-filter，把额度架构（push main 只跑 ubuntu 单腿）搅进条件里。
+#   两条门触发条件本就正交，拆开各自声明最简单，且不动已调好的 Rust 额度架构。
+#
+# 为什么**不加 paths 过滤**（这条别优化掉）：
+#   ui/src 下有 15 个测试文件直接 `readFileSync(join(REPO_ROOT, 'src-tauri/...'))` 读 Rust
+#   源码做跨语言一致性断言（IPC 通道名、错误码、配置版本、staged 分类…）。只挂 `ui/**` 的话，
+#   「Rust 侧改了通道名、前端没跟」正好是这道门唯一能抓、却因为过滤而不触发的场景 —— 门变成
+#   永远绿的摆设。ubuntu 1x 计费、装完依赖跑完约 2 分钟，为省这 2 分钟换一道假门不划算。
+#
+# 额度：只跑 ubuntu-22.04（前端测试是 node 环境，与宿主平台无关，多平台矩阵零信息增量）。
+on:
+  push:
+    branches: [main]
+    # 只忽略**不可能影响前端测试**的路径。实测：ui/src 下无任何测试读取 .md（三处 `docs/` 命中
+    # 全在注释里），唯一读仓外文件的 prototype-confirm-parity 已在 CI 排除。
+    # ⚠️ 绝不能把 `src-tauri/**` 加进来 —— 15 个测试直读 Rust 源做跨语言一致性断言。
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'NOTICE'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  # 供 package.yml 复用作发布前置门：CI 绿但前端红也不许打包。
+  workflow_call:
+
+# 判据与 ci.yml 逐字一致（见那边的长注释）：main 上被顶掉的旧跑没有消费者；
+# 用 github.ref 而非 event_name，是因为 workflow_call 作发布门时 event_name 取调用方的。
+concurrency:
+  group: ui-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+
+jobs:
+  test:
+    name: typecheck + vitest
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: ui
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      # 与本地开发机同一 major（node 26）：这道门的价值在于「与本地 gate 口径一致」，
+      # 不在于多版本覆盖；版本漂移只会制造本地绿/CI 红的伪信号。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `build` = check-ipc-args.mjs + tsc + vite build（见 ui/package.json）。
+      # 放在 test 前：类型错会让 vitest 的失败信息变得难读，先让 tsc 报准位置。
+      - name: Typecheck + build
+        run: pnpm run build
+
+      # ⚠️ 排除 prototype-confirm-parity：它的判据面是 `~/docs/polaris/design/prototype/
+      #    polaris-prototype.html`（vault 里的设计 SoT，不在仓内），文件读不到时它在**模块顶层
+      #    throw**（不是 skip）—— CI 裸 checkout 必红。这道门因此只在本地成立。
+      #    vitest 的 `--exclude` 是**追加**语义，不覆盖默认的 node_modules 等排除项。
+      #    想让它在 CI 也成立，唯一的办法是把那份 HTML 进仓（`ui/src/styles/prototype.css` 已有先例）
+      #    —— 那是设计资产归属的决定，未做。这行注释就是这道门「在 CI 没执行」的自曝。
+      # 第三方许可清单与真实依赖一致（`--check` 只比对，不写盘）。
+      #
+      # 挂这一腿而不是 ci.yml：本脚本两侧都要 —— Rust 侧走 `cargo metadata`（无需编译），
+      # 前端侧要 `pnpm list --prod` 的生产闭包，而 pnpm 只有这条腿装了。
+      #
+      # 依赖一变而清单没重生成即红。没有这道门的话，清单会静默停在生成那天的依赖上，
+      # 而它是随二进制分发的合规材料 —— 停在旧版等于漏掉新引入依赖的归属。
+      - name: Third-party licenses up to date
+        working-directory: .
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          node scripts/gen-third-party-licenses.mjs --check
+
+      - name: Test
+        run: pnpm exec vitest run --exclude 'src/lib/prototype-confirm-parity.test.ts'

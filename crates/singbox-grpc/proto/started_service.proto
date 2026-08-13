@@ -1,0 +1,334 @@
+// sing-box 1.14 管理 API：daemon.StartedService gRPC 契约。
+//
+// 1:1 移植自 上游 `src/main/services/singbox-api-client.ts`（PROTO_SRC，L34 起）。
+//
+// 本地 Empty 消息：空消息 wire 编码为 0 字节，与服务端 google.protobuf.Empty 完全兼容
+// （gRPC 只按 service/method 名 + 字段号对齐，消息类型名不参与 wire）。
+//
+// ## 字段号的真值来自随包内核二进制，不是文档、不是记忆
+//
+// 本文件每个字段号都与 `resources/*/sing-box` 里 protoc-gen-go 嵌入的 FileDescriptorProto
+// 逐条对拍过。**这不是可选的谨慎，是被真机咬过之后的硬纪律**——理由见下面
+// `TailscaleEndpointStatus` 的段落。对拍不靠人自觉：`build.rs` 在 release 构型下从随包核提取
+// descriptor 与本文件对账，不一致即拒绝出包；`tests/bundled_core_wire.rs` 在开发机（核已 fetch）
+// 上跑同一条判据。换核之后这两道门会自己说话。
+syntax = "proto3";
+
+package daemon;
+
+// sing-box 上游为 Go，go_package 仅对 Go 代码生成有意义；Rust (prost) 忽略。保留以与上游同构。
+option go_package = "github.com/sagernet/sing-box/daemon;daemon";
+
+message Empty {}
+
+service StartedService {
+  // Tailscale 管理。SubscribeTailscaleStatus（A3 STATUS relay）/ SetTailscaleExitNode
+  // 由本 crate 暴露；TailscaleLogout 暂不暴露（proto 保留以与服务端 wire 同构）。
+  rpc SubscribeTailscaleStatus(Empty) returns (stream TailscaleStatusUpdate);
+  rpc TailscaleLogout(TailscaleLogoutRequest) returns (Empty);
+  rpc SetTailscaleExitNode(SetTailscaleExitNodeRequest) returns (Empty);
+
+  // clash 等价管理方法（本 crate 主暴露面）。
+  rpc SubscribeStatus(SubscribeStatusRequest) returns (stream Status);
+  rpc SubscribeConnections(SubscribeConnectionsRequest) returns (stream ConnectionEvents);
+  rpc SelectOutbound(SelectOutboundRequest) returns (Empty);
+  // **SelectOutbound 的读侧对偶**：group 的**运行期**选择（`Group.selected`）。
+  //
+  // 没有它，本仓对「selector 现在实际指着谁」就只能靠推断生成产物——而 `cache_file` 的
+  // `store_selected` 恰好会在起核时用上一轮的运行期选择**覆盖**生成的 `default`，两者可以长期
+  // 分叉且零迹象（见 proxy.rs 的 H3 段落）。读回来才是自证。
+  //
+  // 上游确有此方法，本地不是自造：`daemon/started_service.proto` 逐字含
+  // `rpc SubscribeGroups(google.protobuf.Empty) returns(stream Groups)`，且 `Group` 的字段号
+  // （tag=1/type=2/selectable=3/selected=4/isExpand=5/items=6）在 v1.14.0-alpha.32、
+  // v1.14.0-alpha.34、v1.14.0-beta.3 三个 tag 上**逐字一致**（2026-07-31 经 GitHub contents API 核对）。
+  // 服务端实现 `StartedService.SubscribeGroups` 在进入等待前**先发一帧**当前快照
+  // （`daemon/started_service.go`：for 循环体内 `server.Send(groups)` 在 select 之前），
+  // 故「订阅→取首帧→立即 drop」是一次合法的一次性读，无需轮询。
+  rpc SubscribeGroups(Empty) returns (stream Groups);
+  rpc CloseConnection(CloseConnectionRequest) returns (Empty);
+  rpc CloseAllConnections(Empty) returns (Empty);
+
+  // **日志级别的读侧自证**：核**此刻实际**在用的日志级别（`logFactory.Level()`）。
+  //
+  // 没有它，日志页显示的是「我写下的那个值」（`config.logLevel`），而那个值与核在跑的级别有两条
+  // 已实证的分叉：① 隐私锁开启时生成侧走 `LogLevel::effective(privacy)` 抬到 ≥warn，UI 仍显示 info；
+  // ② 配置暂存态下改级别是零 IPC 零磁盘写，分段控件已高亮新级别而核仍按旧级别记录。两条都不是
+  // UI 能自己补偿的——只有把核的值读回来才算自证。
+  //
+  // 上游确有此方法：`daemon/started_service.proto` 逐字含
+  // `rpc GetDefaultLogLevel(google.protobuf.Empty) returns(DefaultLogLevel) {}`。
+  //
+  // **核未运行时它返回 `os.ErrInvalid`**（`daemon/started_service.go`：先 RLock 检查
+  // `serviceStatus.Status ∈ {STARTING, STARTED}`，否则直接报错）—— 这是设计内的，不是故障。
+  // 消费方必须把它呈现成明确的「未知」态，**不得回落成某个具体级别**：回落出来的那个值一定是
+  // 「我写下的值」，于是这处自证就退化成它本要揭穿的那句谎。
+  rpc GetDefaultLogLevel(Empty) returns (DefaultLogLevel);
+
+  // **核日志的结构化订阅**：`Log` 帧带 [`LogLevel`] 枚举，不是一行待猜的文本。
+  //
+  // 上游确有此方法：`daemon/started_service.proto` 逐字含
+  // `rpc SubscribeLog(google.protobuf.Empty) returns(stream Log) {}`。
+  //
+  // # 它是**全级别**流，与 `log.level` 无关
+  //
+  // 服务端喂这条流的是 `StartedService.WriteMessage`（api service 在 `StartStateStarted` 把
+  // `StartedService` 自己 `AttachPlatformWriter` 进 logFactory），而 `log/observable.go` 的
+  // `observableLogger.Log` 里那段 platform writer 分发**不受 `level <= l.level` 约束**：
+  //
+  //   if level > l.level && len(platformWriters) == 0 && !l.needObservable { return }  // 有 writer 即不早返
+  //   ...
+  //   if len(platformWriters) > 0 { for _, w := range platformWriters { w.WriteMessage(level, msg) } }
+  //
+  // ⇒ 核**恒把 trace 在内的每一条**推给本流，`log.level` 只决定它自己往 stderr/文件写什么。
+  // 消费方据此**在客户端筛级**即可，无需为了看 debug 去改核的配置并重启核。
+  //
+  // # 首帧是 reset + 至多 3000 行历史
+  //
+  // 服务端订阅时先发一帧 `reset=true` + `logLines` 全量快照（`LogMaxLines` = 3000，
+  // `daemon/attached_service.go` 的 `defaultAttachedLogMaxLines`），其后逐条增量推。
+  // `ClearLogs` 也会经 `resetLogs()` → `logSubscriber.Emit(nil)` 推一帧空的 `reset=true`。
+  //
+  // # 它盖不住起核期（这条边界必须记住）
+  //
+  // `AttachPlatformWriter` 发生在 `StartStateStarted`（`service/api/server.go` 的 `Start`），
+  // 故**核起来之前**的日志——包括 TUN 装地址失败那类 FATAL——结构性地不在本流里。那一段仍只能从
+  // 核的 stderr 捞（`runtime/proxy.rs::pipe_to_log`），两条腿分工不重叠，谁也替不了谁。
+  rpc SubscribeLog(Empty) returns (stream Log);
+  // 清空核侧那 3000 行日志环。上游逐字含
+  // `rpc ClearLogs(google.protobuf.Empty) returns(google.protobuf.Empty) {}`。
+  //
+  // 没有它，「清空日志」只清得掉本地环形缓冲：`SubscribeLog` 一旦重订阅，核那份历史又会整份回来，
+  // 用户看到的是「清了又自己长回来」。清必须两侧一起清。
+  rpc ClearLogs(Empty) returns (Empty);
+}
+
+message TailscaleStatusUpdate {
+  repeated TailscaleEndpointStatus endpoints = 1;
+}
+
+// **本消息的字段号在 1.14 预览期被上游改过一次，改错的代价是整条 STATUS 流静默死掉。**
+//
+// 2026-08-05 真机（macOS，随包核 1.14.0-beta.7）：TS 出口下拉看不到 tailnet 设备、也看不到已
+// `--advertise-exit-node` 的对端；组网信息卡同样空白。根因不在 UI、不在投影层，而在这里——
+// 本消息此前照抄 上游，用的是 **1.14.0-alpha 期**的布局：
+//
+//   alpha.40 及更早 : endpointTag=1 backendState=2 authURL=3 networkName=4
+//                     magicDNSSuffix=5 self=6 userGroups=7 exitNode=8 keyAuth=9
+//   beta.7（现随包）: endpointTag=1 backendState=2 stateText=3 authURL=4 networkName=5
+//                     magicDNSSuffix=6 self=7 userGroups=8 exitNode=9 keyAuth=10
+//
+// 上游在 f3 插了 `stateText`，其后**全部 +1**。旧布局套新 wire 的后果不是「少读一个字段」，是
+// 逐层错位后 prost 硬报错：真 f6（`magicDNSSuffix`，字符串）被当成 `self`（message）去解，ASCII
+// 首字节 't'=0x74 → wiretype 4(EndGroup) → `DecodeError`；真 f8（`userGroups`）被当成 `exitNode`
+// （TailscalePeer），而 `TailscaleUserGroup.userID` 是 varint、`TailscalePeer.hostName` 要
+// length-delimited → `UnexpectedWireType`。prost 对 wire type 不匹配零容忍
+// （`encoding/wire_type.rs::check_wire_type`），**整帧丢弃，没有部分成功**。
+//
+// 于是故障形态极具欺骗性：**未登录的 NoState 帧字段稀疏，解得开**；一旦登录成功（帧里开始带
+// magicDNSSuffix / userGroups）就每帧必炸 → `ReconnectingStream` 当断线退避重连 → 重连后再炸 →
+// 首帧之后永远没有第二帧。而 reconnect.rs 当时用 `tracing::warn!` 记这个错，本仓没有任何
+// tracing subscriber ⇒ **一行日志都不产生**。这个组合让同一根因扛过了两轮修复（e6e0698 加重订阅
+// 自愈、8771ee1 改出口卡数据源），两次都在治它的下游症状。
+//
+// 教训落成两道门（见文件头）：字段号只认随包核 descriptor，且换核后由门自曝，不靠 review 记得。
+message TailscaleEndpointStatus {
+  string endpointTag = 1;
+  string backendState = 2;
+  // 人类可读状态文案（如 "Connected."）。**本仓不消费**，但必须声明：它就是 beta 期插进来把后面
+  // 全顶掉一位的那个字段，留着它在这里，下次谁再对照 alpha 期资料改动时能立刻看见这段历史。
+  string stateText = 3;
+  string authURL = 4;
+  string networkName = 5;
+  string magicDNSSuffix = 6;
+  TailscalePeer self = 7;
+  repeated TailscaleUserGroup userGroups = 8;
+  TailscalePeer exitNode = 9;
+  bool keyAuth = 10;
+}
+
+// 对端节点按归属用户(owner/sharee)分组；peers 在 f5。
+//
+// f1..f4（userID / loginName / displayName / profilePicURL）本仓不展示，故不映射——但**不映射不等于
+// 可以不知道**：`userID` 是 int64(varint)，正是它与 `TailscalePeer.hostName`(string) 撞在 f1 上，
+// 把上面那次字段号漂移从「读到脏数据」放大成「整帧解不开」。alpha.40 与 beta.7 上本消息逐字一致。
+message TailscaleUserGroup {
+  repeated TailscalePeer peers = 5;
+}
+
+message TailscalePeer {
+  string hostName = 1;
+  string os = 3;
+  repeated string tailscaleIPs = 4;
+  bool online = 5;
+  bool exitNode = 6;
+  bool exitNodeOption = 7;
+  bool active = 8;
+  int64 keyExpiry = 11;
+  string stableID = 12;
+  bool expired = 13;
+}
+
+message TailscaleLogoutRequest {
+  string endpointTag = 1;
+}
+
+// 热重设 TS 出口节点（不重启核）：按 stableID EditPrefs{ExitNodeID}，幂等。
+// 字段号逐字对齐上游 daemon/started_service.proto（endpointTag=1, stableID=2）。
+message SetTailscaleExitNodeRequest {
+  string endpointTag = 1;
+  string stableID = 2;
+}
+
+message SubscribeStatusRequest {
+  int64 interval = 1;
+}
+
+// `memory` / `trafficAvailable` 的标量类型同期一并订正（2026-08-05 descriptor 对拍发现）。
+// **这两处与上面的 Tailscale 错位不同性质**：`int64`↔`uint64`、`int64`↔`bool` 都编码为 varint，
+// wire type 相同 ⇒ 此前解码从不报错，只是把一个布尔当整数读（值恒 0/1）。属静默语义错而非
+// 结构错，改回来对既有取值零影响，但留着它就等于在字段表里埋一条与真核不符的记录。
+message Status {
+  uint64 memory = 1;
+  int32 goroutines = 2;
+  int32 connectionsIn = 3;
+  int32 connectionsOut = 4;
+  bool trafficAvailable = 5;
+  int64 uplink = 6;
+  int64 downlink = 7;
+  int64 uplinkTotal = 8;
+  int64 downlinkTotal = 9;
+}
+
+message SubscribeConnectionsRequest {
+  int64 interval = 1;
+}
+
+message ConnectionEvents {
+  repeated ConnectionEvent events = 1;
+  bool reset = 2;
+}
+
+message ConnectionEvent {
+  ConnectionEventType type = 1;
+  string id = 2;
+  Connection connection = 3;
+  int64 uplinkDelta = 4;
+  int64 downlinkDelta = 5;
+  int64 closedAt = 6;
+}
+
+enum ConnectionEventType {
+  NEW = 0;
+  UPDATE = 1;
+  CLOSED = 2;
+}
+
+message Connection {
+  string id = 1;
+  string inbound = 2;
+  string inboundType = 3;
+  int32 ipVersion = 4;
+  string network = 5;
+  string source = 6;
+  string destination = 7;
+  string domain = 8;
+  string protocol = 9;
+  string user = 10;
+  string fromOutbound = 11;
+  int64 createdAt = 12;
+  int64 closedAt = 13;
+  int64 uplink = 14;
+  int64 downlink = 15;
+  int64 uplinkTotal = 16;
+  int64 downlinkTotal = 17;
+  string rule = 18;
+  string outbound = 19;
+  string outboundType = 20;
+  repeated string chainList = 21;
+  ProcessInfo processInfo = 22;
+}
+
+// `userId` 同上：真核是 `int32`，此前写成 `uint32`（同为 varint，解码不报错）。本仓只读
+// `processPath`（`runtime/stats.rs::daemon_conn_to_engine`），故订正无消费侧影响。
+message ProcessInfo {
+  uint32 processId = 1;
+  int32 userId = 2;
+  string userName = 3;
+  string processPath = 4;
+  repeated string packageNames = 5;
+}
+
+message SelectOutboundRequest {
+  string groupTag = 1;
+  string outboundTag = 2;
+}
+
+// `SubscribeGroups` 的帧：运行核当前全部出站 group（selector 与 urltest）的快照，非增量。
+message Groups {
+  repeated Group group = 1;
+}
+
+// 一个出站 group 的运行期状态。
+//
+// `selected` = 服务端的 `iGroup.Now()`，即**运行期实际选中的成员 tag**——这正是 `cache_file`
+// 可能与生成 config 的 `default` 分叉的那个值。`selectable` 仅 `group.Selector` 为真
+// （urltest 组不可手选）。`items` / `isExpand` 本 crate 不消费，保留以与服务端 wire 同构。
+message Group {
+  string tag = 1;
+  string type = 2;
+  bool selectable = 3;
+  string selected = 4;
+  bool isExpand = 5;
+  repeated GroupItem items = 6;
+}
+
+message GroupItem {
+  string tag = 1;
+  string type = 2;
+  int64 urlTestTime = 3;
+  int32 urlTestDelay = 4;
+}
+
+message CloseConnectionRequest {
+  string id = 1;
+}
+
+// sing-box 侧日志级别枚举。**枚举值序不是本仓自定的，是 wire 契约的一部分**：
+// `DefaultLogLevel` 的全部载荷就是这一个数字，取错了序号就是把 warn 显示成 info——
+// 一处「自证」显示出错误的级别，比没有这处自证更糟。
+//
+// 它与本仓 `config-engine::user_config::LogLevel`（debug/info/warn/error/fatal 五档，
+// 序为**升序严重度**）**不是同一个枚举**，两者既不同档也不同序（此处 0=PANIC 最严重、递减到
+// 6=TRACE）。故不做类型层面的互转，只按名字投影成小写字符串展示——上游多出的 `panic`/`trace`
+// 本仓生成侧永不写入，但读侧必须能原样说出来（用户可能手改过配置，或上游改了默认值）。
+//
+// 字段号/枚举值同样进 `tests/bundled_core_wire.rs` 的对拍表，与 message 同一道门。
+enum LogLevel {
+  PANIC = 0;
+  FATAL = 1;
+  ERROR = 2;
+  WARN = 3;
+  INFO = 4;
+  DEBUG = 5;
+  TRACE = 6;
+}
+
+// `GetDefaultLogLevel` 的响应：核此刻实际在用的日志级别。
+message DefaultLogLevel {
+  LogLevel level = 1;
+}
+
+// `SubscribeLog` 的帧。`reset=true` = 本帧之前的内容作废：既是订阅首帧（携带至多 3000 行历史），
+// 也是 `ClearLogs` 之后那一帧（`messages` 为空）。其余帧是增量（服务端会把短时间内的多条合批）。
+//
+// 嵌套的 `Message` 是上游原样形态（`Log.Message`），**不拍平成顶层消息**：拍平在 wire 上等价，
+// 但 descriptor 里它的全名就是 `Log.Message`，拍平后本仓那道「vendored ⇄ 随包核」对拍门就点名不到它。
+message Log {
+  repeated Message messages = 1;
+  bool reset = 2;
+  message Message {
+    LogLevel level = 1;
+    string message = 2;
+  }
+}

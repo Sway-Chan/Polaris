@@ -1,0 +1,21 @@
+[package]
+name = "polaris-stats-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+# IndexMap：connMap 保持插入序，支持 LRU（UPDATE 时 delete+set 把活跃条目移到末尾，#167）+ OOM 驱逐最旧。
+# 标准库 HashMap/无序，无法做 LRU；BTreeMap 按 key 排序而非插入序。IndexMap 是 Rust 事实标准的有序 map。
+indexmap = "2"
+# serde_json：诊断脱敏 [`redact`] 在任意 JSON 树上递归打码（UserConfig 与生成的 sing-box config 都是 JSON）。
+# workspace 既有依赖（config-engine / store / src-tauri 已用）→ Cargo.lock 只多一条边，无新 crate 入树。
+serde_json.workspace = true
+# config-engine：脱敏的 `looks_like_ip` 复用 `user_config::ip::is_ipv4`（IPv4 形态判定的单一真值）。
+# 勿另写一份——审计 §F 记过「同一判定两份、严格度不一致」的既往事故。workspace 内 path 依赖，
+# 同 mesh / net-stack 的既有形态（config-engine 只依赖 helper-proto+serde，无环、无膨胀）。
+polaris-config-engine = { version = "0.1.0", path = "../config-engine" }
+
+[dev-dependencies]

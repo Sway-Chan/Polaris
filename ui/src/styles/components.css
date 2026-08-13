@@ -1,0 +1,1182 @@
+/*
+ * Polaris 组件样式（1:1 提取自原型 polaris-prototype.html）。
+ *
+ * 真值源：~/docs/polaris/design/prototype/polaris-prototype.html 的 <style> 块。
+ * 仅提取 home / connections / logs 三屏所需的通用组件（.btn/.card/.pill/.seg2/.input）
+ * 与各屏专用类（.conn-card/.sankey/.conn-table/.log-toolbar 等），逐字对齐原型层级与数值。
+ *
+ * 设计纪律（与 tokens.css / tailwind.config.js 协同）：
+ *  - 颜色一律走 hsl(var(--token))（令牌见 tokens.css），Tailwind utility 同源。
+ *  - 间距 / radius / shadow / 字体栈走非颜色令牌（--sp-* / --r-* / --shadow-pop / --sans 等）。
+ *  - 原型 class 名与层级保持不变，React 组件直接引用本文件的类 + Tailwind utility（布局微调用）。
+ *  - 响应式 @container mainc / topo 分支照搬原型（.main 已在 index.css 设 container:mainc）。
+ *
+ * 行号注释指向原型 polaris-prototype.html 的源行，便于后续对照修订。
+ */
+
+/* ═══════════ screen shell（L238-263）═══════════ */
+.screen{ padding:var(--sp-5) var(--sp-6) 13px; flex:1 0 auto; display:block; }
+.screen[hidden]{ display:none; }
+/* HERO views（connections / logs）：钉住视口，内部 table/stream 独立滚动（L240-244）。
+   :not([hidden]) 压住 .screen[hidden]{display:none} 的特异性冲突。 */
+#s-logs:not([hidden]), #s-connections:not([hidden]){ display:flex; flex-direction:column; flex:1 1 auto; min-height:0; }
+/* Home 是 flex 列：拓扑卡占据剩余高度（L245-247） */
+#s-home:not([hidden]){ display:flex; flex-direction:column; flex:1 1 auto; min-height:0; }
+#s-home > .phead, #s-home > .conn-card{ flex:none; }
+#s-home > .topo{ flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
+#s-home > .topo > .topo-head{ flex:none; }
+#s-home > .topo > .sankey-wrap{ flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
+#s-logs > .phead, #s-connections > .phead{ flex:none; }
+#s-logs > .mode-warn, #s-logs > .card.log-toolbar, #s-logs > .log-foot{ flex:none; }
+
+/* ═══════════ 通用：phead / card / btn / pill / dot / seg2 / input / bar（L256-323）═══════════ */
+.phead{ display:flex; align-items:flex-start; gap:14px; margin-bottom:20px; }
+.phead h1{ font-family:var(--disp); font-size:23px; font-weight:640; letter-spacing:-.01em; margin:0;
+  line-height:1.15; }
+.phead h1:focus-visible{ outline:2px solid hsl(var(--ring)); outline-offset:3px; border-radius:4px; }
+.phead .sub{ font-size:12.5px; color:hsl(var(--fg-dim)); margin-top:5px; }
+.phead .meta{ margin-left:auto; flex:none; text-align:right; font-size:11.5px; color:hsl(var(--fg-faint));
+  font-variant-numeric:tabular-nums; }
+.phead .acts{ margin-left:auto; display:flex; gap:9px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
+
+.card{ border:1px solid hsl(var(--line)); border-radius:var(--r); background:hsl(var(--surface)); }
+.card.pad{ padding:16px; }
+.card-h{ font-size:14px; font-weight:640; margin:0 0 3px; }
+.card-sub{ font-size:11.5px; color:hsl(var(--fg-dim)); }
+
+.btn{ display:inline-flex; align-items:center; gap:7px; font-size:12.5px; font-weight:580;
+  padding:8px 13px; border-radius:var(--r-sm); border:1px solid hsl(var(--line)); background:hsl(var(--surface));
+  color:hsl(var(--fg)); transition:.14s; white-space:nowrap; cursor:pointer; }
+.btn svg{ width:15px; height:15px; }
+.btn:hover{ background:hsl(var(--surface-2)); }
+.btn.flow{ background:hsl(var(--flow)); border-color:transparent; color:#00141d; font-weight:660; }
+.btn.flow:hover{ background:hsl(var(--flow-hi)); }
+.btn:disabled{ opacity:.5; pointer-events:none; }
+.btn.ghost{ border-color:hsl(var(--hair)); color:hsl(var(--fg-dim)); background:transparent; }
+.btn.ghost:hover{ background:hsl(var(--surface-2)); color:hsl(var(--fg)); }
+.btn.sm{ padding:6px 10px; font-size:11.5px; }
+.btn:focus-visible{ outline:2px solid hsl(var(--ring)); outline-offset:2px; }
+
+.pill{ display:inline-flex; align-items:center; gap:4px; font-size:10.5px; font-weight:640;
+  padding:2px 8px; border-radius:999px; line-height:1.5; white-space:nowrap; }
+.pill.proto{ background:hsl(var(--flow-weak)); color:hsl(var(--flow-hi)); }
+.pill.aur{ background:hsl(var(--aurora-weak)); color:hsl(var(--aurora-hi)); }
+.pill.region{ background:hsl(var(--surface-3)); color:hsl(var(--fg-dim)); }
+.pill.warn{ background:hsl(var(--warn-weak)); color:hsl(var(--warn)); }
+.pill.err{ background:hsl(var(--err-weak)); color:hsl(var(--err)); }
+.pill.ok{ background:hsl(var(--ok-weak)); color:hsl(var(--ok)); }
+
+.dot{ width:7px; height:7px; border-radius:50%; flex:none; }
+.dot.ok{ background:hsl(var(--ok)); box-shadow:0 0 0 3px hsl(var(--ok)/0.18); }
+.dot.err{ background:hsl(var(--err)); }
+.dot.idle{ background:hsl(var(--fg-faint)); }
+/* 「核在跑但流量没经核」（systemProxy 未生效）用的第三档：绿=真连上、琥珀=降级、灰=没跑。
+   缺这一档时降级只能在绿/灰里二选一，两个选项都在说谎。 */
+.dot.warn{ background:hsl(var(--warn)); box-shadow:0 0 0 3px hsl(var(--warn)/0.18); }
+
+.seg2{ display:inline-flex; gap:3px; padding:3px; border-radius:var(--r-sm); border:1px solid hsl(var(--line));
+  background:hsl(var(--surface-2)); }
+.seg2 button{ font-size:12.5px; font-weight:560; color:hsl(var(--fg-dim)); padding:6px 15px; white-space:nowrap;
+  border-radius:7px; transition:.14s; border:0; background:transparent; cursor:pointer; }
+.seg2 button.on{ background:hsl(var(--surface)); color:hsl(var(--flow-hi)); font-weight:660;
+  box-shadow:0 1px 3px hsl(var(--shadow)/0.16); }
+.seg2 button:not(.on):hover{ color:hsl(var(--fg)); }
+
+.input{ font:inherit; font-size:12.5px; color:hsl(var(--fg)); background:hsl(var(--surface-2));
+  border:1px solid hsl(var(--line)); border-radius:var(--r-sm); padding:8px 11px; width:100%; }
+.input:focus-visible{ outline:2px solid hsl(var(--ring)); outline-offset:1px; border-color:hsl(var(--flow)); }
+
+/* 搜索框：icon + borderless input 的 label 包裹形态。原型 L1782/1925/1984/2034 四处 inline style 逐字同构
+   （前端曾照搬 inline）→ 收敛为单一类，各消费方只写 `<label class="input search-box">` + 尺寸类。 */
+.search-box{ display:flex; align-items:center; gap:8px; padding:0 11px; cursor:text; }
+.search-box:focus-within{ outline:2px solid hsl(var(--ring)); outline-offset:1px; border-color:hsl(var(--flow)); }
+.search-box > svg{ color:hsl(var(--fg-faint)); flex:none; }
+.search-box input{ border:0; background:none; outline:none; flex:1; min-width:0; padding:8px 0; font:inherit; color:inherit; }
+.search-clear{ flex:none; display:inline-flex; color:hsl(var(--fg-faint)); border-radius:999px; padding:2px; cursor:pointer; }
+.search-clear:hover{ color:hsl(var(--fg)); background:hsl(var(--surface-3)); }
+
+.bar{ height:6px; border-radius:999px; background:hsl(var(--surface-3)); overflow:hidden; }
+.bar>i{ display:block; height:100%; border-radius:999px; background:hsl(var(--flow)); transition:width .4s ease; }
+.mono{ font-family:var(--mono); }
+
+/* sub-tabs（连接视图 tab 切换，L589-601）*/
+.sub-tabs{ display:inline-flex; gap:3px; padding:4px; border-radius:var(--r-md); border:1px solid hsl(var(--line));
+  background:hsl(var(--surface-2)); width:max-content; max-width:100%; }
+.sub-tabs button{ display:inline-flex; align-items:center; gap:7px; font-size:12.5px; font-weight:560;
+  color:hsl(var(--fg-dim)); padding:6px 13px; border-radius:var(--r-sm); transition:.14s; border:0; background:transparent; cursor:pointer; }
+.sub-tabs button.on{ background:hsl(var(--surface)); color:hsl(var(--fg)); box-shadow:0 1px 3px hsl(var(--shadow)/0.14); }
+.sub-tabs .cnt{ font-size:12px; font-weight:560; color:hsl(var(--fg-faint)); }
+.sub-tabs .cnt::before{ content:"·"; margin-right:4px; color:hsl(var(--fg-faint)); }
+.sub-tabs button.on .cnt{ color:hsl(var(--fg-dim)); }
+
+/* stub（空态占位，L1302-1306）*/
+.stub{ border:1px dashed hsl(var(--hair)); border-radius:var(--r); padding:40px 22px; text-align:center; color:hsl(var(--fg-faint)); }
+.stub h4{ font-size:14px; font-weight:640; color:hsl(var(--fg-dim)); margin:0 0 5px; }
+.stub p{ font-size:12px; margin:0 auto 16px; max-width:300px; line-height:1.6; }
+
+/* mode-warn（隐私锁提示条，L1373-1375）*/
+.mode-warn{ display:none; align-items:center; gap:8px; font-size:11.5px; color:hsl(var(--warn));
+  background:hsl(var(--warn-weak)/0.6); border:1px solid hsl(var(--warn)/0.35); border-radius:var(--r-sm); padding:9px 12px; margin-bottom:14px; }
+.mode-warn.show{ display:flex; }
+.mode-warn svg{ width:15px; height:15px; flex:none; }
+
+/* ═══════════════ HOME（L326-513）═══════════════ */
+/* 统一连接控制卡（§D）：一卡两列 — 左=出口节点+检测，右=接管方式+分流策略 */
+.conn-card{ padding:var(--sp-4); margin-bottom:7px; }
+.cc-cols{ display:grid; grid-template-columns:minmax(0,3.4fr) minmax(0,1.7fr); gap:0; align-items:stretch; }
+.cc-col{ display:flex; flex-direction:column; min-width:0; }
+.cc-col.left{ gap:var(--sp-4); padding-right:var(--sp-5); }
+.cc-col.right{ position:relative; gap:var(--sp-4); padding-left:var(--sp-5); justify-content:space-between; }
+.cc-col.right::before{ content:""; position:absolute; left:0; top:0; bottom:0; width:1px; background:hsl(var(--hair)); }
+.cc-field{ display:flex; flex-direction:column; min-width:0; }
+.cc-hair{ height:1px; background:hsl(var(--hair)); }
+.conn-card .unlock-head{ margin-bottom:0; }
+/* ≤560px：单列扁平化，hairline 换成 border（L350-361）*/
+@container mainc (max-width:560px){
+  .cc-cols{ grid-template-columns:1fr; }
+  .cc-col{ display:contents; }
+  .cc-col.right::before{ display:none; }
+  .cc-hair{ display:none; }
+  .cc-col.left .cc-field:not(.unlock-field){ order:1; }
+  .cc-col.right .cc-field:first-child{ order:2; }
+  .cc-col.right .cc-field:last-child{ order:3; }
+  .conn-card .unlock-field{ order:4; }
+  .conn-card .cc-field{ border-top:1px solid hsl(var(--hair)); padding-top:var(--sp-4); margin-top:var(--sp-4); }
+  .cc-col.left .cc-field:not(.unlock-field){ border-top:none; padding-top:0; margin-top:0; }
+}
+
+/* icon-btn / connect-btn（L362-411）*/
+.icon-btn{ width:36px; height:36px; border-radius:var(--r-sm); display:grid; place-items:center;
+  border:1px solid hsl(var(--line)); background:hsl(var(--surface-2)); color:hsl(var(--fg-dim));
+  transition:.14s; flex:none; cursor:pointer; }
+.icon-btn:hover{ background:hsl(var(--surface-3)); color:hsl(var(--fg)); }
+.icon-btn svg{ width:17px; height:17px; }
+.icon-btn.on{ color:hsl(var(--flow-hi)); background:hsl(var(--flow-weak)); border-color:hsl(var(--flow)/0.4); }
+
+.exit-row{ display:flex; align-items:center; gap:9px; }
+.exit-row .icon-btn{ width:32px; height:32px; }
+.exit-row .connect-btn{ width:44px; height:44px; }
+/* 空状态（一个节点都没有）：占据 `.node-dd` 原来的弹性槽位，虚线边框表明「这里还没有内容」，
+   两条直达入口就地给出下一步（对齐 上游 connection-control-card 的 isEmptyState 形态）。 */
+.home-empty-exit{ flex:1; min-width:0; display:flex; flex-wrap:wrap; align-items:center; gap:8px;
+  padding:11px; border:1px dashed hsl(var(--line)); border-radius:9px; background:hsl(var(--surface-2)); }
+.home-empty-exit .he-tx{ font-size:12.5px; color:hsl(var(--fg-dim)); }
+.home-empty-exit .btn svg{ width:13px; height:13px; }
+/* 分流策略切换在飞：整组置灰（契约 L21 的 routingBusy 反馈）。 */
+.seg2 button:disabled{ opacity:.5; cursor:default; }
+/* phead meta 行的「系统代理未生效」。
+   色阶 = `--warn` 琥珀，与**同一语义**的另两处严格一致：状态栏 `.dot.warn`（StatusBar 对
+   proxy-degraded 取 'warn'）与首页降级横幅。此前这里是 `--err` 红 ⇒ 同一屏上「系统代理未生效」
+   有红有琥珀两种色阶，用户读作两件不同严重程度的事（2026-07-28 复审 LOW）。
+   降级不是错误：核在跑、只是流量没经核，琥珀（需要注意）才是对的量级。 */
+.home-degraded{ color:hsl(var(--warn)); font-weight:640; }
+.exit-flag{ display:flex; align-items:center; flex:none; }
+.flag{ display:inline-block; width:18px; height:12px; border-radius:2px; border:1px solid hsl(var(--hair)); overflow:hidden;
+  flex:none; vertical-align:-2px; background:hsl(var(--surface-3)); }
+.flag.globe{ border-color:transparent; background:none; color:hsl(var(--fg-faint)); }
+.exit-info{ min-width:0; }
+.exit-name{ font-size:15px; font-weight:660; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.exit-addr{ font-size:11.5px; color:hsl(var(--fg-faint)); margin-top:3px; font-family:var(--mono);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+.connect-btn{ width:52px; height:52px; border-radius:50%; flex:none; display:grid; place-items:center;
+  color:#fff; transition:.2s; position:relative; border:0; cursor:pointer; }
+.connect-btn svg{ width:22px; height:22px; }
+.connect-btn.on{ background:hsl(var(--aurora)); box-shadow:0 0 0 4px hsl(var(--aurora)/0.22),0 8px 20px -6px hsl(var(--aurora)/0.6); }
+.connect-btn.off{ background:hsl(var(--surface-3)); color:hsl(var(--fg-dim)); border:1px solid hsl(var(--hair)); }
+.connect-btn.on:hover{ background:hsl(var(--aurora-hi)); }
+.connect-btn.busy{ background:hsl(var(--warn)); box-shadow:0 0 0 4px hsl(var(--warn)/0.2); }
+@media (prefers-color-scheme:dark){ :root:not([data-theme="light"]) .connect-btn.on{ box-shadow:0 0 0 3px hsl(var(--aurora)/0.15),0 6px 15px -8px hsl(var(--aurora)/0.42); } }
+:root[data-theme="dark"] .connect-btn.on{ box-shadow:0 0 0 3px hsl(var(--aurora)/0.15),0 6px 15px -8px hsl(var(--aurora)/0.42); }
+@media (prefers-color-scheme:dark){ :root:not([data-theme="light"]) .connect-btn.busy{ box-shadow:0 0 0 3px hsl(var(--warn)/0.14); } }
+:root[data-theme="dark"] .connect-btn.busy{ box-shadow:0 0 0 3px hsl(var(--warn)/0.14); }
+
+.field-lbl{ font-size:11.5px; font-weight:640; color:hsl(var(--fg)); margin-bottom:8px; display:flex; align-items:center; }
+.seg-wrap{ display:flex; }
+.seg-wrap .seg2{ display:flex; width:100%; }
+.seg-wrap .seg2 button{ flex:1; }
+.seg-gear{ display:grid; place-items:center; width:20px; height:20px; margin-left:auto; color:hsl(var(--fg-faint));
+  border:0; background:none; cursor:pointer; transition:color .12s; }
+.seg-gear:hover{ color:hsl(var(--fg)); }
+.seg-gear svg{ width:15px; height:15px; }
+
+/* 节点下拉（L420-460）—— 当前批次简化为 trigger（节点切换走 nodes 页 / 下拉后续补）*/
+.node-dd{ position:relative; flex:1; min-width:0; display:flex; }
+.node-trigger{ display:flex; align-items:center; gap:11px; min-width:0; flex:1; text-align:left;
+  border-radius:var(--r-md); padding:4px 6px; margin:-4px -6px; transition:background .12s; border:0; background:none; cursor:pointer; color:inherit; }
+.node-trigger:hover{ background:hsl(var(--surface-2)); }
+.node-trigger:focus-visible{ outline:2px solid hsl(var(--ring)); outline-offset:1px; }
+.node-trigger .nt-chev{ margin-left:auto; width:16px; height:16px; color:hsl(var(--fg-faint)); flex:none; transition:transform .18s; }
+
+/* sankey 拓扑（L462-487）*/
+.topo{ margin-top:7px; container:topo / inline-size; }
+/* align-items 由原型的 baseline 改 center：卡头此后含 30px 高的检索框，baseline 会把它吊在标题基线上 */
+.topo-head{ display:flex; align-items:center; gap:10px; margin-bottom:4px; }
+.topo-head h3{ font-size:14px; font-weight:640; margin:0; min-width:0; }
+.topo-head .tw{ margin-left:auto; font-size:10.5px; color:hsl(var(--fg-faint)); font-weight:540; white-space:nowrap; }
+/* 检索框 240×30：上游 三档实测定稿（200 挤 placeholder / 280 视觉重量压过标题 / 240 兼顾） */
+.topo-search{ width:240px; height:30px; flex:none; padding:0 9px; }
+.sankey-wrap{ padding:12px 2px 2px; position:relative; }
+.sankey{ width:100%; flex:1 1 auto; min-height:180px; max-height:340px; display:block; contain:size; }
+.sankey .col-lbl{ font-size:11px; font-weight:600; fill:hsl(var(--fg-faint)); }
+.sankey .node rect{ rx:3; }
+.sankey .nlabel{ font-size:11.5px; fill:hsl(var(--fg)); font-weight:540; }
+.sankey .link{ fill:url(#linkGrad); opacity:.5; transition:opacity .16s; cursor:context-menu; }
+/* 高亮：hover 与检索共用同一淡出语义（焦点集外 → dim）。:has 分支保留原型的纯 CSS hover 兜底 */
+.sankey:has(.link:hover) .link, .sankey.dim .link{ opacity:.2; }
+.sankey .link:hover, .sankey .link.hl{ opacity:.92; }
+.sankey.dim .node{ opacity:.28; transition:opacity .16s; }
+.sankey .node.hl{ opacity:1; }
+.sankey .dnode{ cursor:pointer; outline:none; }
+.sankey .dnode:focus-visible rect:first-of-type{ stroke:hsl(var(--ring)); stroke-width:2; }
+/* tooltip：位置与翻转由 JS 算（clamp 在 .sankey-wrap 内），故不带原型的 transform —— 它无边界感知会溢出卡片 */
+.sk-tip{ position:absolute; z-index:20; pointer-events:none; background:hsl(var(--fg)); color:hsl(var(--surface));
+  font-size:11px; font-weight:560; padding:5px 9px; border-radius:7px; white-space:nowrap; opacity:0;
+  transition:opacity .12s; box-shadow:0 6px 16px -6px hsl(var(--shadow)/0.5); }
+.sk-tip.show{ opacity:1; }
+.sk-nomatch{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); pointer-events:none;
+  font-size:11.5px; color:hsl(var(--fg-faint)); background:hsl(var(--surface)/0.86); padding:6px 12px; border-radius:999px; }
+.sankey-fallback{ display:none; margin-top:4px; }
+/* @540 图退化为条形 fallback，检索框一并隐藏（无图可检索）。
+   不设「窄窗降 150px」中间档：上游 那条 780px 断点的前提是其容器约 1240px；Polaris 主窗 925 下 topo 容器
+   仅约 695px，同款断点会恒生效把框永久钉死在 150px（CDP 实测逮到）。240 框在 695 容器内宽松，overflowRight=-17。 */
+@container topo (max-width:540px){ .sankey{ display:none; } .sankey-fallback{ display:block; } .topo-search{ display:none; } }
+/* 零连接空态（宽屏）：`.sankey-fallback` 里那句只在 ≤540 容器可见，宽屏零连接原本是整块纯白。
+   窄容器交还给 fallback（否则两句重复）。 */
+.sankey-empty{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); pointer-events:none;
+  font-size:12px; color:hsl(var(--fg-faint)); }
+@container topo (max-width:540px){ .sankey-empty{ display:none; } }
+
+/* 右键菜单（原型 L1294-1300）：拓扑域名节点用，连接表行右键等后续消费方共用 */
+.ctx-menu{ position:absolute; z-index:300; min-width:210px; padding:5px; background:hsl(var(--surface));
+  border:1px solid hsl(var(--line)); border-radius:var(--r-md); box-shadow:var(--shadow-pop); }
+.ctx-i{ display:flex; align-items:center; gap:8px; width:100%; text-align:left; padding:8px 10px; border-radius:7px; font-size:12.5px; color:hsl(var(--fg-dim)); }
+.ctx-i svg{ flex:none; } .ctx-i:hover{ background:hsl(var(--surface-2)); color:hsl(var(--fg)); }
+.ctx-i b{ color:hsl(var(--flow-hi)); font-weight:600; }
+.ctx-i.danger:hover{ background:hsl(var(--err-weak)); color:hsl(var(--err)); }
+
+/* 解锁检测（L489-513）*/
+.unlock-field{ display:flex; flex-direction:row; align-items:center; gap:14px; }
+.unlock-field .unlock-row{ flex:1; margin-top:0; }
+.unlock-row{ display:flex; flex-direction:column; align-items:stretch; gap:8px; }
+.unlock-line{ display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
+.detect-ts{ margin-left:auto; font-size:10.5px; color:hsl(var(--fg-faint)); font-variant-numeric:tabular-nums; }
+.ub{ display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:560; color:hsl(var(--fg-dim)); }
+.ub .dot{ width:7px; height:7px; }
+.ub.ok{ color:hsl(var(--fg)); } .ub.ok .dot{ background:hsl(var(--ok)); }
+.ub.no{ color:hsl(var(--fg-faint)); } .ub.no .dot{ background:hsl(var(--fg-faint)); }
+.ub.blocked{ color:hsl(var(--fg)); } .ub.blocked .dot{ background:hsl(var(--err)); }
+.ub.partial{ color:hsl(var(--fg)); } .ub.partial .dot{ background:hsl(var(--warn)); }
+/* restricted = 风控/反爬拦截（非地区封禁）：橙色系，区别 blocked 红 / partial 黄 / timeout 灰。
+   无专用橙 token，小圆点直用 hsl（两主题可读）。语义/文案见 unlock-detection.ts。 */
+.ub.restricted{ color:hsl(var(--fg)); } .ub.restricted .dot{ background:hsl(22 90% 52%); }
+.ub.timeout{ color:hsl(var(--fg-dim)); } .ub.timeout .dot{ background:hsl(var(--fg-faint)); }
+/* 未检测态：`.dot` 基线（components.css:69 / prototype.css）不带 background，而 `.ub.idle` 此前无着色规则
+   → 状态点整个不可见，六个徽章看起来像「没有状态点这个东西」而非「还没检测」。给一档最弱的可见色。 */
+.ub.idle .dot{ background:hsl(var(--fg-faint)/.4); }
+.ub.checking .dot{ background:hsl(var(--warn)); animation:pulse 1s ease-in-out infinite; }
+@keyframes pulse{ 0%,100%{ opacity:1; } 50%{ opacity:.3; } }
+@container mainc (max-width:720px){ .unlock-line{ gap:7px; } .unlock-field{ gap:8px; } }
+
+/* 品牌图标（随包本地 SVG，解锁徽章 + 应用分流内置项共用；见 components/brand-icons）。
+   .brand-svg = 内联 SVG 容器（填满父盒、object-fit 保持比例）。 */
+.brand-svg{ display:inline-flex; width:100%; height:100%; }
+.brand-svg svg{ width:100%; height:100%; display:block; object-fit:contain; }
+/* 解锁徽章图标：REVERT 到原型 26px 基线 + 白底方块（此前 30px 裸尺寸丢失了白底 tile，
+   深色墨线图标如 GitHub/Apple 在暗色背景上会隐形）。状态灰度对齐原型（timeout/blocked/idle 置灰）。 */
+.ub-ico{ width:26px; height:26px; flex:none; border-radius:6px; background:#fff; padding:3px; box-sizing:border-box;
+  overflow:hidden; display:inline-grid; place-items:center; border:1px solid hsl(var(--line)); box-shadow:0 1px 2px hsl(var(--shadow)/0.14); }
+.ub-ico .brand-svg, .ub-ico .brand-svg svg{ width:100%; height:100%; object-fit:contain; }
+.ub.idle .ub-ico, .ub.no .ub-ico, .ub.timeout .ub-ico, .ub.blocked .ub-ico{ filter:grayscale(1); opacity:.62; }
+@container mainc (max-width:720px){ .ub-ico{ width:20px; height:20px; border-radius:5px; } }
+/* 应用分流内置图标：复用 .app-ico 方块（白底 + 内边距，与远端 .app-ico-img 观感一致）。 */
+.app-ico.brand{ background:#fff; }
+.app-ico .brand-svg{ padding:3px; box-sizing:border-box; }
+
+/* ═══════════════ CONNECTIONS（L1047-1082）═══════════════ */
+.conn-toolbar{ display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap; flex:none; }
+.conn-toolbar .input{ flex:1; min-width:150px; }
+#conn-table-view{ flex:1; min-height:0; display:flex; flex-direction:column; }
+#conn-top-view{ flex:1; min-height:0; overflow-y:auto; }
+#conn-table-view[hidden], #conn-top-view[hidden]{ display:none; }
+.conn-toolbar, #s-connections > .phead{ flex:none; }
+.conn-scroll{ overflow:auto; border:1px solid hsl(var(--line)); border-radius:var(--r); flex:1; min-height:130px; }
+/* .conn-table base rule (incl. min-width) lives in prototype.css — that file loads last (index.css) and won every
+   property anyway, so repeating it here only created a third, silently-dead value to drift against. */
+.conn-table th, .conn-table td{ white-space:nowrap; }
+.conn-table .c-close{ width:1px; padding-left:5px; padding-right:2px; }
+.conn-table td.c-close{ text-align:center; }
+/* Type(L4) 列（tcp 实底灰 / udp 描边）+ Process 列（进程名，弱化省略）——补齐 上游 连接表两列。 */
+.conn-table .c-type{ width:1px; }
+.conn-table .c-proc{ max-width:160px; }
+.conn-proc{ display:inline-block; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  vertical-align:bottom; font-size:11px; color:hsl(var(--fg-dim)); }
+.pill.tcp{ background:hsl(var(--surface-3)); color:hsl(var(--fg-dim)); }
+.pill.udp{ background:transparent; color:hsl(var(--fg-dim)); box-shadow:inset 0 0 0 1px hsl(var(--line)); }
+.conn-table th:nth-child(2), .conn-table td:nth-child(2){ padding-left:2px; }
+.conn-table th{ text-align:left; font-size:10.5px; font-weight:640; letter-spacing:.05em; text-transform:uppercase;
+  color:hsl(var(--fg-faint)); padding:10px 12px; background:hsl(var(--surface-2)); position:sticky; top:0; z-index:1;
+  box-shadow:inset 0 -1px 0 hsl(var(--hair)); }
+.conn-table th.sortable{ cursor:pointer; user-select:none; }
+.conn-table th.sortable:hover{ color:hsl(var(--fg)); }
+.conn-table th .sort-ar{ opacity:0; margin-left:3px; font-size:9px; }
+.conn-table th.sorted .sort-ar{ opacity:1; color:hsl(var(--flow-hi)); }
+.conn-table td{ padding:10px 12px; border-top:1px solid hsl(var(--hair)); }
+.conn-table tr:hover td{ background:hsl(var(--surface-2)/0.5); }
+.conn-host{ font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:150px; }
+.conn-sub{ font-size:10.5px; color:hsl(var(--fg-faint)); font-family:var(--mono); }
+.conn-chain{ font-size:11px; color:hsl(var(--fg-dim)); } .conn-chain b{ color:hsl(var(--flow-hi)); font-weight:600; }
+.conn-rate .d{ color:hsl(var(--dn)); font-weight:600; } .conn-rate .u{ color:hsl(var(--up)); font-weight:600; }
+.conn-x{ color:hsl(var(--fg-faint)); border-radius:5px; border:0; background:none; cursor:pointer; display:grid; place-items:center; padding:2px; }
+.conn-x:hover{ color:hsl(var(--err)); background:hsl(var(--err-weak)); }
+.conn-x:focus-visible{ outline:2px solid hsl(var(--ring)); }
+.conn-x svg{ width:15px; height:15px; }
+.top-grid{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+@container mainc (max-width:720px){ .top-grid{ grid-template-columns:1fr; } }
+.top-bar-row{ display:flex; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid hsl(var(--hair)); }
+.top-bar-row:last-child{ border-bottom:0; }
+.top-bar-row .tb-name{ width:120px; font-size:12px; font-weight:560; flex:none; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.top-bar-row .bar{ flex:1; }
+.top-bar-row .tb-v{ font-size:11px; color:hsl(var(--fg-dim)); width:70px; text-align:right; flex:none; font-variant-numeric:tabular-nums; }
+
+/* ═══════════════ LOGS（L1086-1107）═══════════════ */
+.log-toolbar{ margin-bottom:14px; flex:none; overflow:hidden; }
+.log-tb-lvl{ display:flex; align-items:center; gap:11px; flex-wrap:wrap; padding:13px 16px 11px; }
+.log-flow-tag{ font-size:10.5px; font-weight:660; letter-spacing:.05em; text-transform:uppercase; color:hsl(var(--fg-faint)); flex:none; }
+.log-tb-cap{ padding:0 16px 12px; max-width:680px; line-height:1.55; }
+.log-tb-main{ display:flex; align-items:center; gap:11px; flex-wrap:wrap; padding:12px 16px 13px; border-top:1px solid hsl(var(--hair)); }
+.log-tb-search{ flex:1; min-width:150px; }
+.log-tb-actions{ display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap; margin-left:auto; }
+.log-tb-sep{ width:1px; align-self:stretch; min-height:18px; background:hsl(var(--hair)); margin:0 2px; }
+.log-live{ display:inline-flex; align-items:center; gap:7px; }
+.log-live-dot{ width:7px; height:7px; border-radius:50%; background:hsl(var(--ok)); box-shadow:0 0 0 3px hsl(var(--ok)/0.16); flex:none; }
+.log-levels{ display:inline-flex; gap:3px; padding:3px; border:1px solid hsl(var(--line)); border-radius:var(--r-sm); background:hsl(var(--surface-2)); }
+.log-levels button{ font-size:11.5px; font-weight:600; padding:5px 11px; border-radius:var(--r-xs); color:hsl(var(--fg-dim)); border:0; background:transparent; cursor:pointer; transition:.14s; }
+.log-levels button.on{ background:hsl(var(--surface)); color:hsl(var(--fg)); box-shadow:0 1px 2px hsl(var(--shadow)/0.14); }
+.log-view{ font-family:var(--mono); font-size:12px; line-height:1.75; background:hsl(var(--bg)/0.6); border:1px solid hsl(var(--line));
+  border-radius:var(--r); padding:14px 16px; flex:1; min-height:180px; overflow-y:auto; }
+.log-line[hidden]{ display:none; }
+.log-view mark{ background:hsl(var(--warn)/0.5); color:inherit; border-radius:2px; }
+.log-line{ white-space:pre-wrap; word-break:break-word; }
+.log-ts{ color:hsl(var(--fg-faint)); } .log-INFO{ color:hsl(var(--flow-hi)); font-weight:600; }
+.log-WARN{ color:hsl(var(--warn)); font-weight:600; } .log-ERROR,.log-FATAL{ color:hsl(var(--err)); font-weight:600; }
+.log-DEBUG{ color:hsl(var(--fg-faint)); font-weight:600; }
+.log-foot{ display:flex; align-items:center; justify-content:space-between; margin-top:10px; font-size:11.5px; color:hsl(var(--fg-dim)); }
+
+/* ═══════════ DIALOG（原生 <dialog> + showModal，§1.2） ═══════════ */
+/* 提取自原型 :1186-1219（.dialog/.dlg-*）+ :1355-1358（focus ring），改造要点：
+   - 弃 .modal/.modal-scrim 手写遮罩层：卡片样式直接落 <dialog> 元素本身，scrim 用原生 ::backdrop；
+   - top-layer 免 z-index；showModal 使背景 inert（焦点圈禁 + 指针锁），替代原型 trapFocus + .fx-sentinel；
+   - <dialog> 盒即卡片（fit content 居中），子元素 dlg-head/body/foot 铺满 → 点 backdrop 时 e.target===<dialog>。 */
+.dlg{ padding:0; margin:auto; border:1px solid hsl(var(--line)); border-radius:var(--r-lg);
+  width:min(460px, calc(100vw - 40px)); max-height:calc(100vh - 40px); overflow:hidden;
+  background:hsl(var(--surface)); color:hsl(var(--fg)); display:flex; flex-direction:column;
+  box-shadow:0 34px 70px -26px hsl(var(--shadow)/0.7); }
+.dlg:focus, .dlg:focus-visible{ outline:none; }
+/* ::backdrop —— 半透明遮罩 + blur。blur 在 WebKitGTK 的 ::backdrop 上表现需真机实测（§1.2），
+   不支持时降级为纯半透明底（backdrop-filter 无效即忽略，视觉可接受）。 */
+.dlg::backdrop{ background:hsl(220 42% 4% / 0.5); backdrop-filter:blur(2px); }
+.dlg-head{ display:flex; align-items:center; gap:11px; padding:16px 18px; border-bottom:1px solid hsl(var(--line)); flex:none; }
+.dlg-ic{ width:30px; height:30px; border-radius:var(--r-sm); display:grid; place-items:center;
+  background:hsl(var(--flow-weak)); color:hsl(var(--flow-hi)); flex:none; }
+.dlg-ic svg{ width:16px; height:16px; }
+.dlg-head b{ font-size:14px; font-weight:660; flex:1; min-width:0; }
+.dlg-x{ width:28px; height:28px; border-radius:7px; display:grid; place-items:center; color:hsl(var(--fg-faint));
+  border:0; background:none; cursor:pointer; flex:none; }
+.dlg-x:hover{ background:hsl(var(--surface-3)); color:hsl(var(--fg)); }
+.dlg-x:focus-visible{ outline:2px solid hsl(var(--ring)); outline-offset:1px; }
+/* header/footer 固定，仅 dlg-body 滚动（原型 §fix :1192：整 dialog overflow:auto 会令 footer 随内容滚走）。 */
+.dlg-body{ padding:16px 18px; display:flex; flex-direction:column; gap:14px; flex:1 1 auto; overflow-y:auto; min-height:0; }
+.dlg-foot{ display:flex; gap:9px; justify-content:flex-end; padding:14px 18px; border-top:1px solid hsl(var(--line)); flex:none; }
+.fld-l{ font-size:11.5px; font-weight:620; margin-bottom:7px; display:block; }
+.dlg-err{ font-size:11px; color:hsl(var(--err)); background:hsl(var(--err)/0.1); padding:8px 10px; border-radius:var(--r-sm); line-height:1.5; }
+.row2{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+/* 危险确认按钮（删除/放弃等破坏性操作）。 */
+.btn.danger{ background:hsl(var(--err)); border-color:transparent; color:#fff; font-weight:660; }
+.btn.danger:hover{ background:hsl(var(--err)); filter:brightness(1.08); }
+
+/* ═══════════ CSEL —— dialog 内自定义下拉（§1.3） ═══════════ */
+/* 提取自原型 :1478-1502，改造要点：listbox 用 position:fixed（视口坐标，JS 定位）逃出 dlg-body 的
+   overflow 裁切，且作为 dialog 子元素仍在 top-layer；宽度锁触发器宽（长选项省略号不撑宽）。 */
+.sel.csel{ position:relative; }
+.csel-trigger{ position:relative; display:flex; align-items:center; width:100%; font:inherit; font-size:12.5px;
+  color:hsl(var(--fg)); background:hsl(var(--surface-2)); border:1px solid hsl(var(--line)); border-radius:var(--r-sm);
+  padding:8px 30px 8px 11px; cursor:pointer; text-align:left; }
+.csel-trigger:focus-visible{ outline:2px solid hsl(var(--ring)); outline-offset:1px; border-color:hsl(var(--flow)); }
+.sel.csel.open .csel-trigger{ border-color:hsl(var(--flow)); }
+.csel-trigger .csv{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.csel-trigger > .csel-chev{ position:absolute; right:8px; top:50%; transform:translateY(-50%); width:15px; height:15px;
+  color:hsl(var(--fg-dim)); pointer-events:none; transition:transform .18s, color .14s; }
+.csel-trigger:hover > .csel-chev, .sel.csel.open .csel-trigger > .csel-chev{ color:hsl(var(--flow-hi)); }
+.sel.csel.open .csel-trigger > .csel-chev{ transform:translateY(-50%) rotate(180deg); }
+.csel-menu{ z-index:1; max-height:min(300px, 50vh); overflow-y:auto; padding:5px;
+  background:hsl(var(--surface)); border:1px solid hsl(var(--line)); border-radius:var(--r-md); box-shadow:var(--shadow-pop); }
+.csel-opt{ display:flex; align-items:center; gap:8px; width:100%; text-align:left; padding:8px 10px; border-radius:7px;
+  font-size:12.5px; color:hsl(var(--fg-dim)); transition:background .12s; border:0; background:none; cursor:pointer; }
+.csel-opt > span:first-child{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.csel-opt:hover, .csel-opt.active{ background:hsl(var(--surface-2)); color:hsl(var(--fg)); }
+.csel-opt.on{ color:hsl(var(--flow-hi)); font-weight:620; }
+.csel-opt .csel-ck{ margin-left:auto; width:15px; height:15px; color:hsl(var(--flow)); flex:none; opacity:0; }
+.csel-opt.on .csel-ck{ opacity:1; }
+.csel-opt.disabled{ opacity:.42; cursor:not-allowed; }
+.csel-opt.disabled:hover{ background:transparent; color:inherit; }
+/* §RU: optgroup 组头（分组条件类型，原型 :1500）。不可聚焦、不占扁平索引，仅视觉分隔。 */
+.csel-grp{ padding:8px 10px 3px; font-size:9.5px; font-weight:680; letter-spacing:.06em; text-transform:uppercase;
+  color:hsl(var(--fg-faint)); }
+.csel-grp:first-child{ padding-top:4px; }
+
+/* ═══════════ 表单字段 / 折叠 / 开关 / 导入 / mini-menu ═══════════
+   提取自原型 polaris-prototype.html :1201-1216（fld/fold/swt）+ :1376-1386（parse/dz/clip）+
+   :1362-1372（mini-menu）。D1 仅提了 URL 弹窗所需（fld-l/input/csel）；D2 补齐 8 协议节点表单 +
+   手动导入 + 「添加 ▾」下拉所需类（纯新增选择器，不改 D1 既有规则）。 */
+.req-star{ color:hsl(var(--err)); font-weight:700; }
+.fld-l > .fld-opt{ font-size:10px; font-weight:500; color:hsl(var(--fg-faint)); }
+.err-line{ font-size:11px; color:hsl(var(--err)); margin-top:6px; }
+.fld-hint{ font-size:10.5px; color:hsl(var(--fg-dim)); margin-top:3px; line-height:1.5; }
+
+/* 折叠段（原生 <details>）—— 传输/安全、前置代理。dlg-body 已 flex-gap 隔开直接子，故折叠体内改用自身 flex-gap。 */
+.fld-fold{ border:1px solid hsl(var(--line)); border-radius:var(--r-sm); overflow:hidden; }
+.fld-fold > summary{ list-style:none; cursor:pointer; display:flex; align-items:center; gap:8px; padding:11px 13px;
+  font-size:12px; font-weight:600; color:hsl(var(--fg-dim)); background:hsl(var(--surface-2)/0.5); }
+.fld-fold > summary::-webkit-details-marker{ display:none; }
+.fld-fold > summary svg{ width:15px; margin-left:auto; transition:transform .2s; color:hsl(var(--fg-faint)); }
+.fld-fold[open] > summary{ color:hsl(var(--fg)); border-bottom:1px solid hsl(var(--line)); }
+.fld-fold[open] > summary svg{ transform:rotate(180deg); }
+.fld-fold-body{ padding:13px; display:flex; flex-direction:column; gap:14px; }
+/* summary 内的标题吃掉剩余空间 —— 否则插入计数徽章后，标题与 svg 的两个 margin-left:auto 会
+   **均分**剩余空间，徽章飘到 summary 中间。让标题 flex:1 后 svg 的 auto 无空间可分，
+   「计数 + 箭头」自然贴右，无需覆盖上面既有的 svg 规则（该规则在 prototype.css 里另有一份重复定义，
+   改它必须两处同改；这里绕开它，只加新类）。 */
+.fld-fold-t{ flex:1; min-width:0; }
+/* 折叠段条目计数（取值逐字抄自 .ns-c，见 :854-858 —— 那套被 .mini-menu/.node-menu 前缀锁死，
+   设置页拿不到，故在此另接同款视觉，不新造组件族）。 */
+.fld-fold-c{ font-size:10px; color:hsl(var(--fg-faint)); font-variant-numeric:tabular-nums; }
+
+/* 开关行（switch field，FieldRenderer 的 swt 分支） */
+.swt-row{ display:flex; align-items:center; gap:12px; }
+.swt-row .swt-tx{ flex:1; min-width:0; }
+.swt-row .swt-tx b{ font-size:12.5px; font-weight:600; display:block; }
+
+/* 手动导入：识别预览 / 拖放区 / 剪贴板提示 */
+.parse-list{ display:flex; flex-direction:column; gap:5px; font-size:11.5px; margin-top:2px; max-height:120px; overflow-y:auto; }
+.parse-list .pl-row{ display:flex; align-items:center; gap:7px; font-family:var(--mono); }
+.parse-list .pl-row svg{ width:13px; flex:none; }
+.parse-ok{ color:hsl(var(--ok)); } .parse-bad{ color:hsl(var(--err)); }
+.dz{ border:1.5px dashed hsl(var(--hair)); border-radius:var(--r-md); padding:24px; text-align:center;
+  color:hsl(var(--fg-faint)); font-size:12px; cursor:pointer; }
+.dz.drag{ border-color:hsl(var(--flow)); background:hsl(var(--flow-weak)/0.5); color:hsl(var(--flow-hi)); }
+.dz svg{ width:26px; margin-bottom:8px; opacity:.7; }
+.clip-hint{ display:none; align-items:center; gap:8px; font-size:11.5px; color:hsl(var(--flow-hi));
+  background:hsl(var(--flow-weak)); border-radius:var(--r-sm); padding:8px 11px; }
+.clip-hint.show{ display:flex; } .clip-hint svg{ width:14px; flex:none; } .clip-hint button{ margin-left:auto; }
+
+/* mini-menu —— 「添加 ▾」下拉（绝对定位于触发按钮下方，非 top-layer；不入 dialog 栈）。 */
+.mini-menu{ position:absolute; z-index:320; min-width:184px; max-height:min(60vh,360px); overflow-y:auto; padding:5px;
+  background:hsl(var(--surface)); border:1px solid hsl(var(--line)); border-radius:var(--r-md); box-shadow:var(--shadow-pop); }
+.mini-menu .mi{ display:flex; align-items:center; gap:8px; width:100%; text-align:left; padding:8px 10px; border-radius:7px;
+  font-size:12.5px; color:hsl(var(--fg-dim)); border:0; background:none; cursor:pointer; }
+.mini-menu .mi:hover{ background:hsl(var(--surface-2)); color:hsl(var(--fg)); }
+.mini-menu .mi:focus-visible{ outline:2px solid hsl(var(--ring)); outline-offset:-1px; }
+.mini-menu .mi svg{ width:15px; flex:none; }
+
+/* ══════════ D3: 组网三卡（HomeScreen）+ 组网/订阅弹窗辅助块 ══════════
+   加法移植原型 :620-640（mesh-col 家族）与 :1216-1233（mesh 弹窗块）——D3 前 grep 全 *.css 0 命中。
+   开关行沿用 D2 的 .swt-row（FieldRenderer switch），不引原型 .set-row，故仅补此处未覆盖的展示块。 */
+.mesh-card{ padding:16px; }
+.mesh-head{ display:flex; align-items:baseline; gap:9px; flex-wrap:wrap; }
+.mesh-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; margin-top:12px; }
+.mesh-col{ display:flex; align-items:center; gap:12px; padding:12px 13px; border-radius:var(--r-md);
+  border:1px solid hsl(var(--line)); background:hsl(var(--surface-2)/0.5); transition:.14s; }
+.mesh-col:hover{ border-color:hsl(var(--flow)/0.42); background:hsl(var(--surface-2)/0.85); }
+.mesh-col.add{ border-style:dashed; background:transparent; }
+.mesh-col.add:hover{ border-color:hsl(var(--flow)/0.5); }
+.mesh-ic{ width:38px; height:38px; flex:none; border-radius:var(--r-md); display:grid; place-items:center;
+  background:hsl(var(--flow-weak)); color:hsl(var(--flow-hi)); }
+.mesh-ic svg{ width:19px; height:19px; }
+.mesh-ic.add{ background:hsl(var(--surface-3)); color:hsl(var(--fg-faint)); }
+.mesh-tx{ flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:2px; }
+.mesh-col-h{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.mesh-col-h b{ font-size:13.5px; font-weight:650; }
+.mesh-col-sub{ font-size:11px; color:hsl(var(--fg-dim)); line-height:1.4;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.mesh-acts{ display:flex; align-items:center; gap:6px; flex:none; }
+/* 弹窗内提示 / 进行态 / 成功态 / .conf 预览 */
+.warn-line{ display:flex; gap:7px; align-items:flex-start; font-size:11px; color:hsl(var(--warn));
+  background:hsl(var(--warn)/0.1); padding:8px 10px; border-radius:var(--r-sm); margin-top:10px; line-height:1.5; }
+.warn-line svg{ width:14px; flex:none; margin-top:1px; }
+.spin-inline{ width:12px; height:12px; vertical-align:-1px; }
+.mesh-note{ display:flex; align-items:flex-start; gap:10px; padding:11px 12px; border-radius:var(--r-md);
+  background:hsl(var(--surface-2)); border:1px solid hsl(var(--line)); font-size:12px; color:hsl(var(--fg-dim)); line-height:1.5; }
+.mesh-note svg{ flex:none; width:17px; height:17px; margin-top:1px; color:hsl(var(--fg-faint)); }
+.ts-status{ display:flex; align-items:center; gap:9px; font-size:12.5px; color:hsl(var(--fg-dim)); margin-top:10px;
+  padding:11px 12px; border-radius:var(--r-md); background:hsl(var(--surface-2)); border:1px solid hsl(var(--line)); }
+.mesh-success{ display:flex; align-items:flex-start; gap:11px; padding:12px; border-radius:var(--r-md); margin-top:10px;
+  background:hsl(var(--ok-weak)/0.5); border:1px solid hsl(var(--ok)/0.35); }
+.mesh-success svg{ flex:none; margin-top:1px; }
+.mesh-success b{ font-size:13px; font-weight:640; }
+.wg-preview{ border:1px solid hsl(var(--ok)/0.35); background:hsl(var(--ok-weak)/0.4); border-radius:var(--r-md);
+  padding:11px 12px; font-size:11.5px; margin-top:10px; }
+.wg-preview .wpv-h{ font-weight:640; color:hsl(var(--ok)); margin-bottom:7px; display:flex; align-items:center; gap:6px; font-size:12px; }
+.wg-preview .wpv-row{ display:flex; gap:8px; font-family:var(--mono); padding:2px 0; }
+.wg-preview .wpv-row span:first-child{ color:hsl(var(--fg-faint)); min-width:96px; flex:none; }
+.wg-preview .wpv-row span:last-child{ color:hsl(var(--fg)); word-break:break-all; }
+.wg-conf-err{ font-size:11.5px; color:hsl(var(--err)); margin-top:6px; }
+
+/* ══════════ D5: 自定义应用弹窗（图标四子面板 + 标签选择）══════════
+   加法移植原型 :2596-2651（aad-icon-row/aad-ico-grid/tag-pick/emoji-pal）——D5 前 grep 全 *.css 0 命中。
+   图标预览复用既有 .app-ico/.app-ico-img/.ico-fb（AppPolicyScreen.AppIcon 同款布局，非重新发明）。 */
+.aad-icon-row{ display:flex; gap:14px; align-items:flex-start; }
+.aad-icon-preview{ width:52px; height:52px; font-size:20px; flex:none; }
+.aad-icon-methods{ flex:1; min-width:0; }
+.aad-ico-pane{ margin-top:8px; }
+.aad-hint{ font-size:11px; color:hsl(var(--fg-faint)); padding:6px 2px; line-height:1.5; }
+.aad-ico-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(40px,1fr)); gap:6px; margin-top:8px;
+  max-height:150px; overflow-y:auto; }
+.aad-ico-cell{ width:40px; height:40px; border-radius:var(--r-sm); border:1px solid hsl(var(--line));
+  background:hsl(var(--surface-2)); display:grid; place-items:center; cursor:pointer; padding:6px; }
+.aad-ico-cell:hover{ border-color:hsl(var(--flow)/0.4); }
+/* 选中环必须 inset：.aad-ico-grid 是 overflow-y:auto 的密排网格（gap 6px），外扩的 box-shadow 环会
+   被滚动容器裁掉一半、并溢出压到相邻格子上（原型踩过同一个坑）。inset 画在格子内侧，零溢出。 */
+.aad-ico-cell.on{ border-color:hsl(var(--flow)); box-shadow:inset 0 0 0 1px hsl(var(--flow)/0.4); }
+.aad-ico-cell img{ width:100%; height:100%; object-fit:contain; }
+.emoji-pal{ display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+.emoji-opt{ width:34px; height:34px; border-radius:var(--r-sm); border:1px solid hsl(var(--line));
+  background:hsl(var(--surface-2)); font-size:16px; display:grid; place-items:center; cursor:pointer; }
+.emoji-opt:hover{ border-color:hsl(var(--flow)/0.4); }
+/* `.emoji-opt.on` 只在 prototype.css:932 定义（原型 L894：border flow + flow-weak 填充）。此处**不留**
+ * 副本：本文件在 prototype.css 之前 @import，同选择器只有「声明了同一属性」才会被后者覆盖 —— 早前这里
+ * 的副本写的是 `box-shadow`（prototype 侧没有这个属性可覆盖），于是与 prototype 的填充**叠加**，渲染出
+ * 原型没有的一圈外环，比同族其余选中格重一档。属性名错开 = 双份定义的隐性叠加，比数值不一致更难发现。 */
+.aad-res-bar{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
+.aad-res-bar .search-box{ flex:1; min-width:140px; }
+.tag-pick{ display:flex; flex-wrap:wrap; gap:6px; max-height:110px; overflow-y:auto; }
+.tagchip{ font-size:11.5px; font-weight:560; padding:5px 11px; border-radius:999px; border:1px solid hsl(var(--line));
+  background:hsl(var(--surface-2)); color:hsl(var(--fg-dim)); cursor:pointer; }
+.tagchip:hover{ border-color:hsl(var(--flow)/0.4); }
+.tagchip.on{ background:hsl(var(--flow-weak)); color:hsl(var(--flow-hi)); border-color:hsl(var(--flow)/0.4); font-weight:620; }
+.aad-tag-sel{ display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.aad-sel-chip{ display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:560; padding:4px 8px 4px 4px;
+  border-radius:999px; background:hsl(var(--surface-3)); color:hsl(var(--fg-dim)); cursor:pointer; }
+.aad-sel-chip svg{ width:11px; height:11px; opacity:.6; }
+.aad-sel-chip.miss{ background:hsl(var(--warn-weak)); color:hsl(var(--warn)); }
+.aad-sel-k{ font-size:9px; font-weight:700; letter-spacing:.03em; padding:2px 5px; border-radius:999px;
+  background:hsl(var(--surface)); color:hsl(var(--fg-faint)); }
+
+/* ══════════ D5: 资源库弹窗（内置/外置 tab + 多选行）══════════
+   加法移植原型 :2701-2717（cat-list/cat-item/cat-ck/cat-badge）——沿用 .seg2 做 tab（非重新发明）。 */
+.dlg.cat-dlg{ width:min(560px, calc(100vw - 40px)); }
+.cat-ext-bar{ display:flex; align-items:center; gap:10px; font-size:11.5px; color:hsl(var(--fg-dim)); }
+.cat-ext-status{ display:flex; align-items:center; gap:6px; }
+.cat-list{ border:1px solid hsl(var(--line)); border-radius:var(--r-md); max-height:280px; overflow-y:auto; }
+.cat-item{ display:flex; align-items:center; gap:10px; padding:9px 12px; border-bottom:1px solid hsl(var(--hair)); font-size:12px; }
+.cat-item:last-child{ border-bottom:0; }
+.cat-item.disabled{ opacity:.55; }
+.cat-ck{ width:18px; height:18px; border-radius:5px; border:1.5px solid hsl(var(--hair)); flex:none;
+  display:grid; place-items:center; color:transparent; cursor:pointer; }
+.cat-ck svg{ width:12px; height:12px; }
+.cat-ck.on{ background:hsl(var(--flow)); border-color:transparent; color:#00141d; }
+.cat-nm{ flex:1; min-width:0; font-weight:560; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cat-meta{ display:flex; align-items:center; gap:6px; flex:none; }
+.cat-badge{ font-size:10px; font-weight:640; color:hsl(var(--fg-faint)); flex:none; }
+.cat-empty{ padding:24px; text-align:center; font-size:12.5px; color:hsl(var(--fg-faint)); }
+
+/* ═══════════ 规则弹窗（D4）—— 多条件编辑 / AND-OR / 测试匹配（原型 :777-793,1238-1252） ═══════════ */
+/* 条件行：字段列（类型 Csel + 值 textarea + 可选进程按钮）+ 删除按钮。 */
+.cond-row{ display:grid; grid-template-columns:1fr auto; gap:8px; align-items:start; margin-bottom:10px; }
+.cond-fields{ display:flex; flex-direction:column; gap:7px; min-width:0; }
+.cond-fields > .sel{ align-self:flex-start; width:170px; max-width:100%; }  /* 类型下拉不撑满整行 */
+.cond-fields > .fld{ margin:0; }
+.cond-fields textarea.input{ min-height:86px; line-height:1.55; resize:vertical; overflow-y:auto; }  /* 多值 textarea ~4 行 */
+.cond-del{ width:30px; height:30px; border-radius:var(--r-xs); display:grid; place-items:center; color:hsl(var(--fg-faint));
+  flex:none; border:0; background:none; cursor:pointer; }
+.cond-del:hover{ background:hsl(var(--err-weak)); color:hsl(var(--err)); }
+.cond-del svg{ width:14px; }
+/* AND / OR 组合切换（≥2 条件时显示）。 */
+.logic-toggle{ display:inline-flex; gap:3px; padding:3px; border:1px solid hsl(var(--line)); border-radius:var(--r-sm); background:hsl(var(--surface-2)); }
+.logic-toggle button{ font-size:11.5px; font-weight:600; padding:5px 12px; border-radius:var(--r-xs); color:hsl(var(--fg-dim));
+  border:0; background:none; cursor:pointer; }
+.logic-toggle button.on{ background:hsl(var(--flow)); color:#00141d; }
+@media (prefers-color-scheme:light){
+  :root:not([data-theme="dark"]) .logic-toggle button.on{ background:hsl(198 94% 27%); color:#fff; font-weight:680; }
+}
+:root[data-theme="light"] .logic-toggle button.on{ background:hsl(198 94% 27%); color:#fff; font-weight:680; }
+/* 测试匹配折叠（<details>）。 */
+.rule-test-det > summary{ display:flex; align-items:center; gap:6px; cursor:pointer; list-style:none; margin:0; }
+.rule-test-det > summary::-webkit-details-marker{ display:none; }
+.rule-test-det > summary::marker{ content:""; }
+.rule-test-caret{ color:hsl(var(--fg-faint)); transition:transform .15s; margin-left:auto; }
+.rule-test-det[open] .rule-test-caret{ transform:rotate(180deg); }
+
+/* ═══════════ 进程选择器（D4 嵌套弹窗）—— 原型 :911-928 ═══════════ */
+.pp-tools{ display:flex; align-items:center; gap:8px; }
+.pp-tools .input{ flex:1; min-width:0; }
+.pp-refresh{ flex:none; padding:8px; }
+.pp-refresh svg{ width:14px; }
+.proc-pick-list{ border:1px solid hsl(var(--line)); border-radius:var(--r-sm); background:hsl(var(--surface-2)/0.4);
+  max-height:340px; overflow-y:auto; }
+.proc-pick-row{ display:flex; align-items:center; gap:11px; padding:9px 11px; cursor:pointer; width:100%; text-align:left;
+  border:0; border-bottom:1px solid hsl(var(--line)/0.6); background:none; font:inherit; color:inherit; }
+.proc-pick-row:last-child{ border-bottom:0; }
+.proc-pick-row:hover{ background:hsl(var(--surface-3)/0.5); }
+.pp-main{ display:flex; flex-direction:column; gap:1px; min-width:0; flex:1; }
+.pp-nm{ font-size:12.5px; font-weight:560; color:hsl(var(--fg)); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pp-path{ font-size:10.5px; color:hsl(var(--fg-faint)); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pp-cnt{ flex:none; font-size:11px; color:hsl(var(--fg-faint)); }
+.proc-pick-empty{ padding:40px 12px; text-align:center; font-size:12px; color:hsl(var(--fg-faint)); }
+
+/* ══════════ APP POLICY 补丁（原型 :800,:860 syncAppDim/#ap-wfp-note；.app-summary 等主体样式在 screens.css）══════════ */
+/* 主开关关闭 或 非智能模式：#ap-body 整块置灰，仅 opacity，控件仍可编辑（syncAppDim §#5，原型 :860）。 */
+.ap-disabled{ opacity:.5; }
+/* Windows-only WFP 尽力而为提示：纯 CSS 按 :root[data-os] 门控（AppShell 写 data-os，原型 :800 同款）。 */
+#ap-wfp-note{ display:none; }
+:root[data-os="win"] #ap-wfp-note{ display:flex; }
+
+/* ═══════════ hover 详情卡（§1.5 非模态层）—— RuleHoverCard / apprule / refs 三卡共用 ═══════════
+   原型 polaris-prototype.html :196-224（#tip 引擎的卡片态视觉数值）+ :1026（.ref-line）。绝不经
+   dialog-store / Modal——纯 hover 触发浮层，挂载见 hover-cards/HoverCard.tsx（position:fixed +
+   getBoundingClientRect + 近边翻转，取代原型 #tip 单例 + JS 偏移的挂法，class 名与数值保持一致）。 */
+.hover-card{ position:fixed; z-index:200; max-width:300px; padding:8px 10px; border-radius:var(--r-sm);
+  background:hsl(var(--surface-2)); border:1px solid hsl(var(--line)); color:hsl(var(--fg));
+  font-size:11.5px; line-height:1.5; box-shadow:0 8px 24px -8px hsl(var(--shadow)/0.5);
+  pointer-events:auto; white-space:normal; }
+.hover-card .tip-t{ font-weight:600; }
+/* app-rule 卡（原型 :5213-5225）：匹配条件 pill 墙 + 分隔线 + 出口行 */
+.hover-card .tc-conds{ display:flex; flex-wrap:wrap; gap:4px; margin-top:5px; }
+.hover-card .tc-cond{ font-size:10.5px; font-family:var(--mono); padding:2px 6px; border-radius:5px; background:hsl(var(--surface-2)); color:hsl(var(--fg-dim)); }
+.hover-card .tc-cond b{ color:hsl(var(--flow-hi)); font-weight:640; }
+.hover-card .tc-sep{ height:1px; background:hsl(var(--line)); margin:7px 0; }
+.hover-card .tc-row{ display:flex; align-items:center; gap:8px; font-size:11px; }
+.hover-card .tc-lbl{ color:hsl(var(--fg-faint)); }
+/* 规则名卡（原型 :5230-5249）：名称+标签 · 逐条件行 · 分隔线 · 策略行 */
+.hover-card .rl-hc-head{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.hover-card .rl-hc-nm{ font-weight:640; }
+.hover-card .rl-hc-tag{ font-size:9.5px; font-weight:640; padding:1px 6px; border-radius:20px; background:hsl(var(--surface-3)); color:hsl(var(--fg-faint)); letter-spacing:.02em; }
+.hover-card .rl-hc-tag.off{ background:hsl(var(--warn-weak)); color:hsl(var(--warn)); }
+.hover-card .rl-hc-conds{ display:flex; flex-direction:column; gap:5px; margin-top:7px; }
+.hover-card .rl-hc-cond{ display:flex; align-items:center; gap:7px; }
+.hover-card .rl-hc-ty{ flex:none; }
+.hover-card .rl-hc-val{ font-size:11px; color:hsl(var(--fg-dim)); word-break:break-all; }
+.hover-card .rl-hc-node{ font-size:11px; color:hsl(var(--fg-dim)); }
+/* 资源引用卡（原型 :1026 .ref-line）：逐条引用行（kind pill + 文案） */
+.hover-card .ref-line{ display:flex; align-items:center; gap:7px; padding:2px 0; font-size:11.5px; white-space:nowrap; }
+.hover-card .ref-line:first-child{ padding-top:0; } .hover-card .ref-line:last-child{ padding-bottom:0; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   CSS 基座 reconcile —— 补齐原型独有族（原型 polaris-prototype.html <style> L64-1502
+   为唯一真值）。仅补现状缺失/漂移的组件族；shell chrome 族（.win/.shell/.side/.brand
+   与 .nav-* 与 .main 与 .statusbar 与 .winctl）由下方「shell chrome（批 A2）」段补齐；#tip 归 tooltip
+   引擎（另处）；dialog 内部富族(.aad-ico/.cat-item)现状已有 React 适配版本，保留不覆盖。
+   行号注释指向原型源行。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ══════════════════════════════════════════════════════════════════════════
+   shell chrome（批 A2）—— 窗口外壳族。原型 <style> L104-194 + L229-236 + L556-568
+   逐字转写（基座 agent 留的缺口）。两处对真机的刻意偏移（浏览器原型无真 vibrancy）——**注意：两处当年
+   写在本文件里的实现都已失效，现均由 index.css 承担，本段仅存意图说明**：
+     ① .win mac/win → transparent（透出原生 vibrancy(Sidebar 材质)/Mica），
+        非原型 :root[data-os=mac] .win 的 surface/0.86 + backdrop-filter 浏览器模拟；
+        当年写成了 `.win-frame`（全仓无此元素）⇒ 恒打空，已删，见下方 window 段。
+     ② .main mac → 不透明实色底盖住 vibrancy（vibrancy 只给侧栏），非原型 bg/0.32 半透。
+        本文件 `:root[data-os="mac"] .main` 与 prototype.css:237 同选择器同特异性，而 prototype.css
+        **后** @import ⇒ 恒被其 bg/0.32 覆盖，同样是死代码；现由 index.css 同选择器规则接管。
+   mac 交通灯由原生 decorations:true 绘制 → 不搬 .tl 元素/样式（不自绘，上一轮已删）。
+   win 的 .side/.win 规则原型未建模，此处补齐 Mica 语义（透出需 alpha + 透明窗）。
+   窄宽 sb-fold-* 容器查询在 index.css，本段不重复。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── window（原型 L105-126）── */
+/* 真实窗口下 .win 填满整个 webview 视口（窗口锁 925×740 + decorations 给边框/圆角）。
+   原型里 .win 是固定 925 卡片 + .stage 居中 = demo「桌面上浮动窗口」观感；真实 app 里窗口即卡片，
+   固定尺寸 + 居中会在视口≠925 时把内容缩到中间、左侧露空（真机+headless 均复现的偏移根因）。
+   该「填满」现由 index.css 的 `.win{width:100%;height:100vh;…}` 承担。
+
+   ⚠️ 此处原有一组 `.win-frame` 规则（含 mac/win → transparent 的偏移①），**已删**：全仓 tsx 零处渲染
+   该 class（AppShell.tsx:113-116 渲染的是 `.stage` > `.win`），选择器恒打空 ⇒ 纯死代码，且它让人误以为
+   「mac 透明已经做了」，正是真机「窗口特效并未生效」长期没被定位到的原因之一。
+   偏移① 的真实落点现在 index.css「mac 让位给原生 vibrancy」段（作用于真实存在的 `.win`，并按
+   `[data-window-effects="on"]` 门控——特效关时窗口是不透明实色窗，前端不能让位）。 */
+
+/* Windows / Linux 浮动窗口控制（mac 用原生交通灯 → 不显；display 由 data-os 切换） */
+.winctl{ position:absolute; top:7px; right:9px; z-index:75; display:none; gap:2px;
+  background:hsl(var(--surface)/0.72); backdrop-filter:blur(9px); border-radius:var(--r-sm); padding:2px; }
+:root[data-os="win"] .winctl, :root[data-os="lin"] .winctl{ display:flex; }
+.winctl button{ width:32px; height:26px; border-radius:var(--r-xs); display:grid; place-items:center;
+  color:hsl(var(--fg-dim)); }
+.winctl button:hover{ background:hsl(var(--surface-3)); }
+.winctl button:focus-visible{ outline:2px solid hsl(var(--ring)); outline-offset:1px; }
+.winctl .cls:hover{ background:hsl(var(--err)); color:#fff; }
+.winctl svg{ width:12px; height:12px; }
+
+.shell{ flex:1; display:flex; min-height:0; position:relative; }
+
+/* ── sidebar（原型 L131-194）── */
+/* sidebar 与主体间竖直分割线去掉（用户 2026-07-22 要求；此处刻意偏离原型，与 prototype.css:131 同步，勿改回） */
+.side{ width:148px; flex:none;
+  background:hsl(var(--surface-2)/0.42); display:flex; flex-direction:column; padding:0 10px 12px;
+  overflow-y:auto; overflow-x:hidden; transition:width .3s ease-out; }
+.side[hidden]{ display:none; }
+/* mac：透明侧栏透出原生 vibrancy(Sidebar 材质)，与交通灯标题栏读作同一面 */
+:root[data-os="mac"] .side{ background:transparent; }
+/* win：半透明透出 Mica（需 alpha 才显色；原型未建模 win，此为真机语义补齐） */
+:root[data-os="win"] .side{ background:hsl(var(--surface-2)/0.20); }
+/* drag-region chrome header（mac 顶部净空 ~36px；非 mac 12px 顶部可拖条）。
+   拖动来自 HTML `data-tauri-drag-region`（Sidebar.tsx / SettingsSidebar.tsx），不是 CSS——
+   `-webkit-app-region` 是 Electron 约定，Tauri 栈零处理（已从本规则移除，它从未生效过）。
+   `app-region:drag` 仅 Windows WebView2 生效（wry-0.55.1/src/webview2/mod.rs:601 开了非客户区支持）。 */
+.side-chrome{ height:36px; flex:none; display:flex; align-items:center; padding:0 5px; app-region:drag; }
+:root:not([data-os="mac"]) .side-chrome{ height:12px; }
+
+.brand{ display:flex; align-items:center; gap:10px; padding:4px 6px; margin-bottom:2px; border-radius:var(--r-sm);
+  cursor:pointer; transition:background .14s; }
+.brand:hover{ background:hsl(var(--surface-3)/0.55); }
+.brand:focus-visible{ outline:2px solid hsl(var(--ring)); outline-offset:-1px; }
+.brand-chev{ width:15px; height:15px; flex:none; margin-left:auto; color:hsl(var(--fg-faint)); opacity:0; transition:opacity .14s,transform .2s; }
+.brand:hover .brand-chev{ opacity:1; }
+.brand .mk{ width:30px; height:30px; flex:none; border-radius:var(--r-sm); display:grid; place-items:center;
+  background:hsl(var(--logo-tile)); border:1px solid hsl(var(--logo-tile-bd));
+  box-shadow:0 4px 12px -6px hsl(var(--shadow)/0.32); }
+.brand .mk svg{ width:26px; height:26px; color:#fff; }
+.brand .wm{ font-family:var(--disp); font-weight:600; font-size:17px; letter-spacing:.01em;
+  color:hsl(var(--fg)); line-height:1; white-space:nowrap; }
+.brand .wm small{ display:block; font-family:var(--sans); font-weight:500; font-size:9.5px;
+  letter-spacing:.16em; color:hsl(var(--flow-hi)); margin-top:3px; text-transform:uppercase; }
+
+.nav-group{ font-size:10px; font-weight:640; letter-spacing:.1em; text-transform:uppercase;
+  color:hsl(var(--fg-faint)); padding:12px 9px 5px; white-space:nowrap; }
+.nav-item{ position:relative; display:flex; align-items:center; gap:10px; width:100%; text-align:left;
+  padding:8px 9px; border-radius:var(--r-sm); font-size:13px; font-weight:520; color:hsl(var(--fg-dim));
+  transition:background .14s,color .14s; margin-bottom:1px; white-space:nowrap; }
+.nav-item svg{ width:17px; height:17px; flex:none; }
+.nav-item:hover{ background:hsl(var(--surface-3)); color:hsl(var(--fg)); }
+.nav-item.on{ background:hsl(var(--flow-weak)); color:hsl(var(--flow-hi)); font-weight:640; }
+.nav-item:focus-visible{ outline:2px solid hsl(var(--ring)); outline-offset:-1px; }
+.nav-item.on::before{ content:""; position:absolute; left:-10px; top:50%; transform:translateY(-50%);
+  width:3px; height:17px; border-radius:0 3px 3px 0; background:hsl(var(--flow)); }
+.nav-item .cnt{ margin-left:auto; font-size:10.5px; font-weight:640; color:hsl(var(--fg-faint));
+  background:hsl(var(--surface-3)); padding:1px 7px; border-radius:999px; }
+.nav-item.on .cnt{ background:hsl(var(--flow)/0.2); color:hsl(var(--flow-hi)); }
+.side .spacer{ flex:1; }
+
+/* 已删 .side-collapse（legacy 分离按钮位）：折叠开关早已合入 .brand 行（见 Sidebar.tsx），
+   全仓无元素带这个 class ⇒ 恒不命中的死选择器（且 prototype.css:178 另存一份）。「以对齐原型
+   chrome 族清单」不是保留理由——原型清单在 prototype.css，这里这份只是重复的双真值。 */
+
+/* ── collapsed rail（原型 L181-194）：一个 collapsed bool 同驱主/设置侧栏 ── */
+.side.collapsed{ width:56px; }                       /* Win/Linux 紧凑 */
+:root[data-os="mac"] .side.collapsed{ width:80px; }  /* mac：清交通灯(~72px)+8px 余量 */
+.side.collapsed .brand{ flex-direction:column; justify-content:center; gap:10px; padding:2px 0 5px; cursor:pointer; }
+.side.collapsed .brand .wm{ display:none; }
+.side.collapsed .brand .brand-chev{ display:none; }
+.side.collapsed .nav-item{ justify-content:center; padding:9px 0; gap:0; }
+.side.collapsed .nav-item > span:not(.cnt){ display:none; }
+.side.collapsed .nav-group{ height:1px; padding:0; margin:10px 8px; background:hsl(var(--line)); color:transparent; overflow:hidden; }
+.side.collapsed .nav-item .cnt{ position:absolute; top:1px; right:1px; margin:0; min-width:15px; height:15px;
+  padding:0 3px; font-size:8.5px; line-height:15px; text-align:center; }
+
+/* ── main（原型 L229-236）：非滚动 flex 列 [滚动区]+[状态栏]；与 sidebar 为 .shell flex 兄弟 ── */
+.main{ flex:1; min-width:0; overflow:hidden; background:hsl(var(--bg)/0.55);
+  display:flex; flex-direction:column; container:mainc / inline-size;
+  position:relative; z-index:1; border-radius:var(--r-lg) 0 0 0;
+  box-shadow:-12px 0 30px -20px hsl(var(--shadow)/0.5); backdrop-filter:blur(7px); }
+/* 偏移②：mac 内容区不透明实色底盖住 vibrancy（vibrancy 只给侧栏），非原型 bg/0.32 半透 */
+:root[data-os="mac"] .main{ background:hsl(var(--bg)); backdrop-filter:none; }
+/* mac 主内容顶部让出原生 Overlay 标题栏拖动带（36px，同 .side-chrome）——见 prototype.css 同规注释：
+   #5 真因是 phead 顶排交互控件落在 OS 标题栏拖动区被吞点击（WebKit 实证 cqh 未塌、菜单可点）。
+   真实拖动区元素 .main-chrome（镜像 .side-chrome）承担该 36px，非 padding——padding 是惰性留白不可拖动。
+   ⚠️ 修正：拖动靠 HTML `data-tauri-drag-region`（AppShell.tsx），此前的 `-webkit-app-region` 是 Electron
+   约定、Tauri 不认，从未生效（详见 prototype.css 同规注释与 ~/docs/polaris/design/polaris-window-drag.md）。 */
+.main-chrome{ height:0; flex:none; app-region:drag; }
+:root[data-os="mac"] .main-chrome{ height:36px; }
+.main-scroll{ flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; display:flex; flex-direction:column; }
+
+/* ── status bar（原型 L556-568；窄宽 sb-fold-* 容器查询在 index.css）── */
+.statusbar{ height:32px; flex:none; border-top:1px solid hsl(var(--line)); background:hsl(var(--surface-2));
+  display:flex; align-items:center; gap:9px; padding:0 var(--sp-4); font-size:11.5px; color:hsl(var(--fg-dim));
+  overflow:hidden; white-space:nowrap; }
+.statusbar .sb-sep{ width:1px; height:14px; background:hsl(var(--line)); flex:none; }
+.statusbar .sb-i{ display:inline-flex; align-items:center; gap:6px; flex:none; }
+.statusbar b{ color:hsl(var(--fg)); font-weight:600; }
+.statusbar .rate-dn{ color:hsl(var(--dn)); font-weight:600; font-variant-numeric:tabular-nums; }
+.statusbar .rate-up{ color:hsl(var(--up)); font-weight:600; font-variant-numeric:tabular-nums; }
+.statusbar .sb-count{ margin-left:auto; }
+.statusbar .sb-conns{ display:inline-flex; align-items:center; gap:4px; color:hsl(var(--warn)); font-weight:640; }
+.statusbar .sb-conns b, .statusbar .sb-conns svg{ color:hsl(var(--warn)); }
+
+/* ───── 原生 select 外壳（原型 L321-325）—— 巨型 chevron 根因修复 ─────
+   现状完全缺失 .sel 基座规则：NodesScreen 的 .sel nt-proto/nh-sort 内的 <svg> 无尺寸
+   /定位约束 → 撑爆成巨型 chevron；<select> 无 appearance:none → 原生箭头 + 自绘 chevron 双现。
+   偏移原型的后代选择器 `.sel svg`→子选择器 `.sel > svg`：React 的 Csel 在 .sel.csel 内嵌
+   .csel-trigger>.csel-chev 与 .csel-menu>.csel-opt>.csel-ck（原型扁平 JS DOM 无此嵌套），
+   后代选择器会误命中 .csel-ck 把菜单勾错位；`> svg` 只命中原生 select 的直接子 chevron。 */
+.sel{ position:relative; }
+.sel > svg{ position:absolute; right:9px; top:50%; transform:translateY(-50%); width:14px; height:14px;
+  pointer-events:none; color:hsl(var(--fg-faint)); }
+.sel select{ appearance:none; font:inherit; font-size:12.5px; font-weight:540; color:hsl(var(--fg));
+  background:hsl(var(--surface-2)); border:1px solid hsl(var(--line)); border-radius:var(--r-sm);
+  padding:8px 30px 8px 12px; cursor:pointer; }
+
+/* ───── HOME：出口延迟交通灯 + 4 档配色（原型 L384-398）─────
+   延迟前导圆点用 ::before → JS textContent 写入不会抹掉；数字文本 4 档配色。 */
+.exit-lat{ display:inline-flex; align-items:center; gap:6px; font-size:12.5px; font-weight:640; color:hsl(var(--fg)); font-variant-numeric:tabular-nums; }
+.exit-lat::before, .nd-foot .nd-lat::before{ content:""; width:7px; height:7px; border-radius:50%; flex:none; background:hsl(var(--fg-faint)); }
+.exit-lat.fast::before,.nd-lat.fast::before{ background:hsl(var(--ok)); }
+.exit-lat.mid::before,.nd-lat.mid::before{ background:hsl(var(--flow)); }
+.exit-lat.slow::before,.nd-lat.slow::before{ background:hsl(var(--warn)); }
+.exit-lat.dead::before,.nd-lat.dead::before{ background:hsl(var(--err)); }
+.exit-lat.none::before,.nd-lat.none::before{ background:hsl(var(--fg-faint)); }
+.nd-foot .nd-lat.fast, .nm-item .nm-lat.fast, .tray-i .tray-lat.fast, #sb-lat.fast{ color:hsl(var(--ok)); }
+.nd-foot .nd-lat.mid,  .nm-item .nm-lat.mid,  .tray-i .tray-lat.mid,  #sb-lat.mid{ color:hsl(var(--flow-hi)); }
+.nd-foot .nd-lat.slow, .nm-item .nm-lat.slow, .tray-i .tray-lat.slow, #sb-lat.slow{ color:hsl(var(--warn)); }
+.nd-foot .nd-lat.dead, .nm-item .nm-lat.dead, .tray-i .tray-lat.dead, #sb-lat.dead{ color:hsl(var(--err)); }
+.nd-foot .nd-lat.none, .nm-item .nm-lat.none, .tray-i .tray-lat.none, #sb-lat.none{ color:hsl(var(--fg-faint)); }
+/* statusbar 区旗（原型 L376）*/
+.flag.sb{ width:15px; height:10px; vertical-align:-1px; }
+/* Home 右列字段 2 列网格（原型 L418-419）*/
+.field-grid{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:16px; }
+@container mainc (max-width:660px){ .field-grid{ grid-template-columns:1fr; } }
+
+/* ───── HOME 节点内联下拉 #node-menu + .nm-*（原型 L433-466）─────
+   现状仅有 .node-dd/.node-trigger；补齐展开菜单（批 C Home 恢复内联节点选单时消费）。 */
+.node-dd.open .node-trigger .nt-chev{ transform:rotate(180deg); }
+.node-menu{ position:absolute; top:calc(100% + 8px); left:0; z-index:40; width:360px; max-width:calc(100cqw - 60px);
+  background:hsl(var(--surface)); border:1px solid hsl(var(--line)); border-radius:var(--r-md); padding:5px;
+  box-shadow:var(--shadow-pop);
+  max-height:min(430px,62vh); overflow-y:auto; }
+.node-menu[hidden]{ display:none; }
+.nm-search{ position:sticky; top:-6px; display:flex; align-items:center; gap:8px; background:hsl(var(--surface)); padding:2px 2px 7px; z-index:2; margin:-2px -2px 0; }
+.nm-search .input{ flex:1; min-width:0; }
+.nm-sort{ display:inline-flex; align-items:center; gap:6px; flex:none; font-size:11px; color:hsl(var(--fg-dim)); white-space:nowrap; cursor:pointer; }
+.nm-search[hidden]{ display:none; }
+.nm-search .input{ padding:7px 11px; }
+.nm-head{ font-size:10px; font-weight:640; letter-spacing:.08em; text-transform:uppercase;
+  color:hsl(var(--fg-faint)); padding:9px 9px 4px; }
+.nm-item{ display:flex; align-items:center; gap:8px; width:100%; text-align:left; padding:8px 9px;
+  border-radius:var(--r-sm); font-size:12.5px; transition:background .12s; }
+.nm-item:hover, .nm-item.active{ background:hsl(var(--surface-2)); }
+.nm-item.on{ color:hsl(var(--flow-hi)); font-weight:620; }
+.nm-item.dead{ opacity:.55; }
+.nm-item .nm-name{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.nm-item .nm-badge{ font-size:9px; font-weight:640; padding:1px 5px; border-radius:5px; flex:none;
+  background:hsl(var(--surface-3)); color:hsl(var(--fg-faint)); }
+.nm-item .nm-lat{ margin-left:auto; font-size:11px; font-variant-numeric:tabular-nums; color:hsl(var(--fg-dim)); flex:none; }
+.nm-item .nm-ck{ width:15px; height:15px; color:hsl(var(--flow)); flex:none; }
+.nm-latdot{ width:7px; height:7px; border-radius:50%; flex:none; }
+.lat-fast{ background:hsl(var(--ok)); } .lat-mid{ background:hsl(var(--flow)); }
+.lat-slow2{ background:hsl(var(--warn)); } .lat-dead2{ background:hsl(var(--err)); } .lat-none{ background:hsl(var(--fg-faint)); }
+.nm-foot{ position:sticky; bottom:-6px; display:flex; gap:8px; padding:7px 3px 2px; margin:2px -2px -2px;
+  background:hsl(var(--surface)); border-top:1px solid hsl(var(--hair)); }
+.nm-foot button{ flex:1; justify-content:center; }
+.nm-reorder{ display:flex; align-items:center; gap:8px; padding:7px 10px; margin:3px 2px; border-radius:var(--r-sm);
+  background:hsl(var(--flow-weak)); color:hsl(var(--flow-hi)); font-size:11px; font-weight:600; width:calc(100% - 4px); }
+.nm-reorder[hidden]{ display:none; }
+.nm-reorder svg{ width:14px; height:14px; flex:none; }
+.nm-empty{ padding:22px; text-align:center; color:hsl(var(--fg-faint)); font-size:12px; }
+/* 统一节点选择菜单分组头（rule target + Home exit 共用；原型 L985-990）*/
+.mini-menu .ns-grp, .node-menu .ns-grp{ display:flex; align-items:center; gap:8px; width:100%; text-align:left; padding:7px 10px; border-radius:7px;
+  font-size:11.5px; font-weight:600; color:hsl(var(--fg-dim)); }
+.mini-menu .ns-grp:hover, .node-menu .ns-grp:hover{ background:hsl(var(--surface-2)); color:hsl(var(--fg)); }
+.mini-menu .ns-chev, .node-menu .ns-chev{ width:13px; height:13px; flex:none; transition:transform .15s; } .mini-menu .ns-chev.open, .node-menu .ns-chev.open{ transform:rotate(90deg); }
+.mini-menu .ns-grp .ns-c, .node-menu .ns-grp .ns-c{ margin-left:auto; font-size:10px; color:hsl(var(--fg-faint)); font-variant-numeric:tabular-nums; }
+.mini-menu .ns-node{ padding-left:26px; } .mini-menu .ns-node .flag{ width:16px; }
+
+/* 组网卡 badge/chev 补齐（原型 L625-639；现状 D3 mesh 用 .mesh-acts，补原型角标+右箭头）*/
+.mesh-badge{ margin-left:auto; flex:none; }
+.mesh-badge .pill{ margin:0!important; }
+.mesh-col.clickable{ cursor:pointer; }
+.mesh-chev{ width:17px; height:17px; flex:none; color:hsl(var(--fg-faint)); transition:.14s; }
+.mesh-col:hover .mesh-chev{ color:hsl(var(--fg-dim)); transform:translateX(1px); }
+
+/* ───── pending-changes bar + 明细 popover（原型 L528-554）─────
+   全局滑出条，docked 于 statusbar 上方。 */
+.pending-bar{ flex:none; height:0; overflow:hidden; display:flex; align-items:center; gap:11px; padding:0 15px;
+  background:hsl(var(--warn-weak)); border-top:1px solid hsl(var(--warn)/0.4); transition:height .2s ease; }
+.pending-bar.show{ height:36px; }
+.pending-bar.err{ background:hsl(var(--err-weak)); border-top-color:hsl(var(--err)/0.45); }
+.pending-bar .pb-ic{ width:22px; height:22px; border-radius:var(--r-xs); display:grid; place-items:center;
+  background:hsl(var(--warn)/0.9); color:#241400; flex:none; }
+.pending-bar.err .pb-ic{ background:hsl(var(--err)); color:#fff; }
+.pending-bar .pb-ic svg{ width:13px; }
+.pending-bar .pb-tx{ display:flex; align-items:baseline; gap:8px; min-width:0; overflow:hidden; cursor:pointer; }
+.pending-bar .pb-tx b{ font-size:12px; font-weight:660; color:hsl(var(--warn)); white-space:nowrap; }
+.pending-bar.err .pb-tx b{ color:hsl(var(--err)); }
+.pending-bar .pb-tx div{ font-size:11px; color:hsl(var(--fg-dim)); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pending-bar .pb-acts{ margin-left:auto; display:flex; gap:8px; flex:none; }
+.pd-pop{ position:absolute; z-index:210; width:min(360px,calc(100% - 24px)); padding:6px;
+  background:hsl(var(--surface)); border:1px solid hsl(var(--line)); border-radius:var(--r-md); box-shadow:var(--shadow-pop); }
+.pd-pop[hidden]{ display:none; }
+.pd-pop .pd-h{ font-size:10px; font-weight:640; letter-spacing:.06em; text-transform:uppercase; color:hsl(var(--fg-faint)); padding:6px 8px 4px; }
+.pd-row{ display:flex; align-items:center; gap:8px; padding:7px 8px; border-radius:var(--r-sm); font-size:12px; }
+.pd-row:hover{ background:hsl(var(--surface-2)); }
+.pd-row .dot{ width:6px; height:6px; }
+.pd-row .pd-l{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pd-x{ width:22px; height:22px; border-radius:var(--r-xs); display:grid; place-items:center; color:hsl(var(--fg-faint)); flex:none; }
+.pd-x:hover{ color:hsl(var(--err)); background:hsl(var(--err-weak)); }
+.pd-foot{ display:flex; gap:8px; justify-content:flex-end; padding:8px 6px 4px; margin-top:4px; border-top:1px solid hsl(var(--hair)); }
+/* `.pd-pop` 是 absolute → 定位上下文必须是操作条自己（否则会锚到更外层，明细飘到卡片外）。 */
+.pending-bar{ position:relative; }
+/* `.pb-tx` 基线带 `cursor:pointer`（prototype.css:564）。纯告知型的条（如系统代理降级横幅）没有可点的东西，
+   手型即假可点 —— 特指度 (0,3,0) 高于 prototype 的 (0,2,0)，故不受 @import 顺序影响。 */
+.pending-bar .pb-tx.pb-static{ cursor:default; }
+/* 明细触发器是 <button>：去掉 UA/preflight 的按钮外观，保持与原状 div 同款排版。 */
+.pending-bar button.pb-tx{ border:0; background:transparent; padding:0; font:inherit; text-align:start; }
+
+/* ───── 全局通知：toast / applying-pill（原型 L573-597；chip-flash 已删，见下）───── */
+/* `.chip-flash` 已删（2026-07-29）：原型 `flashHot` 那条腿裁定不移植（切节点 / 切直连 / 跨屏高亮
+   三个调用点全部撤除），规则零消费方。本文件经 index.css 的 @import 整份打进产物 ⇒ 留着就是随包发出去
+   的死重量，不是「留个存档」。原型侧仍有此规则，已在对拍文档登记为「原型有、实现刻意不移植」。 */
+.toast{ background:hsl(var(--fg)); color:hsl(var(--surface)); font-size:12px; font-weight:560; padding:9px 14px;
+  border:1px solid transparent; border-radius:var(--r-sm); box-shadow:0 12px 30px -10px hsl(var(--shadow)/0.6);
+  opacity:0; transform:translateY(6px); transition:opacity .18s, transform .18s; max-width:320px; }
+.toast.show{ opacity:1; transform:translateY(0); }
+.toast.ok{ background:hsl(var(--ok)); color:#fff; }
+.toast.err{ background:hsl(var(--err)); color:#fff; }
+/* §toast dark neutral（真机反馈「toast 为什么关闭是白底实心，跟开启的风格差异那么大」）：基础态 `.toast`
+   是**反相底** `background:hsl(var(--fg))`，深色下 --fg=95%L ⇒ 白底实色大色块，而 .ok/.err 早已收敛成
+   weak 底 + 有色字 + 发丝边 —— 中性态（toast.info / toast.warning，kind='') 从没拿到对应覆盖，同一栈里两种
+   风格割裂。中性态按同一结构补齐：surface-2(14%L，与 --ok-weak/--err-weak 的 14%L 同档) 底 + --fg 正文字
+   + --hair 发丝边。特异性 (0,3,0) < .ok/.err 的 (0,4,0)，不会反过来盖掉彩色态，与声明顺序无关。
+   ⚠ 本块在 prototype.css:595 段有**逐字重复的一份**（两文件各存一套 .toast）；改这里必须同步改那边，
+   只改一份 = 没改（谁最后 @import 谁生效）。守卫见 styles/style-invariants.test.ts。 */
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]) .toast{ background:hsl(var(--surface-2)); color:hsl(var(--fg)); border-color:hsl(var(--hair)); }
+  :root:not([data-theme="light"]) .toast.ok{ background:hsl(var(--ok-weak)); color:hsl(var(--ok)); border-color:hsl(var(--ok)/0.35); }
+  :root:not([data-theme="light"]) .toast.err{ background:hsl(var(--err-weak)); color:hsl(var(--err)); border-color:hsl(var(--err)/0.35); }
+}
+:root[data-theme="dark"] .toast{ background:hsl(var(--surface-2)); color:hsl(var(--fg)); border-color:hsl(var(--hair)); }
+:root[data-theme="dark"] .toast.ok{ background:hsl(var(--ok-weak)); color:hsl(var(--ok)); border-color:hsl(var(--ok)/0.35); }
+:root[data-theme="dark"] .toast.err{ background:hsl(var(--err-weak)); color:hsl(var(--err)); border-color:hsl(var(--err)/0.35); }
+/* 两段 toast：首行标题 + 次行原因（error description）。次行降字号/弱化，继承色不另配。 */
+.toast-msg{ line-height:1.4; }
+.toast-desc{ margin-top:2px; font-size:11px; font-weight:500; opacity:0.82; line-height:1.4; word-break:break-word; }
+.applying-pill{ display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:600; color:hsl(var(--flow-hi)); }
+
+/* ───── 共享交互态：nd-a.on / spin-inline / 二次确认 / 统一焦点圈（原型 L1355-1360）───── */
+.nd-a:focus-visible, .icon-btn:focus-visible, .conn-x:focus-visible, .dlg-x:focus-visible, .ut-x:focus-visible,
+.nd-check:focus-visible, .app-remove:focus-visible{ outline:2px solid hsl(var(--ring)); outline-offset:1px; }
+.nd-a.on{ color:hsl(var(--flow)); background:hsl(var(--flow-weak)); }
+.spin-inline{ width:12px; height:12px; vertical-align:-1px; }
+.btn.confirming, .nd-a.confirming{ background:hsl(var(--err))!important; border-color:transparent!important; color:#fff!important; }
+/* `.app-remove` 的武装态 —— **原型缺这条**：proto:1359-1360 的 .confirming 只覆盖 .btn/.nd-a，而
+   proto:4173 的 app-remove 走的正是 confirmTwice（msg 传空串 ⇒ 也没有 data-tip）。照抄原型 = 第一下
+   点下去零反馈、2.6s 内再点一下应用就没了 —— 那不是闸门。故补齐翻红；`opacity:1` 单列一条理由：
+   .app-remove 基线 opacity:0（:319-320，仅 hover/:focus-visible 显现），武装后鼠标一挪开按钮直接隐身。 */
+.app-remove.confirming{ opacity:1; background:hsl(var(--err))!important; border-color:transparent!important; color:#fff!important; }
+
+/* ══════════ SETTINGS 块 + helper/core/about/danger（原型 L1122-1172）══════════ */
+.set-section{ } .set-section[hidden]{ display:none; }
+.set-block{ padding:4px 18px 8px; margin-bottom:16px; }
+.set-block-h{ font-size:13px; font-weight:660; padding:14px 0 4px; border-bottom:1px solid hsl(var(--hair)); margin-bottom:4px; }
+/* 图形兼容块：窗口特效行在 Linux 无等价物且特效分支不编译进 Linux → CSS 隐藏（下行）。
+   硬件加速行的 mac 门控**已上移到组件层**（SettingsDisplay `showsHardwareAccelRow(os)`，用户 2026-07-22
+   要求 mac 去掉该 no-op 开关）：组件层比 CSS `:root[data-os=mac] #set-hwaccel` 隐藏可靠——render 时按已
+   落定的 data-os 直接决定入不入树，不吃 data-os 由 post-paint effect 写入的首帧/时机窗口，故此处不再留
+   `#set-hwaccel` 隐藏规则。 */
+:root[data-os="lin"] #set-window-effects{ display:none; }
+.set-row{ display:flex; align-items:center; gap:14px; padding:13px 0; border-bottom:1px solid hsl(var(--hair)); }
+.set-row:last-child{ border-bottom:0; }
+.set-row .sr-tx{ flex:1; min-width:0; } .set-row .sr-tx b{ font-size:13px; font-weight:580; }
+.set-row .sr-tx div{ font-size:11.5px; color:hsl(var(--fg-dim)); margin-top:3px; line-height:1.5; }
+.set-row .sr-ctl{ flex:none; }
+.helper-card{ padding:0; overflow:hidden; margin-bottom:16px; }
+.hc-head{ display:flex; align-items:center; gap:13px; padding:16px 18px; border-bottom:1px solid hsl(var(--line)); }
+.hc-ic{ width:44px; height:44px; flex:none; border-radius:var(--r); display:grid; place-items:center;
+  background:hsl(var(--flow-weak)); color:hsl(var(--flow-hi)); } .hc-ic svg{ width:22px; height:22px; }
+.hc-tx{ flex:1; } .hc-tx b{ font-size:14px; font-weight:660; } .hc-tx div{ font-size:11.5px; color:hsl(var(--fg-dim)); margin-top:2px; }
+.hc-body{ padding:16px 18px; } .helper-state[hidden]{ display:none; }
+.hc-status{ display:flex; align-items:center; gap:9px; font-size:12.5px; margin-bottom:12px; }
+.hc-steps{ display:flex; flex-direction:column; gap:7px; margin:10px 0 14px; }
+.hc-step{ display:flex; align-items:center; gap:9px; font-size:12px; color:hsl(var(--fg-dim)); }
+.hc-step .st-n{ width:20px; height:20px; border-radius:50%; display:grid; place-items:center; font-size:10.5px; font-weight:700;
+  background:hsl(var(--surface-3)); color:hsl(var(--fg-faint)); flex:none; }
+.hc-step.done .st-n{ background:hsl(var(--ok)); color:#04160f; } .hc-step.done{ color:hsl(var(--fg)); }
+.hc-plat{ display:inline-flex; gap:3px; padding:3px; border:1px solid hsl(var(--line)); border-radius:var(--r-sm); background:hsl(var(--surface-2)); margin-bottom:12px; }
+.hc-plat button{ font-size:11.5px; font-weight:560; padding:5px 12px; border-radius:var(--r-xs); color:hsl(var(--fg-dim)); }
+.hc-plat button.on{ background:hsl(var(--surface)); color:hsl(var(--fg)); box-shadow:0 1px 2px hsl(var(--shadow)/0.14); }
+.core-card{ padding:16px 18px; margin-bottom:16px; }
+.core-ver{ display:flex; align-items:center; gap:11px; padding:11px 13px; border:1px solid hsl(var(--line)); border-radius:var(--r-md);
+  background:hsl(var(--surface-2)/0.5); margin-top:10px; }
+.core-ver .cv-tag{ font-family:var(--mono); font-size:12px; font-weight:600; }
+.about{ padding:22px; text-align:center; }
+.about-mk{ width:76px; height:76px; margin:0 auto 16px; border-radius:20px; display:grid; place-items:center;
+  background:hsl(var(--logo-tile)); border:1px solid hsl(var(--logo-tile-bd));
+  box-shadow:0 14px 32px -14px hsl(var(--shadow)/0.34); }
+.about-mk svg{ width:62px; height:62px; color:#fff; }
+.about h2{ font-family:var(--disp); font-size:26px; font-weight:640; margin:0; letter-spacing:.01em; }
+.about .ver{ font-size:12.5px; color:hsl(var(--fg-dim)); margin-top:5px; }
+.about .tagline{ font-size:14.5px; font-weight:550; color:hsl(var(--fg)); max-width:340px; margin:14px auto 7px; line-height:1.55; }
+.about .about-desc{ font-size:12.5px; color:hsl(var(--fg-dim)); max-width:400px; margin:0 auto 18px; line-height:1.65; }
+.about-links{ display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
+.about-link{ display:inline-flex; align-items:center; gap:8px; font-size:12.5px; font-weight:580; padding:9px 15px;
+  border-radius:var(--r-sm); border:1px solid hsl(var(--line)); background:hsl(var(--surface-2)); color:hsl(var(--fg)); text-decoration:none; transition:.14s; }
+.about-link:hover{ border-color:hsl(var(--flow)/0.5); color:hsl(var(--flow-hi)); }
+.about-link svg{ width:16px; height:16px; }
+.danger-zone{ margin-top:20px; padding:14px 16px; border:1px solid hsl(var(--err)/0.3); border-radius:var(--r);
+  background:hsl(var(--err-weak)/0.5); }
+
+/* ══════════ OVERLAYS：privacy lock（原型 L1173-1185）══════════ */
+.overlay{ position:absolute; inset:0; z-index:100; display:flex; align-items:center; justify-content:center; }
+.overlay[hidden],.modal[hidden],.float-win[hidden],.tray-menu[hidden]{ display:none; }
+#lock-overlay{ background:hsl(var(--shadow)/0.5); backdrop-filter:blur(14px) saturate(1.1); flex-direction:column; }
+.lock-box{ text-align:center; }
+.lock-mk{ width:64px; height:64px; margin:0 auto 18px; border-radius:16px; display:grid; place-items:center;
+  background:hsl(var(--logo-tile)); border:1px solid hsl(var(--logo-tile-bd)); box-shadow:0 10px 28px -12px hsl(var(--shadow)/0.34); }
+.lock-mk svg{ width:52px; height:52px; color:#fff; }
+.lock-box h3{ font-family:var(--disp); font-size:18px; margin:0 0 6px; }
+.lock-box p{ font-size:12.5px; color:hsl(var(--fg-dim)); margin:0 0 18px; }
+.lock-field{ display:flex; gap:9px; width:280px; }
+.lock-field .input{ background:hsl(var(--surface)/0.9); }
+/* 订阅弹窗自动更新条件揭示（原型 L1220-1221）*/
+.sub-auto-on{ display:none; }
+.sub-auto-fld:has(#sub-auto-swt.on) .sub-auto-on{ display:block; }
+
+/* ══════════ tray 自绘浮层 + update-toast + dashboard 逃生窗（原型 L1254-1309）══════════
+   tray-menu 挂主窗 webview 无独立窗口（#300 白屏免疫）；wave 2 前端批消费。 */
+/* vh not cqh: .main is a container-type:inline-size query container with no block axis (see prototype.css mini-menu comment). */
+.tray-menu{ position:absolute; bottom:44px; right:34px; z-index:200; width:246px; max-width:calc(100% - 24px);
+  max-height:min(70vh,600px); overflow-y:auto; padding:6px;
+  background:hsl(var(--surface)); border:1px solid hsl(var(--line)); border-radius:var(--r-md);
+  box-shadow:0 24px 54px -20px hsl(var(--shadow)/0.7),0 3px 10px hsl(var(--shadow)/0.2); }
+:root[data-os="mac"] .tray-menu{ bottom:auto; top:44px; }
+.tray-status{ display:flex; align-items:center; gap:9px; padding:10px 11px; border-radius:var(--r-sm); background:hsl(var(--surface-2)/0.6); margin-bottom:4px; }
+.tray-status .ts-mk{ width:26px; height:26px; border-radius:7px; display:grid; place-items:center; flex:none;
+  background:hsl(var(--logo-tile)); border:1px solid hsl(var(--logo-tile-bd)); }
+.tray-status.stopped .ts-mk{ background:hsl(var(--surface-3)); } .tray-status.stopped .ts-mk svg{ color:hsl(var(--fg-faint)); }
+.tray-status.error .ts-mk{ background:hsl(var(--err)); }
+.tray-status .ts-mk svg{ width:21px; height:21px; color:#fff; }
+.tray-status .ts-tx{ flex:1; min-width:0; }
+.tray-status b{ font-size:12.5px; } .tray-status div{ font-size:10.5px; color:hsl(var(--fg-dim)); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.tray-i{ display:flex; align-items:center; gap:10px; width:100%; text-align:left; padding:8px 11px; border-radius:var(--r-sm); font-size:12.5px; color:hsl(var(--fg-dim)); }
+.tray-i>svg:first-child{ width:16px; height:16px; flex:none; } .tray-i:hover{ background:hsl(var(--surface-2)); color:hsl(var(--fg)); }
+.tray-i:focus-visible{ outline:2px solid hsl(var(--ring)); outline-offset:-1px; }
+.tray-i .tk{ margin-left:auto; width:15px; height:15px; color:hsl(var(--flow)); flex:none; }
+.tray-i .tray-lat{ margin-left:auto; font-size:11px; font-variant-numeric:tabular-nums; color:hsl(var(--fg-faint)); flex:none; }
+.tray-i .tray-chev{ margin-left:auto; width:15px; height:15px; color:hsl(var(--fg-faint)); flex:none; }
+.tray-i.danger:hover{ background:hsl(var(--err-weak)); color:hsl(var(--err)); }
+.tray-i.accent{ color:hsl(var(--flow-hi)); font-weight:600; }
+.tray-sep{ height:1px; background:hsl(var(--line)); margin:5px 6px; }
+.tray-sub-label{ font-size:10px; font-weight:640; letter-spacing:.06em; text-transform:uppercase; color:hsl(var(--fg-faint)); padding:7px 11px 3px; }
+.tray-view[hidden]{ display:none; }
+.tray-back{ display:flex; align-items:center; gap:8px; width:100%; padding:8px 9px; border-radius:var(--r-sm); font-size:12px; font-weight:600; color:hsl(var(--fg)); margin-bottom:2px; }
+.tray-back:hover{ background:hsl(var(--surface-2)); } .tray-back svg{ width:15px; flex:none; }
+.tray-group-h{ font-size:10px; font-weight:640; letter-spacing:.06em; text-transform:uppercase; color:hsl(var(--fg-faint)); padding:9px 11px 3px; }
+.update-toast{ position:absolute; right:24px; bottom:92px; z-index:200; width:min(340px,calc(100% - 24px)); padding:15px 16px;
+  background:hsl(var(--surface)); border:1px solid hsl(var(--line)); border-radius:var(--r-lg);
+  box-shadow:0 26px 56px -22px hsl(var(--shadow)/0.7); }
+.ut-state[hidden]{ display:none; }
+.ut-top{ display:flex; align-items:center; gap:11px; margin-bottom:10px; }
+.ut-ic{ width:36px; height:36px; flex:none; border-radius:var(--r-md); display:grid; place-items:center; }
+.ut-ic.info{ background:hsl(var(--flow-weak)); color:hsl(var(--flow-hi)); }
+.ut-ic.ok{ background:hsl(var(--ok-weak)); color:hsl(var(--ok)); }
+.ut-ic.err{ background:hsl(var(--err-weak)); color:hsl(var(--err)); }
+.ut-ic svg{ width:19px; height:19px; }
+.ut-tx b{ font-size:13px; font-weight:660; } .ut-tx div{ font-size:11px; color:hsl(var(--fg-dim)); margin-top:2px; }
+.ut-x{ margin-left:auto; color:hsl(var(--fg-faint)); width:24px; height:24px; border-radius:var(--r-xs); display:grid; place-items:center; }
+.ut-x:hover{ background:hsl(var(--surface-3)); }
+.ut-acts{ display:flex; gap:8px; justify-content:flex-end; margin-top:10px; }
+.ut-prog{ display:flex; align-items:center; gap:9px; font-size:11px; color:hsl(var(--fg-dim)); }
+.ut-prog .bar{ flex:1; }
+.float-win{ position:absolute; inset:0; z-index:190; display:flex; align-items:center; justify-content:center; background:hsl(var(--shadow)/0.4); }
+.dash-inner{ width:min(760px,92vw); height:min(520px,80vh); background:hsl(var(--surface)); border:1px solid hsl(var(--line));
+  border-radius:var(--r-lg); overflow:hidden; display:flex; flex-direction:column; box-shadow:0 30px 70px -26px hsl(var(--shadow)/0.8); }
+.dash-bar{ height:38px; flex:none; display:flex; align-items:center; gap:10px; padding:0 12px; background:hsl(var(--surface-2)); border-bottom:1px solid hsl(var(--line)); }
+.dash-bar .du{ font-family:var(--mono); font-size:11px; color:hsl(var(--fg-faint)); background:hsl(var(--surface-3)); padding:4px 10px; border-radius:var(--r-xs); flex:1; }
+.dash-body{ flex:1; padding:20px; color:hsl(var(--fg-dim)); display:flex; flex-direction:column; gap:14px; overflow:auto; }
+.dash-plain{ font-size:12px; color:hsl(var(--fg-faint)); background:hsl(var(--surface-2)/0.5); border:1px dashed hsl(var(--line)); border-radius:var(--r-md); padding:26px; text-align:center; }
+.dash-stat{ display:flex; gap:14px; flex-wrap:wrap; } .dash-stat .ds{ flex:1; min-width:120px; background:hsl(var(--surface-2)); border:1px solid hsl(var(--line)); border-radius:var(--r-md); padding:14px; }
+.dash-stat .ds .dn{ font-family:var(--mono); font-size:20px; font-weight:700; color:hsl(var(--flow)); }
+.dash-stat .ds .dl{ font-size:10.5px; color:hsl(var(--fg-faint)); text-transform:uppercase; letter-spacing:.05em; margin-top:3px; }
+
+/* ══════════ 网络/DNS/TUN 设置族（原型 L1399-1465，去 .seg-gear/.fx-sentinel：
+   .seg-gear 现状已有 Home 20px 无边款；.fx-sentinel React 用原生 <dialog> inert 免焦点陷阱）══════════ */
+.cidr-list{ display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:8px; margin-top:10px; }
+.cidr-row{ display:flex; gap:8px; align-items:center; } .cidr-row .input{ flex:1; }
+.cidr-del{ width:30px; height:30px; border-radius:7px; display:grid; place-items:center; color:hsl(var(--fg-faint)); border:1px solid hsl(var(--line)); flex:none; }
+.cidr-del:hover{ color:hsl(var(--err)); }
+/* 已删 .swt.swt-warn.on：全仓无任何开关带 .swt-warn（prototype.css:1453 另存一份同名规则）。 */
+.ipv6-hint{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:9px; font-size:11.5px; color:hsl(var(--fg-dim));
+  background:hsl(var(--surface-2)/0.6); border:1px solid hsl(var(--line)); border-radius:var(--r-sm); padding:8px 11px; }
+.ipv6-hint[hidden]{ display:none; }
+.ipv6-hint svg{ width:15px; flex:none; } .ipv6-hint button{ margin-left:auto; }
+.tun-details{ margin:4px 0 0; }
+.tun-details summary{ font-size:11px; font-weight:600; color:hsl(var(--flow-hi)); cursor:pointer; list-style:none; display:inline-flex; align-items:center; gap:5px; }
+.tun-details summary::-webkit-details-marker{ display:none; }
+.tun-details summary::before{ content:"▸"; transition:transform .15s; display:inline-block; }
+.tun-details[open] summary::before{ transform:rotate(90deg); }
+.tun-details-body{ margin-top:7px; display:flex; flex-direction:column; gap:6px; font-size:11px; color:hsl(var(--fg-dim)); line-height:1.55; }
+.tun-details-body b{ color:hsl(var(--fg)); font-weight:640; }
+.tun-det-h{ font-size:11px; font-weight:700; color:hsl(var(--fg)); margin-top:6px; letter-spacing:.01em; }
+.tun-det-h:first-child{ margin-top:0; }
+.plat-warn{ display:none; align-items:center; gap:8px; margin:10px 0 4px; font-size:11.5px; color:hsl(var(--warn));
+  background:hsl(var(--warn-weak)/0.6); border:1px solid hsl(var(--warn)/0.35); border-radius:var(--r-sm); padding:8px 11px; }
+.plat-warn svg{ width:15px; flex:none; }
+:root[data-os="lin"] .plat-warn{ display:flex; }
+.webrtc-note{ display:none; margin-top:7px; font-size:11px; color:hsl(var(--warn)); }
+.webrtc-row.disabled .webrtc-note{ display:block; }
+.webrtc-row.disabled #webrtc-seg{ opacity:.42; pointer-events:none; }
+.term-env{ display:flex; flex-direction:column; gap:6px; margin-top:10px; }
+/* 命令分组头（Windows (CMD) / Windows (PowerShell) / macOS · Linux）—— 平台分支后同一区域会并列
+   多组命令，无标签就分不清哪行该粘进哪个 shell；复制按钮按**组**给（跨 shell 混着复制是废输出）。 */
+.term-grp{ display:flex; align-items:center; gap:8px; margin-top:13px; }
+.term-grp:first-child{ margin-top:0; }
+.term-grp > span{ font-size:10px; font-weight:640; letter-spacing:.05em; text-transform:uppercase;
+  color:hsl(var(--fg-faint)); }
+.term-grp > .btn{ margin-left:auto; }
+/* 终端代理提示（沿用 上游 terminal-proxy-section 的 tip 段；文案全部复用既有五语种 i18n 键）。 */
+.term-tips{ display:flex; flex-direction:column; gap:4px; margin-top:12px; font-size:10.5px;
+  color:hsl(var(--fg-dim)); line-height:1.55; }
+.term-tips b{ color:hsl(var(--fg-dim)); font-weight:660; }
+.term-row{ display:flex; align-items:center; gap:8px; background:hsl(var(--surface-2)/0.6); border:1px solid hsl(var(--line)); border-radius:var(--r-sm); padding:7px 10px; }
+.term-row code{ flex:1; min-width:0; overflow-x:auto; font-size:11.5px; color:hsl(var(--fg)); white-space:nowrap; }
+.term-copy{ width:26px; height:26px; border-radius:6px; display:grid; place-items:center; color:hsl(var(--fg-faint)); border:1px solid hsl(var(--line)); flex:none; }
+.term-copy svg{ width:14px; } .term-copy:hover{ color:hsl(var(--flow-hi)); background:hsl(var(--surface-3)); }
+.term-copy:focus-visible{ outline:2px solid hsl(var(--ring)); outline-offset:1px; }
+.dns-bs-endpoints{ display:flex; flex-direction:column; gap:5px; font-size:11.5px; color:hsl(var(--fg-dim)); }
+.dns-bs-none{ display:none; }
+#dns-bootstrap-row.no-boot .dns-bs-endpoints{ display:none; }
+#dns-bootstrap-row.no-boot .dns-bs-none{ display:block; }
+.race-ups{ display:flex; flex-direction:column; gap:8px; margin-top:8px; }
+.race-up{ display:flex; align-items:center; gap:10px; font-size:12px; color:hsl(var(--fg-dim)); cursor:pointer; padding:2px 0; }
+.race-up > span:first-child{ flex:1; display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+.race-up .mono{ color:hsl(var(--fg-faint)); font-size:11px; }
+.race-tier{ display:flex; align-items:center; gap:8px; margin-top:4px; }
+.race-tier:first-child{ margin-top:0; }
+.race-tier-l{ font-size:9.5px; font-weight:640; letter-spacing:.06em; text-transform:uppercase; color:hsl(var(--fg-faint)); }
+.race-tier-c{ font-size:10.5px; color:hsl(var(--fg-faint)); font-variant-numeric:tabular-nums; }
+.race-tier::after{ content:""; flex:1; height:1px; background:hsl(var(--hair)); }
+.race-tag{ font-size:9.5px; padding:1px 6px; border-radius:5px; background:hsl(var(--flow)/0.12); color:hsl(var(--flow-hi)); font-weight:600; }
+.race-tag.muted{ background:hsl(var(--surface-3)); color:hsl(var(--fg-faint)); }
+.race-custom .cidr-row{ margin-top:2px; }
+.race-custom:empty{ display:none; }
+.le-foot{ display:flex; gap:8px; margin-top:11px; }
+.le-foot .btn[disabled]{ opacity:.45; pointer-events:none; }
+.le-imp{ margin-top:9px; padding:10px; border:1px solid hsl(var(--line)); border-radius:var(--r-sm); background:hsl(var(--surface-2)/0.5); }
+.le-imp textarea{ width:100%; resize:vertical; }
+.le-imp-acts{ display:flex; align-items:center; gap:8px; margin-top:8px; }
+.le-imp-hint{ font-size:10.5px; color:hsl(var(--fg-faint)); }
+.tun-anchor{ display:flex; align-items:center; gap:9px; font-size:11.5px; color:hsl(var(--fg-dim));
+  background:hsl(var(--surface-2)/0.6); border:1px solid hsl(var(--line)); border-radius:var(--r-sm); padding:9px 12px; margin-bottom:14px; }
+.tun-anchor svg{ width:15px; color:hsl(var(--flow-hi)); flex:none; } .tun-anchor a{ margin-left:auto; color:hsl(var(--flow-hi)); font-weight:600; cursor:pointer; }
+
+/* ══════════ 应用分流弹窗补齐：进程面板 + 分类组 + name/category 行（原型 L901-946）══════════ */
+.aad-proc-panel{ display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; padding:10px; border:1px solid hsl(var(--line));
+  border-radius:var(--r-sm); background:hsl(var(--surface-2)/0.4); max-height:150px; overflow-y:auto; }
+.aad-proc-panel[hidden]{ display:none; }
+.aad-proc-opt{ display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:var(--r-sm); border:1px solid hsl(var(--line));
+  background:hsl(var(--surface)); font-size:11.5px; color:hsl(var(--fg-dim)); cursor:pointer; }
+.aad-proc-opt svg{ width:13px; flex:none; opacity:0; color:hsl(var(--flow)); } .aad-proc-opt.on svg{ opacity:1; }
+.aad-proc-opt.on{ background:hsl(var(--flow-weak)); color:hsl(var(--flow-hi)); border-color:hsl(var(--flow)/0.5); }
+.ap-group{ border:1px solid hsl(var(--line)); border-radius:var(--r-md); margin-bottom:12px; overflow:hidden;
+  background:hsl(var(--surface-2)/0.16); }
+.ap-group:last-of-type{ margin-bottom:0; }
+.ap-group-head{ display:flex; align-items:center; gap:8px; padding:8px 13px;
+  background:hsl(var(--surface-2)/0.55); border-bottom:1px solid hsl(var(--hair)); }
+.apg-name{ font-size:11.5px; font-weight:680; color:hsl(var(--fg-dim)); letter-spacing:.01em; }
+.apg-count{ font-size:10px; font-weight:640; color:hsl(var(--fg-faint)); background:hsl(var(--surface-3)/0.7);
+  min-width:16px; text-align:center; padding:1px 6px; border-radius:999px; font-variant-numeric:tabular-nums; }
+.ap-group-body{ padding:11px; }
+.ap-group-body .app-wall{ gap:8px; }
+.ap-group.is-list .ap-group-body{ padding:0; }
+.ap-group.is-list .ap-list{ border:0; border-radius:0; }
+.ap-group.is-list .ap-row:last-child{ border-bottom:0; }
+.aad-nc{ display:grid; grid-template-columns:1fr 148px; gap:12px; align-items:start; }
+.aad-nc .sel, .aad-nc .sel select{ display:block; width:100%; }

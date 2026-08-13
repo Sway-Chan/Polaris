@@ -1,0 +1,129 @@
+/**
+ * 「核在跑的真实日志级别」徽标的纯投影（Logs 屏用）。
+ *
+ * # 它现在管的是哪一格（2026-08-09 口径收窄，随核日志改吃 `SubscribeLog` 一并定案）
+ *
+ * 核日志改由管理 API 的 `SubscribeLog` 送达后，**本页显示的核日志已经不归它管**了：那条流恒是全级别，
+ * 筛在客户端（`logging::set_level` 的 `max_level`），改完即刻跟上。于是这颗徽标唯一还管着的是
+ * **核写进它自己那份日志文件时用的级别** —— 即 `<configDir>/singbox.log`，也就是
+ * 「导出日志」与「导出诊断包」两个产物里核的那一半（`commands/misc.rs` 的 `read_tail`）。
+ *
+ * 这不是把它降级成一句无关紧要的话，恰恰相反：屏幕上看得见的那份不会骗人了，**盘上那份才是唯一
+ * 还会与你的设置不一致的东西**，而它偏偏是你要发给别人看的那份。徽标的职责因此从「守屏幕」变成
+ * 「守导出物」。
+ *
+ * # 方向性：只有「核记得比你要的少」才报
+ *
+ * 收窄前只要 `核级别 !== 控件级别` 就涂 warn 色。但两个方向的后果不对称：
+ *
+ *  - 核**更严**（如控件 debug、核 info）⇒ 导出的 `singbox.log` 缺你正要看的那些行。**有后果**。
+ *  - 核**更啰嗦**（如控件调回 info、核仍 debug）⇒ 盘上那份多几行。排障收尾把级别调低是常规动作，
+ *    于是徽标此后常年亮着 —— 一个恒亮的警示等于没有警示。**无后果，不报**。
+ *
+ * # 为什么「读不到」不能回落成某个级别
+ *
+ * 核未运行时上游 `GetDefaultLogLevel` 必然报错（服务端先查 `serviceStatus.Status ∈
+ * {STARTING, STARTED}`）。此时若回落成 `config.logLevel`，显示的恰恰又是那个「我写下的值」——
+ * 自证退化成它本要揭穿的那句谎，只是换了个地方说。故 `level == null` 一律进 `notRunning` /
+ * `unavailable` 两个明说「不知道」的态，**没有第三条回落路径**。
+ *
+ * # 隐私锁那条分叉去哪了（它不在这里，因为这里看不见它）
+ *
+ * 隐私锁开启时生成侧 `LogLevel::effective(privacy)` 把 info/debug 抬到 warn，核确实会与控件不一致 ——
+ * 但 `privacyMode === true` 时 `LockOverlay` 是 `aria-modal` 的整窗遮罩（`layout/LockOverlay.tsx`），
+ * **本页连同这颗徽标一起被盖住**。做一个只在看不见的时候才亮的状态，是自欺。故本模块不收隐私锁这一路
+ * 输入；解锁后若核确实是按抬级后的值起的，它照常落进 `coreRestart`（「核是按旧级别起的」）——
+ * 那句话对那个状态同样成立。
+ *
+ * 顺带记一条**曾被误判成缺口、已撤回**的事实，免得下一轮再走一遍：上锁前起的那个核会继续按
+ * info/debug 把连接明细写进 `singbox.log`（`config_set_privacy_mode` 只翻进程内标志位，既不重生成
+ * 配置也不重启核），而管理 API 只有 `GetDefaultLogLevel`、**没有 setter**（上游
+ * `daemon/started_service.proto` 全表 46 个 rpc 核对过）⇒ 除重启核外无第二条收紧路径。
+ *
+ * 这**不是**缺口。判据是隐私锁自己写给用户的那两句话，不是谁的推断：
+ * `logs.privacyNote`「隐私锁开启中 — **日志流**已对域名与 IP 脱敏」（射程 = 日志流，从来不含盘上文件）、
+ * `privacy.subtitle`「输入密码解锁。**代理仍在运行。**」。后一句直接否掉「上锁时重启核」这条补法 ——
+ * 那会断掉全部连接，与 app 自己承诺的相反。盘上那份从不在锁的承诺内。
+ *
+ * （`core_log_privacy_floor` 那道下限不受本条影响：它挡的是「我们自己把核连接明细**新引入**到
+ * `polaris.log`」这种自伤回归，与锁的承诺射程无关。）
+ *
+ * # 为什么做成纯函数而不是写在组件里
+ *
+ * 「不回落」与「方向性」都是**不变量**，不是渲染细节；它们得有能单独变异验证的判据
+ * （见 `runtime-level.test.ts`）。混在 JSX 里只能靠 review 记得。
+ */
+
+import type { LogLevel, RuntimeLogLevel } from '@/contracts/types';
+
+/**
+ * 分叉的成因 —— 两者的**补救动作不同**，故不能合并成一个 boolean。
+ *
+ * - `unsaved`：级别改动还在暂存区（盘上仍是旧值）。补救 = 应用 + 重启内核。
+ * - `coreRestart`：改动已落盘，核是按旧级别起的。补救 = 重启内核。
+ */
+export type RuntimeLevelDrift = 'unsaved' | 'coreRestart';
+
+/** 徽标的四个互斥态。`pending` = 还没拿到第一份回答（不显示任何东西，别急着说「读不到」）。 */
+export type RuntimeLevelView =
+  | { kind: 'pending' }
+  | { kind: 'notRunning' }
+  | { kind: 'unavailable' }
+  /** 读到了核在跑的级别。`drift` = 非 null 即分叉现形的时刻，取值说明见 [`RuntimeLevelDrift`]。 */
+  | { kind: 'known'; level: string; drift: RuntimeLevelDrift | null };
+
+/**
+ * 啰嗦度序（越大越啰嗦）。含 `trace` —— 那是 sing-box 有、本仓五档没有的级别，核可能真跑在上面
+ * （手改 JSON / 将来扩档），必须能参与比较而不是被当成未知。
+ */
+const VERBOSITY: Readonly<Record<string, number>> = {
+  fatal: 0,
+  error: 1,
+  warn: 2,
+  info: 3,
+  debug: 4,
+  trace: 5,
+};
+
+/**
+ * 把后端回答 + 控件当前显示值 + 盘上值，投影成徽标要呈现的态。
+ *
+ * @param resp 后端 `logs:runtimeLevel` 的回答；`null` = 尚未取回（首次渲染 / IPC 抛错后仍留空）。
+ * @param shown 级别分段控件此刻高亮的那个值（= staged 合并后「我写下的值」）。
+ * @param savedLevel **盘上**那份 config 的 `logLevel`（非 staged 合并值）。`null` = 还没水合 ⇒
+ *   判不出「暂存未应用」，此时一律归 `coreRestart`（不猜）。
+ */
+export function runtimeLevelView(
+  resp: RuntimeLogLevel | null,
+  shown: LogLevel,
+  savedLevel: LogLevel | null,
+): RuntimeLevelView {
+  if (!resp) return { kind: 'pending' };
+  if (resp.level === null || resp.level === undefined) {
+    // 后端只有两种「读不到」的理由；出现第三种（或字段缺失）也一律按 unavailable 呈现 ——
+    // 宁可说「读不到」，也不能悄悄编一个级别出来。
+    return resp.reason === 'notRunning' ? { kind: 'notRunning' } : { kind: 'unavailable' };
+  }
+  return { kind: 'known', level: resp.level, drift: driftOf(resp.level, shown, savedLevel) };
+}
+
+/** 「改动还在暂存区」= staged 合并后的值与盘上的值不一致。 */
+function pendingCause(shown: LogLevel, savedLevel: LogLevel | null): RuntimeLevelDrift {
+  return savedLevel !== null && savedLevel !== shown ? 'unsaved' : 'coreRestart';
+}
+
+function driftOf(
+  core: string,
+  shown: LogLevel,
+  savedLevel: LogLevel | null,
+): RuntimeLevelDrift | null {
+  if (core === shown) return null;
+  const a = VERBOSITY[core];
+  const b = VERBOSITY[shown];
+  // 任一侧的级别名不认识（上游扩了档 / 后端换了拼法）→ 比不出方向。**报，不吞**：
+  // 说「不一样」尚可自证，说「一样」是编造。
+  if (a === undefined || b === undefined) return pendingCause(shown, savedLevel);
+  // 核比控件更啰嗦 ⇒ 盘上那份只是多几行，无后果（见模块头「方向性」）。
+  if (a > b) return null;
+  return pendingCause(shown, savedLevel);
+}

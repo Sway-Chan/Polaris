@@ -1,0 +1,21 @@
+[package]
+name = "polaris-net-stack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+polaris-config-engine = { path = "../config-engine" }
+url = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+# 正则（provider filter/exclude-filter）。regex crate 引擎天然线性时间（防 ReDoS）。
+regex = "1"
+
+[dev-dependencies]
+# 测试用：生成 ServerConfig.id（对齐 Polaris crypto.randomUUID()）。
+uuid = { version = "1", features = ["v4"] }
+# 测试用：异步运行时（assert_host_allowed / safe_redirect_fetch 的 tokio::test）。
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

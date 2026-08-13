@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN" dir="ltr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 与主窗同口径 CSP：禁外部内容嵌入（防点击劫持）。浮层只用内联 SVG，无远端资源，故不放开 img 的 https。 -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    />
+    <title>Polaris</title>
+  </head>
+  <body>
+    <div id="tray-root"></div>
+    <script type="module" src="/src/tray/main.tsx"></script>
+  </body>
+</html>

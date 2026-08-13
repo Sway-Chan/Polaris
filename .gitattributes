@@ -1,0 +1,20 @@
+# 强制源码/文本 LF（跨平台一致）。Windows 默认 autocrlf 会把源码检出成 CRLF，破坏
+# 「读源码做模式匹配」的 guard 测试——commands.rs `top_level_fn_body` 搜 "\n}\n" 定位
+# 右花括号，CRLF（\r\n}\r\n）匹配不到即 panic。eol=lf 让三平台一律检出 LF。
+* text=auto eol=lf
+
+# 二进制资源：禁止任何行尾/编码转换（.srs 是 sing-box geo 规则二进制）。
+*.srs binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.gz binary
+*.zip binary
+*.dylib binary
+*.dll binary
+*.so binary

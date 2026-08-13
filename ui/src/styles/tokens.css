@@ -1,0 +1,229 @@
+/*
+ * Polaris 设计令牌（1:1 提取自原型 polaris-prototype.html L7-73）。
+ *
+ * 真值源：~/docs/polaris/design/prototype/polaris-prototype.html 的 :root 块。
+ * HSL 三元组逐个对照，不改色相/饱和度/明度。通过 [data-theme="dark|light"] 显式切换，
+ * 同时保留 @media (prefers-color-scheme) 作为「跟随系统」兜底。
+ * 唯一一处偏离原型：浅色 `--err` 的明度 50% → 44%（无障碍，理由与实测见下方该行注释）。
+ *
+ * ⚠️ **本文件的浅色取值进不了浏览器**（2026-07-30 实测，见 index.css 末尾「浅色 --err 下调」段）：
+ * `prototype.css` 是 index.css 的**最后一个 @import**，它自己也带一整套同选择器的 `:root` 令牌声明
+ * （prototype.css:6-72），同特异性、源序在后 ⇒ 压过本文件。四条主题路径里本文件只在「无 data-theme
+ * + 系统深色」那条赢（本文件的 media 腿多一个 `:not` ⇒ (0,3,0) > prototype 的 (0,2,0)）。
+ * 故：**改本文件的浅色值是空操作**，真正生效的覆盖必须写在 index.css 的全部 @import 之后。
+ * 这里同步改值只为让「声明的真值源」不说谎；style-invariants 有门钉着两处必须同值。
+ *
+ * 主题切换约定（与 tailwind darkMode:'class' 协同）：
+ *  - <html data-theme="dark">  → 暗色
+ *  - <html data-theme="light"> → 亮色
+ *  - <html>（无 data-theme）   → 跟随系统 prefers-color-scheme
+ *
+ * Tailwind 经 colors.* = 'hsl(var(--token))' 引用（见 tailwind.config.js）。
+ * 原型 class 名（.win/.shell/.side/.nav-item/.statusbar...）由各 layout 组件用
+ * Tailwind utility + 此处 CSS 变量还原，不在本文件写组件 CSS。
+ */
+
+:root {
+  /* ── 三级面 / 背景 / 线 ── */
+  --bg: 210 30% 96%;
+  --surface: 0 0% 100%;
+  --surface-2: 210 28% 94%;
+  --surface-3: 210 22% 89%;
+  --line: 213 22% 87%;
+  --hair: 213 22% 83%;
+
+  /* ── 文字 ── */
+  --fg: 220 32% 13%;
+  --fg-dim: 216 15% 40%;
+  --fg-faint: 214 14% 44%;
+
+  /* ── 主色：flow 极光青 ── */
+  --flow: 197 88% 40%;
+  --flow-hi: 198 92% 33%;
+  --flow-weak: 196 70% 93%;
+  --ring: 197 88% 44%;
+
+  /* ── 辅色：aurora 冰蓝·极光绿 ── */
+  --aurora: 162 78% 33%;
+  --aurora-hi: 163 82% 27%;
+  --aurora-weak: 162 55% 92%;
+
+  /* ── 语义色 ── */
+  /* 原型是 152 60% 36% / 32 84% 42% / 356 68% 50%；只下调明度过 WCAG AA（H/S 逐字不动）。
+   * 逐值推导见 index.css 的「浅色语义色下调」段。 */
+  --ok: 152 60% 27%;
+  --ok-weak: 152 48% 92%;
+  --warn: 32 84% 31%;
+  --warn-weak: 38 84% 92%;
+  --err: 356 68% 44%;
+  --err-weak: 356 74% 96%;
+
+  /* ── 速率/方向 ── */
+  /* 原型是 197 80% 42%；同上只下调明度。--up 实测已过 AA，逐字保留原型值。 */
+  --dn: 197 80% 33%;
+  --up: 262 52% 54%;
+
+  /* ── 阴影源 / 靛 ── */
+  --shadow: 216 45% 20%;
+  --indigo: 234 60% 40%;
+
+  /* ── logo 磁贴 ── */
+  --logo-tile: 0 0% 100%;
+  --logo-tile-bd: 214 24% 80%;
+
+  color-scheme: light;
+}
+
+/* ── 暗色（显式）── */
+:root[data-theme='dark'] {
+  --bg: 220 40% 6%;
+  --surface: 219 32% 10.5%;
+  --surface-2: 218 26% 14%;
+  --surface-3: 217 22% 19.5%;
+  --line: 217 19% 23%;
+  --hair: 217 17% 28%;
+
+  --fg: 210 30% 95%;
+  --fg-dim: 214 16% 66%;
+  --fg-faint: 214 13% 48%;
+
+  --flow: 195 90% 56%;
+  --flow-hi: 194 96% 68%;
+  --flow-weak: 200 60% 15%;
+  --ring: 195 90% 60%;
+
+  --aurora: 161 60% 45%;
+  --aurora-hi: 162 68% 55%;
+  --aurora-weak: 162 45% 13%;
+
+  --ok: 152 50% 46%;
+  --ok-weak: 154 40% 14%;
+  --warn: 36 88% 60%;
+  --warn-weak: 34 45% 14%;
+  --err: 356 74% 66%;
+  --err-weak: 356 42% 17%;
+
+  --dn: 195 82% 62%;
+  --up: 265 70% 74%;
+
+  --shadow: 224 80% 1%;
+  --indigo: 236 64% 32%;
+
+  --logo-tile: 213 26% 88%;
+  --logo-tile-bd: 214 18% 72%;
+
+  color-scheme: dark;
+}
+
+/* ── 亮色（显式，与 :root 默认一致，供显式切换兜底）── */
+:root[data-theme='light'] {
+  --bg: 210 30% 96%;
+  --surface: 0 0% 100%;
+  --surface-2: 210 28% 94%;
+  --surface-3: 210 22% 89%;
+  --line: 213 22% 87%;
+  --hair: 213 22% 83%;
+
+  --fg: 220 32% 13%;
+  --fg-dim: 216 15% 40%;
+  --fg-faint: 214 14% 44%;
+
+  --flow: 197 88% 40%;
+  --flow-hi: 198 92% 33%;
+  --flow-weak: 196 70% 93%;
+  --ring: 197 88% 44%;
+
+  --aurora: 162 78% 33%;
+  --aurora-hi: 163 82% 27%;
+  --aurora-weak: 162 55% 92%;
+
+  /* 与上方 `:root` 浅色基线逐值一致（「主题两档同步」③ 钉着）。 */
+  --ok: 152 60% 27%;
+  --ok-weak: 152 48% 92%;
+  --warn: 32 84% 31%;
+  --warn-weak: 38 84% 92%;
+  --err: 356 68% 44%;
+  --err-weak: 356 74% 96%;
+
+  --dn: 197 80% 33%;
+  --up: 262 52% 54%;
+
+  --shadow: 216 45% 20%;
+  --indigo: 234 60% 40%;
+
+  --logo-tile: 0 0% 100%;
+  --logo-tile-bd: 214 24% 80%;
+
+  color-scheme: light;
+}
+
+/* ── 跟随系统（无 data-theme 时）── */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']):not([data-theme='dark']) {
+    --bg: 220 40% 6%;
+    --surface: 219 32% 10.5%;
+    --surface-2: 218 26% 14%;
+    --surface-3: 217 22% 19.5%;
+    --line: 217 19% 23%;
+    --hair: 217 17% 28%;
+
+    --fg: 210 30% 95%;
+    --fg-dim: 214 16% 66%;
+    --fg-faint: 214 13% 48%;
+
+    --flow: 195 90% 56%;
+    --flow-hi: 194 96% 68%;
+    --flow-weak: 200 60% 15%;
+    --ring: 195 90% 60%;
+
+    --aurora: 161 60% 45%;
+    --aurora-hi: 162 68% 55%;
+    --aurora-weak: 162 45% 13%;
+
+    --ok: 152 50% 46%;
+    --ok-weak: 154 40% 14%;
+    --warn: 36 88% 60%;
+    --warn-weak: 34 45% 14%;
+    --err: 356 74% 66%;
+    --err-weak: 356 42% 17%;
+
+    --dn: 195 82% 62%;
+    --up: 265 70% 74%;
+
+    --shadow: 224 80% 1%;
+    --indigo: 236 64% 32%;
+
+    --logo-tile: 213 26% 88%;
+    --logo-tile-bd: 214 18% 72%;
+
+    color-scheme: dark;
+  }
+}
+
+/* ═══════════ 非颜色令牌（spacing scale / radius / shadow / 字体栈）═══════════
+   原型 L65-73。间距统一走此 7 级阶梯（无临时 13/15/18/22）。radius 与字体栈同理。 */
+:root {
+  --r-xs: 6px;
+  --r-sm: 8px;
+  --r-md: 10px;
+  --r: 11px;
+  --r-lg: 14px;
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-7: 32px;
+
+  /* 所有浮层（上下文菜单 / 迷你菜单 / 节点选择器）共用的一抹投影 */
+  --shadow-pop: 0 18px 40px -16px hsl(var(--shadow) / 0.6);
+
+  --sans: -apple-system, 'Segoe UI Variable', 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', system-ui, sans-serif;
+  --disp: 'Space Grotesk', 'Avenir Next', 'SF Pro Display', 'Segoe UI',
+    var(--sans);
+  --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Cascadia Code', Menlo,
+    Consolas, monospace;
+}

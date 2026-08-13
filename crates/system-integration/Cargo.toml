@@ -1,0 +1,18 @@
+[package]
+name = "polaris-system-integration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+polaris-config-engine = { path = "../config-engine" }
+polaris-helper-proto = { path = "../helper-proto" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = "2"
+# 唯一用途：mac 服务枚举回落到旧口径时自曝（静默降级一道安全相关的过滤 = 本仓吃过亏的形状）。
+log = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

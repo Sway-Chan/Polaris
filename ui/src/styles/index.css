@@ -1,0 +1,1711 @@
+/*
+ * Polaris 全局样式。
+ *
+ * tokens.css 注入全部设计令牌（颜色 / 间距阶梯 / radius / shadow / 字体栈），
+ * Tailwind 经 CSS 变量引用（见 tailwind.config.js）。
+ * 本文件只放 Tailwind 指令 + 最小全局重置（html/body/#root 满高、选区色、字体平滑）。
+ */
+
+@import './tokens.css';
+/* port 自有组件样式（hover-card / dlg / light 主题补充 / brand-svg 等，原型 <style> 里没有的端口发明）
+ * 作 gap-filler 放在 prototype.css **之前**：prototype.css 在后，凡与其冲突的规则一律被 prototype 覆盖
+ * （中和历史 poison/drift，如旧 `.win{height:100vh}`）；prototype 没有的 port 专属类才生效 → 系统性一次
+ * 补回换 prototype.css 时随 components/screens.css 丢失的全部端口样式，替代逐条手补。 */
+@import './components.css';
+@import './screens.css';
+@import './prototype.css';
+
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+ * 浅色语义色下调：`--err` / `--warn` / `--ok` / `--dn` 只动明度过 WCAG AA（H/S 与原型逐字一致）
+ * ══════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * ── ① `--err`：356 68% 50% → 356 68% 44% ────────────────────────────────────────────────────
+ *
+ * 缺陷不是「两个孤例」，是**这个 token 在浅色下没有余量**：`--err` 的 L*=47.2，落在纯白
+ * `--surface` 上的对比度只有 **4.97** —— 那已经是天花板，底色只要染一点色就掉到 4.5 以下。
+ *
+ * 实测（`ui/dist` 产物 CSS + 真 Chromium `computedStyle` 取层叠赢家 + WCAG/CIE L*，改前浅色档；
+ * hover 态用真鼠标且等过 CSS transition —— 采样早于 `.14s` 会读到过渡中间色，别再踩）：
+ *   3.84  `.csel-trigger.danger:hover`   底 `--surface-3`      （**最差**，且此前没人测过）
+ *   3.94  `.act-block`                   底 `--err`/0.15
+ *   4.00  `.nd-top .nd-lat.dead`         底 `--err`/0.14
+ *   4.26  `.dlg-err` / `.nd-a.err:hover` 底 `--err`/0.1
+ *   4.33  `#sb-lat.dead` · `.csel-trigger.danger`   底 `--surface-2`   ← 报上来的那两处
+ *   4.35  `.aad-sel-chip:hover`          底 `--flow-weak`
+ *   4.37  `.pill.err` · `.pending-bar.err .pb-tx b` · `.ut-ic.err` · 五处 `:hover` 危险菜单项
+ *                                        底 `--err-weak`
+ *   4.64/4.68  连接表行 hover · 应用行 hover   底 `--surface-2`/0.5、/0.45 叠在 `--surface` 上
+ *   4.97  落 `--surface`（卡片/弹窗/菜单）—— 全仓浅色 err 文字的**上限**
+ * ⇒ 18 处不过 AA，分布在 4 个样式文件 + 10 个组件里。
+ *
+ * 为什么改 token 而不是给那两处另开 `--err-on-surface2`：受影响的底色有 6 种
+ * （`--surface-2` / `--surface-3` / `--err-weak` / `--flow-weak` / `--err` 自身 0.1~0.15 的淡染 /
+ * `--surface-2` 的半透明叠加），且绝大多数落点在**禁区文件**（prototype/components/screens.css）
+ * 里，只能在覆盖层逐选择器改写。逐处另开 token = 每新增一个 err 文字落点都要重判一次该用哪个，
+ * 第 N 处必漏。根因是这一个明度值，改它是唯一的根治。不动 `--surface-2`：它波及面更大，且
+ * 对 `--err-weak`/`--flow-weak`/淡染那 4 类底色一点用没有（本文件下方 chip 族那道门也压着它）。
+ *
+ * 取 44% 的判据：把上面 6 类底色 + 「白字落 err 实底」逐条解方程扫 L —— 45% 时最差项
+ * （`--surface-3`）只有 4.55，余量 0.05，任何后续底色微调即翻；44% 起最差 4.72，留 0.2 余量。
+ * 再暗没有新的约束要满足，只是白白偏离原型更多。改后：状态栏/csel 触发器 5.31、
+ * `--err-weak` 5.38、`--err`/0.15 淡染 4.77；白字落 err 实底从 4.97 升到 6.10（实底那一路只会更好）。
+ *
+ * **深色档不动**，理由是「动不了」而不是「不用动」：深色下 `--err` 同时承担
+ * 「亮红文字落暗底」与「白字落亮红实底」两个相反方向 —— 实测 `.btn.danger` 深色白字落 err 实底
+ * 只有 **3.16**、`.csel-trigger.danger:hover` 深色 **4.26**，把 `--err` 调亮能救后者却把前者压得更低。
+ * 这两条深色缺陷各自需要**改规则**（prototype.css:602 已经为 `.toast.err` 深色做过同一件事：
+ * 实心亮底+白字 → err-weak 底 + err 文字），不是一次 token 移动能解。`.btn.danger` 那条已在本文件
+ * 下方「深色 `.btn.danger` 换墨色」段修掉（改的是规则不是 token，方向与本段互不冲突）。
+ *
+ * ── ② `--warn` 32 84% 42%→31%、`--ok` 152 60% 36%→27%、`--dn` 197 80% 42%→33% ──────────────
+ *
+ * 与 ① 同因同治：这三个 token 在浅色下**全是正文色**，且原值一处都过不了 AA。先查用法再定门槛
+ * （不是见 3.x 就按 4.5 砍）：
+ *  · `--warn` 当文字的落点全是 10~12.5px：`.log-WARN`(12px) `.warn-line`(11px) `.mode-warn`/
+ *    `.plat-warn`/`.app-disabled-note`(11.5px) `.webrtc-note`(11px) `.pill.warn`(10.5px)
+ *    `.nd-cap.lan`(10px) `.statusbar .sb-conns`(11.5px) `.pending-bar .pb-tx b`(12px)
+ *    `.core-ver-banner .cvb-tx b`(12.5px) `.nd-top .nd-lat.slow`(11px) `.home-degraded` …
+ *  · `--ok` 同样：`.pill.ok`(10.5px) `.act-direct` `.parse-ok` `.wg-preview .wpv-h`(12px)
+ *    `.nd-top .nd-lat.fast`(11px) `#sb-lat.fast` `.ut-ic.ok`…
+ *  · `--dn` 只有两处，都是文字：`.statusbar .rate-dn`(11.5px/600) `.conn-rate .d`(11.5px/600)。
+ *  全仓**没有一处**落进 AA 的大字例外（≥18.66px bold / ≥24px）⇒ 门槛一律 **4.5**，不是 3.0。
+ *  当色点/描边/进度条填充/开关轨（`.dot.*` `.lat-*` `.swt.indet` `.sub-usage .bar>i`
+ *  `.connect-btn.busy` 的 22px 图标、`.pb-ic`/`.cvb-ic` 的 13px 图标）走 1.4.11 的 **3:1**，
+ *  本段不按 4.5 判它们，但下调后逐条只会更好或仍达标（见下）。
+ *
+ * 取值判据（CIE L* + WCAG，底色花名册按「该 token 的文字实际落在什么面上」逐条扫出来）：
+ *   --warn 31%  L*=41.59  最差 **4.65** ← `.nd-top .nd-lat.slow` 的 warn/0.14 叠在列表卡 hover
+ *                                        （`#s-nodes.nodes-list-view .nd-card:hover` = surface-2/0.55）
+ *          32% 时该项 4.42 仍不过；33% 只有 4.23 ⇒ 31% 是第一个全过的档。改前该项 **2.91**。
+ *   --ok   27%  L*=41.00  最差 **4.66** ← `.act-direct` 的 ok/0.15 叠在 `.rule-item:hover`
+ *          28% 时 4.46 差一点；改前 **3.04**。
+ *   --dn   33%  L*=44.47  最差 **4.78** ← 状态栏 `--surface-2`；34% 只有 4.52 余量太薄；改前 **3.16**。
+ * 其余底色改后：warn 落 surface 6.09 / surface-2 5.31 / warn-weak 5.36；ok 落 surface 6.23 /
+ * surface-2 5.43 / ok-weak 5.44；dn 落 surface 5.48 / 连接表行 hover 5.14。
+ *
+ * **淡染要按 hover 后的行底算**：`.act-*` / `.nd-lat.*` 这类 chip 自带 `--tok/0.1~0.15` 淡染，
+ * 它composite 的父面在鼠标移上去时会从 `--surface` 变成 `--surface-2/0.45~0.55` ⇒ 同一块 chip
+ * 在 hover 帧里比静止帧暗一档。①（`--err`）当时的花名册只按「叠在 --surface 上」算，漏了这一层；
+ * 本段按 hover 后的行底算，故比 ① 的口径严。
+ *
+ * **`--warn` 的取舍（如实说，不偷偷牺牲）**：黄/琥珀在白底上天生难达标 —— 要 4.5 就必须压到
+ * L*≈41，而 L*=41 的 32° 色相看上去是**赭石/焦糖**，不再是原型那种明快的琥珀黄。这是算术不是审美
+ * 选择：同一 L* 下换任何黄系色相都一样褐（往 38~45° 走更亮、要更低的 L 才达标，只会更褐；往 25°
+ * 走会撞 `--err` 的红）。我取「过 AA 的褐琥珀」而不是「好看的 3.19」—— 语义仍靠**色相**区分
+ * （`--warn` 32° 暖 vs `--err` 356° 红 vs `--ok` 152° 绿），只是三者明度被拉到同一档。
+ * 若陈先生判定「警告黄必须保持明快」，正确的做法是**给警告文字换底**（改成 `--warn-weak` 实底 +
+ * 深色字，同 `.toast` 深色那套做法），不是把 token 调回去 —— 别在这里放宽到 3:1。
+ *
+ * **`--dn` / `--up` 分开处理**：`--dn` 只当文字、无实底用法 ⇒ 直接下调即可。`--up`（上行）实测
+ * L*=43.50、最差 4.59（`.act-return` 的 up/0.15 叠在 --surface）⇒ **已过 AA，一个字不动**。
+ * 但它在 hover 后的行底上是 **4.32**，与 `--flow-hi` 的 4.12、`--err` 的 4.46 一样卡在线下 ——
+ * 那三条是本轮扫出来的**新发现**，不在「warn/dn/ok」射程里，见交接，别在这里顺手改。
+ *
+ * **深色档三个 token 都不动**，理由是「量过了不用动」而不是「没测」：深色 warn 最差 6.58、
+ * ok 4.87、dn 8.19（都含 hover 行底的淡染复合）⇒ 全部过 AA。下方新增的门 ⑤ 把这三个数钉住，
+ * 将来谁调深色令牌会自曝。
+ *
+ * **两处随 token 下调而必须改墨色的规则**（都在下方，token 换了不改它们就是把缺陷从一处搬到另一处）：
+ *  · `.hc-step.done .st-n`：原墨 `#04160f` 在 `--ok` 27% 上只剩 **2.99**（10.5px 数字，不达标）；
+ *  · `.log-view mark`：`--warn/0.5` 高亮底本就不达标，下调后更暗。
+ *
+ *
+ * ⚠️ **为什么写在这里而不是 tokens.css**：`prototype.css` 是最后一个 @import，它自己带一整套同选择器
+ * 的 `:root` 令牌声明（prototype.css:6-72）⇒ **tokens.css 的浅色取值是死代码**。实证：把 dist 产物里
+ * tokens.css 那两条浅色腿染成绿色再读 `computedStyle`，`--err` 纹丝不动仍是 356 68% 50%。四条主题
+ * 路径逐条测过，tokens.css 只在「无 data-theme + 系统深色」一条赢（它的 media 腿多一个 `:not`
+ * ⇒ (0,3,0) > prototype 的 (0,2,0)）。tokens.css 那两条浅色腿也同步改了值，只为不让声明的真值源说谎。
+ *
+ * 选择器为什么是两条：`:root` (0,1,0) 管「无 data-theme + 系统浅色」；`:root[data-theme='light']`
+ * (0,2,0) 管显式浅色（与 prototype 同特异性，靠源序在后取胜）。两条都**不含深色选择器** ⇒ 深色路径上
+ * prototype 的 `[data-theme="dark"]`(0,2,0) 与 media 腿、以及 tokens.css 的 media 腿(0,3,0) 各自
+ * 压过这里的 (0,1,0)，深色纹丝不动（四条路径改后已逐条复测）。
+ *
+ * ⚠️ 本块**不能是 index.css 的第一条规则**：上面那道「主题条件规则必须成对」的门用
+ * `/([^{}]+)\{/` 切规则，文件开头那串 `@import …;` / `@tailwind …;` 会被一并吞进第一条规则的
+ * 选择器捕获里，导致它认不出这是个「纯变量块」而误判成「浅色只有显式腿」。挪到任意一条规则
+ * 之后即可（前面有 `}` 收口，选择器就干净了）。故本块放在下面那个 `:root{color-scheme}` 之后。 */
+
+:root {
+  color-scheme: light dark;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+:root,
+:root[data-theme='light'] {
+  --err: 356 68% 44%;
+  --warn: 32 84% 31%;
+  --ok: 152 60% 27%;
+  --dn: 197 80% 33%;
+}
+
+/* 上面 `--ok` / `--warn` 下调后必须跟着换墨色的两处（不换 = 把缺陷从文字搬到墨色，净收益归零）。
+ * 两条都只用 token、不写 `[data-theme]` 分支 ⇒ 天然两档同步，也就不触发「主题条件规则必须成对」。
+ *
+ * ① `.hc-step.done .st-n`（10.5px/700 的步骤序号）：prototype.css:1186 的墨是 `#04160f`，那是当年
+ *    「白字落 --ok 只有 3.9」的对策（见该处注释）。`--ok` 降到 27% 后这笔账整个翻过来 ——
+ *    近黑墨掉到 **2.99**、白墨升到 **6.23**。改用 `--surface`：浅色下它是白(6.23)、深色下它是
+ *    近黑面色(6.50) ⇒ 一条规则两档都对，且不再是写死的裸色值。
+ *    （深色原墨 6.81 → 6.50，让出 0.31 换来浅色 2.99 → 6.23。）
+ *
+ * ② `.log-view mark`（搜索命中高亮）：原本 `color:inherit` ⇒ 命中片段沿用所在行的级别色，压在
+ *    `--warn/0.5` 的高亮底上。**改前就不达标**：浅色 fg-dim 3.21 / fg-faint 2.74，深色 2.39 / 1.31，
+ *    `.log-WARN` 行更是 warn 压 warn = **1.93**（等于看不见）。`--warn` 下调把高亮底压得更暗 ⇒ 这一条
+ *    是本次改动**加重**的，按「不偷偷牺牲可读性」必须一并处理。定死 `--fg`：浅色 7.44、深色 5.25。
+ *    代价是命中片段丢掉级别色 —— 但它原本就是 1.93~3.21 的不可读色，拿「读得出的中性」换「读不出的
+ *    彩色」是正账；级别色仍由同一行未命中的部分表达。 */
+.hc-step.done .st-n {
+  color: hsl(var(--surface));
+}
+.log-view mark {
+  color: hsl(var(--fg));
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--sans);
+  color: hsl(var(--fg));
+  background: hsl(var(--bg));
+}
+
+/* mac/win：webview 透明以透出原生 vibrancy/Mica；Linux 保持不透明（白屏兜底，不动）。 */
+:root[data-os='mac'],
+:root[data-os='win'] {
+  background: transparent;
+}
+:root[data-os='mac'] body,
+:root[data-os='win'] body,
+:root[data-os='mac'] #root,
+:root[data-os='win'] #root {
+  background: transparent;
+}
+
+::selection {
+  background: hsl(var(--flow) / 0.3);
+}
+
+/* ── 状态栏窄宽折叠（原型 .statusbar sb-fold-* @container mainc L556-558）──
+   .main 作为 container:mainc；窄宽时折叠 节点/出口IP/延迟 项，保留最关键的速率+连接数。 */
+.main {
+  container: mainc / inline-size;
+}
+@container mainc (max-width: 500px) {
+  .sb-fold-ip {
+    display: none !important;
+  }
+}
+@container mainc (max-width: 620px) {
+  .sb-fold-lat {
+    display: none !important;
+  }
+}
+@container mainc (max-width: 520px) {
+  .sb-fold-node {
+    display: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── 真实窗口适配（原型 .stage 的 padding/gap 是 demo「桌面浮窗」观感；真实 app 窗口即 .win 卡片，边到边填满） ── */
+.stage{ padding:0; gap:0; }
+/* 原型 .win = demo 里固定 925×740 浮窗卡；真实 app 里窗口本身就是卡 → 必须填满 webview，
+   否则 webview 高度≠740（Linux 服务端标题栏 / mac resize / 任何缩放）时底部露空（= 用户所见「残留」）。
+   卡片边框/圆角/投影是「浮窗」观感，真窗口交给原生窗框（mac decorations / WM），故一并清。 */
+.win{ width:100%; height:100vh; min-width:0; min-height:0; max-width:none; border:0; border-radius:0; box-shadow:none; }
+:root[data-os="lin"] .win{ border-radius:0; }
+
+/* ── 组件保真修复（真机暴露、headless seeded harness 复现验证） ── */
+
+/* .swt 开关：原型 `.swt` 自身无 display（span 默认 inline→忽略 width:36px），靠「恒为 flex 子项被
+   blockify」才生效。端口 SetRow 把开关包进非 flex 的 `.sr-ctl` div → 退回 inline → 塌成 2px，只剩
+   `::after` 白旋钮浮着（Settings 各开关的真机 bug）。显式 inline-flex 脱离对 flex 上下文的依赖，
+   任何位置都按 36×20 轨道渲染（rule-acts 内已在 flex 里的开关不受影响）。 */
+.swt{ display:inline-flex; }
+
+/* .seg2 视图切换（Nodes 卡片/列表、AppPolicy Cards/List）：原型 seg2 按钮内 SVG 靠 `width="15"`
+   属性定尺寸（prototype.css 无 `.seg2 button svg` 尺寸规则，只有 `.btn svg`）。端口 SVG 省了 width
+   属性 → 无尺寸塌陷成空胶囊。补规则给所有 seg2 图标按钮统一定尺寸。 */
+.seg2 button svg{ width:15px; height:15px; flex:none; }
+
+/* brandIcon 品牌 SVG（应用分流卡图标 + 解锁徽章共用）：内联 SVG 只有 viewBox 无 width/height，
+   `.brand-svg`/其 svg 的尺寸规则原在已弃用的 components.css，换 prototype.css 时丢失 → SVG 塌成 0，
+   应用分流卡图标全空框。补 `.brand-svg` 填满其容器（`.app-ico` 32×32 / 徽章框），logo 留内边距。 */
+.brand-svg{ display:grid; place-items:center; width:100%; height:100%; line-height:0; }
+.brand-svg > svg{ width:100%; height:100%; display:block; }
+.app-ico.brand .brand-svg{ padding:4px; box-sizing:border-box; }
+
+/* ── 换 prototype.css 时随弃用的 components.css 一起丢失的 port 自有组件样式（这些类是端口发明的、
+ *    原型 `<style>` 里没有，故 prototype.css 不含 → 真机全裸奔）。逐条从 components.css 提回。 ── */
+
+/* .hover-card：hover 详情卡根（rules/apppolicy/resources 三处 hover 卡共用挂载 HoverCardPanel）。
+ * 根规则丢失 → 无 position/max-width/background/padding，内容裸文字撑破触发卡（真机所有卡 hover 皆溢出）。
+ * 子类（.tc-* 与 .rl-hc-* 与 .tip-t 与 .ref-line）一并带回，保证整卡样式完整。
+ * （不写成紧挨着的星号加斜杠：那两个字符会就地终止本条注释，其后的说明文字被当 CSS 解析 ——
+ *   本行与 components.css 的 shell chrome 段此前都踩过，构建期两条 css-syntax-error 即由此来。）
+ *
+ * ⚠️ 与 `prototype.css:209-227` 的 `#tip.card` / `#tip .tc-* / .rl-hc-*` 是**同一套皮肤的两份**，
+ * 声明逐字相同、只差前缀。这不是随手复制，是镜像分层的必然结果：
+ *   - 原型用**一个** `#tip` 元素同时驱动 plain tip 与 rich card（`proto:195-198` 的署名决定）；
+ *   - 本仓把两档拆开 —— plain 走 `lib/tooltip-engine.ts`（消费 `#tip` / `#tip.show`），
+ *     rich 走 `HoverCard.tsx` 的 `.hover-card`（三个消费点分布在可滚动列表行内，无共同定位容器，
+ *     定位语义与 tooltip 不同，见 `HoverCard.tsx:11-14` 的署名理由）。
+ * ⇒ `prototype.css` 里那份是**原型正本的镜像**（禁区文件，不删）；本层这份是端口实际生效的那份。
+ * 同 `.toast` 在 prototype.css / components.css 各存一套的既有形态：**改一份等于没改，两份必须同步**。
+ * 若哪天 rich card 改回挂 `#tip.card`，本段应整体删除而不是继续维护两份。 */
+.hover-card{ position:fixed; z-index:200; max-width:300px; padding:8px 10px; border-radius:var(--r-sm);
+  background:hsl(var(--surface-2)); border:1px solid hsl(var(--line)); color:hsl(var(--fg));
+  font-size:11.5px; line-height:1.5; box-shadow:0 8px 24px -8px hsl(var(--shadow)/0.5);
+  pointer-events:auto; white-space:normal; }
+.hover-card .tip-t{ font-weight:600; }
+.hover-card .tc-conds{ display:flex; flex-wrap:wrap; gap:4px; margin-top:5px; }
+.hover-card .tc-cond{ font-size:10.5px; font-family:var(--mono); padding:2px 6px; border-radius:5px; background:hsl(var(--surface-2)); color:hsl(var(--fg-dim)); }
+.hover-card .tc-cond b{ color:hsl(var(--flow-hi)); font-weight:640; }
+.hover-card .tc-sep{ height:1px; background:hsl(var(--line)); margin:7px 0; }
+.hover-card .tc-row{ display:flex; align-items:center; gap:8px; font-size:11px; }
+.hover-card .tc-lbl{ color:hsl(var(--fg-faint)); }
+.hover-card .rl-hc-head{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.hover-card .rl-hc-nm{ font-weight:640; }
+.hover-card .rl-hc-tag{ font-size:9.5px; font-weight:640; padding:1px 6px; border-radius:20px; background:hsl(var(--surface-3)); color:hsl(var(--fg-faint)); letter-spacing:.02em; }
+.hover-card .rl-hc-tag.off{ background:hsl(var(--warn-weak)); color:hsl(var(--warn)); }
+.hover-card .rl-hc-conds{ display:flex; flex-direction:column; gap:5px; margin-top:7px; }
+.hover-card .rl-hc-cond{ display:flex; align-items:center; gap:7px; }
+.hover-card .rl-hc-ty{ flex:none; }
+.hover-card .rl-hc-val{ font-size:11px; color:hsl(var(--fg-dim)); word-break:break-all; }
+.hover-card .rl-hc-node{ font-size:11px; color:hsl(var(--fg-dim)); }
+.hover-card .ref-line{ display:flex; align-items:center; gap:7px; padding:2px 0; font-size:11.5px; white-space:nowrap; }
+.hover-card .ref-line:first-child{ padding-top:0; } .hover-card .ref-line:last-child{ padding-bottom:0; }
+
+/* .dlg-err：弹窗错误提示条。
+ * 2026-07-30 后**只剩 2 处上下文级用法**：`TsLoginDialog.tsx:276`（贴着相关控件）与
+ * `SubDialog.tsx:367`（订阅预检结果，与 `.mesh-success` 二选一）。原先那 13 处**提交级**用法
+ * 已全部改成右下角 toast —— 它们渲染在 `children` 末尾，而 `.dlg-body` 是弹窗内唯一滚动容器
+ * ⇒ 点 footer 的「保存」时错误落在滚动内容最底部，要滚到底才看得见（规则弹窗最坏 ~3050px 时暴露）。
+ * 本条**不删**：上下文级那 2 处仍在用，且它们的位置本来就对（紧贴出错的那块 UI，不需要滚动）。
+ * 定义本身在 `components.css:392`（禁区），本层是端口覆盖。 */
+.dlg-err{ font-size:11px; color:hsl(var(--err)); background:hsl(var(--err)/0.1); padding:8px 10px; border-radius:var(--r-sm); line-height:1.5; }
+
+/* .search-clear：搜索框清除按钮。 */
+.search-clear{ flex:none; display:inline-flex; color:hsl(var(--fg-faint)); border-radius:999px; padding:2px; cursor:pointer; }
+.search-clear:hover{ color:hsl(var(--fg)); background:hsl(var(--surface-3)); }
+
+/* .sk-nomatch：拓扑/列表无匹配居中提示。 */
+.sk-nomatch{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); pointer-events:none;
+  font-size:11.5px; color:hsl(var(--fg-faint)); background:hsl(var(--surface)/0.86); padding:6px 12px; border-radius:999px; }
+
+/* .aad-tag-sel：添加应用弹窗的分类标签选择行。 */
+.aad-tag-sel{ display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+
+/* 弹窗容器自身不显焦点环：showModal 后无输入的弹窗会把焦点落到 <dialog> 容器（见 Modal.focusFirst），
+ * 全局 button/[tabindex]:focus-visible 规则会给它描一圈醒目蓝框（真机确认，用户反感）。dialog 是聚焦
+ * 兜底载体、非交互控件，抑制其环；真正的交互控件（输入框/按钮 Tab 聚焦）仍保留焦点环（a11y）。 */
+dialog:focus,
+dialog:focus-visible,
+.dlg:focus,
+.dlg:focus-visible { outline: none; }
+
+/* 换屏后被程序化聚焦的主标题同理（`AppShell` 的 route 副作用把焦点转到 h1，供读屏宣告换屏）。
+ * WKWebView 给这次聚焦判 `:focus-visible`（Chromium 不判），真机上表现为首次点导航时右侧主标题
+ * 冒一圈蓝框（陈先生 2026-07-29 报）。h1 是聚焦兜底载体、非交互控件，与上面 dialog 同一条理由。
+ * 收窄到 `[tabindex='-1']`：只命中被程序化标记过的那个 h1，页面里其它标题与真交互控件不受影响。 */
+h1[tabindex='-1']:focus,
+h1[tabindex='-1']:focus-visible { outline: none; }
+
+/* 日志工具栏：开关态按钮的底色 + 重排后的尺寸约束（2026-07-29 真机反馈）。
+ *
+ * **`.btn.on` 此前根本没有皮肤** —— 脱敏/自动滚动两颗一直挂着 `on` 类却零视觉变化，用户只能靠
+ * 切换文案辨认当前态（这正是「用开关底色表示、不要切文字」这条反馈的由来）。
+ * 取 `.icon-btn.on`（components.css:154）的逐属性同值：本仓「这颗开着」的既有语言就是它，
+ * 不另造第三套。射程收在 `.log-tb-actions` 内，不动全局 `.btn`（别处的 `on` 语义未逐一核过）。 */
+.log-tb-actions .btn.on {
+  color: hsl(var(--flow-hi));
+  background: hsl(var(--flow-weak));
+  border-color: hsl(var(--flow) / 0.4);
+}
+/* 暂停期缓冲行数徽标：沿用 `.nav-item .cnt` 的形态，尺寸压到与 sm 按钮同级。 */
+.log-tb-actions .btn .cnt {
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 660;
+  background: hsl(var(--flow) / 0.2);
+  color: hsl(var(--flow-hi));
+}
+/* 级别说明从独占一行移进 `.log-tb-main` 行首（原来源分段的位置）：给宽度上限并允许压缩，
+ * 否则这段长文案会把搜索框挤成一条缝；窄窗下整行本就 flex-wrap，会自然折行。 */
+.log-tb-main .log-tb-cap {
+  padding: 0;
+  flex: 0 1 auto;
+  max-width: 330px;
+  min-width: 0;
+}
+
+/* 分段控件族（A 族）选中态文字统一为 flow-hi —— **反向修原型的两级设计**。
+ *
+ * 原型在 A 族内分两级（本文件上方「选中态视觉语言统一」段有原始记录）：选「配置值」的 `.seg2` 用
+ * flow-hi 强调，选「看哪一页」的 `.sub-tabs` / `.cat-tabs` / `.log-levels` / `.hc-plat` 用中性 fg。
+ * 这个区分在原型里是自洽的，但真机上表现为「同样长相的分段控件，有的选中变蓝、有的不变」——
+ * 陈先生 2026-07-29 逐处点名（节点页 自建/组网/订阅组、连接页、日志级别），裁定一律蓝字灰底。
+ *
+ * 取值直接引 `.seg2 button.on`（components.css:81）的同一个 token，不另调色 —— 目的是让四族与
+ * `.seg2` 逐字同值，而不是造第五种蓝。底色/投影/字重仍归各自原规则，本条只动 color。
+ * 未点名的 `.cat-tabs` / `.hc-plat` 一并纳入：它们与被点名的三处同族同构，留着不改就是把
+ * 「两级不一致」换成「三处一致 + 两处不一致」，问题没解决只是挪了位置。 */
+.sub-tabs button.on,
+.cat-tabs button.on,
+.log-levels button.on,
+.hc-plat button.on { color: hsl(var(--flow-hi)); }
+
+/* 侧栏选中项：实色填充 → flow 的 alpha 叠色。
+ *
+ * `components.css:756` 的 `.nav-item.on{background:hsl(var(--flow-weak))}` 是**不透明**填充，而侧栏
+ * 三端都是半透的（mac transparent + vibrancy / win Mica / lin surface-2/0.6）⇒ 选中那一行的透明效果
+ * 被整块盖掉。深色下 `--flow-weak` 是 `200 60% 15%`（一块深海军蓝），贴在 vibrancy 上尤其突兀
+ * （陈先生 2026-07-29 真机报）。
+ *
+ * 不新造配色：导航族的语言仍是「flow 填充 + flow-hi 文字 + flow 左条」，只把填充从实色换成
+ * 同色相的 alpha —— 同族的 `.nav-item.on .cnt`（components.css:762）本来就用 `hsl(var(--flow)/0.2)`，
+ * 这里是照它的既有写法，不是第四套。
+ *
+ * 不按 os 分支：三端侧栏都半透，alpha 叠色在哪一端都正确 ⇒ 少一个状态维度（同上面 `.main` 那条的理由）。
+ * 深浅各给一档：深色底暗、需要更多存在感；浅色 `--flow` 明度低（40%），同 alpha 会显脏。
+ * 要调浓淡改这两个数即可，选择器和族语义都不用动。 */
+.nav-item.on { background: hsl(var(--flow) / 0.1); }
+:root[data-theme='dark'] .nav-item.on { background: hsl(var(--flow) / 0.18); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']):not([data-theme='dark']) .nav-item.on {
+    background: hsl(var(--flow) / 0.18);
+  }
+}
+
+/* ── 真机视觉微调（用户逐项反馈） ── */
+
+/* 应用分流卡图标：logo 尽量填满方块（≥80%），过大等比压缩填充（object-fit:contain 已保证等比）。
+ * 减小内边距：品牌 SVG 4px→2px（32px 块 → 28px 图 ≈ 87%）；远端 img 3px→2px 同理。 */
+.app-ico.brand .brand-svg{ padding:2px; }
+.app-ico .app-ico-img{ padding:2px; }
+/* 解锁徽标图标兜底裁切（防个别非方 viewBox 的 logo 溢出圆角 tile）。 */
+.ub-ico{ overflow:hidden; }
+
+/* ── 图标 tile 不用 grid 承载（WebKit 百分比高度失效）── 治本点，别改回 grid。
+ *
+ * 症状：非方 logo（netflix viewBox 282×512）在 tile 里被拉长溢出，再被 tile 的 overflow:hidden 切掉
+ * 半个「N」；方形 logo 恰好不溢出，于是看着「只有 netflix 坏」。
+ *
+ * 真因（WebKitGTK 探针实测，与 mac WKWebView 同引擎 WebCore）：tile 是 `display:grid` +
+ * `place-items:center` 时，**replaced 元素（<img>）的百分比高度解析失败** → 退回 intrinsic ratio 撑高。
+ * 实测 26px tile（内容区 12×12）内 netflix img 盒 = 12×22（宽对、高错 → 溢出）；改 flex/block 后
+ * = 12×12（正确）。grid 的任何写法（place-items:stretch / grid-template:1fr/1fr）都无效，只有离开 grid 才行。
+ * Chromium 无此问题，故 headless-Chrome 预览与 CI 都看不出，只在真机（mac/Linux WebKit）复现。
+ *
+ * 范围 = 所有承载 <img> 的 tile；只含内联 SVG 的 grid tile（按钮/复选框/.about-mk 等）不受影响
+ * （内联 svg 非 replaced 元素，百分比正常），故不动它们。 */
+.app-ico,
+.aad-ico-cell,
+.aad-icon-preview{ display:flex; align-items:center; justify-content:center; }
+.ub-ico{ display:inline-flex; align-items:center; justify-content:center; }
+
+/* 节点分组 tab（.sub-tabs）高度对齐工具栏分段控件（.seg2）：原 padding 偏大（容器 4px + 按钮 7px 竖向
+ * → 视觉偏高，用户反馈「45 太高，35 合适」）。收到与 seg2 一致（容器 3px + 按钮 6px），高度统一。 */
+.sub-tabs{ padding:3px; }
+.sub-tabs button{ padding:6px 14px; }
+
+/* 添加应用弹窗「在线图标」空态：提示文字 .aad-hint 落在 .aad-ico-grid（38px 列网格）的单格里 →
+ * 被挤成逐字竖排（真机确认）。让它跨满所有列，恢复正常整行文本。 */
+.aad-ico-grid .aad-hint{ grid-column: 1 / -1; }
+
+/* 在线图标格三态可辨（配合 AppAddDialog 的 data-ico 标记）：`.aad-ico-cell` 底色是白瓷砖（原型
+ * §AF3 的统一底），图标没画上去时露的就是这块白 —— 于是「webview 压根没发请求」（lazy 未触发）
+ * 与「发了但取失败」在屏幕上完全同形，真机上分不出走哪条修法。这两条只加视觉标记，不碰加载行为：
+ *   无 data-ico = 从未 load 也未 error（未发起 / 在途）→ 虚线；err = 发了且失败 → 红框。
+ * 都成功时无任何装饰，与原型一致。 */
+.aad-ico-cell:not([data-ico]){ border-style:dashed; }
+.aad-ico-cell[data-ico="err"]{ border-color:hsl(var(--err)/0.55); background:hsl(var(--err-weak)); }
+
+/* hover 详情卡：纯信息卡（无交互内容）→ pointer-events:none，让点击/hover **穿透**到被卡片视觉遮住的
+ * 操作按钮（用户反馈「悬停需避开操作按钮」——指针移到被遮按钮即离开触发器、卡片随即关闭，按钮恢复可点）。
+ * 展开延迟已是 500ms（HoverCard OPEN_DELAY，对齐原型 TIP_DELAY），无需改。 */
+.hover-card{ pointer-events: none; }
+
+/* 节点工具栏协议/排序下拉触发器保留最小宽度：Csel 触发器宽随当前选中值文字自适应 → 选「名称」比
+ * 「默认顺序」窄，切换时宽度跳动（真机反馈）。原生 <select> 按最宽选项定宽，此处以 min-width 复现该稳定宽，
+ * 不因短选项缩水（值取能容纳最宽标签「默认顺序/全部协议」）。 */
+.node-toolbar .nt-proto,
+.node-toolbar .nh-sort{ min-width: 116px; }
+
+/* 品牌图标（brandIcon 现渲染为 <img data:svg>）：object-fit:contain 稳定等比填充、永不裁切
+ * （替代内联 svg——object-fit 对内联 svg 在 WebKit 不可靠）。SVG 的 intrinsic size 由 brandIcon 的
+ * withIntrinsicSize() 从 viewBox 补回——WebKit 对只有 viewBox 的 SVG 会拉满容器（contain 失效），
+ * 那才是 Netflix「N」被拉伸/切的真因（Chromium 退回 ratio 故本地预览看不出）。 */
+.brand-svg{ width:100%; height:100%; object-fit:contain; display:block; }
+
+/* 托盘浮层状态卡的 logo：原型靠 `.tray-status.stopped .ts-mk svg{color:fg-faint}` 置灰，但 Polaris 星
+ * sprite 是**硬编码渐变**（fill=url(#pl-*)），不吃 currentColor → 未连接仍是彩色（真机确认）。
+ * 用 filter 置灰，与托盘图标本身的灰/彩语义一致（未连接=灰，连接才亮）。 */
+.tray-status.stopped .ts-mk{ background:hsl(var(--surface-3)); }
+.tray-status.stopped .ts-mk svg{ filter:grayscale(1) opacity(0.6); }
+
+/* 侧栏/主体色差（不依赖 vibrancy/透明）：给侧栏一个比主体明确的实色差。侧栏取 surface-2 实色
+ * （dark 下 14% > bg 6% = 略亮；light 下 94% < 100% = 略深），主体保持原 bg 叠加。
+ *
+ * **仅 Linux 生效** —— 真机反馈「MacOS 左侧导航栏没有半透明」的根因修复。
+ * 改前：本段是无条件 `.side{surface-2/0.6}` + mac 专属 `surface-2/0.4` 覆盖。index.css 在
+ * @import components.css/prototype.css **之后**，同特异性后者胜 ⇒ 这两行把 components.css:684 与
+ * prototype.css:135 的 `:root[data-os="mac"] .side{background:transparent}` 一并盖掉，40% 实色糊在侧栏上，
+ * 系统 vibrancy 透不出来。原注释写的意图（「特效关闭或 Linux 时也能区分」）没错，错在实现无条件生效。
+ * 改后：mac/Win 一律让位给原生特效（mac vibrancy / Win Mica，src-tauri/src/main.rs:482-508 挂载），
+ * 由 components/prototype 的 per-os `.side` 规则接管。
+ *
+ * 「特效关闭」的兜底为什么不需要本段：mac/Win 的 `transparent` 与特效**同门控**
+ * （`should_apply_window_effects`，main.rs:440-459）—— 特效开则建透明窗 + 挂 vibrancy/Mica；特效关则建
+ * 不透明窗、回落 conf 实色底 #0B0F14（透明只为透出特效而存在，没特效就不该透明，否则侧栏直接透出桌面）。
+ * 两支下侧栏/主体色差都由**前端层**给出（见下方「mac 让位」段：特效关时 `.win` 仍自绘 `surface/0.86`，
+ * 特效开时 `.main` 自绘不透明底而侧栏透出 vibrancy），侧栏不吃 `.main` 那层 ⇒ 两支下都分得清。
+ * 这两条规则与窗口是否透明无关，故本段实色对 mac/Win 恒属多余。
+ * Linux 恒不透明、恒不调用任何特效（main.rs:509-511；特效分支根本不编译进 Linux 目标），才是真正需要这条
+ * 实色差的唯一平台 —— 也因此 UI 侧同步隐藏 windowEffects 那行开关（components.css:935，不留死开关）。
+ *
+ * 「特效是否开启」的信号：**已接**，见下方「mac 让位」段与 `components/layout/window-effects.ts`。
+ * （旧注释曾判定「前端拿不到 ⇒ 不做」，结论已修正：三个合取项里前两项 —— 平台、两否决位 —— 前端本来就有
+ * （config 字段，Settings 开关同源），只有第三项 `apply_*` 未报错拿不到；而 mac 上该项 ~恒真。故无需新造
+ * Rust→webview 回传，用既有 config 即可，成本≈零。） */
+:root[data-os="lin"] .side{ background:hsl(var(--surface-2)/0.6); }
+
+/* ══════════ mac 让位给原生 vibrancy（真机「窗口特效并未生效」的根因修复）══════════
+ *
+ * 症状：mac 真机开着窗口特效，但看不到任何 vibrancy。Rust 侧全对——`should_apply_window_effects`
+ * 返回 true、`main.rs:488-495` 确实挂上了 `apply_vibrancy(Sidebar 材质)`，窗口也确实建成了透明窗。
+ * 断点在 CSS：vibrancy 在 webview **背后**，webview 里只要有任何一层不透明底，它就一点也透不出来。
+ * 两层挡着（都在 prototype.css，即浏览器原型的逐字移植——原型跑在浏览器里，没有真 vibrancy 可透）：
+ *   ① `.stage`（prototype.css:73）：三层 gradient，末层 `linear-gradient(...)` **无 alpha** ⇒ 整块 100% 不透明，
+ *      它是最外层容器，一个人就能把下面全部挡死；`:root[data-theme="light"] .stage`（:81）同理。
+ *   ② `:root[data-os="mac"] .win`（prototype.css:109）：`surface/0.86` + `backdrop-filter:blur(30px)`
+ *      —— 这正是**浏览器模拟的假毛玻璃**（components.css:639-651 的段注释亲口写明该偏移的存在）。
+ *      真机上它既挡住 86% 的真 vibrancy，`backdrop-filter` 又只能采样到自己上游的透明层（采不到窗后的
+ *      vibrancy）⇒ 纯负收益：用一层假玻璃盖掉了真玻璃。
+ *
+ * 为什么按 `[data-window-effects="on"]` 门控、而不是无条件透明：mac 两条建窗支路对前端的要求**相反**
+ * （main.rs:440-459）——特效开＝透明窗（前端必须让位），特效关＝**不透明窗 + 实色 #0B0F14**（前端必须
+ * 自绘：那块实色是深色，浅色主题下透出来就是深底浅字，不可读）。属性由 AppShell 依既有 config 两否决位
+ * 写入，口径/成本/射程边界见 `components/layout/window-effects.ts`。属性缺失（config 未载入）= 不让位，
+ * 即保持下方规则不生效、外观与改前逐字节一致 ⇒ 该兜底方向天然安全。
+ *
+ * 特异性：`:root[data-os][data-window-effects] .x` = (0,4,0) > prototype.css 的 `:root[data-os] .x` (0,3,0)
+ * 与 `:root[data-theme="light"] .stage` (0,3,0) ⇒ 本段靠**特异性**取胜，不依赖 @import 顺序（本仓
+ * components.css 先于 prototype.css import，同特异性下恒被后者覆盖——见文件头注释）。 */
+:root[data-os="mac"][data-window-effects="on"] .stage{ background:transparent; }
+:root[data-os="mac"][data-window-effects="on"] .win{
+  background:transparent; -webkit-backdrop-filter:none; backdrop-filter:none; }
+
+/* mac 内容区不透明（components.css:753「偏移②」的意图，此处令其真正生效——原规则与 prototype.css:237
+ * 同选择器同特异性，而 prototype.css 后 import ⇒ 长期被 `bg/0.32` 覆盖，是**死代码**）。
+ * 语义：vibrancy 只给侧栏（`.side` 在 mac 下已 transparent，components.css:684 / prototype.css:135），
+ * 内容区自绘实色 —— 与 macOS 原生「侧栏 vibrancy + 内容区不透明」一致，也避免正文长文本压在随桌面
+ * 变化的半透背景上（可读性）。`.main` 自带的圆角接缝 + 投影仍在，两列的视觉分层不靠透明度承担。
+ * 不加 `[data-window-effects]` 门控：特效关时窗口本就是实色 #0B0F14 不透明窗，`.main` 实色同样正确，
+ * 两支下都成立 ⇒ 无条件即可，少一个状态维度。 */
+:root[data-os="mac"] .main{ background:hsl(var(--bg)); backdrop-filter:none; }
+
+/* ══════════ 选中态（.on）视觉语言统一 —— 按「结构族」归位，不逐处调色 ══════════
+ * 基线 = 原型 polaris-prototype.html 的 <style>。原型里选中态只有三套语言，各自成族：
+ *  A) 分段控件族（轨道 = surface-2 底 + line 边 + 3~4px 内衬，内含 r=7px 按钮）：
+ *     选中 = **surface 浮块 + 投影**。成员：.seg2 L305-310 / .sub-tabs L602-606 / .cat-tabs L1034-1036 /
+ *     .log-levels L1109-1111 / .hc-plat L1148-1150 / .geo-region L802-805。
+ *     文字分两级，原型内一致贯彻（是有意区分，不是漂移）：选「配置值」的 .seg2 用 flow-hi 强调；
+ *     选「看哪一页」的 sub-tabs/cat-tabs/log-levels/hc-plat 用中性 fg。
+ *  B) 导航族（.nav-item L157-168）：flow-weak 填充 + flow-hi 文字 + flow 左条。设置页左侧导航复用
+ *     同一条规则（原型 L1629 markup 写死 `class="set-nav nav-item on"`，无独立 .set-nav 皮肤），
+ *     与主侧栏同源 ⇒ 本节不动，动它会连带主侧栏。
+ *  C) chip 族（.ap-chip L845 / .tagchip L899 / .aad-proc-opt L907）：flow-weak 填充 + flow-hi 文字 +
+ *     flow/0.4~0.5 描边。本节不动 —— **已实测，不是「没查过」**（订正见下方 C 族浅色实测段）。
+ * 本节只收敛「结构属 A 族、却被涂成 B 族」的那一处漂移，不新增第四套配色。 */
+
+/* ── C) chip 族的浅色实测（2026-07-30，订正上面那句「本节不动」的含义）─────────────────────────
+ *
+ * 起因：A 族的 `.geo-region button.on` 曾因「flow-weak(L93%) 打底的选中块与 surface-2(L94%) 轨道
+ * 几乎等亮、只靠色相」而被判为「一块糊在轨道里的淡蓝」并改掉（见下方 .geo-region 段）。chip 族用的
+ * 正是同一套 flow-weak 底 + flow-hi 字，于是「chip 族是不是也坏了」此前既无承认也无否认。
+ *
+ * **实测结论：没坏，不改。** 那条修法是为 A 族特定的明度关系定的，无条件套到 chip 族是照猫画虎。
+ *
+ * 量法：取 dist 产物 CSS 在 Chromium 里读 computedStyle（拿层叠的实际赢家，不靠人读 CSS 推断），
+ * 再算 WCAG 对比度与 CIE L*。浅色下的三组数（同一把尺子）：
+ *   · A 族**被否决**的旧态：块 flow-weak(#E1F3FA) vs 轨道 surface-2(#EBF0F4) → ΔL*=0.22、1.01:1
+ *   · A 族**已接受**的新态：块 surface(#FFFFFF)  vs 轨道 surface-2(#EBF0F4) → ΔL*=5.51、1.15:1
+ *   · `.tagchip.on`：块 flow-weak(#E1F3FA) vs **同排未选 chip** surface(#FFFFFF) → ΔL*=5.29、1.14:1
+ * 即 tagchip 落在「已接受」那一档（差 4%），是「被否决」那一档的 24 倍。文字 flow-hi on flow-weak
+ * = 4.61:1（过 WCAG AA 4.5:1）。另有两条 A 族没有的分离通道：描边 line→flow/0.5（ΔL*≈14）、
+ * 字重 500→600。`.ap-chip` / `.aad-proc-opt` 同构同数。
+ *
+ * **根因上的结构差异**（这才是「A 族要改、C 族不用」的判据，不是数字碰巧）：分段控件的轨道是一条
+ * 连续可见的底轨，选中块必须从**轨道**里浮出来；chip 是一排离散的独立块，参照系是**同排的兄弟
+ * chip**，而兄弟 chip 的底是 surface(L100%) 不是轨道的 surface-2(L94%)。参照系差 6 个百分点，
+ * 结论就反过来。
+ *
+ * ⚠️ **这条结论是有载荷的**：`.tagchip` 的 idle 底之所以是 surface，靠的是 prototype.css:929
+ * （**最后一个 @import**）压过 components.css:554 的 `background:hsl(var(--surface-2))`。谁要是
+ * 「顺手消掉这份重复」把 prototype 那行删了，tagchip 的选中态立刻掉到 ΔL*=0.22 —— 正是被否决的
+ * 那一档。此不变量由 styles/style-invariants.test.ts 的「chip 族浅色分离度」一条守着。 */
+
+/* A：cat-tabs 按钮竖向 padding 独一份 5px（其余同族/sub-tabs/seg2/geo-region 均 6px）→ 矮 ~3px，
+ * ResCatalogDialog 内它与同排 .input 搜索框并列时基线明显偏上。对齐到 6px。 */
+.cat-tabs button{ padding:6px 14px; }
+
+/* A：geo-region（规则页「你所在的地区」）归位到分段控件族的选中态 —— 取 `.seg2 button.on`
+ * （原型 L309-310）的逐属性同值，不另起配方。
+ *
+ * 结构证据：原型 L802-804 的 `.geo-region` 轨道与 L305-308 的 `.seg2` 逐属性同构 —— inline-flex /
+ * gap:3px / padding:3px / surface-2 底 / line 边 / r-sm 轨道 / 按钮 r=7px / idle 色 fg-dim，只差字号
+ * 12 vs 12.5。它就是个 seg2，不是导航项。
+ * 语义证据：它选的是写进 config 的「地区」**配置值**（同 seg2 承载的接管方式 / 分流策略），不是视图
+ * 分区 ⇒ 取 A 族里带 flow-hi 强调的那一级，而非 sub-tabs 那级的中性 fg。
+ *
+ * 为什么不逐字照抄原型 L805（`background:fg; color:surface` 黑/白反色实块）：那是原型自身的孤例——
+ * 6 个同构轨道里另外 5 个一律 surface 浮块 + 投影；且该反色块已被用户当面否决（「跟全局没统一」）。
+ * SoT 的权威在它的**族口径**，不在这一行的字面值。
+ * 为什么不是上一轮的 flow-weak 填充（B 族写法）：把「选一个值的分段控件」涂成「导航项」，正是本轮
+ * 反馈「规则页地区显蓝色、和节点页 tab 不是一套」的根因 —— accent 铺在**底色**上，整块就是一片蓝。
+ *
+ * 两个主题下的分离机制（与同族其余 5 个控件逐字同构，非本处另创）：
+ *  · 浅色：选中块 surface(L100%) 比轨道 surface-2(L94%) 亮 6% + 投影可见 ⇒ 明度差主导，白块浮起。
+ *    旧写法 flow-weak(L93%) 与轨道(L94%) 几乎等亮，只靠色相 ⇒ 一块糊在轨道里的淡蓝。
+ *  · 深色：明度差方向相反且很小（10.5% vs 14%，对比约 1.1:1），投影在 shadow(L1%) 下近乎不可见 ⇒
+ *    分离主要由**文字**承担：色 fg-dim→flow-hi、字重 540→660。关键收益是底色回到中性面，accent 只
+ *    留在文字上，"整块发蓝"消失；文字对比同时从 8.5:1 升到 10.7:1（flow-hi 亮青 on surface 近黑蓝）。
+ * 即：本处不为深色另开分支，深色的观感差异是 token 换值的自然结果，与 sub-tabs/cat-tabs/log-levels/
+ * hc-plat/seg2 完全一致 —— 统一的定义就是「同族同规则」，不是「两个主题里长得一样」。 */
+.geo-region button.on{ background:hsl(var(--surface)); color:hsl(var(--flow-hi)); font-weight:660;
+  box-shadow:0 1px 3px hsl(var(--shadow)/0.16); }
+
+/* 工具栏同排控件高度对齐（node-toolbar 搜索/视图/协议排序/测速/多选一排；log-tb-main 来源视图/搜索/
+ * 操作一排）：.btn.sm 比同排的 .input/.csel-trigger 矮。
+ *
+ * 原实现写死 `min-height:33px`，那个 33 是**估的且估错了** —— Chromium 实测（scratchpad/measure.mjs，
+ * 逐字取 dist 产物 CSS 渲染 node-toolbar 六个控件）：.input/.csel-trigger = **36.75px**、.seg2 = 35px、
+ * .btn.sm = 33px。于是 33 恰好只把按钮钉在它本来的高度上 ⇒ 规则等于没写，真机仍差 3.75px
+ * （陈先生 2026-07-29 报「测可见、多选按钮跟同行其他的高度不一致」）。
+ *
+ * 改用 `align-self:stretch` 而非换一个新数字：行高由 .input 的 font-size/padding/line-height 三者
+ * 合成，36.75 是这套字体度量下的巧合值，写死它等于把排版细节复制一份到覆盖层，下次调字号又会悄悄错开。
+ * stretch 让按钮取**本行最高控件**的高度，判据从「我猜的数」变成「同排事实」，自动跟随。
+ * 同理给 .seg2 也加（实测 35px，同样偏矮 1.75px）。
+ * 实测复核：加规则后六个控件齐平 36.75px，内部 icon/文字仍居中（.btn 自身 align-items:center 不受影响）。
+ *
+ * `.log-tb-actions` 是两级：它自己是 .log-tb-main 里的 flex item（margin-left:auto），
+ * 先让它撑满行高，其内的按钮才有可撑的高度 —— 只写内层那条是无效操作（它的父盒本就贴着它）。
+ *
+ * 原来这里还有第三条 `.ap-toolbar .ap-chip{min-height:33px}`，已随「分类筛选改下拉」一并删除：
+ * 那排如今只剩 .csel-trigger/.input/.seg2，chip 这个族没有消费方了，留着就是条死规则。 */
+.node-toolbar > .btn.sm,
+.node-toolbar > .seg2,
+.log-tb-main > .log-tb-actions,
+.log-tb-actions > .btn.sm{ align-self:stretch; }
+
+/* 输入类控件 focus 描边过粗（真机反馈）：.input/.search-box 的 focus 环从 2px 收细到 1.5px；
+ * 只收窄这两类文本输入控件，不动按钮/下拉触发器等其它 focus-visible（原 2px a11y 环保留）。 */
+.input:focus-visible,
+.search-box:focus-within{ outline-width:1.5px; }
+
+/* 首页出口节点选择器（.node-trigger）加可见框：原型该触发器是无框文字态（border:0/background:none），
+ * 真机看不出是「可点的下拉框」（用户反馈「下拉没有一个框」）。补一圈边框 + 底色，做成明确的下拉框态。 */
+.node-trigger{ border:1px solid hsl(var(--line)); background:hsl(var(--surface-2)/0.4); border-radius:var(--r-md); padding:8px 11px; margin:0; }
+.node-trigger:hover{ border-color:hsl(var(--flow)/0.5); }
+.node-dd.open .node-trigger{ border-color:hsl(var(--flow)); }
+/* 出口节点选单宽度对齐触发框：原型 .node-menu 固定 width:360px，与 flex:1 撑满的触发框不等宽（用户
+ * 反馈「下拉宽度没对齐框」）。改为 100%（.node-menu 是 absolute 相对 .node-dd，即触发框容器 → 等宽）。 */
+.node-menu{ width:100%; min-width:280px; }
+
+/* 连接圆钮 err 态（启停失败 → 点击重试）：原型 <style> **没有这一态**，是端口新增，故落本层而非
+ * prototype.css（那是原型的逐字移植，唯一权威，不接受端口新增）。
+ *
+ * 此前这段挂着 `DESIGN-REVIEW(connect-btn-err-color)`「偏离能力契约，待统一复审」的牌，
+ * 参照物是 polaris-上游-capability-contract.md L18 的 `off(teal▶)/on(红‖)/err(橘!)`。
+ * **2026-07-29 判据切成「原型 ↔ 后端双向对拍」后那张牌已无对象**：原型里根本没有 err 这一态
+ * ⇒ 本条不是「偏离契约」，而是「原型无、实现有」的**增补**（处置是回写原型补 err 态，不是改代码）。
+ * 故摘牌，理由保留备查：
+ *   1) 契约那套配色描述的是 **上游**；Polaris 原型本就改过前两态的映射（off=灰/on=teal），
+ *      照搬 err=橘会得到一套「两态按 Polaris、一态按 上游」的混血；
+ *   2) --warn(橘) 已被 .connect-btn.busy 占用 → err 用橘会让「进行中」与「已失败」同色不可辨
+ *      （这条与偏好无关，是 token 双占导致的可辨性硬冲突）；
+ *   3) 全库 .err 修饰类（.pill.err/.dot.err/.pending-bar.err）一律 --err，用红才与本仓一致。
+ * 不靠颜色单独承载语义：组件同时渲染 ! 图标（色觉障碍可辨）—— **这条必须保留**。 */
+.connect-btn.err{ background:hsl(var(--err)); box-shadow:0 0 0 4px hsl(var(--err)/0.2); }
+@media (prefers-color-scheme:dark){ :root:not([data-theme="light"]) .connect-btn.err{ box-shadow:0 0 0 3px hsl(var(--err)/0.14); } }
+:root[data-theme="dark"] .connect-btn.err{ box-shadow:0 0 0 3px hsl(var(--err)/0.14); }
+
+/* 图标 tile 阴影（应用分流卡图标框 + 解锁徽标框共用同一条规则——用户明确问过「两处白底 tile
+ * 融入背景是否可复用」，答案是可以，抽成一条规则而非各写一份）：
+ * `.ub-ico` 早先已有 border+box-shadow（components.css/prototype.css，均只读不可改），`.app-ico`
+ * 从未有过——应用分流卡的品牌图标/远端 img 图标都是白底 tile，浅色主题下与卡片白底融为一体
+ * （真机截图确认）。补给 `.app-ico`，并与 `.ub-ico` 显式共用同一条声明（数值抄 `.ub-ico` 现值，
+ * 非另起一份）。深色下白 tile 本就与深色背景反差大，规则叠加无影响，故不按主题分流。 */
+.app-ico,
+.ub-ico{ border:1px solid hsl(var(--line)); box-shadow:0 1px 2px hsl(var(--shadow)/0.14); }
+
+/* 应用分流卡分组 + 卡片浅色主题区分度修复（真机截图确认：分组头与卡面、卡片与页面背景在浅色下
+ * 发灰糊成一片；深色本已有明显层次差，不受影响，只加浅色覆盖）。
+ * 浅色下 --surface(100%L)/--bg(96%L)/--surface-2(94%L) 彼此仅差 2-6 个百分点，--line(87%L) 边框
+ * 与这些背景的反差都不够——`.ap-group`/`.app-card` 原样保留 --line 描边在深色够用，浅色下换更深一档
+ * 的 --hair（既有 token，`.ap-group-head`/`.ap-row` 分隔线已在用，语义就是「比 line 更强的分隔」）；
+ * 分组头背景从透明度混合的 surface-2/0.55 换成 --surface-3 实色（与其身处的近白背景拉开更明显的
+ * 面积色差）；卡片补一圈贴合阴影（复用 --shadow token，量级与 hover-card/ub-ico 已有阴影同源）让白卡
+ * 从近白背景里"浮"出来，而非只靠一条边框线。只覆盖浅色，深色维持 prototype.css 原值不动。 */
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]) .ap-group{ border-color:hsl(var(--hair)); background:hsl(var(--surface-2)/0.5); }
+  :root:not([data-theme="dark"]) .ap-group-head{ background:hsl(var(--surface-3)); }
+  :root:not([data-theme="dark"]) .app-card{ border-color:hsl(var(--hair)); box-shadow:0 1px 3px hsl(var(--shadow)/0.16); }
+}
+:root[data-theme="light"] .ap-group{ border-color:hsl(var(--hair)); background:hsl(var(--surface-2)/0.5); }
+:root[data-theme="light"] .ap-group-head{ background:hsl(var(--surface-3)); }
+:root[data-theme="light"] .app-card{ border-color:hsl(var(--hair)); box-shadow:0 1px 3px hsl(var(--shadow)/0.16); }
+
+/* ══════════ 状态栏高度单一真值 + toast 底距推导 ══════════
+ * 真机反馈「toast 为什么不是自适应位置，举例底部信息栏为什么差那么多」的根因修复。
+ *
+ * 改前：`Toaster.tsx` 内联 `bottom:96`（死值）。96 的来历 = 状态栏 32 + **曾经吸底的 pending bar 36**
+ * + 呼吸 28。原型里 `.pending-bar` 确是 statusbar 上方的 docked 滑出条（prototype.css:547/549：
+ * `height:0` 折叠 / `.show` 时 `height:36px`），96 在原型成立。但 Polaris 已把它改成 **Home 内联卡片**
+ * （screens.css:350 的 `#s-home > .pending-bar` 规则 override 掉 docked 专有属性；渲染点在
+ * HomeScreen.tsx:802 的 `<PendingChangesBar />`，位于 `.main-scroll` 内），statusbar 上方不再有那 36px
+ * ⇒ 96 里的 36 成了**死账**，toast 比设计稿多浮 36px。
+ * 这正是「1:1 迁移照搬了形、没检查前提是否成立」的同款坑。
+ *
+ * 改后：bottom 不再是独立常数，而是由状态栏高度推导 —— `.statusbar` 的 height 与 `#toast-stack`
+ * 的 bottom 同源，状态栏改高 toast 自动跟随。
+ *
+ * ⚠️ 措辞要准：本 var 是**运行期**的权威值，**不是**仓内唯一的字面量。
+ * `components.css` 与 `prototype.css` 的 `.statusbar` 各自仍写着 `height:32px`，本段靠位于
+ * `@import` 之后覆盖它们。**那两处刻意不改**：prototype.css 是「原型 `<style>` 逐字移植」、
+ * components.css 同属禁区（见 screens.css:355），端口侧改动一律走本覆盖层 —— 改禁区文件会让它
+ * 与原型对拍失效，代价大于消一处重复。
+ * 代价如实记账：那两个字面量若与本 var 分叉，**渲染上无害**（本层恒胜）但**读代码会误导**。
+ * `style-invariants` 门钉的是「bottom 必须由 --statusbar-h 推导」，不钉字面量唯一性。
+ *   bottom = 状态栏高 + 呼吸间距；`--toast-gap` = toast 与状态栏顶边的净空。
+ *   该净空曾取 28px（原型 96−32−36 的余项）—— 那是个**推导出来的余数**，不在本仓设计刻度上（--sp-*
+ *   为 4/8/12/16/20/24/32，无 28）。用户拍板收到 16px 并改用 `--sp-4` 令其回到刻度内 ⇒
+ *   bottom = 32 + 16 = 48px。数值可再演进，style-invariants 门只钉「必须由 --statusbar-h 推导」
+ *   这个关系，不钉具体像素。
+ *
+ * 不抄 上游：上游的 `.statusbar` 是 **30px**（conduit.css:96）且 toast 走 Sonner **右上角**
+ * （index.css:197 `[data-sonner-toaster]`），根本没有「底距」这一说 —— 前提与本仓的底部 toast 不同，
+ * 其数值不可移植。
+ *
+ * 位置的其余属性（right/z-index/flex 栈）仍在 `Toaster.tsx` 内联：它们是布局不变量，不随任何元素尺寸走；
+ * 唯独 bottom 必须跟着状态栏，故与状态栏 token 同处一地。 */
+:root{ --statusbar-h:32px; --toast-gap:var(--sp-4); }
+.statusbar{ height:var(--statusbar-h); }
+#toast-stack{ bottom:calc(var(--statusbar-h) + var(--toast-gap)); }
+
+/* ── toast 行内动作按钮（`.toast-action`）─────────────────────────────────────────
+ * 唯一消费者：测速中断态的「继续」（续测差集）。原型的 `notify()` 没有按钮这一档，故本规则**原型无对应**
+ * ——写在这里而不是 prototype.css/components.css：那两处是冻结的原型移植面（禁改），端口侧新增一律落本层。
+ *
+ * 只用 `.toast` 已有的配色变量，不引第二套色板：`.toast` 基础态在浅色下是深底浅字（`--fg` 底 / `--surface` 字），
+ * 深色下反过来（surface-2 底 / fg 字）。按钮若写死颜色，必然在其中一档上糊成一片。故边框与文字一律
+ * `currentColor` —— 它恒等于该条 toast 当前的前景色，两档主题自动同向，且 `.toast.ok/.err` 变体也跟着走。
+ * 底色留 `transparent`（描边按钮）：`color-mix()` / 相对色语法能做出更好看的淡填充，但本仓 CSS 至今
+ * **零处**使用它们，为一个按钮把 WebKitGTK 的版本下限抬上去不值当 —— 描边在三端 webview 都是无条件可用的。 */
+.toast-action{
+  display:block; margin-top:6px; padding:3px 10px;
+  font-size:11px; font-weight:600; font-family:inherit; line-height:1.5;
+  color:currentColor; background:transparent;
+  border:1px solid currentColor; border-radius:var(--r-sm);
+  cursor:pointer; opacity:0.85; transition:opacity .15s;
+}
+.toast-action:hover{ opacity:1; }
+.toast-action:focus-visible{ outline:2px solid currentColor; outline-offset:2px; }
+
+/* ── pending-bar docked 形态（P2：条迁到 AppShell `<main>` 底，贴 statusbar）─────────────────────
+ *
+ * 本段全部属**端口侧改动**，故按 index.css:417 的纪律落在覆盖层，而不是改 `components.css`
+ * （它与 `prototype.css` 同属禁区：改了会让原型对拍失效）。特指度均 ≥ 被覆盖者，且本文件位于
+ * `@import` 之后，两条保障任取其一即够。
+ *
+ * ① 展开态放开 overflow：基线 `.pending-bar{overflow:hidden}` 是折叠动画（height:0→36px）用的，
+ *    代价是把 `.pd-pop` 这个 absolute 子元素**整块裁掉** = 点明细没反应。内联时代靠
+ *    `#s-home > .pending-bar{overflow:visible}` 顺手绕过，搬出 `#s-home` 后那条不再命中。
+ *    条只在差集非空时挂载（`n===0 → return null`）⇒ 恒等于 `.show` 态，折叠语义不受影响。
+ * ② 高度改由 `--pending-bar-h` 派生 —— 与 `--statusbar-h` 同一手法，理由也同一条：下面 toast 的
+ *    bottom 要在条出现时抬高，**必须与条的真实高度同源**。写死 36 就是又造一笔死账（正是
+ *    `--statusbar-h` 那次修掉的坑）。`components.css:898` 的 `height:36px` 刻意不改，本层恒胜。
+ * ③ `.pd-pop` 封顶自滚：popover 向上弹（组件内联 `bottom:calc(100% + 6px)`），而 `.main` 是
+ *    `overflow:hidden` + `container:mainc` 的 layout containment ⇒ 裁切与层叠都收在 `.main` 内。
+ *    差集可以很长（订阅一次刷新几十个节点），不封顶就顶穿上沿被裁且无法滚动查看。
+ * ④ 条内 spinner 收到 13px：36px 的条里按钮是 `.btn.sm`，默认 15px 会把行高顶起来。
+ * ⑤ `.pd-eff`（P4 新增，原型无此元素）：staged 明细逐条的生效类别角标（FR-9）。`flex:none` +
+ *    `white-space:nowrap` —— 它是这一行里**不可被挤掉**的那部分（`.pd-l` 有 `flex:1` 会先让位），
+ *    否则长节点名会把「需重启生效」压没，而那正是这一行存在的理由。 */
+:root{ --pending-bar-h:36px; }
+.pending-bar.show{ height:var(--pending-bar-h); overflow:visible; }
+.pd-pop{ max-height:min(320px, 60vh); overflow-y:auto; }
+.pending-bar .pb-acts .spinner{ width:13px; height:13px; }
+.pd-row .pd-eff{ flex:none; white-space:nowrap; font-size:10.5px; color:hsl(var(--fg-faint)); }
+
+/* toast 让位：条 docked 后占据 statusbar 上方 36px，而 toast 的 bottom 只算了状态栏 ⇒ 二者**结构上
+ * 必然重叠**（48px 的 bottom vs 条占 32–68px，压 20px）。此前无此问题是因为条被 `#s-home` override
+ * 成页内卡片、根本不在这个位置。
+ *
+ * 修法与 `--statusbar-h` 同源：bottom 再加一项条高，**只在条真的展开时**加。用 `:has()` 而非在 JS 里
+ * 改内联样式，是因为 `style-invariants` 已钉死「`Toaster.tsx` 不得再设 bottom」（内联优先级会压掉整条推导链）。
+ *
+ * 降级行为如实记账：`:has()` 在旧 WebKitGTK（<2.34）不支持 ⇒ 该规则整条被丢弃 ⇒ 退回今天的重叠，
+ * **不会更坏**，也不会影响上面那条基线。Windows WebView2 / macOS WKWebView(12.3+) 均支持。 */
+body:has(.pending-bar.show) #toast-stack{
+  bottom:calc(var(--statusbar-h) + var(--pending-bar-h) + var(--toast-gap));
+}
+
+/* 断开态 stub 的尺寸（陈先生 2026-07-29「虚线框没对齐连接拓扑的自适应」+ 07-30「增加窗口高度时
+ * 虚线框没跟着变化」两轮真机反馈的合并落点）。
+ *
+ * 原型 `.stub`（prototype.css:1363）只有 padding、高度随内容 ⇒ 虚线框比图表区窄一大圈。
+ * 第一版抄了 `.sankey` 的三个尺寸项（flex/min/max）让两态占同一信封，但**连 `max-height:340px`
+ * 一起抄进来了**：卡片本身是 `flex:1 1 auto` 会随窗口长高，box 却卡在 340 ⇒ 窗口拉高后
+ * 虚线框下方留一片死白，看起来就是「不跟着变」。
+ *
+ * 现在**只保留下限、不设上限**：断开态那一格里没有图表要对齐，stub 就是这块画布本身，填满即可。
+ * 上限对 `.sankey` 有意义（viewBox 比例 + 布局算法按高度铺节点，过高会把连线拉得稀疏），
+ * 对一个「图标 + 两行字居中」的空态没有任何意义 —— 抄尺寸不等于抄约束。 */
+#sankey-stub{ flex:1 1 auto; min-height:180px; margin:0;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; }
+
+/* 连接表：长文本列定宽 + 截断 + 悬停浮窗（陈先生 2026-07-29 真机：「规则列宽度没有限制」）。
+ * 域名与进程此前已各自截断，规则/节点链/目标三列**无上限** —— 一条长规则条件或长机场节点名
+ * 就把整表横向撑开，其余列被推出视口。这里把四列统一到同一形态：
+ *   `<td class="c-*">` 定宽（width+max-width 成对：表格 auto 布局下只给 max-width 仍可能被内容撑破）
+ *   → 内层 `.conn-clip` 负责省略号（td 本身做截断在部分 WebKit 下与 border-collapse 打架）
+ *   → `data-tip` 给全文，浮窗延迟由 tooltip 引擎统一控制。
+ * 速率列同样定宽：`fmtRate` 的输出宽度随量级跳（"0 B/s" ↔ "10.24 MB/s"），不定宽则每帧抖动。 */
+.conn-clip{ display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; vertical-align:bottom; }
+.conn-table .c-rule{ width:170px; max-width:170px; }
+.conn-table .c-chain{ width:140px; max-width:140px; }
+.conn-table .c-dest{ width:160px; max-width:160px; }
+.conn-table .c-rate{ width:124px; max-width:124px; }
+
+/* 节点卡「再点一次确认切换」的**就地**视觉。整卡是触发面之一，而卡上那颗按钮的 `.confirming` 翻红
+ * 只覆盖了按钮那一小块——用户点的往往是卡面本身，没有卡级反馈就等于「点了没反应」。
+ * 用描边而非底色：底色会与 `.nd-card.cur`（当前出口）打架，而武装态与当前出口是互斥的两回事。
+ * 同时仍配一条 toast（NodesScreen），两个通道一起给：鼠标用户看描边，视线在别处的用户看 toast。 */
+.nd-card.confirming{ outline:2px solid hsl(var(--flow)); outline-offset:-2px; }
+
+/* 能力检测徽章合并成一行（陈先生 2026-07-30：腾一行给连接拓扑）。
+ * 原本 AI / 流媒体各占一行、各带一个 `.ul-lbl` 文字标签；现在两组同排、用一个 `·` 分隔。
+ * `.ub-grp` 自己也是 flex 且**可换行**：窄窗口下徽章仍要能折行，只是折行发生在组内而不是
+ * 把两组拆回两行 —— 否则窄窗口一到就退回改动前的高度，等于没改。
+ * `.ub-sep` 用 `flex:none` + 固定横向留白：它是两组之间的视觉界桩，不参与压缩，
+ * 被挤没了整行就读成一串来源不明的图标。 */
+.unlock-line .ub-grp{ display:flex; align-items:center; gap:9px; flex-wrap:wrap; min-width:0; }
+/* 分隔符是**画出来的短虚线**，不是字符（陈先生 2026-07-30 第三轮：「移除中间分割 ·，换成一个短虚线」）。
+ * 改画法顺带消掉一个跨引擎脆点：`·` 的盒宽取决于字形推进，本机 16px/700 量到 4.56px、
+ * 把 stack 里能取到的 sans 全试一遍散布 3.94–6.08px ⇒ 换 WebKit/WebView2 最坏 +1.52px 行宽。
+ * 画的线宽是 px 常量，行宽预算里这一项从此**恒定**。
+ * `height:0` + `border-top`：让它在 flex 行里只占横向宽度、不参与撑高（撑高会顶到徽章行高度，
+ * 而那正是「左列 = 119 + size」这条线性关系的输入）。 */
+/* **竖**虚线，不是横的（陈先生 2026-07-31 真机）：`width:0` + `border-left`。
+ * 高度 14px 沿用横线时的长度（他认可的是「短虚线」这个尺度，只是方向错了），且必须
+ * **远小于徽章 36px** —— 一旦 ≥36 它就成了行高的驱动者，上面「左列 = 119 + size」那条
+ * 线性关系的输入就变了。
+ * margin 3px → 10px 不是顺手调的：竖线的盒宽是 0 + 1px 边框 = 1px（横线时它自己占 14px），
+ * 只转方向不动 margin 的话两组之间只剩 7px，而**组内图标间距是 9px** —— 分隔符两侧比组内
+ * 还窄，读起来就不是分隔而是挤在一起。取 10px 后总横向足迹 1+20=21px，与改前的 14+6=20px
+ * 只差 1px，行宽不动。 */
+.unlock-line .ub-sep{ flex:none; width:0; height:14px; padding:0; margin:0 10px;
+  border-left:1px dashed hsl(var(--fg-faint)); align-self:center; user-select:none; }
+
+/* 这一档**只压间距、不再压徽章尺寸**（陈先生 2026-07-30 真机：最小窗口下检测图标偏小，卡片还有高度余量）。
+ * 原先这里有一条 `.unlock-line .ub-ico{ width/height:20px }`，前提是「925 最小窗口下 `.main` 只有 749px，
+ * 26px 的徽章放不下要折成两行」。该前提在当前代码上不成立 —— 上线徽章只有 7 枚、且每枚都取到内联 SVG
+ * （无文字回退），逐字量 dist 产物：925×740 下这一行可用 443.33px，26px 档只用掉 334.56px，
+ * 单行还富余 108.77px。也就是说那条规则一行都没帮上，纯粹把图标白缩了 30%（20 vs 26）——正是真机看到的「偏小」。
+ * 放大基本不吃卡片高度：925 下卡片高度由**右列**（接管方式+分流策略，161.5px）钉死，左列（出口区 86.0 +
+ * 分隔线 1.0 + 徽章行 + 两道 16px gap）要涨到徽章 **42.5px** 才追平右列（本行原写 40px，是改动前的
+ * 估算，2026-07-30 实测追平点是 42.5px —— 40px 时左列 159 vs 右列 161.5，仍差 2.5px）。
+ * 实测常态（已配节点）下 20/26/30/34/40/41 各档的卡片 195.5px、拓扑 383.06px 逐像素相同，
+ * 拓扑一个像素都没被挤回去。
+ * 唯一例外是**空态**（一个节点都没配，左列换成两颗引导按钮 119.8px，改由左列定高）：卡片 206.75→212.75，
+ * 多出的 6px 由拓扑出（`#sankey-stub` 下限 180px，够不着）。
+ *（原本这里还写了空态拓扑的绝对值，已删：那是量自某个特定窗口**高度**的值，拓扑高随窗高走，
+ * 只有差值可比，绝对值放在这里只会误导。）
+ * ⚠️ 本段当初取 26px 为上限的理由「宽窗口 = 原型基线」**已被推翻**，现行值是 32px，
+ * 判据与实测表见下方「能力检测徽章 26 → 32px」那一整段。本段只保留间距压缩。
+ * 间距压缩（`.ub-grp` gap / `.ub-sep` 留白）保留：那一档本来就更挤，与折不折行无关。
+ * 原型 720 那档（禁区文件，20px）保持不动 —— 那是 `.main`≤720 的真·极窄兜底，最小窗口够不到。 */
+@container mainc (max-width:820px){
+  .unlock-line .ub-grp{ gap:7px; }
+  /* 竖线后同步压：这一档组内 gap 压到 7px，分隔符两侧跟着压到 7px，维持「≥ 组内间距」这条关系。 */
+  .unlock-line .ub-sep{ margin:0 7px; }
+}
+
+/* ══════════ 能力检测徽章 26 → 36px：**有意偏离原型基线**，不是漂移，别改回去 ══════════
+ * 依据是陈先生 2026-07-30 真机裁定，**三轮**：
+ *   第一轮（原话「现在首页能力检测是单行，所以图标大小应该适当再大一些，避免图标跟卡片下方的
+ *   高度与右侧栏显得差距较大」）⇒ 按下面的实测取到量化最优 41px；
+ *   第二轮（原话「首页图标可以缩减到 32 的大小」）⇒ 看过真机后按观感回调到 32px；
+ *   第三轮（原话「大小从 32 调整到 36」）⇒ **现行值 36px**。
+ * 所以下面那套「为什么是 41」的推导仍然有效、也仍然是本段数字的来源，但**最终值由观感裁定**：
+ * 41 是「左右列差最小且单行」的解，32/36 是陈先生看过真机之后要的密度。两者不冲突 ——
+ * 量化给出可行域，观感在可行域内选点。**别拿下面的 41.53 上限把 36 "修正"回 41。**
+ *
+ * 36 的账（由下面实测出的线性关系**推导**，非另行测量 —— 关系式本身是逐档量出来的）。
+ * 分隔符改画线后行宽公式的常数项变了：原式那一项 `8.56` 是 `·` 的盒宽（字形推进 4.56 +
+ * 窄档 padding `0 2px`），画线是 `width:14 + margin 0 2px` = **18**（925×740 下 `.main`=777 ≤ 820，
+ * 命中窄档，故取 2px 那一档），⇒ **常数项 152.56 → 162.00**：
+ *   左列 = 119 + size ⇒ 155.0，比右列 161.5 **矮 6.5px**（26px 档矮 16.5，32px 档矮 10.5，41px 档矮 1.5）。
+ *     即：把 16.5 消掉了 10.0。这是观感与密度的取舍，不是算错。
+ *   单行余量 = 443.33 − (7×36 + 162.00) = **29.33px**（32px 档 57.33）。
+ *   🔴 **8 枚徽章时单行上限掉到 32px（36 > 32）** ⇒ **36px 挺不住再上线一个服务**，32px 刚好挺得住。
+ *     `ENABLED_SERVICE_IDS` 加人时**必须**回来重算：8 枚行宽 = 8×size + 182.00 ≤ 443.33 ⇒ size ≤ 32.67。
+ *     届时要么回落 32，要么接受折行（折行代价见下方「代价」段：卡片 195.5→246、拓扑 −50px）。
+ *   空态（窄窗口）代价按同一线性关系：卡片 212.75→222.75、拓扑 365.81→355.81（下限 180px 够不着）。
+ *   常态卡片/拓扑高仍**逐像素不变**（由右列钉死，只要 size < 42.5 就成立）。
+ *
+ * ⚠️ 分隔符换成画线后，41px 那档**已不再单行**：7×41 + 162.00 = 449.00 > 443.33。
+ *   下方「实测正是这样：41px 用掉 439.56」是**换画线之前**的数（画线比 `·` 宽 18 − 8.56 = +9.44）。
+ *   保留那段是因为可行域的推导方法仍然有效，但**上界已从 41.53 收到 40.19**（(443.33−162)/7）。
+ * ⚠️ 本段所有 36 档数字都是**按线性关系推导的，没有另测 dist 产物**（不同于 26/41 两档 —— 那两档是
+ *   逐字量的）。余量 29.33px 不算宽裕，真机若看到折行，第一嫌疑就是这里某项的实际值与推导不符。
+ *
+ * 本段取代上一段那句「上限就取 26px」。该段的**原则**仍然成立且本段照办：「窄窗口的图标不该
+ * 比宽窗口大」—— 本段不是在窄窗口单独放大，而是**两档一起**抬到 32px。
+ * 上一段被重测推翻的两处已**就地改掉**（追平点 40 → 42.5px；空态拓扑的绝对值删除，那是量自某个
+ * 特定窗口高度的值，拓扑高随窗高走、只有差值可比，而两轮的差值都是 −6px、完全一致），
+ * 所以上下两段现在不冲突，不要再照旧数字去推翻本段。本段所有数字统一在 925×740 / 1400×900 下量。
+ *
+ * 为什么左列会矮：卡片两列由 `.cc-cols` 的 grid 拉平（`align-items:stretch`），所以两列的**盒**高恒等，
+ * 目测到的「差距」是两列**内容**高之差 —— 量盒高一辈子看不见它，得逐个子项加起来：
+ *   左列 = 出口区 86.0 + 分隔线 1.0 + 徽章行 (= 徽章边长) + 两道 16px gap = 119 + size
+ *   右列 = 接管方式 72.75 + 分流策略 72.75 + 一道 16px gap = 161.5（与窗宽无关，两档同值）
+ * ⇒ 26px 档左列 145.0，比右列**矮 16.5px**；`size = 42.5` 时两列内容高逐像素相等。
+ *
+ * 以下是 41 那一轮的完整推导，保留是因为**可行域的上界仍然由它给出**（现行 32 就在这个域里）。
+ * 那为什么当时不取 42.5 而取 41：`size` 的上限由**最小窗口的单行**卡住，不是由 42.5 卡住。
+ * 925×740（`minWidth/minHeight`，tauri.conf.json:18-21）下 `.main` = 925−148（`.side` 定宽）= 777，
+ * 徽章行可用 443.33px，行宽 = 7×(size+13) + 5×7 + 8.56 + 2×9 = 7×size + 152.56
+ * （13 = 状态点 7 + `.ub` gap 6；8.56 = `·` 的盒宽）⇒ 单行要求 size ≤ 41.53。
+ * 实测正是这样：41px 用掉 439.56（余 3.77px，单行），42px 用掉 446.56 → 折成两行，卡片 195.5→246、
+ * 拓扑 383.06→332.56，等于把上一轮省下来的那行又还回去。当时取整数上限 41px：左右列只差 1.5px，
+ * 再大一档就得拿「拓扑少 50px」去换那 1.5px，不划算。
+ * 换引擎（WebKit / WebView2）的余量核算：**这条已由「分隔符改画线」根治** —— 行宽里原先唯一的
+ * 非 px 项是 `·` 的字形推进（本机 16px/700 量到 4.56px，stack 里各 sans 散布 3.94–6.08px ⇒ 最坏
+ * +1.52px），现在换成 `width:14px` 的画线，**行宽各项全是 px 常量，跨引擎恒定**。
+ * （余量对**徽章枚数**仍然敏感：7 → 8 枚时单行上限掉到 33px，而现行 36px 已经越过它 —— 见段首红字。）
+ *
+ * 代价（41 那轮逐字量 925×740 与 1400×900 两档 dist 产物；32 的对应值按线性关系推导，见段首）：
+ *   常态（已配节点）：卡片高由**右列**钉死 ⇒ 只要 size < 42.5，卡片 195.5px、拓扑 383.06/543.06px
+ *     **逐像素不变**，26/32/41 都落在这个区间里；
+ *   空态（零节点，左列换成两颗引导按钮 119.75px、改由左列定高）：只在窄窗口有代价 ——
+ *     925 下 26→41 是卡片 212.75→227.75、拓扑 365.81→350.81；36 档为 222.75 / 355.81
+ *     （`#sankey-stub` 下限 180px，都够不着）；
+ *     1400 下两颗按钮并排只占 55.25px，左列仍矮于右列 ⇒ 卡片 195.5、拓扑 543.06，一样不变。
+ * padding 保持 3px 不跟着放大：白底内边距不动，图形净宽从 18px（26 档）涨到 30px（36 档，+67%），
+ * 「图标显小」问的就是这块净宽，把 padding 一起放大等于把涨幅还掉一半。
+ * border-radius 按原型自己的比例走（20→5、26→6，约 size/4.4）⇒ 36 取 8px，否则方块会显得偏方。
+ *
+ * 下面那条 `≤720` 不是新设计，是**把被自己盖掉的原型值还回去**：原型的极窄兜底
+ * （prototype.css:543 / components.css:291，禁区，20px）选择器只有 `.ub-ico`(0,1,0)，
+ * 会被上面这条 `.unlock-line .ub-ico`(0,2,0) 无条件盖掉 —— 不复述一遍，`.main`≤720 就会拿到 32px。
+ * 用 `max-width:720px` 复述而不是给上面那条加 `min-width` 门：后者在 (720,721) 留一条谁都不命中的缝。
+ * 该档在当前 `minWidth:925`（`.main`≥777）下走不到，留着是为了 minWidth 一旦下调它还在。 */
+.unlock-line .ub-ico{ width:36px; height:36px; border-radius:8px; }
+@container mainc (max-width:720px){
+  .unlock-line .ub-ico{ width:20px; height:20px; border-radius:5px; }
+}
+/* ══════════ 能力检测徽章尺寸段 END ══════════ */
+
+/* 应用分流「分类筛选」下拉的最小宽度（与上方 `.node-toolbar .nt-proto/.nh-sort` 同因同治，见该处注释）：
+ * Csel 触发器宽度随**当前选中值**的文字自适应，中文下「全部」↔「AI」逐字宽差明显，切分类时控件宽度
+ * 跳动、同排搜索框跟着抖。原生 <select> 是按最宽选项定宽的，这里用 min-width 复现那份稳定宽。
+ * 取 96px 而非 node-toolbar 的 116px：本处最长标签只有两个汉字（视频/社交/游戏），116 会白留一截并
+ * 挤压 flex:1 的搜索框；内容真超出时触发器仍按内容自然变宽（min-width 只是下限，如 en 的 "Social"）。
+ * 落本覆盖层而非 prototype.css：`.ap-cat` 是端口新增的类（原型该位置是平铺 chips，无对应元素）。 */
+.ap-toolbar .ap-cat{ min-width:96px; }
+/* ══════════ 资源库行：状态标签紧跟规则集名称 ══════════
+ * 真机反馈「下载状态应该在规则集名称后面」的落点。只在 DOM 上把 `.cat-badge` 挪到 `.cat-nm` 之后
+ * 是不够的 —— 生效的行布局是 prototype.css:1076 的
+ * `grid-template-columns:auto minmax(0,1fr) auto auto`（`components.css:573` 那份 flex 版本被
+ * 后 @import 的 prototype.css 整条盖掉，读代码时容易误判成 flex），名称列是 1fr、会把整行余量吃满
+ * ⇒ 标签虽紧邻名称，视觉上仍被顶到行尾，与「贴着名字」正好相反。
+ *
+ * 改法：余量从名称列挪到**最后一列**（名称改 `minmax(0,auto)` 按内容宽、超长仍靠 min=0 触发既有
+ * 省略号），分类 pill 落末列并右对齐 ⇒ [勾选][名称][标签]……[分类]。
+ *
+ * 两个 `grid-column` 显式钉列不是装饰：标签是**条件渲染**的（未具备的条目没有它），靠自动流放置时
+ * 一旦标签缺席，分类 pill 会前移一列、右对齐当场失效。钉死列号后两种形态同一布局。
+ *
+ * 写这里而非改 components.css/prototype.css：那两者是原型逐字镜像的只读区（判据同本文件 :396 段），
+ * 端口侧改动一律走本覆盖层；本段位于全部 @import 之后，同特异性后者胜。 */
+.cat-item{ grid-template-columns:auto minmax(0,auto) auto minmax(0,1fr); }
+.cat-item > .cat-badge{ grid-column:3; }
+.cat-item > .cat-meta{ grid-column:4; justify-self:end; }
+
+/* csel 菜单里的勾（`.csel-ck`）必须留在自己那一行的行内流里 —— 真机症状「规则条件类型选了什么都行，
+ * 触发器文字对，但重开菜单勾恒停在『域名正则』」的根因，且它根本不在 React 层。
+ * 泄漏源是 prototype.css:340 `.sel svg{ position:absolute; right:9px; top:50%; transform:translateY(-50%) }`：
+ * 那条是给原生 `<select>` 外壳的 chevron 写的**后代**选择器。React 版 Csel 把菜单渲染在 `.sel.csel` 子树内
+ * （`.sel.csel > .csel-menu > .csel-opt > .csel-ck`），于是这条规则连菜单里每一项的勾一起命中。
+ * components.css:812 已经把自己那份收窄成 `.sel > svg`，但**子选择器管不到孙代** —— `.csel-ck` 压根不匹配它，
+ * prototype 那条（同为 (0,1,1)）因此是唯一命中者，无人覆盖。
+ * 后果：全部勾被绝对定位到包含块 `.csel-menu`（inline `position:fixed`）的 `top:50%`，重叠在菜单垂直中线上，
+ * 只有选中项那个 `opacity:1` ⇒ 唯一可见的勾恒画在**中线所在的那一行**，而不是选中行。规则条件类型菜单
+ * （15 项 5 组、`max-height:300px` 未滚动时）中线 149px 正落在第 4 项「域名正则」的 [131.5,166.3] 区间里，
+ * 与用户描述逐字吻合（Playwright 量得 `ck.position=absolute; ck.top=149px`，全 15 项同坐标）。
+ * prototype.css 是原型逐字镜像（禁改），故在此覆盖层复位；(0,2,0) > (0,1,1)，且本段在 `@import` 之后。
+ * transform 必须一并复位：position 回 static 后 `translateY(-50%)` 仍会把勾上移半个身位。 */
+.csel-opt .csel-ck{ position:static; transform:none; }
+
+/* 拓扑 tooltip（`.sk-tip`）的位置由 JS 独占，`transform` 必须在这里复位 —— 与上一段同一类失效：
+ * 「在 components.css 里对原型做的修正，被后 @import 的 prototype.css 原样盖回」。
+ *
+ * components.css:233 那份 `.sk-tip` **刻意不写** transform，注释（:232）与 `ConnectionTopology.tsx:9,360`
+ * 都写明理由：原型的 `translate(-50%,-8px)` 无边界感知，issue #303 题2② 实证会溢出卡片，故位置改由
+ * `clampToWrap()` 全权算。但 prototype.css:515 的同选择器 `.sk-tip` 仍带着那条 transform，且后 @import
+ * ⇒ 同特异性后者胜（构建产物里 components 那份 #26、prototype 那份 #507），「不写」根本没能取消它。
+ *
+ * 为什么这会**恰好抵消**掉 JS 那套边界数学：`clampToWrap`（`lib/overlay-position.ts:36`）返回的是
+ * tooltip **左上角**在 wrap 内的坐标，且已夹进 `[8, wrap.w - tipW - 8]`（`clampAxis` 的 8px 是
+ * `OVERLAY_EDGE_PAD`）。inline style 只写 left/top，随后 CSS 的 `translate(-50%,-8px)` 在这个**已经算准**
+ * 的坐标上再平移半个身位 ⇒ 视觉左缘 = `clamped_left − tipW/2`，clamp 保下的 8px 内边距被直接吃穿。
+ * 换句话说：算得越准，越是稳定地偏出去 —— 贴左缘时必然溢出，而那正是 clamp 存在的唯一理由。
+ *
+ * 实测（Playwright，viewport 1100×780，`.sankey-wrap` 左缘 x=189）：一条 158px 宽的域名 tooltip 放在
+ * clamp 下限 `left:8` 上，视觉左缘落在 x=118 ⇒ **溢出卡片外侧 71px**；同一元素把 transform 置 none 后
+ * 落在 x=197，正好是 wrap 左缘 + 8px 内边距。短到 26px 的 tooltip 也仍溢出 5px —— 溢出量随宽度线性放大，
+ * 不存在「窄一点就没事」的安全区。`.card` 没有 `overflow:hidden`（components.css:42），溢出部分直接压到
+ * 卡片外的侧栏一侧，不会被裁掉。
+ *
+ * 选择器取两个类（(0,2,0) > `.sk-tip` 的 (0,1,0)）而非 `!important`：`.sk-tip` 恒挂在 `.sankey-wrap` 内
+ * （`ConnectionTopology.tsx:240,362`），压过泄漏源即可，留出后续真要做位移动画时的余地。
+ * 只复位 transform、不碰 position/left/top：那三项本就是端口与原型一致的部分，JS 正是靠它们定位。 */
+.sankey-wrap .sk-tip{ transform:none; }
+/* ══════════ csel 可折叠分组组头（规则弹窗「目标出站」按订阅分组 + 默认折叠）══════════
+ * 端口新增的类（`.csel-grp-t/-chev/-c`）——原型的 `.csel-grp` 只是静态分隔标签，没有可折叠形态；
+ * 可折叠那套视觉在原型里是 `.mini-menu/.node-menu` 的 `.ns-grp`，而那组规则被前缀锁死、csel 命不中，
+ * 故在此覆盖层另接同款视觉（同 `.fld-fold-c` 的先例，不改禁区文件、也不新造组件族）。
+ *
+ * `position:static; transform:none` 不是装饰，是**必需的复位**：prototype.css:340
+ * `.sel svg{ position:absolute; right:9px; top:50% ... }` 是给原生 select 外壳 chevron 写的后代选择器，
+ * 会连带命中 `.sel.csel` 子树里每一个 svg —— 组头箭头会被绝对定位到菜单中线上（与 `.csel-ck` 那个
+ * 已修复的真机缺陷同源，见本文件上方 `.csel-opt .csel-ck{position:static}` 那段的根因说明；
+ * 中间还隔着 `.sk-tip` 一段，那是同一类失效的第三例）。
+ * `.csel-menu .csel-grp-chev` (0,2,0) > (0,1,1)，靠特异性取胜，
+ * 不依赖源序（本段本就在全部样式导入之后，两条保障任取其一即够）。
+ *
+ * `text-transform:none` 同理是复位：`.csel-grp` 基线带 uppercase，那是给「域名/进程」这类固定类目名
+ * 写的；这里的组名是**用户数据**（订阅名），大写化等于改写用户自己起的名字。 */
+.csel-menu .csel-grp-t{ display:flex; align-items:center; gap:8px; width:100%; text-align:left;
+  padding:7px 10px; border-radius:7px; font-size:11.5px; font-weight:600; letter-spacing:normal;
+  text-transform:none; color:hsl(var(--fg-dim)); border:0; background:none; cursor:pointer; }
+.csel-menu .csel-grp-t:hover{ background:hsl(var(--surface-2)); color:hsl(var(--fg)); }
+.csel-menu .csel-grp-chev{ position:static; transform:none; width:13px; height:13px; flex:none;
+  transition:transform .15s; }
+.csel-menu .csel-grp-t.open .csel-grp-chev{ transform:rotate(90deg); }
+.csel-menu .csel-grp-c{ margin-left:auto; font-size:10px; color:hsl(var(--fg-faint));
+  font-variant-numeric:tabular-nums; }
+
+/* ── 出口选单「阻断」项：danger 变体在 .node-menu 下的补全 + 禁用态 ───────────────────────────
+ *
+ * 为什么必须写在这里而不是 components.css：`prototype.css` 是**最后一个 @import**，在它之后
+ * 才轮到本文件。components.css 里的同名规则会被 prototype.css 的原版静默盖回（本文件上方
+ * `.csel-opt .csel-ck` / `.sk-tip` / `.csel-grp-chev` 三段是同一类失效的前三例）。
+ *
+ * ① danger hover 补全：`prototype.css:1416` 只写了 `.mini-menu .mi.danger:hover`，**没有
+ *    `.node-menu .mi.danger`**。首页出口选单的容器是 `.node-menu`，所以阻断项若不在此补一条，
+ *    它的危险色 hover 压根不存在（与应用分流那个 `.mini-menu` 里的阻断项观感分叉）。
+ * ② 禁用态：直连模式下阻断不生效，该项 disabled。原型没有 `.mi` 的禁用语汇，这里给最小一套
+ *    （压低不透明度 + 禁用指针 + 抑制 hover 反馈）。`:disabled` 与 `.disabled` 同时兜，前者是
+ *    真实 button 态、后者供快照/harness 断言用。 */
+.node-menu .mi.danger:hover{ background:hsl(var(--err-weak)); color:hsl(var(--err)); }
+.node-menu .mi.danger:disabled,
+.node-menu .mi.danger.disabled{ opacity:.45; cursor:not-allowed; }
+.node-menu .mi.danger:disabled:hover,
+.node-menu .mi.danger.disabled:hover{ background:none; color:inherit; }
+
+/* 托盘行的禁用态 + 行内提示槽（浮层窗也 @import 本文件，见 tray/main.tsx）。
+ *
+ * `.tray-hint` 复刻 `.tray-lat`（components.css:1052）的几何：`margin-left:auto` 右推 + 11px + faint。
+ * 不直接复用 `.tray-lat` 是因为那个类名属于延迟语义，挂在「阻断不生效」上会误导后来者。
+ * 托盘没有 tooltip 引擎（`initTooltips` 只在主窗），禁用原因只能行内可见，故需要这个槽。 */
+.tray-i .tray-hint{ margin-left:auto; font-size:11px; color:hsl(var(--fg-faint)); flex:none; }
+.tray-i:disabled,
+.tray-i.disabled{ opacity:.45; cursor:not-allowed; }
+.tray-i:disabled:hover,
+.tray-i.disabled:hover{ background:none; color:inherit; }
+
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+ * 实体色按钮的禁用态：必须**褪成中性面**，不能只压不透明度
+ * ══════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * 缺陷（2026-07-30 mac 真机）：`.btn:disabled` 全仓只有一句 `opacity:.5`（components.css:54 与
+ * prototype.css:300 两份逐字重复），**不动背景色**。于是 `.btn.flow` 禁用后是「50% 不透明的品牌蓝」
+ * —— 仍然是一块彩色实底，读起来像「还亮着 / 还能点」。真机把它描述成「上一次亮起的残留」，正是
+ * 这个的直接后果。`.btn.danger`（实体红）同理。全仓 14 处 `.btn.flow` + `disabled` 落点全受益。
+ *
+ * 为什么只挑 `.flow` / `.danger` 两个变体，不动 `.btn` 裸态与 `.btn.ghost`：后两者本就**没有实底**
+ * （裸态是近容器色的 `--surface`，ghost 全透明），`opacity:.5` 已足够把它们读成禁用；再给它们换底色
+ * 只会造出「禁用比可用还显眼」的新问题。缺陷的射程就是「实体品牌色」这一类，按类收口而非逐处调。
+ *
+ * 取值（实测对比度，按 WCAG 相对亮度算，浅/深两档同一条规则）：底 `--surface-2` + 字 `--fg-faint`
+ *   ⇒ 浅色 **4.52**、深色 **3.60**（禁用控件本就豁免 1.4.3，这里只求「读得出、但明显不活跃」）。
+ *   改前对照：浅色 **2.37**、深色 **3.16**（白字 / 近黑字压在 50% 透明的实体蓝上）⇒ 两档都是净改善。
+ *   `opacity` 必须显式回 `1`：留着 `.5` 会把整块连字带底一起压向容器色，实测标签只剩 1.84~2.64，
+ *   **比改前更糟** —— 「换中性底」与「压不透明度」是两套禁用语汇，叠加会互相抵消，只能二选一。
+ *   不动 `font-weight`：字重不影响「是否可用」的判读，少改一个维度。
+ *
+ * 为什么写成 `:root` 开头这种看着多余的形态 —— **特异性刚好卡在这里**：浅色档的
+ * `:root[data-theme="light"] .btn.flow`（prototype.css:1290）与其 media 腿
+ * `:root:not([data-theme="dark"]) .btn.flow`（:1285）都是 **(0,4,0)**，而 `.btn.flow:disabled`
+ * 只有 (0,3,0) ⇒ 不加 `:root` 则**浅色下压根赢不了**，蓝底照旧（这条是实测出来的，不是推的）。
+ * 加上 `:root` 后同为 (0,4,0)，再靠「index.css 排在全部 @import 之后」的源序取胜。
+ *
+ * 一条规则通吃两档、不写 `[data-theme]` 分支：取值全走 token，而 token 自身已按主题分档 ⇒ 天然
+ * 两档同步，也就不该触发「主题条件规则必须成对」那道门（style-invariants.test.ts ⑤）。
+ *
+ * **不覆盖 `.btn.confirming`**（components.css:958 的实体红，带 `!important`）：那是「再点一次确认」
+ * 的**瞬时武装态**，语义上正等着用户点，本就不该被读成禁用；且要压过它得同样上 `!important` 打
+ * 军备竞赛。若「武装 + 禁用」真在真机同时出现，按独立缺陷处理，别在这里顺手加 `!important`。 */
+:root .btn.flow:disabled,
+:root .btn.danger:disabled{
+  background:hsl(var(--surface-2)); border-color:hsl(var(--line)); color:hsl(var(--fg-faint)); opacity:1; }
+
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+ * 深色 `.btn.danger` 换墨色：白字 → `--surface`（实底不动，只换墨）
+ * ══════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * 缺陷：`.btn.danger{ background:hsl(var(--err)); color:#fff; font-size:12.5px; font-weight:660 }`
+ * （components.css:395，禁区）。深色 `--err` 是 356 74% 66% 的**亮**红 ⇒ 白字只有 **3.16**。
+ *
+ * **门槛是 4.5 不是 3.0**：12.5px/660 离 AA 的大字例外（≥18.66px bold ＝ 14pt bold，或 ≥24px）
+ * 差得远，按正文判。浅色档同一条规则是白字压 `--err` 44%（本文件上方已下调）＝ **6.12**，本就达标
+ * ⇒ 只需要动深色一档，故用「media 腿 + 显式腿」成对写法把射程钉死在深色（`:not([data-theme=
+ * 'light'])` 保证显式切浅色的用户拿不到这条）。
+ *
+ * 为什么换墨而不是调 `--err` 或改成弱底：
+ *  · 调深色 `--err`：它同时是「亮红文字落暗面」（`.log-ERROR` / `.pill.err` / `.nd-lat.dead` …
+ *    几十处）与「白字落亮红实底」两个**相反方向**的承载者，调暗救按钮就把那几十处文字压下去；
+ *  · 改成 `--err-weak` 底 + err 文字（`.toast.err` 深色那套，prototype.css:602）：toast 是**通知**，
+ *    退回弱底不损失什么；`.btn.danger` 是**破坏性动作按钮**，弱底后与 `.btn.ghost` 同重量，
+ *    「这一步不可逆」的视觉分量没了 —— 那是拿语义换达标；
+ *  · 换墨保住实底与分量，且**本仓已有同一套词汇**：`.btn.flow{ color:#00141d }`（亮蓝实底配近黑墨）、
+ *    `.hc-step.done .st-n`、`.core-ver-banner .cvb-ic{ color:hsl(var(--surface)) }` 都是这么写的。
+ * 取 `--surface` 而非裸近黑：深色下它是 219 32% 10.5% ⇒ 落亮红上 **5.63**，且不是裸色值
+ *    （本文件那道「覆盖层不得出现裸色值」的门盯着）。hover 的 `filter:brightness(1.08)`
+ *    （components.css:396）对整块生效，实底被提亮、近黑墨几乎不动 ⇒ 复合后 **6.40**，只增不减。
+ *
+ * ⚠️ 选择器必须带 `:not(:disabled)`：上面那条 `:root .btn.danger:disabled` 是 (0,4,0)，本条若写成
+ * `:root[data-theme='dark'] .btn.danger` 也是 (0,4,0) 且源序在后 ⇒ 会把禁用态的 `--fg-faint` 墨
+ * 顶掉，换成近黑墨压 `--surface-2` 的禁用底（深色下二者对比 ~1.1，**字直接消失**）。
+ * 加 `:not(:disabled)` 后本条 (0,5,0) 且天然不匹配禁用态，与源序无关 —— 别为了「看着简洁」删掉它。
+ *
+ * **不覆盖 `.btn.confirming` / `.nd-a.confirming`**（components.css:958，`color:#fff!important`
+ * 压实体 `--err`）：深色下它是同样的 **3.16**，同一个根因。不在这里顺手改的判据沿用本文件上方
+ * `.btn.flow:disabled` 段记下的那条 —— 要压过 `!important` 只能同上 `!important`，而那是「武装态」
+ * 这一独立语义的规则，按独立缺陷另开一轮；本段射程只到常态 `.btn.danger`。已在交接里点名。 */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .btn.danger:not(:disabled) { color: hsl(var(--surface)); }
+}
+:root[data-theme='dark'] .btn.danger:not(:disabled) { color: hsl(var(--surface)); }
+
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+ * 规则弹窗的条件行：类型 + 检索同排，候选**勾选区**自带高度上限
+ * ══════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * 端口新增的类（原型的条件行是「类型下拉 + 一个 textarea」竖着堆，ruleSet 那条另加一个裸下拉）。
+ * 落本覆盖层而非 components.css：那两个文件是原型逐字镜像的只读区（判据同本文件 :396 段），
+ * 且 `prototype.css` 是**最后一个 @import** —— 在 components.css 里写同特异性的规则会被静默压掉。
+ *
+ * ── 为什么检索框在**第一行**、分类切换被推到第二行 ────────────────────────────────────────────
+ * 空间预算是死的（陈先生 2026-07-30 裁定「不要加宽」）：窗口最小宽 925px、`.dlg` 恒 460px、
+ * `.dlg-body` 内容宽 422px、减 gap 8 与 `.cond-del` 30 ⇒ `.cond-fields` 只有 **384px**，
+ * 类型 Csel 定宽 170px ⇒ 同排只剩 **206px**。三件套挤一排在中文下勉强、在 en/ru/fa 下必然换行，
+ * 而**换行时先掉下去的会是检索框** —— 那恰好是陈先生点名要放到右侧的那一个。
+ * 故把分类切换显式推成整行（`flex:1 0 100%`）：检索框在任何语种下都稳定留在类型右边，
+ * 分类切换换来一整行、按钮等宽反而更好点。
+ *
+ * ── 勾选区必须有自己的滚动 ────────────────────────────────────────────────────────────────────
+ * `.dlg-body` 是这个弹窗**唯一**的滚动容器，最坏情形（15 个条件）今天就已经把它撑到 ~2000px。
+ * 勾选区若按候选数撑高，ruleSet 的 2000+ 条会再加几十屏。max-height + 自滚 ⇒ 它的高度与候选数
+ * 无关。132px ≈ 3.5 行 chip（露半行即在告诉用户「还能滚」），介于既有的 `.tag-pick` 110px 与
+ * `.aad-ico-grid` 150px 之间。
+ *
+ * 刻意**不给背景**：chip 的浅色分离度实测结论（本文件「C) chip 族的浅色实测」段）是拿
+ * `.tagchip.on` 的 flow-weak 与**同排未选 chip 的 surface** 比出来的；给容器铺一层底会改变
+ * 那个参照系，等于让一条已实测的结论失效。只给边框划出滚动区边界。
+ *
+ * ── 有勾选区时文本区收矮 ──────────────────────────────────────────────────────────────────────
+ * 原型的 86px 是按「textarea 是唯一入口」定的。有了勾选区它退居为手填补充腿（`allowFreeInput`
+ * 的三条理由见 domain/rules.ts），54px ≈ 2 行足够，省下的高度还给上面那个滚动区。 */
+.cond-head{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.cond-head > .sel{ flex:none; }
+.cond-head > .search-box{ flex:1 1 120px; min-width:120px; }
+/* 第二行 = 分类切换（可缺席）+ `已选 N` chip。分类切换原先自己 `flex:1 0 100%` 独占一行；
+   现在整行由 `.cond-grp-row` 承担，seg2 退回行内 `flex:1`、chip 定宽靠右。
+   进程池没有分类切换 ⇒ 这一行只剩 chip，靠左（`justify-content` 不动，flex 起点即左）。 */
+.cond-head > .cond-grp-row{ flex:1 0 100%; display:flex; align-items:center; gap:8px; }
+.cond-grp-row > .cond-grp{ flex:1; display:flex; min-width:0; }
+.cond-grp-row > .cond-grp button{ flex:1; padding:6px 9px; }
+/* chip 与 seg2 等高（seg2 = 容器 3px + 按钮 6px 竖向 padding）。字号回到 `.ap-chip` 基线 12px，
+   不跟 `.tagchip` 的 11px/mono —— 它是筛选器，不是候选项，形态上要与勾选区里的 chip 分得开。 */
+.cond-sel-chip{ flex:none; padding:6px 11px; }
+.rv-pick{ display:flex; flex-wrap:wrap; align-content:flex-start; gap:6px;
+  max-height:132px; overflow-y:auto; padding:7px 8px;
+  border:1px solid hsl(var(--line)); border-radius:var(--r-sm); }
+.rv-pick .rv-note{ width:100%; padding:2px 1px; }
+/* 「已选但候选池里没有」的项：虚线 + warn 边。它必然是选中态（`.on` 的 flow-weak 底 + flow-hi 字），
+   故只动描边 —— 底色一动就会改掉「chip 族浅色分离度」那条实测结论的参照系（本文件 C 段，有门守）。
+   `.on` 腿必须显式再写一次：`.tagchip.on` 也设 border-color，特异性同为两个类，不写就被它压掉。 */
+.rv-pick .tagchip.off-pool,
+.rv-pick .tagchip.off-pool.on{ border-style:dashed; border-color:hsl(var(--warn)/0.6); }
+.cond-fields textarea.cond-val-input.compact{ min-height:54px; }
+/* 手填腿折叠框：`.fld-fold` 的 14px 上边距是给 `.fld` 之间用的，`.cond-fields` 自己有 7px gap；
+   内边距也按 384px 这一列收一档（原型的 11/13px 是按 460px 整幅弹窗定的）。 */
+.cond-fields > .fld-fold{ margin-top:0; }
+.cond-fields > .fld-fold > summary{ padding:8px 11px; font-size:11.5px; }
+.cond-fields > .fld-fold > .fld-fold-body{ padding:8px; }
+
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+ * 「阻断」配色：两轴划分（陈先生 2026-07-30 裁定）—— 动作标签轴恒 `--err` 且**常驻**
+ * ══════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * 改动前是**四档**，同一件事在同一个应用里有四种说法：
+ *   ① 常驻 --err：`.act-block` pill（规则行/应用分流/两张 hover 卡）· `.act-dot.block` 色点 ·
+ *      应用分流汇总行「阻断 N」· 连接表 chain 列；
+ *   ② **hover-only** --err：首页出口选单 `.mi.danger` · 托盘 `.tray-i.danger` · 应用分流策略菜单
+ *      `.mini-menu .mi.danger` —— idle 时是中性色；
+ *   ③ **无任何颜色**：规则弹窗「目标出站」的阻断选项 · 状态栏出口名 · 首页 `#cur-node` 出口名；
+ *   ④ --warn：拓扑 block 出口条。
+ *
+ * 两轴划分（本段落实 ①②③，④ 不动）：
+ *  · **动作标签轴** =「这条规则/这个应用/这个出口的动作是阻断」「选中它会阻断」→ 恒 `--err` 且常驻。
+ *  · **流量表达轴** =「流量到此被丢弃」（拓扑那条出口条）→ `--warn`，理由见 topology-layout.ts:85-93。
+ *
+ * 为什么 ② 的 hover-only 是缺陷而不是风格：菜单项 idle 时不显示自己的危险度，等于要用户先 hover
+ * 才知道点下去会断网。危险度是这一项的**固有属性**，不是一种交互反馈。
+ *
+ * 为什么 ③ 的规则弹窗此前上不了色：那一项走 `Csel`，而 `CselOptionLike` 只有 value/label/disabled/
+ * icon 四个字段，**结构上没有危险度通道**（旁边两处能上色是因为它们是手写菜单）。根治是补通道，
+ * 不是给规则页单刷一层红 —— 后者第 N 个危险选项还要再刷一次。
+ *
+ * ⚠️ 特异性/源序（本段必须留在下方「选中态统一」段**之前**）：
+ *   `.node-menu .mi.danger` (0,3,0) 与 `.node-menu .mi.on` (0,3,0) 同档、`.csel-opt.danger` (0,2,0)
+ *   与 `.csel-opt.on` (0,2,0) 同档 ⇒ 只靠源序分胜负。放在前面 = **选中态赢**，这是要的：
+ *   「下拉里被选中的那一项」的视觉由那条全仓共享规则独占（它有自己的门在守）。选中态的红改由
+ *   `.csel-trigger.danger` 承载（菜单关着时唯一可见的那一格），见 Csel.tsx `currentDanger`。
+ *   反过来 `.csel-opt.danger` (0,2,0) 高于 prototype.css:1541 `.csel-opt:hover` (0,1,1)、且在
+ *   `.csel-opt.active` (0,2,0) 之后 ⇒ 危险色不会被 hover/键盘高亮洗掉。
+ *
+ * 只写 `color` 不写 `background`：这几处 idle 本就是无底色的行/文字，加底色等于把菜单里一行涂成
+ * 常驻红块（hover 那条 `--err-weak` 底仍在，作为「正指着它」的增量反馈）。
+ *
+ * ⚠️ **为什么钩 `.act-block-txt` 而不是直接钩 `.danger`**：`.danger` 是「这一行是破坏性操作」的
+ * 通用词汇，托盘的**退出**按钮（TrayMenu `tray-i danger`）也戴着它。钩 `.tray-i.danger` 会把退出
+ * 顺手改成常驻红 —— 那不在裁定范围内，且托盘是每天要看很多次的面。`.act-block-txt` 只由三处阻断
+ * 行 + 两处阻断文本发出，射程与轴的定义逐字重合。（`.node-menu`/`.mini-menu` 目前的 `.danger` 恰好
+ * 只有阻断项一个消费方，但那是巧合不是保证，同样不该拿来当选择器。）
+ * `.csel-opt.danger` 是例外且刻意：`Csel` 是通用下拉，不该知道「阻断」这个业务概念——它只表达
+ * 「这个选项是危险的」，红由本段统一给。目前唯一传 `danger` 的就是规则弹窗那一项。 */
+.act-block-txt,
+.node-menu .mi.act-block-txt,
+.mini-menu .mi.act-block-txt,
+.tray-menu .tray-i.act-block-txt,
+.csel-opt.danger,
+.csel-trigger.danger{ color:hsl(var(--err)); }
+
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+ * 三处节点选择器的视觉统一 —— 基准 = 首页出口选单 `.node-menu` / `.nm-item` / `.ns-grp`
+ * ══════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * commit 66746e4 统一了三处的**结构**（分组 + 默认折叠 + 含选中项的组展开），但视觉没跟上：
+ * 同一件事（「这一行是我现在选的」「这一行是个节点」「这是一组的头」）在三处各说一套。
+ *
+ * 三处的容器/行类各不相同且**不可能合并**（`.node-menu` 在主窗首页、`.tray-menu` 在独立
+ * webview、`.csel-menu` 是 dialog 内的通用下拉），故统一只能在覆盖层按轴逐条对齐取值。
+ *
+ * 为什么基准取 `.nm-item`/`.ns-grp` 而不是另两处：
+ *  ① 它是唯一逐字来自原型（`#node-menu`）的那套行词汇 —— 对齐它 = 对齐原型，而不是发明第四种；
+ *  ② 它是信息量的**超集**（延迟色点 + 国旗 + 名称 + 协议标签 + 延迟 + 勾），另两处是它的子集
+ *     ⇒ 对齐方向是「补」而不是「删」，不会为了一致去销毁信息；
+ *  ③ 它是用户看得最多的那一处（首页），「保持一致」这句话的参照系就是它。
+ *
+ * 为什么全部落本文件而不落 components.css：`prototype.css` 是**最后一个 @import**，components
+ * 里的同名规则会被它静默盖回（本文件上方 `.csel-ck` / `.sk-tip` / `.csel-grp-chev` 三段是同一类
+ * 失效的前三例）。托盘那几条也写在这里（浮层窗同样 @import 本文件，见 tray/main.tsx）—— 但托盘
+ * 自己的 `tray-overlay.css` **在本文件之后**导入，故凡与它同选择器的必须靠**特异性**取胜，
+ * 每条都比它多一个类，见各行注释。
+ *
+ * ── 轴 1：选中态 —— 统一为「flow-weak 填充 + flow-hi 文字 + 620 字重」 ────────────────────────
+ *
+ * 改动前三处的选中态是三个答案：
+ *   · `.nm-item.on` / `.csel-opt.on` = 只换文字色 + 字重，**无背景**；
+ *   · `.tray-i` 压根**没有 `.on` 这个类** —— 选中的节点行与旁边任何一行长得一模一样，
+ *     唯一区别是行尾的延迟数字被换成了勾（而勾在未测速的行上本就没有数字可换）；
+ *   · `.csel-menu` 里选中行**看起来有背景** —— 但那不是选中态，是 `Csel` 打开时把键盘高亮
+ *     `active` 初始化到当前值那一行带来的 `surface-2`（`openMenu` 的 setActive）。同一个视觉
+ *     由两种语义产生，正是「三处不一致」最难自查的那一种。
+ *
+ * 取 flow-weak 填充不是新造视觉：本设计系统里「选中」一直是这个词汇
+ * （`.nav-item.on` :165 / `.ap-chip.on` :878 / `.tagchip.on` / `.icon-btn.on` :387 / `.rl-step.on` :806
+ *  / `.emoji-opt.on` :927 全是 flow-weak 填充 + flow-hi 文字）。三处节点行是**唯一**没跟上的一族。
+ *
+ * 复合选择器（`.on.active` / `.on:hover`）不是啰嗦：hover/active 的 `surface-2` 与 `.on` 同特异性
+ * （都是两个类档），只靠源序取胜；显式多一个类后不依赖源序，且鼠标扫过选中行时它不会「掉色」
+ * 成普通 hover —— 那会让用户以为自己刚把选中项弄丢了。
+ *
+ * ⚠️ **射程说明**：`.csel-opt.on` 不带容器前缀 ⇒ 命中**全仓每一个 `Csel`**（设置页各下拉、节点弹窗
+ * 协议选择、规则「匹配类型」、节点工具栏排序、应用分流分类筛选……），不止规则弹窗那一处。这是**有意
+ * 的**：「下拉里被选中的那一项」在全仓本就该是同一个视觉，为把射程收窄到一处而新造一个变体类，恰恰
+ * 是在 Csel 内部再造第四种风格。若将来真需要某处例外，加容器前缀覆盖本条即可（本段在最后 @import 之后）。 */
+.nm-item.on,
+.nm-item.on.active,
+.nm-item.on:hover,
+.node-menu .mi.on,
+.node-menu .mi.on:hover,
+.node-menu .mi.danger.on:hover,
+.csel-opt.on,
+.csel-opt.on.active,
+.csel-opt.on:hover,
+.tray-menu .tray-i.on,
+.tray-menu .tray-i.on:hover{
+  background:hsl(var(--flow-weak)); color:hsl(var(--flow-hi)); font-weight:620;
+}
+
+/* ── 轴 2：hover 态 —— 三处统一「surface-2 填充 + fg 文字」 ──────────────────────────────────
+ * `.mi` / `.csel-opt` / `.tray-i` 的 hover 都带 `color:hsl(var(--fg))`（从 dim 提亮到正常），
+ * 只有 `.nm-item:hover`（prototype.css:470）**只写了 background**。它的基础字色又恰好没设、
+ * 继承的就是 `--fg` ⇒ 同一次 hover 在首页是「只有底色变」、在另两处是「底色 + 字都变」。
+ * 这里补齐提亮腿，让三处 hover 的**声明集**一致（首页视觉变化极小，但语义从此同源）。 */
+.node-menu .nm-item:hover,
+.node-menu .nm-item.active{ background:hsl(var(--surface-2)); color:hsl(var(--fg)); }
+
+/* ── 轴 3：行内边距 —— 主窗三处统一 `8px 10px` ───────────────────────────────────────────────
+ * `.nm-item` 是 `8px 9px`，而同一菜单里的 `.mi`（直连/阻断）与 `.ns-grp`（组头）都是 `…10px`
+ * ⇒ 节点名比它自己的组头左移 1px，一列文字对不齐。`.csel-opt` 本就是 `8px 10px`。
+ * **托盘刻意不并进来**：`tray-overlay.css` 把它收到 `6px 11px` 是有据的取舍（原型 35px 行高
+ * 比原生 NSMenu 的 ~22px 明显偏松，浮层要的是原生菜单观感），那是「窗种差异」不是「不一致」。 */
+.node-menu .nm-item{ padding:8px 10px; }
+
+/* ── 轴 4：前置图标 ────────────────────────────────────────────────────────────────────────────
+ * 改动前：首页 = 7px 延迟色点 + 国旗；托盘 = **6px** 色点、**无国旗**；规则弹窗 = **什么都没有**
+ * （靠 label 文本前缀「代理 →」代替图标）。统一为「色点尺寸一致 + 都有国旗」。
+ *
+ * 延迟色点只在有延迟数据的地方存在（首页/托盘），规则弹窗的「目标出站」不订阅测速 store 也
+ * **不该**订阅 —— 那是「把流量路由到哪」，不是「挑个快的」，在那里画延迟点是给出无关判据。
+ * 故这一轴的终态是：色点 = 两处同尺寸（7px，基准 `.nm-latdot`），国旗 = 三处都有。
+ *
+ * `.csel-ico` 的 `position:static; transform:none` 是**必需复位**，不是装饰：prototype.css:340
+ * `.sel svg{position:absolute; right:9px; top:50%; transform:translateY(-50%)}` 是给原生 select
+ * 外壳 chevron 写的**后代**选择器，会连带命中 `.sel.csel` 子树里每一个 svg —— 不复位的话新加的
+ * 前置图标会被绝对定位到菜单垂直中线上、全部重叠（与本文件上方 `.csel-ck` 那个已修复的真机缺陷
+ * 同源，那是第一例，`.sk-tip` 第二例，`.csel-grp-chev` 第三例；这是第四例）。 */
+.csel-menu .csel-opt > .csel-ico{ position:static; transform:none; width:15px; height:15px; flex:none; }
+/* 有前置图标后 label 不再是 `:first-child` ⇒ prototype.css:1540 的 `.csel-opt > span:first-child`
+ * （flex:1 + 省略号）命不中它，长选项会撑爆菜单而不是截断。改钉在类上，与有无图标无关。 */
+.csel-menu .csel-opt > .csel-lbl{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 托盘色点对齐基准 `.nm-latdot` 的 7px。比 tray-overlay.css 的 `.tray-menu .tray-node-dot`
+ * 多一个类 ⇒ (0,3,0) 稳压 (0,2,0)，不依赖导入顺序。 */
+.tray-menu .tray-i .tray-node-dot{ width:7px; height:7px; }
+/* 托盘/弹窗菜单里的国旗收到 16px（原型 `.mini-menu .ns-node .flag{width:16px}` :1023 的同款先例）：
+ * 托盘卡片只有 246px 宽，18px 盒会多吃掉节点名 2px；两处取同一值，别一处 16 一处 18。 */
+.tray-menu .tray-i .flag,
+.csel-menu .csel-opt > .flag{ width:16px; }
+
+/* ── 轴 5：分组头 —— 托盘对齐基准 `.ns-grp` ────────────────────────────────────────────────────
+ * 改动前托盘组头沿用的是 `.tray-group-h`（静态标签基线）：10px / 640 字重 / `.06em` 字距 /
+ * **uppercase** / `--fg-faint`，箭头 12px、gap 7px；而首页 `.ns-grp` 与规则弹窗 `.csel-grp-t`
+ * 都是 11.5px / 600 / 字距 normal / **不大写** / `--fg-dim`，箭头 13px、gap 8px。
+ *
+ * uppercase 那条尤其要去掉：组名是**用户数据**（订阅名），大写化等于改写用户自己起的名字
+ * （规则弹窗那处 66746e4 已因同一理由复位，见本文件上方 `.csel-grp-t` 段）。
+ *
+ * 选择器带 `.tray-group-h.tray-grp-t` 两个类 + 容器 ⇒ (0,3,0)，压过 tray-overlay.css 里
+ * `.tray-menu .tray-grp-t`(0,2,0) 与 `.tray-menu .tray-group-h`(0,2,0)，不依赖导入顺序。
+ * hover 的 `color` 也一并对齐：tray-overlay 那条 hover 停在 `--fg-dim`（= 不提亮，等于没反馈）。 */
+.tray-menu .tray-group-h.tray-grp-t{ gap:8px; font-size:11.5px; font-weight:600;
+  letter-spacing:normal; text-transform:none; color:hsl(var(--fg-dim)); }
+.tray-menu .tray-group-h.tray-grp-t:hover{ background:hsl(var(--surface-2)); color:hsl(var(--fg)); }
+.tray-menu .tray-grp-t .tray-grp-chev{ width:13px; height:13px; }
+
+/* ── 「加入已有规则」两处新皮肤（覆盖层，禁区两文件零改动）────────────────────────────────────
+ * 全部只用 tokens（`--fg-faint` / `--line` / `--warn` 四档都有值）⇒ 深浅两档自动同步，
+ * 不写任何 `@media prefers-color-scheme` / `[data-theme]` 条件规则（写了就必须成对，见
+ * style-invariants ⑤；这里根本不需要条件）。
+ *
+ * 1) `.ctx-note` —— 右键菜单项尾部的次要说明（命中该域名的那条规则名）。`.ctx-i` 本身是 flex 行，
+ *    故靠 `margin-left:auto` 右推；封顶 + 省略号防长规则名把菜单撑爆（菜单 min-width 只有 210px）。
+ * 2) `.proc-pick-row:disabled` —— 目标已包含该值时那一行不可点。`.proc-pick-row` 基线写死了
+ *    `cursor:pointer` 且 `:hover` 有底色，不复位的话「不可点」在视觉上与可点的完全一样。
+ *    选择器带伪类 (0,2,0) 压过基线 (0,1,0)，不依赖导入顺序。
+ * 3) 行尾状态标签**复用 `.pill`**（`.pill.region` 中性 / `.pill.warn` 提示），故这里只补一条
+ *    `flex:none` —— `.pill` 是 `inline-flex`、无 `flex-shrink:0`，落进 `.proc-pick-row` 这个 flex 行
+ *    时会被压扁。不另造 `.rp-tag`：那是把一个已有的 chip 皮肤抄第二遍。
+ *    「前面可能先命中」取 `--warn` 而非 `--err`：它是**提示**不是错误（口径同本仓「流量表达轴恒
+ *    --warn」那条），且 `--err` 有浅色对比度门管着。
+ * 4) 置灰行的第二行现在放的是**不可追加的原因**（整句，不是一个值列表），而 `.pp-path` 基线是
+ *    `white-space:nowrap` + 省略号 —— 不放开换行的话原因会被截成半句，等于没给原因。只放开
+ *    `:disabled` 那一档：可点行的第二行仍是「类型: 值, 值…」，那种长列表该继续截断。
+ *    纯排版属性、零颜色 ⇒ 与主题两档无关。 */
+.ctx-i .ctx-note{ margin-left:auto; padding-left:10px; max-width:120px; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; font-size:11px; color:hsl(var(--fg-faint)); }
+.proc-pick-row:disabled{ cursor:default; }
+.proc-pick-row:disabled:hover{ background:none; }
+.proc-pick-row:disabled .pp-nm{ color:hsl(var(--fg-dim)); }
+.proc-pick-row:disabled .pp-path{ white-space:normal; }
+.proc-pick-row > .pill{ flex:none; }
+
+/* ══════════ 连接页 TOP 视图：条数选择器收进卡片标题行 ══════════
+ * 陈先生 2026-07-30：「展示前 5 10 15 域名 / 出站 应该在同一行，展示前 / 域名 / 出站 这些可以不用显示，
+ * 只显示数量」。原先 `#conn-top-view` 顶上有一整行 `.conn-toolbar`（「展示前」+ seg2 + 「域名 / 出站」），
+ * 两句文字都是复述（见 TSX 处注释），已整行删除，seg2 移进域名卡的标题行。
+ *
+ * `.card-h` 是禁区文件里的全局类（`components.css:44` / `prototype.css:291`，只有 font/margin，非 flex），
+ * 故另发 `.top-card-h` 而不是给 `.card-h` 加 flex —— 后者会波及全仓每一张卡片的标题。
+ *
+ * seg2 必须**压扁**：原尺寸按钮 `padding:6px 15px; font-size:12.5px` ⇒ 整块约 36px 高，直接塞进
+ * 14px 字的标题行会把域名卡标题撑到 36、出站卡仍是 ~17，两张卡的正文起始线错开一大截。
+ * 压到 `padding:3px 10px; font-size:11.5px`（数值抄 `.btn.sm` 那一档，不新造尺寸语言）：
+ * 外层 padding 2×2 + border 1×2 + 按钮 (3×2 + 11.5×1.2) ≈ **25.8px**。
+ * 两个标题统一 `min-height:29px`（> 25.8，留 3.2px 余量吃字体族差异）+ 垂直居中
+ * ⇒ 无论哪张卡带控件，两个标题都恒 29px、正文起始线对齐。
+ *
+ * ⚠️ 净收益是**推算，未量 dist 产物**：原 `.conn-toolbar` 行 ≈ seg2 36 + marginBottom 14 = 50px；
+ * 标题行由 `.card-h` 的内容高（14px 字 × line-height normal ≈ 16.8px）涨到 min-height 29px，+12.2px
+ * ⇒ 净省 ≈ **37.8px** 垂直空间，全部让给两张卡的列表区。
+ * （`line-height:normal` 的 1.2 是按常见 sans 取的近似值，真机可能有 ±1px 出入 —— 它只影响这笔
+ * 收益账的小数位，不影响「两个标题恒等高」那条结论，那条由 min-height 独立保证。） */
+.top-grid .top-card-h{
+  display:flex; align-items:center; justify-content:space-between; gap:10px;
+  min-height:29px;
+}
+.top-grid .top-card-h > span:first-child{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.top-grid .top-card-h .seg2{ flex:none; padding:2px; }
+.top-grid .top-card-h .seg2 button{ padding:3px 10px; font-size:11.5px; }
+.top-grid .top-card-h > .pill{ flex:none; }
+
+/* ══════════ 侧栏 nav 文案的长语种适配（陈先生 2026-07-31 真机：「俄语容易超出导航栏边框」）══════════
+ *
+ * # 根因（不是「某条翻译太长」）
+ *
+ * `.side{width:148px; padding:0 10px}` + `.nav-item{padding:8px 9px; gap:10px}` + `.nav-item svg{width:17px}`
+ * ⇒ 标签的可用宽只有 **148 − 20 − 18 − 17 − 10 = 83px**（`*{box-sizing:border-box}`，padding 吃在 148 内）。
+ * 而 `.nav-item` / `.nav-group` 都是 `white-space:nowrap` 且**全链路没有任何 overflow/text-overflow**
+ * ⇒ 长标签既不换行也不截断，一路画到 `.side` 的 `overflow-x:hidden` 边界被硬裁 —— 用户看到的
+ * 「超出导航栏边框」就是这个：字贴着侧栏右沿被切断，连省略号都没有。
+ *
+ * 83px 在 13px 字号下只放得下约 9 个拉丁小写字母：**英文自己就不够**（"Rule Resources" / "Connections"），
+ * 俄语（"Политика приложений" ≈ 124–172px，随字体族）与波斯语更远。故这是**容器与文案的结构性不匹配**，
+ * 不是个别 locale 的问题，逐条改翻译治不了（且缩写会改语义，例如 "Политика приложений"→"Политика"
+ * 丢掉「应用」这个限定，陈先生已明确禁止）。
+ *
+ * # 为什么是「折行 + 词内断」，不是加宽、不是截断
+ *
+ * [选 折行]：侧栏是**垂直列表**，纵向空间比横向充裕；折行**一个字符都不丢**。再补
+ *   `overflow-wrap:anywhere` 兜住「单词本身就比 83px 宽」那档（俄语一堆词是这样：
+ *   "Подключения" 单词就要 ~127px）—— 没有它，折行只解决多词短语，单词照样溢出，等于没修全。
+ * [不选 加宽]：要让**最长单词**在一行里放下，`.side` 得从 148px 拉到 ~196px（+32%）。那是全局版式改动
+ *   （主内容区、状态栏、连接表列宽全跟着变），为一条 locale 文案付整份布局的账，且新增语种随时再破一次。
+ * [不选 截断+tooltip]：83px 截出来是「Политика прил…」/「Rule Resou…」，比折行更难认；且导航项是**常驻**
+ *   一级信息，不该逼用户悬停才知道自己点的是什么。截断留给运行期用户数据（节点名/域名，那些本来就带
+ *   ellipsis），不该用在固定文案上。
+ *
+ * # 为什么必须写在这里
+ *
+ * `.side` / `.nav-item` / `.nav-group` 三条基线在 `components.css` 与 `prototype.css` 各存一份（禁区，
+ * 逐字镜像原型，一个字不改），而 `prototype.css` 是**最后一个 @import** ⇒ 在 components.css 里写同
+ * 特异性的覆盖会被静默压掉。本段位于全部 @import 之后，且 `.side .nav-item > span:not(.cnt)` (0,3,1) /
+ * `.side .nav-group` (0,2,0) 都高于基线的 `.nav-item`(0,1,0) / `.nav-group`(0,1,0)，不依赖源序也成立。
+ *
+ * 折叠态不受影响：`.side.collapsed .nav-item > span:not(.cnt){display:none}` (0,4,1) 与
+ * `.side.collapsed .nav-group{height:1px;overflow:hidden}` (0,3,0) 特异性都更高，仍然赢。
+ *
+ * 纯排版属性、**零颜色/零 token** ⇒ 深浅两档表现完全一致，不需要（也不该有）任何 `[data-theme]` /
+ * `prefers-color-scheme` 条件分支（style-invariants 的「主题条件规则必须成对」在此恒不触发）。
+ * 门在 `text-fit.test.ts`：这两条被删或被改回 nowrap 会立刻转红。 */
+.side .nav-item > span:not(.cnt){ min-width:0; white-space:normal; overflow-wrap:anywhere; }
+.side .nav-group{ white-space:normal; overflow-wrap:anywhere; }
+
+/* ══════════ 首页右列 seg2 三档在长语种下溢出（陈先生 2026-07-31 真机：ru/fa「接管方式」「分流策略」）══════════
+ *
+ * # 溢出的到底是什么（**不是**「文字画到按钮外」，是「按钮画到轨道外」）
+ *
+ * `.seg-wrap .seg2{width:100%}`（components.css:196）把基类的 `inline-flex`（= max-content，
+ * components.css:77）钉成容器宽，`.seg-wrap .seg2 button{flex:1}`（:197）= `flex:1 1 0%` 想让三档均分。
+ * 但 flex 项的 `min-width` 初始值是 `auto` ⇒ **自动最小尺寸 = min-content**，而 `.seg2 button` 是
+ * `white-space:nowrap`（components.css:79）⇒ 每颗按钮的 min-content = 整串文字 + 30px 内边距，
+ * **压不下去**。于是三颗按钮各自冻在自己的 min-content 上，总宽超过轨道内容宽时**整颗按钮**（连同它的
+ * hover/选中底色）越过 `.seg2` 的边框往外画。全链路没有 overflow/ellipsis，所以既不裁也不省略。
+ *
+ * ⇒ 判「装不装得下」的算式是**三档 min-content 之和**，不是「3 × 最宽档」：`flex:1 1 0%` 先按均分派
+ * 1/3，超了 min-content 的那颗冻结、剩余空间再分给没冻的 —— 只有**一颗**特别长时另外两颗会让宽给它。
+ * （headless Chromium 实测确认：ru「接管方式」三档实测 106.0/56.9/94.1，正是不均分的冻结分配。）
+ *
+ * # 几何（逐项从 CSS 解析，headless Chromium 逐字复核过）
+ *
+ *   容器 C = `.main` 的 inline-size（`container:mainc/inline-size`）= 窗口宽 − `.side` 148px
+ *   `.screen{padding:20px 24px}` −48 → `.card{border:1px}`+`.conn-card{padding:16px}` −34
+ *   → `.cc-cols{minmax(0,3.4fr) minmax(0,1.7fr)}` 右列 = ⅓ → `.cc-col.right{padding-left:20px}` −20
+ *   ⇒ 轨道外宽 = (C − 82) / 3 − 20；轨道内容宽 = 轨道外宽 − 2(border) − 6(padding)
+ *   窗口 925px（`tauri.conf.json` 的 minWidth **同时也是默认宽**）⇒ C = 777 ⇒ 轨道 211.67 / 内容 203.67
+ *   ⇒ 均分时每档 65.9px，扣掉 30px 内边距只剩 **35.9px 给文字**。
+ *
+ * 各语种「横排所需最小容器宽」（宽度模型算，模型对真机恒偏宽，见 text-fit.test.ts 文件头）：
+ *   zh-CN / zh-TW **700.8** ✓（< 777，任何窗口都放得下）　en-US **886.8**　fa **1021.0**　ru **1158.6**
+ * 也就是说 en / fa / ru **在默认窗口下就溢出**，不是「最小窗口附近一条窄带」。
+ *
+ * # 为什么是「按语种给阈值」，不是别的
+ *
+ * [不选 全语种恒纵向]：zh 在 777 容器下横排够用（需 700.8 < 777），原型基线就是横排；全局改是可见偏离，
+ *   且纵向堆叠会让右列长高约 2×(2×33+6) ≈ 78px，白白挤掉首页拓扑卡的纵向空间。
+ * [不选 单一语言无关阈值]：本仓容器**恒 ≥ 777**（窗口 minWidth 925 − 侧栏 148；侧栏折叠只会更宽）。
+ *   阈值 ≤ 700.8 → 永不触发的死规则；阈值 > 777 → 连 zh 一起堆叠 = 上一条。两者之间没有第三个取值。
+ *   故「规则 1（语言无关阈值）」在本仓几何下不成立，其职责改由门承担：门断言**未登记语种**的所需宽
+ *   必须 ≤ 最小容器宽（最小容器宽由 tauri.conf.json 的 minWidth 与 `.side` 宽现算）。
+ * [不选 缩写/换英文]：「Политика приложений→Политика」丢限定词、语义变了；英文自己也要 886.8 才够。
+ * [不选 收 padding]：15→4 只把文字空间 35.9→57.9，ru 单档最宽仍要 111.5px，差得远。
+ * [不选 flex-wrap]：en 会得到 2+1 的参差布局，既不是横排也不是纵排。
+ * [不选 缩字号]：12.5px 再小影响可读性，且没有任何门管字号。
+ *
+ * # 阈值怎么定
+ *
+ * 阈值 = 该语种的「横排所需最小容器宽」向上取整。`max-width:T` 在 C ≤ T 时生效 ⇒ 横排只发生在 C > T，
+ * 而 T ≥ 所需宽 ⇒ 横排时恒装得下。三个数由 `text-fit.test.ts` 的 ⑦ 逐语种重算并逐条比对，改翻译、
+ * 改任何一环几何、加语种都会转红；名单里多一个不需要的语种同样转红（反向也管）。
+ *
+ * 射程收在 `.cc-col.right` 内：阈值是按首页右列那条几何链算的，别的 `.seg-wrap` 消费方（目前没有）
+ * 几何不同，不该跟着这三个数走。
+ *
+ * 纯排版属性、零颜色/零 token ⇒ 深浅两档表现一致，不需要 `[data-theme]` 分支（style-invariants 的
+ * 「主题条件规则必须成对」在此恒不触发）。 */
+@container mainc (max-width: 887px) {
+  :lang(en) .cc-col.right .seg-wrap .seg2 { flex-direction: column; }
+}
+@container mainc (max-width: 1021px) {
+  :lang(fa) .cc-col.right .seg-wrap .seg2 { flex-direction: column; }
+}
+@container mainc (max-width: 1159px) {
+  :lang(ru) .cc-col.right .seg-wrap .seg2 { flex-direction: column; }
+}
+
+/* ── 组网信息 hover 卡（`hover-cards/MeshInfoHoverCard.tsx`）+ 节点卡上的 ⓘ 触发器 ──────────────
+ *
+ * 本段存在的唯一理由是「**配置值与运行期值必须一眼分得开**」：用户填的 `exitNode` 与 tailnet 上
+ * 真正生效的出口可以不同，混成一张同色表会被读成「填的就是生效的」。故三层区隔同时上：
+ *   ① 段头（`.mi-hd`）—— 运行期段带状态点，配置段不带；
+ *   ② 状态点（`.mi-dot`）—— 绿=流是活的 / 琥珀=核已停、这是缓存末帧（旁边还有 `.mi-stale` 文字兜底，
+ *      色觉障碍用户不靠颜色也读得到）；
+ *   ③ 值的色阶（`.mi-v`）—— live 用正文色 + 更重字重，cfg 用弱化色，stale 用琥珀。
+ * 中间由 `.tc-sep`（本文件上方 hover-card 段已有）分隔，不新造分隔线。
+ *
+ * 全部走 token（--fg / --fg-dim / --fg-faint / --ok / --warn），深浅两档由 tokens.css 的两套值接管，
+ * 不写 `[data-theme]` 分支（无硬编码色值 ⇒ style-invariants 的「主题条件规则必须成对」恒不触发）。 */
+.hover-card .mi-hd{ display:flex; align-items:center; gap:5px; margin:0 0 5px; font-size:9.5px; font-weight:700;
+  letter-spacing:.06em; text-transform:uppercase; color:hsl(var(--fg-faint)); }
+.hover-card .mi-hd + .mi-row{ margin-top:0; }
+.hover-card .mi-dot{ flex:none; width:6px; height:6px; border-radius:50%; background:hsl(var(--fg-faint)); }
+.hover-card .mi-dot.live{ background:hsl(var(--ok)); box-shadow:0 0 0 2px hsl(var(--ok)/0.18); }
+.hover-card .mi-dot.stale{ background:hsl(var(--warn)); }
+.hover-card .mi-stale{ font-weight:640; letter-spacing:0; text-transform:none; color:hsl(var(--warn)); }
+.hover-card .mi-row{ display:flex; align-items:baseline; justify-content:space-between; gap:16px; padding:1.5px 0; font-size:11px; }
+.hover-card .mi-k{ flex:none; color:hsl(var(--fg-faint)); }
+/* 值可能是一串 CIDR/IPv6，必须允许在容器内断行（`.hover-card` max-width:300px）。 */
+.hover-card .mi-v{ text-align:right; word-break:break-all; }
+.hover-card .mi-v.live{ color:hsl(var(--fg)); font-weight:600; }
+.hover-card .mi-v.stale{ color:hsl(var(--warn)); font-weight:600; }
+.hover-card .mi-v.cfg{ color:hsl(var(--fg-dim)); font-weight:500; }
+
+/* ⓘ 触发器（节点卡 `.nd-pills` 行末）：靠右，不占版面、不与既有角标争位。
+ * 只在组网节点渲染（判据 `isMeshProtocol`，见 NodeCard.tsx）。 */
+.nd-info-btn{ margin-left:auto; flex:none; width:18px; height:18px; padding:0; border:0; border-radius:5px;
+  background:transparent; color:hsl(var(--fg-faint)); display:grid; place-items:center; cursor:default; }
+.nd-info-btn svg{ width:14px; height:14px; }
+.nd-info-btn:hover, .nd-info-btn:focus-visible{ color:hsl(var(--flow-hi)); }
+
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+ * 弹窗滚动区的直接子项**不参与压缩** —— 折叠段被压成一条横线的根治
+ * ══════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * 陈先生 2026-07-31 真机：「TS 节点下拉到最下面有个横线，然后关于 TS DNS 相关字段似乎没有看到」
+ * 「WARP …折叠展开没办法滑动内部配置块」。两句话是**同一个根因**，那条横线就是折叠段本身。
+ *
+ * ── 机制（CSS Flexbox §4.5 自动最小尺寸）─────────────────────────────────────────────────────
+ * `.dlg` 恒有 `max-height:calc(100vh - 40px)`（components.css:372 / prototype.css:1229），是纵向 flex；
+ * `.dlg-body` 是其中唯一 `flex:1 1 auto` 的一段（头尾都写了 `flex:none`），带 `overflow-y:auto` 自滚。
+ * 内容超高时，先跑的是 **flex 收缩**，不是滚动：`.dlg-body` 的直接子项默认 `flex-shrink:1`，
+ * 各自的下限取「自动最小尺寸」——
+ *   · `overflow:visible` 的项（`.fld` / `.swt-row` / `.card-sub` …）自动最小尺寸 = 内容高
+ *     ⇒ 压不动 ⇒ 容器溢出 ⇒ `.dlg-body` 出滚动条。**这条腿一直是对的。**
+ *   · `overflow` 非 visible 的项，规范明写自动最小尺寸**塌成 0** ⇒ 它会把整份负余量一个人吃光。
+ * `.fld-fold` 正是后者（`overflow:hidden`，prototype.css:1243 是层叠赢家）。于是：折叠段被压到 0，
+ * `overflow:hidden` 再把内容连同 `summary` 一起裁掉 —— 展不开、滚不到、点不着，只剩上下两条
+ * `border` 叠成的 **2px 横线**。TS 的 `resolveByName` / `acceptDefaultResolvers` 在 `ADV_SPEC` 里
+ * （TsSettingsDialog.tsx:99-100），所以「DNS 字段看不到」是本条的下游症状，不是另一个缺陷。
+ *
+ * 数值对得上：窗口最小高 740（tauri.conf.json:21）⇒ `.dlg-body` 内容区约 548px，而 TS 弹窗常显
+ * 8 个字段 + 7 道 14px gap 已约 550px —— 折叠段（收起态也有 ~40px 的 summary）恰好是被吃掉的那一份。
+ *
+ * ── 为什么是 `flex-shrink:0` 而不是给 `.fld-fold` 打补丁 ──────────────────────────────────────
+ * 缺陷不属于 `.fld-fold`，属于「`.dlg-body` 的任何 clipped 子项」这一**类**。全仓现存 9 处直接子项
+ * 命中该类（5 个 `.fld-fold` + `.cat-list` + 2×`.proc-pick-list` + `.parse-list`），逐个补 = 打地鼠，
+ * 且下一个新增的子项照样中招。
+ * 一句 `.dlg-body > *{ flex-shrink:0 }` 覆盖全类且**对现状零副作用**：`overflow:visible` 的子项
+ * 自动最小尺寸本来就等于内容高、本来就压不动，这条对它们是恒等变换；真正改变行为的**恰好只有**
+ * 那批 clipped 子项。语义上也正确 —— `.dlg-body` 是滚动容器，滚动容器的职责是**滚**内容，不是压内容。
+ *
+ * 那批带 `max-height` 的内滚列表（`.cat-list` 280 / `.proc-pick-list` 340 / `.parse-list` 120）本可
+ * 「压一点、内部滚」，看似值得留 shrink。实测算过不需要：最小窗口下它们的自然高连同兄弟都装得进
+ * 548px，压根不触发收缩；反倒是无下限的 shrink 让它们在极端尺寸下能塌成同一条横线。故不开豁免口，
+ * 也不引入第二套 `min-height` 地板（YAGNI）。
+ *
+ * 纯排版属性，浅色深色同一份，不需要 `[data-theme]` 分支。
+ * 结构门见 `dialog-body-shrink.test.ts`（**cascade 解析门，不是渲染门** —— vitest 无 jsdom）。 */
+.dlg-body > *{ flex-shrink:0; }
+
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+ * 开关的禁用态 —— 「可见但禁用 + 说明为什么」需要一个视觉语汇
+ * ══════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * 原型的 `.swt` 只有 on / indet 两态，没有禁用态（原型里没有禁用的开关）。WARP 的 System 接入模式
+ * 是第一个「结构上永远不能开」的开关（理由见 WarpDialog 的 `advSpec` 与 wg-logic 的 `isWarpDraft`），
+ * 需要它。
+ *
+ * 只压**控件**，不压 `.swt-tx` 里的标签与 `.fld-hint`：那行 hint 正是「为什么禁用」的载体 ——
+ * 把解释压到 42% 不透明度等于让它自己也读不清（`.fld-hint` 本就是 10.5px / `--fg-dim`）。
+ * 不透明度取 .42，与既有禁用语汇同档（components.css:421 `.csel-opt.disabled`）。
+ * 纯状态样式，浅色深色同一份，不需要 `[data-theme]` 分支。 */
+.swt:disabled{ opacity:.42; cursor:not-allowed; }
+
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+ * 设置页 TUN 说明折叠区（`.tun-details`）—— 折叠头与其内容的视觉层级倒挂
+ * ══════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * ── 缺陷 ────────────────────────────────────────────────────────────────────────────────────
+ * 折叠头比它自己的内容还弱，于是读起来不像「一个可展开的区块」，而像「一个看不懂的设置项」：
+ *   `.tun-details summary`  11px / **600** / `--flow-hi`   （prototype.css:1459）
+ *   `.tun-det-h`（段内小标题）11px / **700** / `--fg`       （prototype.css:1465）
+ *   `.tun-details-body b`（协议名）    **640** / `--fg`      （prototype.css:1464）
+ * 权重与色阶双双低于内容。浅深两套主题的相对关系一致（`--fg` L13%/L95% 恒强于
+ * `--flow-hi` L33%/L68%），不是单一主题的偶然。
+ *
+ * ── 为什么不是「把 summary 的权重调到 700」──────────────────────────────────────────────────
+ * 那只是把两个数字比大小，没有回答「它凭什么是个区块」。本仓已经有一套折叠语汇 ——
+ * dialog 侧的 `.fld-fold`（prototype.css:1243-1250）：整框 border + `overflow:hidden` +
+ * summary 带 `surface-2/0.5` 底衬 + `[open]` 提色到 `--fg` 并压一条 border-bottom。
+ * 层级由**容器**承担，所以它的 body 里出现更重的字也不算倒挂 —— 这正是同一次走查里
+ * `SettingsDns` 的 `<Fold>`（共用该语汇）被判**未倒挂**的原因。
+ * 故这里复用那套配方，而不是发明第二套靠字重比大小的规则。**一套折叠语汇，不是两套。**
+ *
+ * ── 连带：closed 态从 `--flow-hi` 收敛到 `--fg-dim` ────────────────────────────────────────
+ * 原型给 summary 上强调色，是因为它当时**没有容器**——accent 是「这行可点」的唯一信号。
+ * 补上面板 + chevron + `cursor:pointer` 之后那个信号不再承重，继续留着反而让本仓出现
+ * 两种折叠头配色。收敛到与 `.fld-fold` 同档。
+ *
+ * ── 为什么落 index.css 而不是改 prototype.css / components.css ────────────────────────────
+ * 那两份是禁区，且 `.tun-details` 在两边**各有一份**（components.css:1100 / prototype.css:1458）——
+ * 直接改要改两处，正是本仓反复踩的「重复定义只改了一份」那个坑（见 style-invariants.test.ts
+ * 对 `.toast` 的双份守门）。index.css 的自有规则在全部 `@import` **之后**，同特异性按源序胜出，
+ * 一处覆盖同时压过两份，并且这里已有 188 条同类组件级覆盖的先例。
+ *
+ * `display:flex`：原规则是 `inline-flex`，底衬不会铺满整行 —— 加了背景就必须一起改，否则
+ * 面板只包住文字宽度。
+ *
+ * ⚠️ **未做视觉验收**：本条是按既有语汇做的结构对齐，没有在真机上逐档看过浅色/深色两套的实际观感。
+ * 下一轮真机时补一次目视确认。 */
+.tun-details{ border:1px solid hsl(var(--line)); border-radius:var(--r-sm); overflow:hidden; }
+.tun-details summary{ display:flex; padding:9px 11px; background:hsl(var(--surface-2)/0.5); color:hsl(var(--fg-dim)); }
+.tun-details[open] summary{ color:hsl(var(--fg)); border-bottom:1px solid hsl(var(--line)); }
+.tun-details-body{ margin-top:0; padding:11px; }
+
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+ * 规则资源表窄档：动作列必须定宽 —— 否则一行有几颗按钮会挪走它左边所有列
+ * ══════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * ── 缺陷（陈先生 2026-08-05 macOS 真机：「大小列在外置行与内置行之间没有对齐」）─────────────
+ * 宽档 `248px 92px 132px auto`（prototype.css:1030 / screens.css:240 各一份）**前导轨全定宽**，
+ * 唯一会变的 `auto` 落在行尾 ⇒ 列边界与行内容无关，天然对齐。窄档换成
+ * `minmax(0,1fr) 88px auto`（同两文件 :1040 / :250）把弹性轨挪到了**行首**：每个 `.res-row`
+ * 是各自独立的 grid（prototype.css:1027 的署名就是这么写的），行尾 `auto` = 该行自己的
+ * max-content，于是动作簇的逐行差异反向倒灌进 1fr，把它右边每一条列边界一起推走 ——
+ *   外置行  更新 + 删除 两颗 `.nd-a`(27px) + gap 6 = 60px → 名称轨 496px，大小列左边界 703px
+ *   内置行  内置不可删（ResourcesScreen.tsx:546）只剩一颗 = 27px → 529px，大小列 736px
+ *   下载中  spinner 14 + gap 6 + margin 6 + 取消 27 = 53px → 503px，大小列 710px
+ *   表头行  第四格是空 `<span>` = 0px           → 556px，大小列 763px
+ * 四个位置，最大偏差 60px。窗口锁 925×740（tauri.conf.json `minWidth`）− 侧栏 148px
+ * ⇒ `.main` 恒 777px ≤ 780px ⇒ **窄档在默认窗口就是常驻态**；宽档要把窗口拉过 928px 才见得到，
+ * 那时四态全部对齐 —— 这正是「只有内置/外置之间错位、行内其它东西都好好的」的成因。
+ *
+ * ── 为什么不是「名称列没收口」（原假设，已证伪）────────────────────────────────────────────
+ * 曾疑内置 geo 的长名（`geosite-geolocation-!cn` 等 28 条）撑破 `.res-name`。925×740 headless
+ * 逐行实测：32 行全部 `scrollWidth === clientWidth`，零溢出（窄档名称轨 496px，最长名远够）。
+ * 且定宽轨的 min track sizing function 不是 `auto` ⇒ 网格项的 automatic minimum size 不生效，
+ * 真撑破了也只会视觉压字，**推不动列**。zh-CN / en-US（`Built-in`/`External` 比中文 pill 长，
+ * ru/fa 无 `resources.src` 走 fallbackLng='en-US'）与浅/深两主题几何逐像素相同 ⇒ 与语种、
+ * 主题都无关，纯结构问题。故这里不加 `min-width:0`/ellipsis：没有要截断的东西（YAGNI）。
+ *
+ * ── 定宽取 60px ────────────────────────────────────────────────────────────────────────────
+ * = `.nd-a` 27px × 2 + 动作格 gap 6px（prototype.css:725 / :1033），即动作簇四态里最宽的那态。
+ * 取最大值而非某一态 ⇒ 其余三态在轨内左对齐，与宽档现状同一口径（宽档下四态的第一颗按钮本就
+ * 都落在同一 x），不需要再改 `justify-content`。
+ *
+ * ── 为什么不是把 `min-width` 挂到动作格上 ──────────────────────────────────────────────────
+ * 那条要靠引擎按规范去 clamp 网格项对 `auto` 轨的贡献量才成立；真机是 macOS WKWebView，本机
+ * 只验得到 Blink。定宽轨在任何引擎上只有一种解释，不押注引擎行为。
+ *
+ * ── 为什么落 index.css ──────────────────────────────────────────────────────────────────────
+ * prototype.css / components.css 是禁区，且窄档规则在 screens.css:250 与 prototype.css:1040
+ * **各有一份**（screens.css 那份还被后导入的 prototype.css 压掉，改它无效 —— 又一次「重复定义
+ * 只改一份」）。index.css 自有规则在全部 `@import` 之后，同特异性按源序胜出，一处压两份；
+ * 容器查询不改变特异性。纯几何，浅深同一份，不需要 `[data-theme]` 分支。
+ * 结构门见 `style-invariants.test.ts`「规则资源表窄档」段。 */
+@container mainc (max-width:780px){ .res-row{ grid-template-columns:minmax(0,1fr) 88px 60px; } }
+
+/* ── 导入弹窗的解析结果预览（#83）─────────────────────────────────────────────────────────
+ * 后端一直在返回 `stats`（imported / unsupported / skipped / failed）与 `warnings`，
+ * 而弹窗此前把它们整个丢掉、只在撞上单例槽时报一句 —— 「37 个里 4 个因缺字段被丢了」这种
+ * **后端算得完全正确**的事实，用户一次都看不到。这一段是那份结果的落地面。
+ *
+ * 为什么落 index.css：`prototype.css`/`components.css` 是禁区，而这批类名是本仓新增、
+ * 原型里没有对应物，不存在「改哪一份」的歧义；放这里与既有的 188 条组件覆盖同层，
+ * 且在全部 `@import` 之后，不会被后导入的 prototype.css 压掉。
+ *
+ * 高度上限 200px + `overflow-y:auto`：机场一次几百个节点是常态，不封顶的话弹窗会被顶穿
+ * （`.dlg` 有 `max-height:calc(100vh-40px)`，正文再长只会把按钮挤出视野）。
+ * **只给 y 轴**：CSS Overflow §3 规定一轴非 visible 时另一轴的 visible 计算成 auto ⇒
+ * 这里必须显式把 x 轴按住，否则长节点名会长出一条横向滚动条（`.dlg-body` 踩过同款）。 */
+.imp-preview{ margin-top:12px; border-top:1px solid hsl(var(--line)); padding-top:11px; }
+.imp-stats{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:9px; }
+.imp-stat{ font-size:10.5px; line-height:1.6; padding:1px 7px; border-radius:999px;
+  background:hsl(var(--surface-2)); color:hsl(var(--fg-dim)); }
+.imp-stat.ok{ color:hsl(var(--fg)); }
+.imp-stat.warn{ background:hsl(var(--warn)/0.14); color:hsl(var(--warn)); }
+.imp-stat.bad{ background:hsl(var(--err)/0.14); color:hsl(var(--err)); }
+.imp-warn{ margin:0 0 9px; padding-left:16px; font-size:10.5px; line-height:1.55;
+  color:hsl(var(--fg-dim)); }
+.imp-list{ margin:0; padding:0; list-style:none; max-height:200px;
+  overflow-y:auto; overflow-x:hidden; border:1px solid hsl(var(--line)); border-radius:var(--r); }
+.imp-list > li{ display:flex; align-items:center; gap:8px; padding:5px 9px; font-size:11.5px; }
+.imp-list > li + li{ border-top:1px solid hsl(var(--line)); }
+/* 名称轨吃掉剩余宽度并允许收缩到 0（`min-width:0` 缺席时 flex item 的 automatic minimum size
+ * 是 max-content ⇒ 长名把徽标顶出行外，ellipsis 永远不触发）。 */
+.imp-name{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.imp-proto{ flex:none; font-size:10px; color:hsl(var(--fg-dim)); text-transform:uppercase;
+  letter-spacing:.03em; }
+.imp-badge{ flex:none; font-size:10px; padding:0 6px; border-radius:999px;
+  background:hsl(var(--warn)/0.14); color:hsl(var(--warn)); }

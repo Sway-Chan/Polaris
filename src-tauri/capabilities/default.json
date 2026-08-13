@@ -1,0 +1,38 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Polaris 默认能力集：前端 webview 经 IPC 调用全部 Polaris command + Tauri 插件能力（对齐 Polaris 渲染端可用的原生能力面）。**dialog 权限刻意不用 `dialog:default`**：该 set 的文案自称 'All dialog types are enabled'，实际只含 allow-message/save/open —— 不含 allow-confirm。`dialog:allow-confirm` 已于 2026-07-29 收回：破坏性操作的二次确认改走 App 自绘 ConfirmDialog（components/dialogs/confirm-gate.ts），生产代码不再调用 window.confirm ⇒ 该授权成为纯多余授权面。有 Rust 侧守卫钉住「生产代码不得再调 confirm」与「本文件不得再授 allow-confirm」两条。保留 allow-message 的理由：插件 init 脚本无条件覆写 window.alert，未授时任何一处 alert 会变成无人捕获的 promise rejection（静默）；授着则最差只是弹一个框。open/save 只在 Rust 侧经 DialogExt 调用，不走 ACL。",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:default",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-close",
+    "core:window:allow-is-maximized",
+    "core:window:allow-start-dragging",
+    "core:webview:default",
+    "core:app:default",
+    "core:path:default",
+    "core:resources:default",
+    "core:menu:default",
+    "core:tray:default",
+    "core:image:default",
+    "shell:allow-open",
+    "dialog:allow-message",
+    "notification:default",
+    "os:default",
+    "process:default",
+    "autostart:default",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled",
+    "fs:default",
+    "fs:allow-read-text-file",
+    "fs:allow-write-text-file"
+  ]
+}

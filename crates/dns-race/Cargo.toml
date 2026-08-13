@@ -1,0 +1,38 @@
+[package]
+name = "polaris-dns-race"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# ⚠️ 本 crate **零新增第三方依赖**：下列每一项都已在 workspace 依赖图内（简约阶梯第 5 级「已装依赖」）。
+# 唯一被认真评估过要不要新引的是 DNS wire 编解码库（hickory-proto 等）——结论是**不引**：
+# 上游 `shared/dns-wire.ts` 是手写极小编解码器，其三态分类（HIT/EMPTY/FAIL）+ TC=1 判 FAIL +
+# 「NXDOMAIN 算 EMPTY 不算 FAIL」等语义是本功能的判定核心，走通用库反而要在库的类型上重建同一套判定，
+# 且失去逐字节对拍能力。故 `wire.rs` 按 上游 1:1 手写移植（~330 行，零依赖、纯函数、可逐字节单测）。
+[dependencies]
+# spec 解析（`parse_dns_server_spec`）+ `DnsConfig` 投影复用 config-engine —— 上游 `parseCustomUpstream`
+# 本身就是调 `parseDnsServerSpec`，在此自造第二份解析器 = 双真值漂移（同一条 `tls://` 拒绝规则两处维护）。
+# 同理 `nodeResolverPool` / `nodeResolverCustom` 的反序列化投影只此一份，本 crate 直接消费。
+polaris-config-engine = { path = "../config-engine" }
+# async-trait = 注入面（`UpstreamQuery` / `DohPost`）需 trait 中 async fn（对齐 unlock 的 `UnlockHttp`）。
+async-trait = { workspace = true }
+# futures = `FuturesUnordered`（一层内 N 个上游并发 + 抢跑后整体 drop 即取消，替代 TS 的 AbortController）。
+futures = { workspace = true }
+# tokio：UDP 薄壳（net）+ 竞速总预算/单上游超时（time）+ sidecar 收发任务（rt）。
+# 档位对齐 core-supervisor / singbox-grpc 既有用法，不引新运行时。
+tokio = { version = "1", features = ["net", "rt", "time", "macros", "sync"] }
+# log = 门面（无 logger 即 no-op）：POISONED 丢弃计数是 decoy 池漂移的唯一信号，必须可见。
+log = "0.4"
+
+[dev-dependencies]
+# 测试用：驱动 async 竞速 + 回环 mock UDP 上游（**只允许 127.0.0.1**，见 lib.rs「测试边界」）。
+tokio = { version = "1", features = [
+    "net",
+    "rt",
+    "rt-multi-thread",
+    "time",
+    "macros",
+    "sync",
+    "test-util",
+] }

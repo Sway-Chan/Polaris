@@ -1,0 +1,17 @@
+[package]
+name = "polaris-helper-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+polaris-helper-proto = { path = "../helper-proto" }
+# thiserror = ClientError / ManagerError 枚举 derive（与 helper / core-supervisor 一致）。
+thiserror = "2"
+# log = 连接 / 重连 / 装卸事件 facade（生产侧由 host 接管；测试侧 no-op）。
+log = "0.4"
+
+[dev-dependencies]
+# tempfile = token 文件 / 脚本落盘的临时目录（token.rs / manager.rs 测试）。
+tempfile = "3"

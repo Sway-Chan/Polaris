@@ -1,0 +1,40 @@
+[package]
+name = "polaris-unlock-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+# wreq 6 删掉了 `Response::chunk()`，流式读 body 只剩 `bytes_stream()`（`impl Stream`）——
+# 需要 `StreamExt::next()` 才能逐 chunk 加停滞看门狗。`futures` 是既有 workspace 依赖
+# （`polaris-unlock` 的并发齐射用它），本 crate 引用它**不给 Cargo.lock 增加任何包**。
+futures.workspace = true
+polaris-unlock = { version = "0.1.0", path = "../unlock" }
+tokio = { version = "1.53.0", features = ["time"] }
+# wreq 6 不再 re-export `Url`（改用 `http::Uri` + `IntoUri`），而 `Uri` 没有相对引用解析能力。
+# wreq 自己内部仍用 `url::Url::join` 解 `Location`（`wreq-6.0.0-rc.29/src/client/layer/redirect/future.rs:196`），
+# 直接引同一个 crate = 与 wreq 5 的 `wreq::Url` **同实现同语义**；`url` 已是 wreq 6 的传递依赖 ⇒ lock 不增包。
+url = "2"
+# 5.3.0 → 6.0.0-rc.29：稳定线的 Chrome 指纹模板止于 137（≈ 一年前），上游把新模板全放进 6.x/3.x 线。
+# 压缩四个 feature **名未变**（实现从 async-compression 换成 tower-http，见 lib.rs「6.x 破坏性变更」）。
+# **新增 `stream`**：`Response::chunk()` 被删，body 截断 + 停滞看门狗改走 `bytes_stream()`，该方法在此 feature 后。
+# **新增 `cookies`**：`ClientBuilder::cookie_store()` 在此 feature 后。理由见 lib.rs `base_builder()`
+# 的 `.cookie_store(true)`（手动逐跳跟随会丢 `Set-Cookie`，与真 Chrome 行为差一条独立于指纹的信号）。
+# `cookie` crate 已在 Cargo.lock 里（tauri 侧的传递依赖）⇒ 开这个 feature **零新增包**。
+wreq = { version = "6.0.0-rc.29", features = ["gzip", "deflate", "brotli", "zstd", "stream", "cookies"] }
+# 2.2.6 → 3.0.0-rc.14（其 `wreq` 约束是 `^6.0.0-rc`，故与上面**绑定**升）。`emulation` feature 名未变，
+# 但语义变了：2.2.6 的 `emulation` 顺带转发 `wreq/gzip|brotli|deflate|zstd`，3.x **不再转发**，改为拉
+# brotli/flate2/zstd 给 TLS **证书压缩**（`emulate/compress.rs`）用。响应体解压全靠上面 wreq 的四个 feature，
+# 故两处必须**各自**声明——指望 wreq-util 带出来会静默丢解压能力（= 拿压缩字节流做 marker 匹配的静默误判）。
+# **不开** `emulation-compression`：它只让 emulation 的默认头集额外塞一条 `accept-encoding`，
+# 而我们的 `Accept-Encoding` 由 `polaris_unlock::browser::ACCEPT_ENCODING` 单点钉死并逐请求覆盖。
+wreq-util = { version = "3.0.0-rc.14", default-features = false, features = ["emulation"] }
+
+[dev-dependencies]
+tokio = { version = "1.53.0", features = ["macros", "rt", "rt-multi-thread", "time"] }
+
+# ⚠️ 本 crate 是 workspace 里**唯一**允许依赖 `wreq`（TLS/JA3 指纹伪装客户端）的地方。
+# 隔离理由见 src/lib.rs 模块文档「为什么单独一个 crate」——订阅拉取 / 内核下载 / WARP 注册
+# 继续走 src-tauri 的 reqwest+rustls，不承担 BoringSSL 构建链与指纹库的模板漂移风险。

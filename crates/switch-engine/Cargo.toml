@@ -1,0 +1,21 @@
+[package]
+name = "polaris-switch-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# 消费 config-engine 的 planHotSwitch 产物（HotSwitchPlan / HotSwitchPut / HotSwitchKind）。
+polaris-config-engine = { path = "../config-engine" }
+# 复用 core-supervisor 的 LifecycleGate（lifecycle_depth 单飞 + 去抖 trailing 顺序门）。
+polaris-core-supervisor = { path = "../core-supervisor" }
+# trait 内 async fn（ManagementApi / ConnectionsFeed 的异步签名）。
+async-trait = { workspace = true }
+# 异步运行时：DebouncedRestart 的 timer + spawn + mpsc。
+tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
+# 错误类型。
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["sync", "time", "rt", "rt-multi-thread", "macros", "test-util"] }

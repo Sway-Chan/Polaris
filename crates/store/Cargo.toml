@@ -1,0 +1,19 @@
+[package]
+name = "polaris-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+polaris-config-engine = { path = "../config-engine" }
+# scrypt = 隐私锁密码哈希的 memory-hard KDF（对齐 上游 main/utils/privacy-lock.ts 的 Node 内建 scrypt）。
+# 手搓 KDF 是安全反模式 → 走成熟 crate（RustCrypto）。default-features=false 只取核心 scrypt() 派生函数，
+# 不拉 password-hash/PHC（落盘用 上游 同款 {algo,salt,hash,params} JSON），复用已在树的 sha2 0.10。
+scrypt = { version = "0.11", default-features = false }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,419 @@
+/*
+ * Polaris 屏幕专用样式（1:1 提取自原型 polaris-prototype.html）。
+ *
+ * 真值源：~/docs/polaris/design/prototype/polaris-prototype.html 的 <style> 块。
+ * 覆盖四屏：nodes / rules / apppolicy / resources。仅提取这四屏专用类（通用 .btn/.card/.pill/.seg2/
+ * .input/.phead/.sub-tabs/.bar/.field-lbl/.card-h/.card-sub 已在 components.css），逐字对齐原型层级与数值。
+ *
+ * 设计纪律（与 tokens.css / tailwind.config.js / components.css 协同）：
+ *  - 颜色一律走 hsl(var(--token))；间距 / radius / shadow / 字体栈走非颜色令牌。
+ *  - 原型 class 名与层级保持不变，React 组件直接引用本文件的类。
+ *  - 行号注释指向原型 polaris-prototype.html 的源行，便于后续对照修订。
+ */
+
+/* ═══════════ 通用：开关 / 信息图标 / spinner（L298-304 / L580-582 / L1016-1017）═══════════ */
+.swt{ position:relative; width:36px; height:20px; border-radius:999px; background:hsl(var(--surface-3));
+  border:1px solid hsl(var(--hair)); flex:none; transition:.16s; cursor:pointer; }
+.swt::after{ content:""; position:absolute; top:1px; left:1px; width:16px; height:16px; border-radius:50%;
+  background:#fff; box-shadow:0 1px 2px hsl(var(--shadow)/0.4); transition:left .16s; }
+.swt.on{ background:hsl(var(--flow)); border-color:transparent; } .swt.on::after{ left:17px; }
+.swt.indet{ background:hsl(var(--warn)); border-color:transparent; } .swt.indet::after{ left:9px; }
+.info-i{ display:inline-grid; place-items:center; width:15px; height:15px; color:hsl(var(--fg-faint)); cursor:default; flex:none; }
+.info-i svg{ width:14px; height:14px; }
+.spinner{ width:15px; height:15px; border-radius:50%; border:2px solid hsl(var(--fg-faint)/0.4);
+  border-top-color:hsl(var(--flow)); animation:spin .7s linear infinite; display:inline-block; }
+@keyframes spin{ to{ transform:rotate(360deg); } }
+.nd-count{ font-size:12px; color:hsl(var(--fg-faint)); font-variant-numeric:tabular-nums; letter-spacing:.01em; }
+.acts .btn .nd-chev{ margin-left:-2px; opacity:.9; }
+
+/* ═══════════ 动作色（L853-859，app-policy 首定义，rules/resources 复用）═══════════ */
+.act-proxy{ background:hsl(var(--flow)/0.15); color:hsl(var(--flow-hi)); }
+.act-direct{ background:hsl(var(--ok)/0.15); color:hsl(var(--ok)); }
+.act-block{ background:hsl(var(--err)/0.15); color:hsl(var(--err)); }
+.act-return{ background:hsl(var(--up)/0.15); color:hsl(var(--up)); }
+.act-dot{ width:6px; height:6px; border-radius:999px; flex:none; display:inline-block; }
+.act-dot.proxy{ background:hsl(var(--flow)); } .act-dot.direct{ background:hsl(var(--ok)); }
+.act-dot.block{ background:hsl(var(--err)); } .act-dot.return{ background:hsl(var(--up)); }
+
+/* rules-note：规则页提示条（mode-warn 定义在 components.css，此处不重复）*/
+.rules-note{ font-size:11.5px; color:hsl(var(--fg-dim)); background:hsl(var(--flow-weak)/0.6); border:1px solid hsl(var(--flow)/0.2);
+  border-radius:var(--r-sm); padding:9px 12px; margin-bottom:14px; display:flex; gap:8px; align-items:center; }
+.rules-note[hidden]{ display:none; }
+.rules-dim{ opacity:.5; }
+
+/* ═══════════ NODES（L598-732）═══════════ */
+.nd-tabs-scroll{ overflow-x:auto; margin:0 0 16px; scrollbar-width:none; }
+.nd-tabs-scroll::-webkit-scrollbar{ display:none; }
+.nd-tabs-scroll .sub-tabs{ width:max-content; max-width:none; margin-bottom:0; }
+.nd-tabs-scroll .sub-tabs button{ white-space:nowrap; }
+.sub-info{ display:flex; align-items:center; gap:10px; padding:11px 14px; border:1px solid hsl(var(--line));
+  border-radius:var(--r); background:hsl(var(--surface)); margin-bottom:14px; }
+.sub-info > b{ font-size:13.5px; font-weight:640; }
+.mesh-card{ padding:16px; margin-bottom:16px; }
+.mesh-head{ display:flex; align-items:baseline; gap:9px; flex-wrap:wrap; margin-bottom:2px; }
+.node-toolbar{ display:flex; align-items:center; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
+.node-toolbar .input{ flex:1 1 150px; min-width:150px; }
+.node-toolbar > .seg2, .node-toolbar > .sel, .node-toolbar > .btn{ flex:none; }
+.nd-subinfo{ margin-bottom:14px; } .nd-subinfo .sub-info{ margin-bottom:0; }
+.node-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:12px; align-content:start;
+  align-items:stretch; grid-auto-rows:1fr; }
+@container mainc (max-width:470px){ .node-grid{ grid-template-columns:1fr; } }
+.nd-card{ position:relative; overflow:hidden; border:1px solid hsl(var(--line)); border-radius:var(--r); background:hsl(var(--surface));
+  padding:13px 14px; display:flex; flex-direction:column; gap:9px; transition:.14s; min-height:141px; }
+.nd-card:hover{ border-color:hsl(var(--flow)/0.45); box-shadow:0 4px 16px -10px hsl(var(--shadow)/0.5); }
+.nd-card > .nd-top, .nd-card > .nd-pills, .nd-card > .nd-acts, .nd-card > .nd-addr, .nd-card > .nd-check{ position:relative; z-index:1; }
+.nd-card.cur{ border-color:hsl(var(--flow)); box-shadow:0 0 0 2px hsl(var(--ring)/0.4); }
+.nd-top{ display:flex; align-items:flex-start; gap:8px; }
+.nd-name{ font-size:13.5px; font-weight:640; flex:1; min-width:0; line-height:1.4; white-space:nowrap; overflow-x:auto;
+  overflow-y:hidden; scrollbar-width:none; }
+.nd-name::-webkit-scrollbar{ display:none; }
+/* 启动 gate 剔除的非法节点：名称置灰（上游 server-card.tsx:103 的 `opacity-50` 等价）。
+   只降名称透明度、不禁用卡片交互——剔除是会话内语义，用户仍需能点进去改配置修它。 */
+.nd-name.nd-invalid{ opacity:.5; }
+.nd-addr{ font-size:11px; color:hsl(var(--fg-faint)); font-family:var(--mono); }
+.nd-dot{ width:8px; height:8px; border-radius:50%; flex:none; margin-top:4px; background:hsl(var(--fg-faint));
+  box-shadow:0 0 0 3px hsl(var(--fg-faint)/0.12); }
+.nd-dot.dead{ background:hsl(var(--err)); box-shadow:0 0 0 3px hsl(var(--err)/0.16); }
+.nd-card.cur .nd-dot{ background:hsl(var(--ok)); box-shadow:0 0 0 3px hsl(var(--ok)/0.18); }
+.nd-top .nd-lat{ margin-left:auto; flex:none; font-size:11px; font-weight:680; font-variant-numeric:tabular-nums;
+  padding:2px 8px; border-radius:999px; line-height:1.5; letter-spacing:.01em; color:hsl(var(--fg-dim)); background:hsl(var(--surface-3)); }
+.nd-top .nd-lat.fast{ color:hsl(var(--ok)); background:hsl(var(--ok)/0.12); }
+.nd-top .nd-lat.mid{ color:hsl(var(--flow-hi)); background:hsl(var(--flow)/0.12); }
+.nd-top .nd-lat.slow{ color:hsl(var(--warn)); background:hsl(var(--warn)/0.14); }
+.nd-top .nd-lat.dead{ color:hsl(var(--err)); background:hsl(var(--err)/0.14); }
+.nd-top .nd-lat.none{ color:hsl(var(--fg-faint)); background:hsl(var(--surface-3)); }
+.nd-pills{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.nd-cap{ display:inline-flex; align-items:center; gap:3px; font-size:10px; font-weight:640; padding:2px 7px; border-radius:999px;
+  background:hsl(var(--surface-3)); color:hsl(var(--fg-dim)); }
+.nd-cap svg{ width:11px; height:11px; }
+.nd-cap.exit{ background:hsl(var(--aurora-weak)); color:hsl(var(--aurora-hi)); }
+.nd-cap.lan{ background:hsl(var(--warn-weak)); color:hsl(var(--warn)); }
+/* 「网段被覆盖」(shadowed)：advisory 提醒，非错误——用 warn 弱底而非 err，且比 .lan 更淡（配置仍可用，
+   只是其中某几段不生效）。prototype.css 后加载但只定义 `.nd-cap` 基础态，(0,2,0) 特异性使本条恒生效。 */
+.nd-cap.shadow{ background:hsl(var(--warn-weak)/0.6); color:hsl(var(--fg-dim)); }
+.nd-cur{ display:inline-flex; align-items:center; gap:4px; font-size:10px; font-weight:660; padding:2px 8px; border-radius:999px;
+  background:hsl(var(--ok-weak)); color:hsl(var(--ok)); }
+.nd-cur::before{ content:""; width:5px; height:5px; border-radius:50%; background:currentColor; flex:none; }
+.nd-xfer{ font-size:10.5px; color:hsl(var(--fg-faint)); font-family:var(--mono); letter-spacing:.02em; }
+.nd-acts{ display:flex; align-items:center; gap:2px; margin-top:auto; padding-top:9px; border-top:1px solid hsl(var(--hair)); }
+.nd-a{ width:27px; height:27px; border-radius:7px; display:grid; place-items:center; color:hsl(var(--fg-faint));
+  border:1px solid transparent; transition:.12s; cursor:pointer; background:transparent; }
+.nd-a svg{ width:14px; height:14px; }
+.nd-a:hover{ background:hsl(var(--surface-2)); color:hsl(var(--fg)); }
+.nd-a.speed:hover{ color:hsl(var(--flow)); background:hsl(var(--flow-weak)); }
+.nd-a.err{ color:hsl(var(--err)/0.85); } .nd-a.err:hover{ background:hsl(var(--err)/0.1); color:hsl(var(--err)); }
+.nd-check{ position:absolute; top:9px; left:9px; width:18px; height:18px; border-radius:5px; border:1.5px solid hsl(var(--hair));
+  background:hsl(var(--surface)); display:none; place-items:center; z-index:2; cursor:pointer; }
+.nd-check svg{ width:12px; height:12px; color:hsl(var(--flow)); display:none; }
+.nd-check.on{ background:hsl(var(--flow)); border-color:hsl(var(--flow)); } .nd-check.on svg{ display:block; color:#fff; }
+.nodes-batch-mode .nd-check{ display:grid; } .nodes-batch-mode .nd-dot{ display:none; }
+.sub-usage{ width:90px; font-variant-numeric:tabular-nums; } .sub-usage .bar{ height:5px; }
+.sub-usage.warn .bar>i{ background:hsl(var(--warn)); }
+.batch-bar{ display:flex; align-items:center; gap:10px; padding:10px 14px; border-radius:var(--r);
+  background:hsl(var(--flow-weak)); border:1px solid hsl(var(--flow)/0.3); margin-bottom:14px; }
+.batch-bar[hidden]{ display:none; }
+.batch-bar b{ font-size:12.5px; color:hsl(var(--flow-hi)); } .batch-bar .sp{ margin-left:auto; }
+/* subscription info bar — vertical stack (L720-732) */
+.sub-info2{ flex-direction:column; align-items:stretch; gap:9px; }
+.sub-info2 .si-main{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.sub-info2 .si-main > b{ font-size:13.5px; font-weight:640; }
+.sub-info2 .si-auto{ font-size:10px; }
+.sub-info2 .si-acts{ display:flex; align-items:center; gap:4px; margin-left:auto; }
+.sub-info2 .si-meta{ display:flex; align-items:center; gap:6px 14px; flex-wrap:wrap; font-size:11px; color:hsl(var(--fg-dim)); }
+.sub-info2 .si-url{ max-width:min(320px,44%); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:hsl(var(--fg-faint)); }
+.sub-info2 .si-updated{ display:inline-flex; align-items:center; gap:5px; } .sub-info2 .si-updated svg{ opacity:.7; }
+.sub-info2 .si-expiry{ font-variant-numeric:tabular-nums; }
+.sub-info2 .si-meta .sub-usage{ display:inline-flex; align-items:center; gap:7px; width:auto; }
+.sub-info2 .si-meta .sub-usage .bar{ width:74px; height:5px; margin:0!important; flex:none; }
+
+/* ═══════════ RULES（L735-805 / L1371-1372）═══════════ */
+.rule-list{ display:flex; flex-direction:column; gap:0; }
+.rule-item{ display:flex; align-items:center; gap:12px; padding:13px 14px; border-bottom:1px solid hsl(var(--hair));
+  background:hsl(var(--surface)); transition:background .12s; }
+.rule-item:hover{ background:hsl(var(--surface-2)/0.55); }
+.rule-item:first-child{ border-top-left-radius:var(--r); border-top-right-radius:var(--r); }
+.rule-item:last-child{ border-bottom:0; border-bottom-left-radius:var(--r); border-top-right-radius:0; border-bottom-right-radius:var(--r); }
+.rule-item.dragging{ opacity:.5; background:hsl(var(--flow-weak)); }
+.rule-item.off{ opacity:.55; }
+.rule-item.off .rule-main b{ text-decoration:line-through; text-decoration-color:hsl(var(--fg-faint)); }
+.rule-pri{ width:18px; text-align:center; font-size:11px; font-weight:660; color:hsl(var(--fg-faint));
+  font-variant-numeric:tabular-nums; flex:none; margin-right:-6px; }
+.rule-grip{ cursor:grab; color:hsl(var(--fg-faint)); display:grid; place-items:center; }
+.rule-grip svg{ width:16px; height:16px; }
+.rule-type-ic{ width:32px; height:32px; flex:none; border-radius:var(--r-sm); display:grid; place-items:center;
+  background:hsl(var(--surface-2)); color:hsl(var(--fg-dim)); } .rule-type-ic svg{ width:16px; height:16px; }
+.rule-main{ flex:1; min-width:0; } .rule-main b{ font-size:13px; font-weight:620; }
+.rule-main .rmeta{ font-size:11px; color:hsl(var(--fg-faint)); margin-top:2px; font-family:var(--mono); }
+/* 条件摘要 = 每类型一枚「类型 ×n」计数标签（值明细走标签 hover，见 RuleItem.tsx RuleMetaCounts）。
+   恒单行：规则行高不随条件条数跳动，也不会随值膨胀被撑开。
+   ⚠️ `white-space` / `overflow` 在 prototype.css 的 `.rule-main .rmeta` 里**没有声明**，故此处的补充
+   不受 @import 顺序影响（prototype 在后，但只覆盖它声明过的属性）。颜色一律走令牌 ⇒ 深浅色同源。 */
+.rule-main .rmeta{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rmeta-cnt{ cursor:help; }
+.rmeta-cnt:hover{ color:hsl(var(--fg-dim)); }
+.rmeta-n{ margin-left:3px; color:hsl(var(--fg-dim)); font-variant-numeric:tabular-nums; }
+.rmeta-cnt:hover .rmeta-n{ color:hsl(var(--fg)); }
+.rmeta-sep{ margin:0 6px; color:hsl(var(--fg-faint)); opacity:.6; }
+/* 悬停卡里的值列表：允许换行 + 限宽，长域名列表不会把卡片拉成一条横线。 */
+.rmeta-vals{ margin-top:5px; font-size:11px; line-height:1.55; color:hsl(var(--fg-dim));
+  max-width:340px; white-space:normal; word-break:break-all; }
+.rule-target{ font-size:11px; color:hsl(var(--fg-dim)); text-align:right; }
+.rule-target .rt-node{ font-weight:600; color:hsl(var(--fg)); }
+.rule-acts{ display:flex; gap:5px; }
+.rl-chain-flow{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:11px; }
+.rl-step{ font-size:11.5px; font-weight:550; padding:5px 10px; border-radius:7px; background:hsl(var(--surface-2));
+  border:1px solid hsl(var(--line)); color:hsl(var(--fg-dim)); white-space:nowrap; }
+.rl-step.on{ background:hsl(var(--flow-weak)); border-color:hsl(var(--flow)/0.35); color:hsl(var(--flow-hi)); font-weight:660; }
+/* 优先级链 6 步青系渐层：原先只有首步(.on)着色、后 5 步一律灰，读起来像「只有自定义规则有效」，
+   而这条链讲的是**依次下降的优先级**。故按位次给 --flow 逐级降透明度（0.30→0.05），把「先命中先生效」
+   的次序画出来。首步仍由上面的 .rl-step.on 单独定义（最强对比），本组只作用于其后各步。
+   实现走 nth-child：.rl-chain-flow 的直接子元素是 6 个 <span> 包裹（步 + 箭头），故选到包裹层再下探。 */
+.rl-chain-flow > span:nth-child(2) .rl-step{ background:hsl(var(--flow)/0.24); border-color:hsl(var(--flow)/0.30); color:hsl(var(--flow-hi)); }
+.rl-chain-flow > span:nth-child(3) .rl-step{ background:hsl(var(--flow)/0.18); border-color:hsl(var(--flow)/0.26); color:hsl(var(--flow-hi)); }
+.rl-chain-flow > span:nth-child(4) .rl-step{ background:hsl(var(--flow)/0.13); border-color:hsl(var(--flow)/0.22); }
+.rl-chain-flow > span:nth-child(5) .rl-step{ background:hsl(var(--flow)/0.09); border-color:hsl(var(--flow)/0.18); }
+.rl-chain-flow > span:nth-child(6) .rl-step{ background:hsl(var(--flow)/0.05); border-color:hsl(var(--flow)/0.14); }
+.rl-arrow{ color:hsl(var(--fg-faint)); font-size:13px; }
+/* 行内排序按钮（上下移/置顶底）：到边界即 disabled——保留占位不塌陷，避免行内按钮左右跳动。 */
+.rule-acts .nd-a:disabled{ opacity:0.3; cursor:default; pointer-events:none; }
+.geo-card{ padding:16px; margin-bottom:16px; }
+.geo-region{ display:inline-flex; gap:3px; padding:3px; border:1px solid hsl(var(--line)); border-radius:var(--r-sm);
+  background:hsl(var(--surface-2)); margin-top:10px; }
+.geo-region button{ font-size:12px; font-weight:540; padding:6px 14px; border-radius:7px; color:hsl(var(--fg-dim)); }
+.geo-region button.on{ background:hsl(var(--fg)); color:hsl(var(--surface)); font-weight:640; }
+.geo-flow{ margin:13px 0 2px; padding:11px 13px; border-radius:var(--r-sm);
+  background:linear-gradient(90deg, hsl(var(--flow-weak)/0.55), hsl(var(--flow-weak)/0.12));
+  border:1px solid hsl(var(--flow)/0.22); }
+.geo-flow .field-lbl{ margin:0; }
+.geo-flow .rl-chain-flow{ margin-top:8px; }
+.geo-rev-btn{ display:inline-flex; align-items:center; gap:7px; padding:7px 14px; border-radius:var(--r-sm);
+  border:1px solid hsl(var(--line)); background:hsl(var(--surface-2)); color:hsl(var(--fg-dim)); font-size:12px;
+  font-weight:560; cursor:pointer; }
+.geo-rev-btn:hover{ border-color:hsl(var(--flow)/0.4); }
+.geo-rev-btn .geo-rev-dot{ width:7px; height:7px; border-radius:999px; background:hsl(var(--fg-faint)); flex:none; }
+.geo-rev-btn.on{ background:hsl(var(--up)/0.15); border-color:hsl(var(--up)/0.45); color:hsl(var(--up)); font-weight:640; }
+.geo-rev-btn.on .geo-rev-dot{ background:hsl(var(--up)); }
+
+/* ═══════════ APP POLICY（L808-864）═══════════ */
+.app-summary{ display:flex; align-items:center; gap:16px; margin-bottom:14px; font-size:12px; flex-wrap:wrap; }
+.app-summary .as-n{ font-weight:660; }
+.app-wall{ display:grid; grid-template-columns:repeat(auto-fill,minmax(196px,1fr)); gap:9px; }
+@container mainc (max-width:400px){ .app-wall{ grid-template-columns:1fr; } }
+.app-card{ display:flex; align-items:center; gap:10px; padding:9px 11px; border:1px solid hsl(var(--line));
+  border-radius:var(--r-md); background:hsl(var(--surface)); }
+.app-ico{ width:32px; height:32px; flex:none; border-radius:var(--r-sm); display:grid; place-items:center; font-size:15px;
+  font-weight:700; background:hsl(var(--surface-2)); color:hsl(var(--fg-dim)); overflow:hidden; }
+.app-tx{ flex:1; min-width:0; }
+.app-tx b{ display:block; font-size:12.5px; font-weight:620; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.app-tx div{ font-size:10px; color:hsl(var(--fg-faint)); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.app-off{ opacity:.5; }
+
+/* 已删：.pol-sel/.pol-tiles/.pol-tile/.pol-node 三瓦片策略选择器（D5·B4/C5 的自造设计）。
+   AppPolicyScreen 已按计划回退到原型的 .app-pol 内联 pill + .mini-menu（见该文件抬头注释），
+   全仓零渲染点 ⇒ 这套样式是死代码，随 DOM 迁移完成一并清掉。 */
+.ap-toolbar{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:16px; }
+.ap-chips{ display:flex; gap:6px; flex-wrap:wrap; }
+.ap-chip{ padding:5px 12px; border-radius:999px; border:1px solid hsl(var(--line)); background:hsl(var(--surface));
+  font-size:12px; font-weight:560; color:hsl(var(--fg-dim)); cursor:pointer; }
+.ap-chip:hover{ background:hsl(var(--surface-2)); }
+.ap-chip.on{ background:hsl(var(--flow-weak)); color:hsl(var(--flow-hi)); border-color:hsl(var(--flow)/0.4); }
+.ap-toolbar .input{ flex:1; min-width:150px; }
+.ap-list{ display:flex; flex-direction:column; border:1px solid hsl(var(--line)); border-radius:var(--r); overflow:hidden; }
+.ap-row{ display:flex; align-items:center; gap:11px; padding:8px 13px; border-bottom:1px solid hsl(var(--hair)); position:relative; }
+.ap-row:hover{ background:hsl(var(--surface-2)/0.45); }
+.ap-row:last-child{ border-bottom:0; }
+.ap-row .app-ico{ width:26px; height:26px; font-size:13px; border-radius:7px; }
+.ap-row-tx{ flex:1; min-width:0; display:flex; align-items:baseline; gap:8px; }
+.ap-row-tx b{ font-size:12.5px; font-weight:600; } .ap-row .ap-proc{ font-size:10.5px; color:hsl(var(--fg-faint)); font-family:var(--mono); }
+.ap-add{ display:flex; align-items:center; justify-content:center; gap:7px; width:100%; padding:11px; margin-top:12px;
+  border:1px dashed hsl(var(--hair)); border-radius:var(--r-md); color:hsl(var(--fg-dim)); font-size:12.5px; background:transparent; cursor:pointer; }
+.ap-add:hover{ border-color:hsl(var(--flow)/0.5); color:hsl(var(--flow-hi)); } .ap-add svg{ width:15px; }
+.ap-empty{ padding:24px; text-align:center; font-size:12.5px; color:hsl(var(--fg-faint)); }
+.ap-off-note{ display:flex; align-items:center; gap:8px; font-size:11.5px; color:hsl(var(--fg-dim));
+  background:hsl(var(--surface-2)/0.5); border:1px solid hsl(var(--hair)); border-radius:var(--r-sm); padding:9px 12px; margin-bottom:14px; }
+.ap-off-note[hidden]{ display:none; }
+.ap-off-note svg{ width:15px; flex:none; color:hsl(var(--fg-faint)); }
+.app-ico-img{ width:100%; height:100%; object-fit:contain; background:#fff; padding:3px; box-sizing:border-box; }
+
+/* ═══════════ RESOURCES（L980-1014）═══════════ */
+.res-table{ border:1px solid hsl(var(--line)); border-radius:var(--r); overflow:hidden; }
+.res-row{ display:grid; grid-template-columns:248px 92px 132px auto;
+  justify-content:start; gap:20px; align-items:center; font-variant-numeric:tabular-nums;
+  padding:12px 14px; border-bottom:1px solid hsl(var(--hair)); font-size:12px; }
+.res-row > span:last-child{ display:flex; align-items:center; gap:6px; }
+.res-row.head{ background:hsl(var(--surface-2)/0.6); font-size:10.5px; font-weight:640; letter-spacing:.05em;
+  text-transform:uppercase; color:hsl(var(--fg-faint)); }
+.res-row:last-child{ border-bottom:0; }
+.res-name{ font-weight:600; display:flex; align-items:center; gap:7px; }
+.res-prog{ display:flex; align-items:center; gap:8px; }
+.res-prog .bar{ flex:1; min-width:60px; } .res-prog span{ font-size:10.5px; color:hsl(var(--fg-faint)); font-variant-numeric:tabular-nums; }
+@container mainc (max-width:780px){ .res-row{ grid-template-columns:minmax(0,1fr) 88px auto; } .res-row .rc-hide{ display:none; } }
+.res-grp{ display:flex; align-items:baseline; gap:8px; padding:9px 14px 7px; font-size:11px; font-weight:660;
+  color:hsl(var(--fg-dim)); background:hsl(var(--surface-2)/0.4); border-bottom:1px solid hsl(var(--hair)); }
+.res-grp:not(:first-child){ border-top:1px solid hsl(var(--hair)); }
+.grp-count{ font-size:10.5px; font-weight:600; color:hsl(var(--fg-faint)); }
+.res-row.f-hide, .res-grp.f-hide{ display:none; }
+.ref-badge{ display:inline-flex; align-items:center; gap:3px; height:16px; padding:0 6px; border-radius:99px; flex:none;
+  font-size:10px; font-weight:660; font-variant-numeric:tabular-nums; line-height:1; cursor:default;
+  background:hsl(var(--flow-weak)); color:hsl(var(--flow-hi)); }
+.ref-badge svg{ width:10px; height:10px; }
+.ref-badge.sys{ background:hsl(var(--surface-3)); color:hsl(var(--fg-dim)); }
+.ref-badge.none{ background:transparent; color:hsl(var(--fg-faint)); box-shadow:inset 0 0 0 1px hsl(var(--hair)); padding:0 5px; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   CSS 基座 reconcile —— 补齐 nodes/rules/apppolicy/resources 缺失族（原型 L601-1057）。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ───── NODES：国旗水印 + list 视图 + toolbar 补齐（原型 L642-731）───── */
+.node-toolbar .nt-hidden{ display:none!important; }   /* 订阅 tab 隐藏多选（上游 showAddButton=false）*/
+.node-toolbar .nh-sort select{ min-width:116px; } .node-toolbar .nt-proto select{ min-width:100px; }
+/* 卡片右下角国旗水印（大、淡、置于内容后；数值对齐 上游 conduit.css .nd-flag，别自创）*/
+.nd-flag{ position:absolute; right:-10px; bottom:-10px; width:86px; height:58px; object-fit:cover; border-radius:6px; opacity:.08;
+  filter:grayscale(.15); pointer-events:none; user-select:none; z-index:0; }
+:root[data-theme="dark"] .nd-flag{ opacity:.11; }
+@media (prefers-color-scheme:dark){ :root:not([data-theme="light"]) .nd-flag{ opacity:.11; } }
+/* list 行：右下角淡水印形态不适用（行太窄），改塑成名称前的小旗图标——同一 <img class="nd-flag">
+   元素，数值 1:1 对齐 上游 server-row.tsx 的 `.nd-row-flag`（conduit.css L390-391：20×14、
+   object-fit:cover、圆角 2px、inset 1px 描边、不透明——非水印透明度），非重新设计。position:static
+   使其脱离水印的 absolute 定位、回到 .nd-card 的 flex 文档流，因是首个子节点故排在 .nd-top（含
+   名称）之前；批选态见下方 order:-1 规则，复选框仍排在旗前。*/
+#s-nodes.nodes-list-view .nd-flag{ position:static; inset:auto; width:20px; height:14px;
+  border-radius:2px; opacity:1; filter:none; box-shadow:inset 0 0 0 1px hsl(var(--line)/0.75); }
+.nd-name .flag{ display:none; }   /* 名称前国旗冗余（右下角已有水印）；DOM 留供取码，仅隐藏 */
+/* 分组订阅（旧折叠头）+ 协议网格（原型 L697-713）*/
+.sub-group{ margin-bottom:14px; }
+.sub-group-h{ display:flex; align-items:center; gap:10px; padding:11px 14px; border:1px solid hsl(var(--line));
+  border-radius:var(--r); background:hsl(var(--surface)); cursor:pointer; }
+.sub-group-h .chev{ transition:.2s; } .sub-group.closed .chev{ transform:rotate(-90deg); }
+.sub-group.closed .sub-group-body{ display:none; }
+.sub-group-body{ padding:12px 2px 2px; }
+.sub-meta{ display:flex; align-items:center; gap:14px; margin-left:auto; font-size:11px; color:hsl(var(--fg-dim)); }
+.proto-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:8px; margin-top:12px; }
+@container mainc (max-width:720px){ .proto-grid{ grid-template-columns:repeat(auto-fill,minmax(96px,1fr)); } }
+.proto-chip{ padding:9px 11px; border:1px solid hsl(var(--line)); border-radius:var(--r-sm); background:hsl(var(--surface-2)/0.5);
+  font-size:12px; font-weight:560; text-align:center; transition:.12s; }
+.proto-chip:hover{ border-color:hsl(var(--flow)/0.5); background:hsl(var(--flow-weak)/0.5); color:hsl(var(--flow-hi)); }
+/* list 视图：卡片网格塌成堆叠紧凑行（#s-nodes.nodes-list-view 切换；原型 L717-731）*/
+#s-nodes.nodes-list-view .node-grid{ display:flex; flex-direction:column; gap:0; grid-template-columns:none;
+  border:1px solid hsl(var(--line)); border-radius:var(--r); background:hsl(var(--surface)); overflow:hidden; }
+#s-nodes.nodes-list-view .nd-card{ flex-direction:row; align-items:center; gap:10px; padding:9px 13px; min-height:0;
+  border:0; border-bottom:1px solid hsl(var(--hair)); border-radius:0; background:transparent; }
+#s-nodes.nodes-list-view .nd-card:last-child{ border-bottom:0; }
+#s-nodes.nodes-list-view .nd-card:hover{ box-shadow:none; background:hsl(var(--surface-2)/0.55); }
+#s-nodes.nodes-list-view .nd-card.cur{ box-shadow:inset 3px 0 0 hsl(var(--flow)); }
+#s-nodes.nodes-list-view .nd-top{ flex:none; align-items:center; gap:8px; min-width:0; max-width:42%; }
+#s-nodes.nodes-list-view .nd-dot{ margin-top:0; }
+#s-nodes.nodes-list-view .nd-name{ flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; }
+#s-nodes.nodes-list-view .nd-top .nd-lat{ margin-left:6px; }
+#s-nodes.nodes-list-view .nd-pills{ flex:1; min-width:0; }
+#s-nodes.nodes-list-view .nd-acts{ margin:0 0 0 12px; padding:0; border-top:0; flex:none; }
+#s-nodes.nodes-list-view.nodes-batch-mode .nd-check{ position:static; order:-1; margin:0; }
+
+/* ───── RULES：决策链卡内边距 + 规则目标触发器 + 模式提示（原型 L770,790-798）───── */
+.rl-chain{ padding:15px 17px; }
+.rule-target-trig{ display:flex; align-items:center; gap:8px; width:100%; padding:9px 11px; border:1px solid hsl(var(--line)); border-radius:var(--r-sm); background:hsl(var(--surface-2)); font:inherit; font-size:12.5px; color:hsl(var(--fg)); text-align:left; }
+.rule-target-trig:hover{ border-color:hsl(var(--flow)/0.4); }
+.rule-target-trig > span{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.rule-target-trig svg{ width:15px; flex:none; color:hsl(var(--fg-faint)); }
+#rules-mode-note, #rules-manual-note{ display:none; }
+#rules-mode-note.show, #rules-manual-note.show{ display:flex; }
+
+/* ───── APP POLICY：策略 chip .app-pol 基座 + 交互 + 自定义删除 + 图标兜底（原型 L833-838,873-877,1331-1345）
+   DOM 迁移已完成：AppPolicyScreen 现渲染原型的 .app-pol 内联 pill + .mini-menu，上方那套 pol-* 三瓦片
+   已随迁移删除，本段不再有前置依赖。───── */
+.app-pol{ display:inline-flex; align-items:center; gap:4px; font-size:11px; font-weight:600; color:hsl(var(--flow-hi));
+  padding:4px 8px; border-radius:7px; background:hsl(var(--flow-weak)); flex:none; max-width:112px; cursor:pointer; }
+.app-pol:hover{ filter:brightness(0.96); }
+.app-pol > span:last-child{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+.app-pol .dot{ flex:none; }
+/* 已删 .app-disabled-note：全仓零渲染点（AppPolicy 的置灰提示走 .ap-off-note / .mode-warn），
+   且 prototype.css:876 另存一份同名规则——这里这份既死又是双真值。 */
+.app-card{ position:relative; }
+.app-remove{ flex:none; width:24px; height:24px; border-radius:var(--r-xs); display:grid; place-items:center;
+  color:hsl(var(--fg-faint)); background:transparent; opacity:0; transition:opacity .12s; border:0; cursor:pointer; }
+.ap-row:hover .app-remove, .ap-row .app-remove:focus-visible{ opacity:1; }
+.app-card .app-remove{ position:absolute; top:-7px; right:-7px; width:20px; height:20px; border-radius:999px;
+  background:hsl(var(--surface)); border:1px solid hsl(var(--line)); box-shadow:0 1px 5px hsl(var(--shadow)/0.25);
+  color:hsl(var(--fg-dim)); transform:scale(.82); transition:opacity .12s, transform .12s; z-index:3; }
+.app-card:hover .app-remove, .app-card .app-remove:focus-visible{ opacity:1; transform:scale(1); }
+.app-remove:hover{ color:hsl(var(--err)); border-color:hsl(var(--err)/0.55); }
+.app-remove svg{ width:12px; } .app-card .app-remove svg{ width:11px; }
+/* 应用图标：白底 tile + emoji/字母兜底（原型 L873-877）*/
+.app-ico .app-ico-img{ width:100%; height:100%; object-fit:contain; background:#fff; padding:3px; box-sizing:border-box; }
+.app-ico .ico-fb{ display:grid; place-items:center; width:100%; height:100%; line-height:1; }
+.app-ico .ico-fb[hidden]{ display:none; }
+
+/* ───── RESOURCES：引用态三分 + 自动更新状态 + 目录弹窗补齐（原型 L1015-1057，非冲突项）
+   .cat-list/.cat-item/.cat-ck 现状已有 React flex 适配版本，此处不覆盖，仅补非冲突族。───── */
+.ref-trigger{ text-decoration:underline dotted; text-decoration-color:hsl(var(--fg-faint)); text-underline-offset:2px; cursor:default; }
+.ref-none{ color:hsl(var(--fg-faint)); }
+.res-auto-status{ display:flex; align-items:center; gap:7px; font-size:11.5px; color:hsl(var(--fg-dim)); }
+.cat-tabs{ display:inline-flex; gap:3px; padding:3px; border-radius:var(--r-sm); border:1px solid hsl(var(--line)); background:hsl(var(--surface-2)); }
+.cat-tabs button{ padding:5px 14px; border-radius:6px; font-size:12px; font-weight:560; color:hsl(var(--fg-dim)); border:0; background:transparent; cursor:pointer; }
+.cat-tabs button.on{ background:hsl(var(--surface)); color:hsl(var(--fg)); box-shadow:0 1px 3px hsl(var(--shadow)/0.16); }
+.cat-nm mark{ background:hsl(var(--flow-weak)); color:hsl(var(--flow-hi)); border-radius:3px; padding:0 1px; }
+.cat-loading{ display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px;
+  padding:38px 20px; font-size:12px; color:hsl(var(--fg-dim)); }
+.cat-loading .spinner{ width:22px; height:22px; }
+.cat-count{ margin-top:8px; font-size:11px; color:hsl(var(--fg-faint)); text-align:right; font-variant-numeric:tabular-nums; }
+
+/* ───── HOME：系统代理降级横幅（`connState === 'proxy-degraded'`）的内联形态。
+   它借用 prototype `.pending-bar` 的内部结构与 --warn 调色（.pb-ic/.pb-tx + warn-weak 底），但语义上是
+   **页内一张告知卡**，不是 statusbar 上方那条 docked 滑出条（后者 height:0 折叠 + `.show` 展开 + 仅 border-top）。
+   `#s-home > .pending-bar`（id 特指度 > .show）就是把 docked 专有属性 override 回内联卡片。
+
+   ⚠️ 待应用差集条已迁出 `#s-home`（现挂 AppShell `<main>` 底，见 components/layout/PendingChangesBar.tsx）
+   ⇒ 本选择器**不再命中它**，也就不需要为它删除。反过来说：本规则今天是降级横幅的**唯一**支撑，
+   删掉它那条横幅会塌成 height:0 + overflow:hidden 的隐形元素（docked 基线），不是"恢复原型形态"。───── */
+#s-home > .pending-bar{ flex:none; height:auto; overflow:visible; margin-bottom:14px; padding:9px 13px;
+  border:1px solid hsl(var(--warn)/0.4); border-radius:var(--r); }
+
+/* ───── SETTINGS：内核版本变更横幅（CoreVersionBanner）。上游 用的 `.app-update-banner`/`.aub-ic`/`.aub-tx`
+   本仓 CSS 里不存在（prototype.css / components.css 是禁区不可改），故在此以最小样式补一族独立 class，
+   调色沿用既有 --warn 语义 token（版本变更 = 警示），布局对齐同页 `.core-ver` 行（图标 + 文本 + 右侧动作）。───── */
+.core-ver-banner{ display:flex; align-items:flex-start; gap:10px; margin-bottom:16px; padding:11px 13px;
+  border:1px solid hsl(var(--warn)/0.35); border-radius:var(--r); background:hsl(var(--warn-weak)); }
+.core-ver-banner .cvb-ic{ flex:none; display:grid; place-items:center; width:22px; height:22px; border-radius:999px;
+  background:hsl(var(--warn)); color:hsl(var(--surface)); }
+.core-ver-banner .cvb-ic svg{ width:13px; }
+.core-ver-banner .cvb-tx{ flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+.core-ver-banner .cvb-tx b{ font-size:12.5px; font-weight:600; color:hsl(var(--warn)); }
+.core-ver-banner .cvb-tx span{ font-size:11.5px; line-height:1.6; color:hsl(var(--fg-dim)); }
+/* 无备份可回滚的诚实说明：比正文再弱一级，避免与主文案抢注意力。 */
+.core-ver-banner .cvb-note{ color:hsl(var(--fg-faint)); }
+.core-ver-banner .btn{ flex:none; }
+/* dismiss 是纯图标按钮，收窄内边距使其呈方形，不占正文宽度。 */
+.core-ver-banner .cvb-dismiss{ padding-left:7px; padding-right:7px; }
+
+/* ───── LAYOUT：常驻应用更新横幅（AppUpdateBanner）。类名沿用 上游的 `.app-update-banner`/`.aub-*`
+   （上一族注释里点名过的那套），布局逐条镜像 `.core-ver-banner`，只改三处，各有理由：
+     · 调色走 --flow 而非 --warn：有新版本是**信息**不是警示，用警示色会与「内核版本变更」这类
+       真需要注意的横幅争同一个视觉权重；
+     · 挂在 `.main` 的 flex 列里（`.main-scroll` 之外）⇒ 必须 `flex:none`，否则会被 flex 拉伸；
+       横向外边距对齐 `.screen` 的 `--sp-6` 内边距，使它与下方内容左右对齐（不能靠 .screen 的 padding，
+       本元素不在 .screen 里）；
+     · `align-items:center`：正文只有两行且右侧有三个按钮，顶对齐会让按钮吊在半空。───── */
+.app-update-banner{ flex:none; display:flex; align-items:center; gap:10px;
+  margin:0 var(--sp-6) 12px; padding:10px 13px;
+  border:1px solid hsl(var(--flow)/0.35); border-radius:var(--r); background:hsl(var(--flow-weak)); }
+.app-update-banner .aub-ic{ flex:none; display:grid; place-items:center; width:22px; height:22px; border-radius:999px;
+  background:hsl(var(--flow)); color:hsl(var(--surface)); }
+.app-update-banner .aub-ic svg{ width:13px; }
+.app-update-banner .aub-tx{ flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+.app-update-banner .aub-tx b{ font-size:12.5px; font-weight:600; color:hsl(var(--flow)); }
+.app-update-banner .aub-tx span{ font-size:11.5px; line-height:1.6; color:hsl(var(--fg-dim)); }
+.app-update-banner .btn{ flex:none; }
+/* dismiss 是纯图标按钮，收窄内边距使其呈方形（同 .cvb-dismiss）。 */
+.app-update-banner .aub-dismiss{ padding-left:7px; padding-right:7px; }
+
+/* ───── LOGS：「核在跑的真实级别」徽标（LogsScreen `.log-core-lvl`）。
+   左边那排 `.log-levels` 分段显示的是**我写下的值**，这颗徽标显示的是**核此刻实际在用的值**
+   ——即核写进 `singbox.log`（两个导出产物里核的那一半）时用的级别。
+   与控件一致（或核只是更啰嗦）时它只是一句安静的确认，故用 --fg-dim + 细描边、不与分段控件抢注意力；
+   **核记得比你要的少**时（暂存未应用 / 核没重启）转 --warn 语义色 —— 那一刻它是本屏最值得看的一句话。
+   反方向不涂色是刻意的：调低级别是排障收尾的常规动作，照涂则徽标常年亮着，警示被自己稀释。
+   prototype.css / components.css 是禁区不可改，故同 `.core-ver-banner` 之例，在此补一族独立 class。───── */
+.log-core-lvl{ flex:none; font-size:11px; font-weight:600; letter-spacing:.02em; padding:4px 9px;
+  border:1px solid hsl(var(--line)); border-radius:var(--r-xs); color:hsl(var(--fg-dim));
+  background:hsl(var(--surface-2)); cursor:default; }
+.log-core-lvl.diverged{ border-color:hsl(var(--warn)/0.45); color:hsl(var(--warn)); background:hsl(var(--warn-weak)); }

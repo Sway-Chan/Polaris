@@ -1,0 +1,81 @@
+{
+  "_doc": [
+    "config 内容版本（`baseVersion`）的跨语言值锁 —— 前端 `lib/staged-config.ts::configBaseVersion`",
+    "与 Rust `commands/config.rs::config_version` 必须对同一份 config 算出同一个短 hash。",
+    "两侧各算、不走 IPC 往返（spec §3.7），故这里锁的是**值一致性**而非表一致性：",
+    "同一组 fixture 双侧计算，都必须等于下面写死的 `expected`。任一侧实现漂移即转红。",
+    "",
+    "Rust 侧锁的是 `config_content_hash`（纯哈希那一半），不是 `config_version` —— 后者还含一层",
+    "渲染端投影（剥隐私 hash / 补 bypassLANList）。投影是「哪一份文档」的问题，另由 Rust 的",
+    "`config_version_is_computed_over_the_frontend_view` 单独钉；本文件只锁「怎么算」。"
+  ],
+  "cases": [
+    {
+      "name": "empty",
+      "why": "空对象 —— FNV 初值 + `{}` 两个字符，最短的那条路径也不得分叉",
+      "expected": "5465b825",
+      "config": {}
+    },
+    {
+      "name": "flat",
+      "why": "整数 / 布尔 / 字符串三种标量的序列化形",
+      "expected": "5e5369d3",
+      "config": { "mixedPort": 7890, "bypassLAN": true, "proxyMode": "rule" }
+    },
+    {
+      "name": "nested",
+      "why": "嵌套对象递归归一",
+      "expected": "c5cf43b9",
+      "config": {
+        "mixedPort": 7890,
+        "dnsConfig": { "enableFakeIp": true, "domesticDns": "223.5.5.5" },
+        "tunConfig": { "stack": "system", "mtu": 9000 }
+      }
+    },
+    {
+      "name": "nestedKeysShuffled",
+      "why": "与 `nested` 是同一份配置、键序打乱 —— hash 必须相等（stableStringify 的全部意义）",
+      "expected": "c5cf43b9",
+      "config": {
+        "tunConfig": { "mtu": 9000, "stack": "system" },
+        "dnsConfig": { "domesticDns": "223.5.5.5", "enableFakeIp": true },
+        "mixedPort": 7890
+      }
+    },
+    {
+      "name": "arrayOrder",
+      "why": "数组保序（customRules 的顺序即优先级，是语义的一部分）",
+      "expected": "e6b204d6",
+      "config": { "customRules": [{ "id": "r1" }, { "id": "r2" }, { "id": "r3" }] }
+    },
+    {
+      "name": "arrayOrderSwapped",
+      "why": "与 `arrayOrder` 同元素、顺序不同 —— hash 必须**不等**（数组若被排序即转红）",
+      "expected": "6e21b306",
+      "config": { "customRules": [{ "id": "r2" }, { "id": "r1" }, { "id": "r3" }] }
+    },
+    {
+      "name": "nullAndAbsent",
+      "why": "null 是合法配置值（`selectedServerId: null`），不得被当成「键不存在」丢掉",
+      "expected": "7d136b72",
+      "config": { "selectedServerId": null, "customAppPresets": [], "ruleResources": {} }
+    },
+    {
+      "name": "nonAscii",
+      "why": "非 ASCII：哈希单元是 UTF-16 code unit 而非 UTF-8 字节 —— Rust 侧写 bytes() 即在此转红。emoji 是代理对（2 个 code unit），中日俄文是 BMP 单元",
+      "expected": "63fee117",
+      "config": {
+        "servers": [
+          { "id": "n1", "name": "香港 IEPL 01 🚀", "remark": "低延迟" },
+          { "id": "n2", "name": "Москва — Резерв", "remark": "فارسی" }
+        ]
+      }
+    },
+    {
+      "name": "escapes",
+      "why": "转义形必须同规：引号 / 反斜杠 / 换行走短转义，控制字符走 \\u00xx 小写四位",
+      "expected": "9aa186a3",
+      "config": { "note": "a\"b\\c\nd\te\u0001f", "path": "C:\\Program Files\\Polaris" }
+    }
+  ]
+}

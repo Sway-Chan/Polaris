@@ -1,0 +1,45 @@
+[package]
+name = "polaris-singbox-grpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# tonic + prost = Rust gRPC 事实标准；workspace 无统一版本，本 crate 私有固定。
+tonic = { version = "0.14", default-features = false, features = [
+    "codegen",
+    "channel",
+    "server",
+    "transport",
+] }
+prost = "0.14"
+prost-types = "0.14"
+tonic-prost = "0.14"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net"] }
+tokio-stream = "0.1"
+# h2c（HTTP/2 cleartext）：tonic transport 默认仅 TLS/native-tls 友好；明文 h2c 需手搓 hyper 连接器。
+h2 = "0.4"
+hyper = "1"
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http2", "tokio"] }
+http = "1"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util", "timeout"] }
+tower-service = "0.3"
+futures-core = "0.3"
+futures-util = "0.3"
+bytes = "1"
+thiserror = "2"
+# log（**替换掉原先的 tracing，非新增能力**）：本仓唯一接了 sink 的日志门面——
+# `src-tauri/src/logging.rs` 用 `log::set_logger` 把它接到 stderr + 文件 + 内存环形缓冲，
+# 且 `log` 本就是 src-tauri 的既有依赖。而 `tracing` 在本仓从无 subscriber ⇒ 本 crate 的每一行
+# 日志都是 no-op，直接造成一次 proto 字段号漂移故障零日志、扛过两轮修复
+# （详见 `src/reconnect.rs` 的 `use log::…` 处与 `proto/started_service.proto` 的相应段落）。
+log = "0.4"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "test-util"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+
+[build-dependencies]
+tonic-prost-build = "0.14"

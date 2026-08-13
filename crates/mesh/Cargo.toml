@@ -1,0 +1,17 @@
+[package]
+name = "polaris-mesh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+polaris-config-engine = { path = "../config-engine" }
+polaris-helper-proto = { path = "../helper-proto" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+# tokio 仅测试用：驱动 WarpService 的 async 注册/注销流程（macros + 单线程 rt）。
+tokio = { version = "1", features = ["macros", "rt"] }

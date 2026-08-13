@@ -1,0 +1,97 @@
+[package]
+name = "polaris"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["full"] }
+# log/env_logger = 运行期结构化日志（对齐 Polaris LogManager 最小面，event:* 不强依赖）
+log = "0.4"
+
+# ── Tauri 2 原生插件（替代 Electron 的 dialog/shell/notification/autostart/os 能力）──
+# 这些是 Electron 原生能力，无对应 domain crate，直接用 Tauri 官方插件。
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-os = "2"
+tauri-plugin-process = "2"
+tauri-plugin-fs = "2"
+
+# ── domain crates（17 crate 装配）──
+# 纯逻辑/trait crate；src-tauri 在 runtime/ 注入真实实现（tokio runtime / std::fs / 真 socket）。
+polaris-config-engine      = { path = "../crates/config-engine" }
+polaris-store              = { path = "../crates/store" }
+polaris-core-supervisor    = { path = "../crates/core-supervisor" }
+polaris-net-stack          = { path = "../crates/net-stack" }
+polaris-switch-engine      = { path = "../crates/switch-engine" }
+polaris-stats-engine       = { path = "../crates/stats-engine" }
+polaris-system-integration = { path = "../crates/system-integration" }
+polaris-helper-client      = { path = "../crates/helper-client" }
+polaris-mesh               = { path = "../crates/mesh" }
+polaris-unlock             = { path = "../crates/unlock" }
+polaris-updater            = { path = "../crates/updater" }
+polaris-singbox-grpc       = { path = "../crates/singbox-grpc" }
+polaris-helper-proto       = { path = "../crates/helper-proto" }
+# 平台 helper（单 crate，内部按 target_os cfg 隔离三平台；B3 接线前仅挂名未 use）
+polaris-helper             = { path = "../crates/helper" }
+# C11 节点域名解析多源竞速 sidecar（issue #147）：UDP 竞速 server + 上游模型 + DNS wire 编解码。
+# DoH 传输经 `DohPost` 端口注入（真实 client 仍只此一份，在 runtime/http.rs）。
+polaris-dns-race           = { path = "../crates/dns-race" }
+# reqwest 的 "socks" feature：SOCKS5 代理支持，`HttpRuntime::via_local_socks_proxy` 打本机 sing-box
+# 的 **`update-in`**（`type:"socks"` 入站）必需 —— 只有它是 socks；`mixed-in` / `probe-*-in` 由
+# http 构造器 `via_local_proxy` 消费，不经本 feature。reqwest 0.13 里 `socks = []` —— 实现内置于
+# connect.rs，**零新依赖**（Cargo.lock 无任何 socks crate 新增）。不开则 `Proxy::all("socks5h://…")`
+# 直接 Err「unknown proxy scheme」→「经代理更新订阅」整条链断（见 runtime/http.rs 该函数文档）。
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls-no-provider", "socks"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+async-trait.workspace = true
+# futures = async 组合子。**唯一**消费点：测速分波时用 `join_all` 并行热切 K 个探测槽（串行热切要
+# 逐槽等一次 gRPC 往返，K=16 时白摊在每一波上）。已在 workspace 依赖表里（unlock crate 用它齐射
+# checker），此处只是从 dev-dependencies 提到 dependencies —— Cargo.lock 零新增。
+futures.workspace = true
+# window-vibrancy = B6 窗口铬：macOS vibrancy（Sidebar）/ Windows Mica；per-platform，非目标平台 no-op。
+# 0.6.x 对齐 tauri 2.11 的 raw-window-handle 0.6 / objc2。Linux 刻意不启用任何特效（白屏逃生门路径）。
+window-vibrancy = "0.6"
+tauri-plugin-single-instance = "2.4.3"
+tauri-plugin-window-state = "2"
+polaris-unlock-transport = { version = "0.1.0", path = "../crates/unlock-transport" }
+# 已有 `rustls` 的 tokio 适配层（**不是**新 HTTP 客户端：只把 rustls 的同步状态机包成 AsyncRead/Write）。
+# **唯一**消费点：测速 CONNECT 隧道对 https 目标在隧道上做 TLS 握手（`runtime/speedtest_tunnel.rs`）。
+# 为什么复用不掉既有依赖：隧道是一条**已建立**的裸 `TcpStream`，reqwest / wreq 的接口都是「给我 URL
+# 我自己去连」，接不进来；裸 `rustls` 则只有同步 `ClientConnection`，套到 tokio 上要手写异步泵。
+# **Cargo.lock 零新增包**——reqwest 早已把 tokio-rustls 0.26.4 拉进依赖图，此处只是把这条边显式化。
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+
+[target."cfg(unix)".dependencies]
+nix = { version = "0.31.3", features = ["net", "process", "signal"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSEvent", "NSResponder", "NSStatusItem", "block2"] }
+# objc2-foundation = **唯一**消费点：`app_language::write_apple_languages` 把应用内语言写进本应用
+# UserDefaults 域的 `AppleLanguages`，让 NSOpenPanel 等原生 UI 跟随应用内语言而非系统语言。
+#
+# **Cargo.lock 零新增包**——objc2-app-kit 早已把 objc2-foundation 0.3.2 拉进依赖图，此处只是把这条边
+# 显式化（同 tokio-rustls / futures 的处理），lock 里只多一行「polaris 依赖它」，无任何 [[package]] 新增。
+#
+# 为什么值得显式化而不是继续用裸 `msg_send!`（`objc2` 已是直接依赖，本可零声明）：**失败方向**。
+# 裸消息的选择器拼错编译期抓不到，而这段代码的全部失败形态本就是「悄悄没生效」——再叠一层不可见风险
+# 不划算。实测（x86_64-apple-darwin 交叉 check）：standardUserDefaults / setObject:forKey: /
+# removeObjectForKey: 三个方法名各拼错一次，裸 msg_send 版**全部编译通过**（exit 0），
+# 类型化绑定版**全部编译失败**（exit 101）。收益就是这个差值。
+#
+# 不开 default features：只要 NSUserDefaults / NSString / NSArray / NSObject 四项（其余 178 项停用）。
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSUserDefaults", "NSString", "NSArray", "NSObject"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }

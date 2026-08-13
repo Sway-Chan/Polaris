@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en-US" dir="ltr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Tauri webview 安全：禁止外部内容被嵌入（防点击劫持） -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+    <title>Polaris</title>
+    <!--
+      首帧主题（FOUC 第二道）。
+
+      第一道在主进程：`create_main_window` 经 `initialization_script` 注入 `tray::theme_boot_script`，
+      它先于本文档任何脚本执行、按 **config.uiTheme 真值**播种 <html data-theme>。那是唯一能在第一帧
+      之前读到用户选择的地方（uiTheme 在 config.json 里，前端拿到它已经是 IPC 之后）。
+
+      本段是它够不着时的兜底：注入失败 / 浏览器里直接预览 dist 时，data-theme 尚未落定的那一小段
+      窗口里，按**系统偏好**给出正确底色 —— 而不是让 tokens 的深色默认糊浅色用户一脸。
+      `:not([data-theme])` 保证一旦属性落定（注入脚本或 AppShell 任一），本段立即失效、零干扰。
+
+      为什么是 <style> 而不是内联 <script>：上面那条 CSP 是 `script-src 'self'`，内联脚本会被直接拦掉；
+      为一句主题赋值把它放宽成 'unsafe-inline' 等于拿整页的脚本注入防线换一个次要观感问题。
+      而 `style-src` 本就有 'unsafe-inline'（Tailwind/设计令牌需要），故这条走 CSS 零成本。
+      取值 = tokens.css 的 --bg（深 220 40% 6% / 浅 210 30% 96%），与 Rust 侧 `window_bg_color` 同源。
+    -->
+    <style>
+      html:not([data-theme]) { background: hsl(220 40% 6%); }
+      @media (prefers-color-scheme: light) {
+        html:not([data-theme]) { background: hsl(210 30% 96%); }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

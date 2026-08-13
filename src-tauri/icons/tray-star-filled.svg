@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Polaris 托盘标记 — FILLED（连接态）。单色（黑）+ 透明底：alpha 即形状。
+  用途：macOS 走 template（iconAsTemplate:true，系统按菜单栏明暗自动反色，只取 alpha 忽略 RGB）；
+  Win/Linux 直接用黑（浅色任务栏）或经 PIL 派生白（深色任务栏）。
+  几何：星形路径 pl-star 逐字来自 icons/polaris-logo.svg（512-space）；full-bleed viewBox 16 16 480 480
+  （星尖 ~18/494 触帧，对齐旧 44px 满幅）。轨道环加粗为**实心厚环**、星形**填充**——与 outline 版形成
+  「实心/厚 vs 空心/细」强对比（4 芒星本身镂空多，仅靠填充区分不够，实测覆盖率近似 → 靠环粗细拉开）。
+  改此文件后重生 tray-on-black/white.png（rsvg-convert 176→缩 44 + PIL 派生白）。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="16 16 480 480" width="176" height="176">
+  <defs><mask id="rm" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+    <rect width="512" height="512" fill="#fff"/>
+    <circle cx="369" cy="98" r="34" fill="#000"/><circle cx="122" cy="395" r="34" fill="#000"/>
+  </mask></defs>
+  <g fill="#000">
+    <circle cx="256" cy="256" r="188" fill="none" stroke="#000" stroke-width="46" mask="url(#rm)"/>
+    <circle cx="369" cy="98" r="20"/><circle cx="122" cy="395" r="20"/>
+    <path d="M256 18 C249 91 246 139 217 184 L184 155 L202 202 C151 231 95 247 20 256 C95 265 151 281 202 310 L184 357 L217 328 C246 373 249 421 256 494 C263 421 266 373 295 328 L328 357 L310 310 C361 281 417 265 492 256 C417 247 361 231 310 202 L328 155 L295 184 C266 139 263 91 256 18 Z"/>
+  </g>
+</svg>

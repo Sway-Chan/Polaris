@@ -1,0 +1,38 @@
+{
+  "name": "polaris-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Polaris 前端（React + Zustand + Vite + Tailwind，Conduit/Aurora 设计系统）",
+  "scripts": {
+    "dev": "vite",
+    "check:ipc": "node scripts/check-ipc-args.mjs",
+    "build": "node scripts/check-ipc-args.mjs && tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "clsx": "^2.1.1",
+    "i18next": "^23.0.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "react-i18next": "^14.0.0",
+    "tailwind-merge": "^2.5.4",
+    "zustand": "^4.5.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@tauri-apps/cli": "^2",
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "autoprefixer": "^10.4.0",
+    "postcss": "^8.4.0",
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5.5.0",
+    "vite": "^5.4.0",
+    "vitest": "^3.2.7"
+  }
+}

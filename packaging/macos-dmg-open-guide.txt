@@ -1,0 +1,61 @@
+════════════════════════════════════════════════════════════════════
+  首次打开 Polaris 被拦下？按下面三步即可（一次性）
+════════════════════════════════════════════════════════════════════
+
+macOS 可能提示以下两种之一：
+
+  A.「"Polaris.app" 已损坏，无法打开。您应该将它移到废纸篓。」
+  B.「无法打开 "Polaris.app"，因为无法验证开发者。」
+
+两种都**不是**文件损坏，也不是病毒。原因是本应用没有使用付费的 Apple
+开发者签名（Developer ID + 公证），macOS 对从网络下载的应用会加一个
+「隔离属性」，未签名的应用就会被拦下。
+
+──────────────────────────────────────────────────────────────
+  三步解决
+──────────────────────────────────────────────────────────────
+
+  1. 先把左边的 Polaris 拖到右边的「应用程序 (Applications)」文件夹
+
+  2. 打开「终端 (Terminal)」，粘贴下面这一行并回车：
+
+         xattr -dr com.apple.quarantine /Applications/Polaris.app
+
+  3. 之后正常双击打开即可。这一步只需做一次，以后更新不必再做
+     （应用内更新流程会自己清理隔离属性）。
+
+  ⚠️ 注意：对上面的提示 A（「已损坏」），「右键 → 打开」是**无效**的，
+     必须用第 2 步的终端命令。提示 B（「无法验证开发者」）则可以用
+     「右键 → 打开 → 确认」放行，也可以直接用第 2 步的命令。
+
+  终端在哪：「访达 → 应用程序 → 实用工具 → 终端」，或按 Command+空格
+  输入 Terminal 回车。
+
+
+════════════════════════════════════════════════════════════════════
+  Can't open Polaris the first time? Three one-time steps
+════════════════════════════════════════════════════════════════════
+
+macOS may show one of these:
+
+  A. "Polaris.app" is damaged and can't be opened. You should move it
+     to the Trash.
+  B. "Polaris.app" can't be opened because the developer cannot be
+     verified.
+
+Neither means the file is broken or malicious. This app is not signed
+with a paid Apple Developer ID (no notarization), and macOS quarantines
+anything downloaded from the internet.
+
+  1. Drag Polaris into the Applications folder shown on the right.
+
+  2. Open Terminal and run this single line:
+
+         xattr -dr com.apple.quarantine /Applications/Polaris.app
+
+  3. Double-click to open as usual. You only need to do this once —
+     in-app updates clear the quarantine attribute themselves.
+
+  Note: for message A ("damaged"), right-click → Open does NOT help;
+  the Terminal command is required. For message B, right-click → Open
+  → confirm also works.

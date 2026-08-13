@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Polaris app-icon source (1024×1024) — the brand star on a white rounded tile.
+
+  Provenance: the star (orbit ring + 2 dots + 8 gradient segments clipped to `pl-star`) is a
+  verbatim copy of the brand mark defs in ui/src/components/brand-icons/PolarisStarSprite.tsx
+  (512-space, ids `pl-*`). It is rendered here onto a macOS-grid rounded-rect tile
+  (824×824 @100 inset, rx≈185) whose fill reproduces the in-app logo-tile token (white; the app
+  icon is fixed and does not follow the system theme, so the light/white value is used) with a
+  1px logo-tile-bd rim, matching the .mk brand tile in ui/src/styles/components.css.
+  The star is scaled to fill ~76% of the tile (scale 1.32, centred), reproducing the white-tile
+  blue-star look of the app sidebar mark. Regenerate the icns/ico/png set from this file.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- tile background: white with a faint cool sheen toward the bottom (stays firmly white) -->
+    <linearGradient id="tilebg" x1="512" y1="100" x2="512" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#EDF2F8"/>
+    </linearGradient>
+
+    <!-- ── brand-mark defs (verbatim from PolarisStarSprite.tsx, 512-space) ── -->
+    <linearGradient id="pl-orbit" x1="54" y1="72" x2="458" y2="440" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1550F4"/>
+      <stop offset=".46" stop-color="#22BDEB"/>
+      <stop offset="1" stop-color="#1347EF"/>
+    </linearGradient>
+    <linearGradient id="pl-dot" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0E50F4"/>
+      <stop offset="1" stop-color="#149DEB"/>
+    </linearGradient>
+    <linearGradient id="pl-nw" x1="256" y1="256" x2="174" y2="74" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#176AF5"/>
+      <stop offset="1" stop-color="#1BB8F0"/>
+    </linearGradient>
+    <linearGradient id="pl-ne" x1="256" y1="256" x2="326" y2="52" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0A4DEA"/>
+      <stop offset="1" stop-color="#0A36D3"/>
+    </linearGradient>
+    <linearGradient id="pl-en" x1="256" y1="256" x2="472" y2="214" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0E72F2"/>
+      <stop offset="1" stop-color="#35DCE6"/>
+    </linearGradient>
+    <linearGradient id="pl-es" x1="256" y1="256" x2="468" y2="322" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0C62F0"/>
+      <stop offset="1" stop-color="#149FEA"/>
+    </linearGradient>
+    <linearGradient id="pl-se" x1="256" y1="256" x2="316" y2="468" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0872EF"/>
+      <stop offset="1" stop-color="#22D3E3"/>
+    </linearGradient>
+    <linearGradient id="pl-sw" x1="256" y1="256" x2="206" y2="472" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#064EE6"/>
+      <stop offset="1" stop-color="#083BD1"/>
+    </linearGradient>
+    <linearGradient id="pl-ws" x1="256" y1="256" x2="42" y2="326" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#073DDC"/>
+      <stop offset="1" stop-color="#142CC5"/>
+    </linearGradient>
+    <linearGradient id="pl-wn" x1="256" y1="256" x2="42" y2="208" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0D73F0"/>
+      <stop offset="1" stop-color="#17C5ED"/>
+    </linearGradient>
+    <path id="pl-star" d="M256 18 C249 91 246 139 217 184 L184 155 L202 202 C151 231 95 247 20 256 C95 265 151 281 202 310 L184 357 L217 328 C246 373 249 421 256 494 C263 421 266 373 295 328 L328 357 L310 310 C361 281 417 265 492 256 C417 247 361 231 310 202 L328 155 L295 184 C266 139 263 91 256 18 Z"/>
+    <clipPath id="pl-clip"><use href="#pl-star"/></clipPath>
+    <mask id="pl-orbitmask" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+      <rect width="512" height="512" fill="#fff"/>
+      <circle cx="369" cy="98" r="22" fill="#000"/>
+      <circle cx="122" cy="395" r="22" fill="#000"/>
+    </mask>
+
+    <!-- tile shape as a clip so the star never spills past the rounded corners -->
+    <clipPath id="tile"><rect x="100" y="100" width="824" height="824" rx="185" ry="185"/></clipPath>
+  </defs>
+
+  <!-- tile -->
+  <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="url(#tilebg)"/>
+
+  <!-- star, clipped to the tile; 512-space mark mapped into the tile centred at (512,512), scale 1.32 -->
+  <g clip-path="url(#tile)">
+    <g transform="translate(174.08 174.08) scale(1.32)">
+      <circle cx="256" cy="256" r="194" fill="none" stroke="url(#pl-orbit)" stroke-width="7" stroke-linecap="round" mask="url(#pl-orbitmask)"/>
+      <circle cx="369" cy="98" r="13" fill="url(#pl-dot)"/>
+      <circle cx="122" cy="395" r="13" fill="url(#pl-dot)"/>
+      <g clip-path="url(#pl-clip)">
+        <path d="M256 256 L-100 -100 L256 -100 Z" fill="url(#pl-nw)"/>
+        <path d="M256 256 L256 -100 L612 -100 Z" fill="url(#pl-ne)"/>
+        <path d="M256 256 L612 -100 L612 256 Z" fill="url(#pl-en)"/>
+        <path d="M256 256 L612 256 L612 612 Z" fill="url(#pl-es)"/>
+        <path d="M256 256 L612 612 L256 612 Z" fill="url(#pl-se)"/>
+        <path d="M256 256 L256 612 L-100 612 Z" fill="url(#pl-sw)"/>
+        <path d="M256 256 L-100 612 L-100 256 Z" fill="url(#pl-ws)"/>
+        <path d="M256 256 L-100 256 L-100 -100 Z" fill="url(#pl-wn)"/>
+      </g>
+    </g>
+  </g>
+
+  <!-- 1px logo-tile-bd rim for edge definition (matches the .mk brand tile border) -->
+  <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" ry="183.5" fill="none" stroke="#C0CAD8" stroke-width="3"/>
+</svg>

@@ -1,0 +1,2644 @@
+{
+  "cases": [
+    {
+      "name": "darwin_systemProxy_priv0_dis0_debug",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "debug",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "darwin_systemProxy_priv0_dis0_info",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "info",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "darwin_systemProxy_priv0_dis0_warn",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "darwin_systemProxy_priv0_dis0_error",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "error",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "darwin_systemProxy_priv0_dis0_fatal",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "fatal",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "darwin_systemProxy_priv0_dis1_debug",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "debug",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_systemProxy_priv0_dis1_info",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "info",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_systemProxy_priv0_dis1_warn",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_systemProxy_priv0_dis1_error",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_systemProxy_priv0_dis1_fatal",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_systemProxy_priv1_dis0_debug",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "darwin_systemProxy_priv1_dis0_info",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "darwin_systemProxy_priv1_dis0_warn",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "darwin_systemProxy_priv1_dis0_error",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "error",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "darwin_systemProxy_priv1_dis0_fatal",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "fatal",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "darwin_systemProxy_priv1_dis1_debug",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_systemProxy_priv1_dis1_info",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_systemProxy_priv1_dis1_warn",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_systemProxy_priv1_dis1_error",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_systemProxy_priv1_dis1_fatal",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_tun_priv0_dis0_debug",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "debug",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "darwin_tun_priv0_dis0_info",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "info",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "darwin_tun_priv0_dis0_warn",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "darwin_tun_priv0_dis0_error",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "darwin_tun_priv0_dis0_fatal",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "darwin_tun_priv0_dis1_debug",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "debug",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_tun_priv0_dis1_info",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "info",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_tun_priv0_dis1_warn",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_tun_priv0_dis1_error",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_tun_priv0_dis1_fatal",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_tun_priv1_dis0_debug",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "darwin_tun_priv1_dis0_info",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "darwin_tun_priv1_dis0_warn",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "darwin_tun_priv1_dis0_error",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "darwin_tun_priv1_dis0_fatal",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "darwin_tun_priv1_dis1_debug",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_tun_priv1_dis1_info",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_tun_priv1_dis1_warn",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_tun_priv1_dis1_error",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_tun_priv1_dis1_fatal",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_manual_priv0_dis0_debug",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "debug",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "darwin_manual_priv0_dis0_info",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "info",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "darwin_manual_priv0_dis0_warn",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "darwin_manual_priv0_dis0_error",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "error",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "darwin_manual_priv0_dis0_fatal",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "fatal",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "darwin_manual_priv0_dis1_debug",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "debug",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_manual_priv0_dis1_info",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "info",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_manual_priv0_dis1_warn",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_manual_priv0_dis1_error",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_manual_priv0_dis1_fatal",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_manual_priv1_dis0_debug",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "darwin_manual_priv1_dis0_info",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "darwin_manual_priv1_dis0_warn",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "darwin_manual_priv1_dis0_error",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "error",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "darwin_manual_priv1_dis0_fatal",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "fatal",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "darwin_manual_priv1_dis1_debug",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_manual_priv1_dis1_info",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_manual_priv1_dis1_warn",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_manual_priv1_dis1_error",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "darwin_manual_priv1_dis1_fatal",
+      "platform": "darwin",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_systemProxy_priv0_dis0_debug",
+      "platform": "win32",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "debug",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "win32_systemProxy_priv0_dis0_info",
+      "platform": "win32",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "info",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "win32_systemProxy_priv0_dis0_warn",
+      "platform": "win32",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "win32_systemProxy_priv0_dis0_error",
+      "platform": "win32",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "error",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "win32_systemProxy_priv0_dis0_fatal",
+      "platform": "win32",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "fatal",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "win32_systemProxy_priv0_dis1_debug",
+      "platform": "win32",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "debug",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_systemProxy_priv0_dis1_info",
+      "platform": "win32",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "info",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_systemProxy_priv0_dis1_warn",
+      "platform": "win32",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_systemProxy_priv0_dis1_error",
+      "platform": "win32",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_systemProxy_priv0_dis1_fatal",
+      "platform": "win32",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_systemProxy_priv1_dis0_debug",
+      "platform": "win32",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "win32_systemProxy_priv1_dis0_info",
+      "platform": "win32",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "win32_systemProxy_priv1_dis0_warn",
+      "platform": "win32",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "win32_systemProxy_priv1_dis0_error",
+      "platform": "win32",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "error",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "win32_systemProxy_priv1_dis0_fatal",
+      "platform": "win32",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "fatal",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "win32_systemProxy_priv1_dis1_debug",
+      "platform": "win32",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_systemProxy_priv1_dis1_info",
+      "platform": "win32",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_systemProxy_priv1_dis1_warn",
+      "platform": "win32",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_systemProxy_priv1_dis1_error",
+      "platform": "win32",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_systemProxy_priv1_dis1_fatal",
+      "platform": "win32",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_tun_priv0_dis0_debug",
+      "platform": "win32",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "debug",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "win32_tun_priv0_dis0_info",
+      "platform": "win32",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "info",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "win32_tun_priv0_dis0_warn",
+      "platform": "win32",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "win32_tun_priv0_dis0_error",
+      "platform": "win32",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "win32_tun_priv0_dis0_fatal",
+      "platform": "win32",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "win32_tun_priv0_dis1_debug",
+      "platform": "win32",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "debug",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_tun_priv0_dis1_info",
+      "platform": "win32",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "info",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_tun_priv0_dis1_warn",
+      "platform": "win32",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_tun_priv0_dis1_error",
+      "platform": "win32",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_tun_priv0_dis1_fatal",
+      "platform": "win32",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_tun_priv1_dis0_debug",
+      "platform": "win32",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "win32_tun_priv1_dis0_info",
+      "platform": "win32",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "win32_tun_priv1_dis0_warn",
+      "platform": "win32",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "win32_tun_priv1_dis0_error",
+      "platform": "win32",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "win32_tun_priv1_dis0_fatal",
+      "platform": "win32",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "win32_tun_priv1_dis1_debug",
+      "platform": "win32",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_tun_priv1_dis1_info",
+      "platform": "win32",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_tun_priv1_dis1_warn",
+      "platform": "win32",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_tun_priv1_dis1_error",
+      "platform": "win32",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_tun_priv1_dis1_fatal",
+      "platform": "win32",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_manual_priv0_dis0_debug",
+      "platform": "win32",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "debug",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "win32_manual_priv0_dis0_info",
+      "platform": "win32",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "info",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "win32_manual_priv0_dis0_warn",
+      "platform": "win32",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "win32_manual_priv0_dis0_error",
+      "platform": "win32",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "error",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "win32_manual_priv0_dis0_fatal",
+      "platform": "win32",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "fatal",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "win32_manual_priv0_dis1_debug",
+      "platform": "win32",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "debug",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_manual_priv0_dis1_info",
+      "platform": "win32",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "info",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_manual_priv0_dis1_warn",
+      "platform": "win32",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_manual_priv0_dis1_error",
+      "platform": "win32",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_manual_priv0_dis1_fatal",
+      "platform": "win32",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_manual_priv1_dis0_debug",
+      "platform": "win32",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "win32_manual_priv1_dis0_info",
+      "platform": "win32",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "win32_manual_priv1_dis0_warn",
+      "platform": "win32",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "win32_manual_priv1_dis0_error",
+      "platform": "win32",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "error",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "win32_manual_priv1_dis0_fatal",
+      "platform": "win32",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "fatal",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "win32_manual_priv1_dis1_debug",
+      "platform": "win32",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_manual_priv1_dis1_info",
+      "platform": "win32",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_manual_priv1_dis1_warn",
+      "platform": "win32",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_manual_priv1_dis1_error",
+      "platform": "win32",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "win32_manual_priv1_dis1_fatal",
+      "platform": "win32",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_systemProxy_priv0_dis0_debug",
+      "platform": "linux",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "debug",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "linux_systemProxy_priv0_dis0_info",
+      "platform": "linux",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "info",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "linux_systemProxy_priv0_dis0_warn",
+      "platform": "linux",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "linux_systemProxy_priv0_dis0_error",
+      "platform": "linux",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "error",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "linux_systemProxy_priv0_dis0_fatal",
+      "platform": "linux",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "fatal",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "linux_systemProxy_priv0_dis1_debug",
+      "platform": "linux",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "debug",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_systemProxy_priv0_dis1_info",
+      "platform": "linux",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "info",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_systemProxy_priv0_dis1_warn",
+      "platform": "linux",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_systemProxy_priv0_dis1_error",
+      "platform": "linux",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_systemProxy_priv0_dis1_fatal",
+      "platform": "linux",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_systemProxy_priv1_dis0_debug",
+      "platform": "linux",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "linux_systemProxy_priv1_dis0_info",
+      "platform": "linux",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "linux_systemProxy_priv1_dis0_warn",
+      "platform": "linux",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "linux_systemProxy_priv1_dis0_error",
+      "platform": "linux",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "error",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "linux_systemProxy_priv1_dis0_fatal",
+      "platform": "linux",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": false,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "fatal",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "linux_systemProxy_priv1_dis1_debug",
+      "platform": "linux",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_systemProxy_priv1_dis1_info",
+      "platform": "linux",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_systemProxy_priv1_dis1_warn",
+      "platform": "linux",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_systemProxy_priv1_dis1_error",
+      "platform": "linux",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_systemProxy_priv1_dis1_fatal",
+      "platform": "linux",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": true,
+        "proxyModeType": "systemProxy"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_tun_priv0_dis0_debug",
+      "platform": "linux",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "debug",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "linux_tun_priv0_dis0_info",
+      "platform": "linux",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "info",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "linux_tun_priv0_dis0_warn",
+      "platform": "linux",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "linux_tun_priv0_dis0_error",
+      "platform": "linux",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "linux_tun_priv0_dis0_fatal",
+      "platform": "linux",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "linux_tun_priv0_dis1_debug",
+      "platform": "linux",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "debug",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_tun_priv0_dis1_info",
+      "platform": "linux",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "info",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_tun_priv0_dis1_warn",
+      "platform": "linux",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_tun_priv0_dis1_error",
+      "platform": "linux",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_tun_priv0_dis1_fatal",
+      "platform": "linux",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_tun_priv1_dis0_debug",
+      "platform": "linux",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "linux_tun_priv1_dis0_info",
+      "platform": "linux",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "linux_tun_priv1_dis0_warn",
+      "platform": "linux",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "linux_tun_priv1_dis0_error",
+      "platform": "linux",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "linux_tun_priv1_dis0_fatal",
+      "platform": "linux",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": false,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "output": "/fake/singbox.log"
+      }
+    },
+    {
+      "name": "linux_tun_priv1_dis1_debug",
+      "platform": "linux",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_tun_priv1_dis1_info",
+      "platform": "linux",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_tun_priv1_dis1_warn",
+      "platform": "linux",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_tun_priv1_dis1_error",
+      "platform": "linux",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_tun_priv1_dis1_fatal",
+      "platform": "linux",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": true,
+        "proxyModeType": "tun"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_manual_priv0_dis0_debug",
+      "platform": "linux",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "debug",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "linux_manual_priv0_dis0_info",
+      "platform": "linux",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "info",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "linux_manual_priv0_dis0_warn",
+      "platform": "linux",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "linux_manual_priv0_dis0_error",
+      "platform": "linux",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "error",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "linux_manual_priv0_dis0_fatal",
+      "platform": "linux",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "fatal",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "linux_manual_priv0_dis1_debug",
+      "platform": "linux",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "debug",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_manual_priv0_dis1_info",
+      "platform": "linux",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "info",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_manual_priv0_dis1_warn",
+      "platform": "linux",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_manual_priv0_dis1_error",
+      "platform": "linux",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_manual_priv0_dis1_fatal",
+      "platform": "linux",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": false,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_manual_priv1_dis0_debug",
+      "platform": "linux",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "linux_manual_priv1_dis0_info",
+      "platform": "linux",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "linux_manual_priv1_dis0_warn",
+      "platform": "linux",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "linux_manual_priv1_dis0_error",
+      "platform": "linux",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "error",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "linux_manual_priv1_dis0_fatal",
+      "platform": "linux",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": false,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "fatal",
+        "timestamp": true
+      }
+    },
+    {
+      "name": "linux_manual_priv1_dis1_debug",
+      "platform": "linux",
+      "input": {
+        "logLevel": "debug",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_manual_priv1_dis1_info",
+      "platform": "linux",
+      "input": {
+        "logLevel": "info",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_manual_priv1_dis1_warn",
+      "platform": "linux",
+      "input": {
+        "logLevel": "warn",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "warn",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_manual_priv1_dis1_error",
+      "platform": "linux",
+      "input": {
+        "logLevel": "error",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "error",
+        "timestamp": true,
+        "disabled": true
+      }
+    },
+    {
+      "name": "linux_manual_priv1_dis1_fatal",
+      "platform": "linux",
+      "input": {
+        "logLevel": "fatal",
+        "disableLogFile": true,
+        "proxyModeType": "manual"
+      },
+      "privacyMode": true,
+      "output": {
+        "level": "fatal",
+        "timestamp": true,
+        "disabled": true
+      }
+    }
+  ]
+}

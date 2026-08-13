@@ -1,0 +1,975 @@
+name: Package
+
+# B10 发布工程：三平台打包流水线（出安装包）。职责 = 「能否产出可分发的安装包」。
+# 与 ci.yml（fmt+clippy+build+test 快速门禁）分工：本 workflow 跑完整 fetch + tauri build + 产物上传，
+# 只在发布/手动时触发（tag / release / dispatch），产物体积大故不进常规 push/PR 门禁。
+#
+# 设计文档：
+#   - §H B10：NSIS 双产物 + mac DMG（未签名）+ deb/AppImage + portable + README/LICENSE/NOTICE 谱系
+#   - §E.2：WebView2 双产物（bootstrapper 主 + offline ~127MB 离线版）
+#   - §I-Q1：不签名（macOS/Windows 均无代码签名，沿 上游 现状）
+#   - §I-Q2：双 NSIS 产物（bootstrapper + offline）
+#
+# 不签名纪律：本 workflow 不含任何 codesign / notarize 步骤。mac 未签名 → 用户首次运行需
+# Gatekeeper 右键放行（README 已指引）；win 未签名 → SmartScreen 「仍要运行」（README 已指引）。
+#
+# ── 额度架构（2026-07-24 重构）：打包**只在发布时**跑 ──
+# root cause：此前 `push: branches: [main]` 让每次 push main 都并行起 4 平台完整 tauri build
+# （mac 计费 10x / win 2x），与 ci.yml 并行、CI 没过也照打 ⇒ 调试期额度烧穿。
+# 现三条触发全是「发布/手动」语义，调试 push 与本 workflow 无关：
+#   · push tags v*       —— 标准发布流；platform 输入不存在 ⇒ 取 all ⇒ 四条腿全打 + 发 release。
+#   · workflow_dispatch  —— 手动验证打包链；**也是「已有 tag 手工补发」的唯一入口**
+#     （在 tag ref 上 dispatch，github.ref = refs/tags/v* ⇒ 下面的 release job 条件为真，走完全程）。
+#     ⚠️ 手工补发**必须把 platform 留在默认 all**：选了单平台则 release job 不跑
+#     （见 jobs.release 的「绝不发半套」条件），补发会静默退化成「只出 artifact、不发布」。
+#
+# ── 为什么删掉 `release: types: [published]`（2026-07-31）──
+# 它原本兜「先在 GitHub UI 建 release」的路径，注释里自陈「UI 对新 tag 建 release 会同时产生
+# tag push + release published 两事件 → 同 ref 两次运行」，并判定「发布罕见，代价可接受」。
+# 成本（**实测与估算分开记**，别把估算当实测传下去）：
+#   · 实测 —— 2026-07-28 run 30328102467 的 ci gate 三腿墙钟 windows 23min（该次 failure）/
+#     ubuntu 7min / macos 4min，配私有仓倍率（mac 10x / win 2x / linux 1x）= **93 计费分钟**。
+#     反直觉但确凿：windows 46 > macos 40 —— mac 是 M1 runner，4 分钟就跑完，10x 也没 win 贵。
+#   · 估算 —— 四条打包腿**从未成功跑完过**，无实测；按 tauri build 15~30min/腿估约 460。
+#   合计一次发布 500+ 计费分钟量级，跑两遍即占满 2000 分钟月额度的一半以上 ——
+#   「发布罕见，代价可接受」这个判断在这个数量级下不成立。
+# ⚠️ `GET /repos/{o}/{r}/actions/runs/{id}/timing` 的 `billable.total_ms` 在本仓**全部 run 都读作 0**，
+#    读不到真实计费；要拿真数得给 gh 加 `user` scope 后查账单 API。上面的数字是墙钟 × 倍率。
+# 删除是安全的**与那个重叠角是否真的发生无关**：它唯一独占的场景（对**已有** tag 手工建
+# release）已被上面的 workflow_dispatch on tag ref 完全覆盖，等于零功能损失。
+on:
+  push:
+    tags:
+      - 'v*'
+  # ── 逐平台打包（2026-07-31）──
+  # 动机：一次 dispatch 打全四条腿 ≈ 470 计费分钟（估算，四条腿从未成功跑完过，无实测），
+  # 迭代某一条腿时另外三条是纯浪费。选单平台后只付那一条腿 + 前置门。
+  # ⚠️ 算清再用：**逐条跑完四个平台比一次全打更贵**（前置 ci/ui 门每次 dispatch 都全额重付，
+  #    见 jobs.ci 注释里的 93 计费分钟实测）。它的收益场景是「反复迭代同一条腿」，不是「省一次全量」。
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: '打包平台（单平台用于迭代验证；只有 all 才会发 release）'
+        type: choice
+        default: all
+        options:
+          - all
+          - linux
+          - windows
+          - macos-arm64
+          - macos-x64
+
+# 最小权限：打包 job 只读仓库（tauri-action 未传 tagName ⇒ 不碰 release API）；
+# 建 release / 传资产的写权限只发给下面的 release job（job 级 permissions 覆盖本块）。
+permissions:
+  contents: read
+
+# 打包耗时且产物大：tag/release 不取消在途（保 release 产物完整性）；
+# workflow_dispatch 落在分支 ref 上，重复手动触发取消旧跑（省额度）。
+#
+# group 里带上 platform（2026-07-31，随逐平台打包一起加）：
+#   在此之前同一 ref 上的每次 dispatch 干的是同一件事，取消在途 = 纯省额度。加了 platform 输入后
+#   「同 ref、不同平台」变成两件**不同**的事：先 dispatch macos-arm64（跑到一半已计约 200 分钟），
+#   再 dispatch macos-x64 → 同组 ⇒ 前者被取消 ⇒ 那 200 分钟白付且没有任何产物。
+#   拆进 group 后两者各占一组、互不取消；「同平台重复 dispatch 取消旧跑」这条原有省额度语义不变。
+# 用 `github.event.inputs.*` 而非 `inputs.*`，理由见 jobs.setup 的 PLATFORM env 注释（tag push 上
+# payload 无 inputs 键 ⇒ null ⇒ 兜到 'all'，与 tag 发布跑同组，行为与改动前一致）。
+concurrency:
+  group: package-${{ github.ref }}-${{ github.event.inputs.platform || 'all' }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  # ══ 矩阵解析：把 workflow_dispatch 的 platform 输入翻成 package job 的 include ══
+  #
+  # 为什么必须多一个 job（不是给单条腿加 `if`）：
+  #   `jobs.<id>.if` 的可用上下文只有 github / needs / vars / inputs —— **拿不到 matrix**，
+  #   所以写不出 `if: inputs.platform == matrix.label` 这种「按腿过滤」。
+  #   [不选 step 级 `if: matrix.label == …`：四条腿的 runner 照样起、照样计费（mac 两条各 10x），
+  #    且全 step skip 的 job 会**绿着结束且零产物**，upload-artifact 的 if-no-files-found: error
+  #    也被 skip 掉 —— 既没省额度又制造假绿]
+  #   [选 setup job 输出 include JSON：过滤发生在**派发之前**，没选中的腿根本不存在，
+  #    ubuntu 1x 且 <10 秒（GitHub 按 job 最少计 1 分钟，即固定成本 1 计费分钟）]
+  #
+  # 本 job 同时是 release 的「是否全平台」判据来源（outputs.full），见 jobs.release。
+  setup:
+    name: resolve matrix
+    runs-on: ubuntu-22.04
+    outputs:
+      include: ${{ steps.resolve.outputs.include }}
+      full: ${{ steps.resolve.outputs.full }}
+    steps:
+      # ══════════════════════════════════════════════════════════════════════════════
+      # ↓↓↓ 以下整段原在 jobs.package.strategy.matrix.include 上方，随**数据本体**原样搬来。
+      #     它记的是矩阵每个字段为什么长这样，跟着数据走才不会被下一个人重新踩。
+      # ══════════════════════════════════════════════════════════════════════════════
+      # 四产物 / 三平台：macOS **分架构单出**（arm64 / x64 各一个 dmg）/ Windows MSVC / Linux。
+      #
+      # 为什么不再出 universal（2026-07-21 用户裁定）：universal 包必须同时打进 mac-arm64 + mac-x64
+      # 两份 sing-box 内核（运行期 proxy.rs::core_platform_dirs 按 env::consts::ARCH 只取一份），
+      # 另一份是纯死重 ⇒ universal 包 ~213M，分架构后每包 ~108M。
+      #
+      # mac 两个 job 都跑在 macos-14（arm64 runner）：x64 job 交叉编译到 x86_64-apple-darwin，
+      # 与原先 universal 内部同时编两个 target 的做法同源，只是不再 lipo 合并。
+      #
+      # tauri_args：注入 --target（决定 target/<triple>/ 输出目录）+ **四平台一律显式 --config**。
+      #
+      # 为什么四个都显式写（不吃 Tauri 的「按平台名自动合并」隐式默认）：
+      #   ① 隐式默认只认固定文件名（tauri.{linux,windows,macos}.conf.json）——文件一改名就**静默**
+      #      停止合并，包里没有任何平台内核，bundler 照常出包，只在用户机器 resolve_core_binary → Err。
+      #      显式 --config 下同样的改名会得到 `failed to read configuration file` **硬失败**。
+      #   ② macOS 的隐式那份（原 tauri.macos.conf.json）实为 arm64 专用：在 Intel Mac 上跑裸
+      #      `cargo tauri build` 会打进 arm64 内核，运行期 core_platform_dirs("macos","x86_64")
+      #      回落到它 → Intel 上根本执行不了。故改名为 tauri.macos-arm64.conf.json 并对称显式传。
+      #
+      # --config 用**仓库根相对路径**：tauri-action 的 projectPath = resolve(process.cwd(), …) = 仓库根，
+      # CLI 以它为 cwd，而 `--config` 按进程 CWD 解析（已实测）。
+      # ⚠️ 绝不可写 `${{ github.workspace }}`：matrix 由 Actions 服务端在**派发到 runner 之前**展开，
+      #    github.workspace 是 runner 侧路径，服务端求值为**空串** ⇒ `--config /src-tauri/...` ⇒
+      #    `failed to read configuration file` ⇒ 该 job 必挂。（step 层用 github.workspace 才安全。）
+      # ══════════════════════════════════════════════════════════════════════════════
+      # ↑↑↑ 搬运说明（2026-07-31，**只补不改**上面那段）：数据挪进本 step 的 shell 单引号串后，
+      #     最后那条 ⚠️ 的**结论不变、机制变了**，两条都得记住：
+      #       · 旧机制：matrix 级 `${{ }}` 由服务端展开，github.workspace 求值为空串；
+      #       · 新机制：本 step 里的 `${{ }}` 是 step 级，github.workspace **有值**，但那是
+      #         **setup job 自己这台 ubuntu runner** 的路径，会被原样塞进 windows/macos 腿的
+      #         tauri_args ⇒ 从「空串」变成「另一台机器的路径」，一样必挂，且更难看出来。
+      #     结论照旧：这里只准写仓库根相对路径。（本段是 YAML 注释，`${{ }}` 不会被求值 —— 与搬来
+      #     那段在原位时同理，Actions 先做 YAML 解析、注释在表达式求值前就被丢掉了。）
+      - name: Resolve platform matrix
+        id: resolve
+        shell: bash
+        env:
+          # 用 `github.event.inputs.*` 而非 `inputs.*`：前者只是读 event payload 的一个字段，
+          # 在 tag push 上 payload 里压根没有 inputs 键 ⇒ 求值为 null ⇒ `|| 'all'` 兜到 all，
+          # 语义确定。`inputs` 上下文在非 dispatch/call 事件下的可用性得跑起来才知道，
+          # 而本 workflow 只在发布时触发，不适合拿发布跑去试。下面 shell 侧再兜一层 :-all。
+          PLATFORM: ${{ github.event.inputs.platform || 'all' }}
+        run: |
+          set -euo pipefail
+
+          # 全量矩阵 = 单一真值来源。JSON 内只有双引号，故整体用 shell 单引号串包住，
+          # 不经 heredoc（免去 terminator 缩进坑），也不做任何 shell 展开。
+          all='[
+            {"os":"ubuntu-22.04","rust_target":"x86_64-unknown-linux-gnu","label":"linux","tauri_args":"--config src-tauri/tauri.linux.conf.json"},
+            {"os":"windows-2022","rust_target":"x86_64-pc-windows-msvc","label":"windows","tauri_args":"--config src-tauri/tauri.windows.conf.json"},
+            {"os":"macos-14","rust_target":"aarch64-apple-darwin","label":"macos-arm64","mac_arch_tag":"mac-arm64","tauri_args":"--target aarch64-apple-darwin --config src-tauri/tauri.macos-arm64.conf.json"},
+            {"os":"macos-14","rust_target":"x86_64-apple-darwin","rust_targets_extra":"x86_64-apple-darwin","label":"macos-x64","mac_arch_tag":"mac-x64","tauri_args":"--target x86_64-apple-darwin --config src-tauri/tauri.macos-x64.conf.json"}
+          ]'
+          # 注：linux/windows/macos-arm64 三条**不带** rust_targets_extra 键，与原 YAML 逐字对齐 ——
+          # 引用一个不存在的 matrix 键得到空串，和原来一样（rust-toolchain 的 targets: '' = 不装额外 target）。
+
+          platform="${PLATFORM:-all}"
+          total="$(jq 'length' <<<"$all")"
+
+          if [ "$platform" = "all" ]; then
+            include="$(jq -c '.' <<<"$all")"
+          else
+            include="$(jq -c --arg l "$platform" '[.[] | select(.label == $l)]' <<<"$all")"
+          fi
+
+          count="$(jq 'length' <<<"$include")"
+          # 硬失败而不是放空矩阵过去：include 为 [] 时 package job 会被整个跳过，
+          # 「什么都没打」和「打完了」在下游 needs 上难以区分，宁可在这里炸。
+          if [ "$count" -eq 0 ]; then
+            echo "::error::platform='$platform' 未匹配任何矩阵条目；合法值：all $(jq -r 'map(.label)|join(" ")' <<<"$all")"
+            exit 1
+          fi
+
+          # full = 「本次跑了全部平台」。release job 用它当「绝不发半套」的判据（见 jobs.release）。
+          # 用 count==total 而不是 platform=='all'：判据取自**实际选中的矩阵**，将来加第五个平台、
+          # 或加一个选两条腿的分组选项，这里都不用改，也不会与真实构建面失配。
+          if [ "$count" -eq "$total" ]; then full=true; else full=false; fi
+
+          echo "platform=$platform  选中 $count/$total 条腿  full=$full"
+          jq -r '.[] | "  · " + .label + " (" + .os + ")"' <<<"$include"
+
+          {
+            echo "include=$include"
+            echo "full=$full"
+          } >> "$GITHUB_OUTPUT"
+
+  # ══ 发布前置门：先过检测再打包 ══
+  # 复用 ci.yml（workflow_call）跑**完整 3-OS** fmt+clippy+build+test，CI 不绿则 4 平台打包
+  # 一个都不起（needs 链）。
+  # [选 workflow_call：单一定义零重复、gate 跑在发布 commit 本体上、release/dispatch/tag 三种
+  #  触发都覆盖、依赖图同 run 内可见] /
+  # [不选 workflow_run：其事件上下文锚在默认分支，tag 关联要手工解 payload，release/dispatch
+  #  两条触发不被覆盖，且跨 run 的「对应关系」靠时间对齐不靠结构] /
+  # [不选 package.yml 内嵌轻量 pre-check job：只验 ubuntu 一腿，win/mac 的 test 失败拦不住发布
+  #  （打包腿只 build 不 test），发布质量口径反而降级]
+  # 单平台 dispatch 时跳过（2026-08-05）：`platform != all` 是**迭代验证**用途，不发 release
+  # （`jobs.release` 的 if 里钉着 `full == 'true'`），却要为 3-OS 前置门重付 93 计费分钟；
+  # 反复迭代同一条腿时那是纯浪费。**发布路径一字未动**：tag push 走 `platform=all` ⇒ full=true
+  # ⇒ 本门照跑，不绿则 package 一条腿都不起。
+  ci:
+    name: ci gate
+    needs: setup
+    if: needs.setup.outputs.full == 'true'
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  # 前端门同样是发布前置：打包腿只跑 `tauri build`（= tsc + vite build），**不跑 vitest**，
+  # 所以没有这一条的话，前端 1726 条测试全红也照样出安装包。ubuntu 单腿、与 ci 并行，不加长关键路径。
+  ui:
+    name: ui gate
+    needs: setup
+    if: needs.setup.outputs.full == 'true'
+    uses: ./.github/workflows/ui.yml
+    secrets: inherit
+
+  package:
+    name: build installer (${{ matrix.label }})
+    needs: [setup, ci, ui]
+    # 🔴 `always()` 是**必需的**，不是保险：上面两门在单平台 dispatch 时是 `skipped`，
+    # 而默认的 needs 语义把 skipped 也当作「未满足」⇒ package 会跟着被整个跳过。
+    #
+    # 判据写成 `!= 'failure'` 而不是 `== 'success'`：前者放行 skipped、拦住 failure；
+    # 后者会把单平台 dispatch 全部拦死。setup 那条仍用 `== 'success'` —— 矩阵解析失败时
+    # 没有任何东西可打，必须拦。
+    #
+    # ⚠️ 改这三条判据前先想清楚发布路径：tag push ⇒ full=true ⇒ 两门真的跑 ⇒ 失败时
+    # result=='failure' ⇒ 本 job 不起。把 `!= 'failure'` 写成 `always()` 或删掉，等于让
+    # CI 红着也能出安装包。
+    if: >-
+      always()
+      && needs.setup.result == 'success'
+      && needs.ci.result != 'failure'
+      && needs.ui.result != 'failure'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # fail-fast: false 保留（2026-07-31 复核，判据同 ci.yml 那条，别单独优化掉一个）：
+      # fail-fast: true 只在「**快**腿先挂、慢腿还在途」时才省得下额度——它取消的是在途 job。
+      # 本仓最贵的两条腿（mac 各 10x）恰恰也是最慢的一档，它们挂掉时能取消的东西已所剩无几；
+      # 反过来，false 换到的是「一次跑就看清哪些平台受影响」，而 true 丢掉这个信息后往往要再跑
+      # 一遍全矩阵去补，重付的比省下的多。
+      fail-fast: false
+      matrix:
+        # ⚠️ include 的**数据本体连同它那段承重注释**已搬到 jobs.setup 的 Resolve platform matrix
+        #    step（matrix 每个字段为什么长这样、为什么四平台一律显式 --config、为什么绝不可写
+        #    github.workspace —— 全在那儿，改矩阵前先读那段）。
+        #
+        # 为什么非搬不可：workflow_dispatch 要能只打一条腿，而 `jobs.<id>.if` 拿不到 matrix 上下文
+        # （可用的只有 github / needs / vars / inputs），没法对单条腿加条件；只能在**派发之前**
+        # 把 include 过滤好。`needs` 上下文在 `jobs.<id>.strategy` 这一层可用，故 fromJSON 成立。
+        include: ${{ fromJSON(needs.setup.outputs.include) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 产物标识：tag 用 tag 名（ref_name，如 v0.1.0），否则用 run_id（数字，无 / 等非法字符）。
+      # GitHub artifact 名 / 文件名禁含 /，分支名 feature/x 会破坏路径，故非 tag 一律回退 run_id。
+      - name: Set build label
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "BUILD_LABEL=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          else
+            echo "BUILD_LABEL=${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
+          fi
+
+      # ── Node / pnpm（前端构建 + fetch 脚本）──
+      # 版本必须与 `ui.yml` 一致（2026-08-05 对齐，此前这里是 20 而 ui gate 是 26）：
+      # ui gate 在 26 上跑 tsc + 全量 vitest，本腿却在 20 上 `tauri build`（= tsc + vite build）
+      # ⇒ **测试环境与产物环境不是同一个**，26 上绿不保证 20 上构建出的产物一致。
+      # 且 20 正是 GitHub 正在下线的那一版（Node 20 已弃用，见 runner 的 deprecation 警告）。
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install UI dependencies
+        run: pnpm --dir ui install --frozen-lockfile
+
+      # ── Rust toolchain ──
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets_extra }}
+
+      # rust-cache 默认键 = job_id + toolchain + 环境哈希，**不含 matrix**。两个 mac job 的 job_id
+      # 同为 `package`、runner 与 toolchain 也相同 ⇒ 同键：互相 restore 对方的 target/ 并在 save 上
+      # 竞争。正确性无碍（cargo 按 triple 分目录）但白白拉取/覆盖，且缓存命中难排查。用 label 分开。
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+          key: ${{ matrix.label }}
+
+      # ── Linux 系统依赖（WebKitGTK 4.1 栈）── Tauri 2 打包必需，GitHub ubuntu-22.04 需补装。
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libglib2.0-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
+            libdbus-1-dev pkg-config
+
+      # ── 原生构建前置：protoc（singbox-grpc build.rs 三平台都要）+ Windows NASM（boring-sys2/BoringSSL 汇编）──
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install NASM (Windows — boring-sys2/BoringSSL asm)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+
+      # ── 资产拉取（SHA256 钉扎，供应链防护核心）──
+      # 三平台一律全拉（不按 runner 过滤）——支持 Linux 上交叉构建。
+      # fetch 脚本缺 pin 即 fail（绝不无校验拉可执行核）。
+      - name: Fetch sing-box core (SHA256-pinned)
+        run: node scripts/fetch-core.mjs
+
+
+      # 依赖指纹门：随包核里 sing-tun 的版本一动就红。
+      #
+      # 守的是一个**不写进配置**的依赖：本仓 tun inbound 刻意不下发 `dns_mode`，整套 DNS 分流靠
+      # sing-tun `DNSModeOrDefault()` 的默认值恒为 `hijack`。上游改默认 ⇒ 配置一字节不变、
+      # `sing-box check` 照样 rc=0、单测全绿，而用户侧是「能上网但分流失效」。
+      # 判据刻意取「依赖版本」而非「那个默认值」本身——二进制里读不到默认值（符号表被剥），
+      # 且判据独立于被检查的值，是 28f5d46 修 cronet go.mod 对拍时立下的同一条。
+      # 与上一步同挂本腿同理由（ci.yml 不拉核，在那边加就是永不会红的假门）。
+      # 删掉本步会让 core_dep_fingerprint 的 `ci_step_still_wired` 转红（它 grep 本文件）。
+      - name: Bundled core dependency fingerprint (sing-tun pin)
+        env:
+          POLARIS_REQUIRE_KERNEL_GATE: '1'
+        run: cargo test -p polaris-config-engine --test core_dep_fingerprint
+
+      # schema 面门：随包核换一版、它的配置 schema 面变了就红。
+      #
+      # 上一步钉的是「我们靠的默认值有没有变」（依赖版本），本步钉的是「我们要建模的东西有没有变」
+      # （配置面）。本仓 src/singbox/ 是手写的一套子集结构体，差集只在 2026-08-08 那次全量审计里
+      # 人工算过一次；核 bump 之后内核新增/改名/删除字段不会让任何东西变红（配置一字节不变、
+      # check 照样 rc=0、单测全绿），于是差集变成什么样换核之后无人知晓。本步把它变成「换核即自曝」。
+      # 判据是内核那一侧的形状（`sing-box schema` 的 $defs 属性路径清单，按协议分支分域），
+      # **不**断言差集为零 —— 差集本来就不该是零。红 ≠ 有 bug，红 = 该看一眼了。
+      # 与上两步同挂本腿同理由（ci.yml 不拉核，在那边加就是永不会红的假门）。
+      # 删掉本步会让 core_schema_surface 的 `ci_step_still_wired` 转红（它 grep 本文件）。
+      - name: Bundled core config schema surface (drift tripwire)
+        env:
+          POLARIS_REQUIRE_KERNEL_GATE: '1'
+        run: cargo test -p polaris-config-engine --test core_schema_surface
+
+      # 构建面矩阵门：四份随包核的 GOOS/GOARCH/CGO_ENABLED + build tag 集一起钉住。
+      #
+      # 与上两步的差别在**覆盖面**：那两道读的都是「本机那一个平台」的二进制，于是
+      # 「mac 那份核这一版没编 with_tailscale」在 Linux 开发机与 ubuntu 腿上结构性看不见 ——
+      # 配置一字节不变、本机 check 照样 rc=0，直到 mac 用户点开一个 Tailscale 节点。
+      # 本步判据是纯字节扫描 Go buildinfo（不需要 Go 工具链，Rust 腿上也没有），
+      # 故在任意宿主上都能把四个平台一起看一遍；上一步的 fetch 不传 --platform = 全平台，
+      # 四份必然在盘上，`POLARIS_REQUIRE_KERNEL_GATE=1` 让缺任一份变成红而不是静默少看一个平台。
+      # 它还顺带守着上一步只落**一份**共享 schema 夹具的依据（四平台 tag 集只差 with_purego）。
+      # 删掉本步会让 core_build_matrix 的 `ci_step_still_wired` 转红（它 grep 本文件）。
+      - name: Bundled core build face matrix (per-platform tags/GOOS/CGO)
+        env:
+          POLARIS_REQUIRE_KERNEL_GATE: '1'
+        run: cargo test -p polaris-config-engine --test core_build_matrix
+
+      - name: Fetch cronet libs (SHA256-pinned)
+        run: node scripts/fetch-cronet.mjs
+
+      # ── 出站面必须被随包核收得下（本腿是这道门唯一有牙的地方）──
+      # config-engine 的 620 条单测全绿、而生成的配置喂给真核是 rc=1 FATAL —— 同一类缺陷因此
+      # 出货过两次（Protocol::Http 的 transport、传输层黑名单）。仓里所有 config-gen 的门都停在
+      # 「我写的函数返回了什么」，没有一道问「内核收不收」。
+      #
+      # 为什么挂这一腿而不是 ci.yml：随包核不入库（.gitignore 的 /resources/*），ci.yml 不拉核 ⇒
+      # 在那边加只会得到一条「文件不在就跳过」的、**永远不会红**的假门。本腿刚 fetch 完核，
+      # 核必然在盘上；`POLARIS_REQUIRE_KERNEL_GATE=1` 让「核没拉到」也变成红而不是静默跳过。
+      # 成本：随包核实测单次 check ≈13ms × 37 场景，可忽略。
+      # 删掉本步会让 `ci_step_still_wired` 那条断言转红（它 grep 本文件）。
+      #
+      # 🔴 **必须排在「Fetch cronet libs」之后**（2026-08-13 实测教训）。此前排在它之前，
+      # Windows 腿红在 `naive outbound → cronet: library not found. Place libcronet.dll in the
+      # executable directory`：随包核 beta.14 在 **initialize 阶段**就硬要这个库，而它由
+      # `fetch-cronet.mjs` 落到 `resources/win/`（= 核的同目录）。08-05 那次绿是因为旧核不要它，
+      # 抬核到 beta.14 后才暴露 —— 而 Windows 腿从 08-05 起就没再跑过，缺陷潜伏了一周。
+      # 排在之后同时更贴近生产：生产就是把 DLL 放在核旁边。顺序由 `ci_step_order_is_load_bearing`
+      # 钉住。
+      - name: Kernel accepts generated outbounds (decode-stage gate)
+        env:
+          POLARIS_REQUIRE_KERNEL_GATE: '1'
+        run: cargo test -p polaris-config-engine --test kernel_accepts_outbounds
+
+      - name: Fetch sing-box dashboard
+        run: node scripts/fetch-dashboard.mjs
+
+      # ── 确保 resources/data/ 存在（geo .srs 规则集占位目录）──
+      # tauri.conf.json 的 bundle.resources 引用此目录；Tauri 2 打包器对缺失资源路径 fail-fast（os error 2）。
+      # data/ 的 .srs 文件由 B7/B9 updater crate 在运行期从 meta-rules-dat 下载（不入库），故构建期目录为空。
+      # 创建空目录占位，运行期 updater 负责填充；构建期空目录合法（bundler 仅需路径存在）。
+      - name: Ensure resources/data placeholder
+        shell: bash
+        run: mkdir -p resources/data
+
+      # ── 打包 conf 不变量（**Rust 构建之前**跑，秒级失败）──
+      # 守「每个包只含且恰含本平台内核」这条核心交付契约的**输入侧**：公共资源逐条不丢 /
+      # 每个 conf 恰含 1 个平台内核 / base 不含任何平台内核 / 每个 conf 都被本 workflow 显式引用
+      # （改名即红）/ offline conf 不越权覆盖 base（version 覆盖已实测）。
+      # 位置在 fetch 之后：检查里含「conf 引用的资源目录必须真实存在」，dashboard 是 fetch 产物。
+      # 纯静态、无构建依赖，任意开发机可复现：`node scripts/verify-packaging.mjs confs`
+      - name: Verify packaging conf invariants
+        shell: bash
+        run: node scripts/verify-packaging.mjs confs
+
+      # ── 清掉上一轮的 staging copy（**Windows 腿专用前置**）──
+      #
+      # 为什么只有 Windows 需要：只有 Windows 腿的 payload 检查扫 `target/release/_up_/resources/`
+      # （NSIS 无 bundle 侧副本，见下方那步的注释）。mac / linux 扫的是 `bundle/`，不受影响。
+      #
+      # 🔴 为什么必须清：`target/release/_up_/` 是**只增不删**的累积目录。
+      #   ① tauri-build 2.6.3 的 `copy_resources`（`src/lib.rs:88-103`）对当前 config 列出的资源
+      #      逐个 `copy_file`，**从不 prune** —— 从 conf 里移除某平台，它上一轮的副本原样留着。
+      #   ② `Swatinem/rust-cache` 恢复整个 `target/`，把上一轮的残留一并带回来。
+      #   ①+② 叠加 ⇒ 任何一次「从 conf 里移除某平台」的改动，都会让下一次带缓存的 Windows 腿
+      #      报「内核平台应恰为 ['win']，实为 [...]」。方向是 fail-closed（假红非假绿），
+      #      但会是一次**查不出所以然的 CI 红**：conf 明明是对的，红的是缓存里的考古层。
+      #      （本机实证：`target/debug/_up_/resources/` 至今残留着分平台改造**之前**的四份 sing-box。）
+      #
+      # 清掉之后一定会被重新铺满，不会反过来造成「扫不到内核」的假红：tauri-build 对 config 文件
+      # 发了 `cargo:rerun-if-changed`（`src/lib.rs:485`），而 `actions/checkout` 每次都以**当前时间**
+      # 写出工作区文件 ⇒ config 恒比任何被缓存的 build script 指纹新 ⇒ build script 每轮必重跑。
+      - name: Reset cargo resource staging (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: rm -rf target/release/_up_
+
+      # ── 随包特权 helper（2026-08-10 新增）──
+      #
+      # 这一步此前**整个不存在**：`cargo tauri build` 只编 src-tauri 那个 `[[bin]]`（polaris），
+      # 而 `polaris-helper` 是 crates/helper 自己的 `[[bin]]`，没人编、更没人铺进 resources/<平台>/。
+      # 于是三平台出货的每个安装包都不含 helper —— 运行期 `resolve_helper_binary` → Err ⇒ 特权
+      # helper 装不上 ⇒ TUN / 路由 / DNS 接管整条不可用，而 app 照常启动、构建期与打包期零报错。
+      # 真机组 E0（Windows helper 首次安装成功）是整份真机计划的前置门，用这种包永远跑不通。
+      # 取证：把 macos-arm64 的 dmg 解 UDIF 后在 HFS+ 目录里搜文件名 —— sing-box 2 / Polaris 6 /
+      # Info.plist 2 / polaris-helper **0**（同探针对存在的名字有命中 ⇒ 0 是真缺失）。
+      #
+      # 必须排在 `Build installers` **之前**：bundler 在打包时读 `../resources/<平台>/` 整目录，
+      # 之后再铺就赶不上这一趟。conf 侧无需改动（引的本就是整个目录，不是逐文件）。
+      #
+      # `--target` 恒显式传：mac x64 腿必须出 x86_64 的 helper，跟着宿主走会静默塞进 arm64 那份。
+      # 平台目录名的真值在 scripts/verify-packaging.mjs 的 LABEL_TO_CORE；这里的 case 是它的影子，
+      # 故默认分支硬失败 —— 新增平台忘了补这里，得到的是红，不是一个静默少 helper 的包。
+      - name: Build and stage privileged helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.label }}" in
+            linux)       res_dir=linux;      bin=polaris-helper ;;
+            windows)     res_dir=win;        bin=polaris-helper.exe ;;
+            macos-arm64) res_dir=mac-arm64;  bin=polaris-helper ;;
+            macos-x64)   res_dir=mac-x64;    bin=polaris-helper ;;
+            *) echo "::error::label '${{ matrix.label }}' 未登记 helper 落位目录（真值见 verify-packaging.mjs 的 LABEL_TO_CORE）"; exit 1 ;;
+          esac
+          cargo build --release -p polaris-helper --bin polaris-helper --target "${{ matrix.rust_target }}"
+          src="target/${{ matrix.rust_target }}/release/$bin"
+          [ -f "$src" ] || { echo "::error::helper 构建产物不存在：$src"; exit 1; }
+          mkdir -p "resources/$res_dir"
+          cp "$src" "resources/$res_dir/$bin"
+          ls -l "resources/$res_dir/$bin"
+
+      # ── 构建 ──
+      # tauri build 自动跑 beforeBuildCommand（pnpm --dir ../ui build）→ 编 Rust → 产安装包。
+      #
+      # ⚠️ 产物目录：本仓是 cargo workspace（根 Cargo.toml members = ["src-tauri", "crates/*"]），
+      #    故 target 目录在**仓库根**（`target/`），**不是** `src-tauri/target/`。
+      #    传了 --target <triple> 时再下沉一层：`target/<triple>/release/bundle/`。
+      #
+      # 每平台只打进本平台内核，靠 matrix.tauri_args 里的**显式 --config**实现（见 matrix 注释）；
+      # 不依赖 Tauri 的按平台名隐式合并。紧随其后的两步断言分别守输入侧与输出侧。
+      - name: Build installers
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: ${{ matrix.tauri_args }}
+
+      # ── 交付物断言：包里恰好一份内核、且是本平台那份（**输出侧**）──
+      # 输入侧（conf 不变量）保证「配置写对了」，本步保证「bundler 真按配置铺了」。
+      #
+      # 🔴 --root 必须指向 **bundle 根**，不是 `target/release`：
+      #    `target/release/_up_/resources/<平台>/` 是 **cargo build script 的 staging copy**，
+      #    `cargo build` 就会生成（实证：`target/debug/` 下同样有 `_up_/resources/`，却根本没有
+      #    `bundle/` 目录），与 bundler 有没有把内核铺进包**完全无关**。此前 --root 收的是
+      #    `target/release`，于是「deb/AppImage 里零内核」「Polaris.app 里零内核」两个合成变异
+      #    双双 exit 0 —— 门打在 staging copy 上，「装出来没核」压根没守住。
+      #
+      # 脚本按 label 断言**每个 bundle target 各自命中**（linux → bundle/deb + bundle/appimage，
+      # mac → bundle/macos），少一个形态也红：
+      #   - 某个 bundle target 里一个核都没有 → 该产物装出来没内核（静默坏包），红
+      #   - 出现别平台目录                    → 死重回潮（§10.2 四平台内核 210MB），红
+      #   - 体积与源不一致 / 源缺失            → 红（不用魔数阈值，直接与 resources/<平台>/ 比大小）
+      - name: Verify bundled core payload (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: node scripts/verify-packaging.mjs payload --label ${{ matrix.label }} --root target/${{ matrix.rust_target }}/release/bundle
+
+      - name: Verify bundled core payload (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: node scripts/verify-packaging.mjs payload --label ${{ matrix.label }} --root target/release/bundle
+
+      # ⚠️ Windows 是**如实的例外，不是遗漏**：NSIS 的 installer.nsi 模板用
+      #    `File /a "/oname={{this.[1]}}" "{{no-escape @key}}"`，`@key` 是资源的**源路径**
+      #    ⇒ 资源从 `resources/` 直接编进 `.exe`，`bundle/nsis/` 下**不存在任何可扫的副本**
+      #    （实证：tauri-cli 2.11.4 预编译二进制的内嵌模板字符串）。
+      #    故本腿只能扫 cargo 侧 staging，脚本会在输出里明确标注「staging 检查（不是产物验证）」。
+      #    「NSIS 安装器内容是否含核」在本仓**没有自动门**，由 Windows 真机安装验证覆盖。
+      #
+      # ⚠️ 本步的判据「staging 里恰含 win」只有在 staging **只反映本次构建**时才成立。
+      #    `_up_/` 是只增不删的累积目录（tauri-build 从不 prune）+ rust-cache 会恢复它，
+      #    故上面的 `Reset cargo resource staging (Windows)` 是本步的**前置**，不可省。
+      - name: Verify staged core payload (Windows — staging check, not artifact verification)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: node scripts/verify-packaging.mjs payload --label ${{ matrix.label }} --root target/release
+
+      # Linux 产物命名 ↔ updater 选包契约（与 mac / windows 腿对称）。
+      # deb 与 AppImage 各自对应 updater 的 installed / loose 形态，掉任一个该形态就选不到包。
+      - name: Verify Linux update-asset naming contract
+        if: runner.os == 'Linux'
+        shell: bash
+        run: node scripts/verify-packaging.mjs assets --label linux --dir target/release/bundle
+
+      # ── mac dmg 内附首次打开引导（#318）──
+      # 本 workflow 不签名（见文件头「不签名纪律」）⇒ 从下载的 dmg 拖出的 app 带
+      # `com.apple.quarantine`，首次打开被 Gatekeeper 拦下。此前的止血只有 README 一句
+      # `xattr -dr`，而**用户读不到 README** —— 他看到的是一个双击报错的 app。
+      #
+      # 为什么要转换往返：上游 那边是自己 `hdiutil create` 出 dmg，塞文件就是一次 cp；
+      # Polaris 的 dmg 由 Tauri bundler 出，格式是 UDZO（只读压缩），必须
+      # UDZO → UDRW → 挂载 → 塞文件 → 卸载 → UDZO 转回来。resize 是必需的：convert 出来的
+      # UDRW 只按内容大小分配，直接 cp 会 "No space left on device"。
+      #
+      # 放在打架构标记**之前**：这样改名与随后的资产名契约门看到的都是最终产物。
+      - name: Embed macOS first-open guide into dmg
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_dir="target/${{ matrix.rust_target }}/release/bundle/dmg"
+          guide="packaging/macos-dmg-open-guide.txt"
+          # Finder 按名排序，前缀数字让它排在 app 之前 —— 引导排在后面等于没有引导。
+          guide_name="0 首次打开必读 READ ME FIRST.txt"
+          [ -f "$guide" ] || { echo "::error::引导文件不存在: $guide"; exit 1; }
+          # detach 偶发 "resource busy"（Spotlight/mds 刚扫过），一次重试足够；
+          # 不重试的话整条腿会因为一次时序抖动红掉，而产物其实是好的。
+          detach_retry() { hdiutil detach "$1" -quiet || { sleep 2; hdiutil detach "$1" -force -quiet; }; }
+          shopt -s nullglob
+          embedded=0
+          for dmg in "$bundle_dir"/*.dmg; do
+            # 可写中间件放**临时目录**，不放 bundle_dir：放在里面的话，一次中途失败留下的
+            # 残件会被下一次重跑的 `*.dmg` 通配捞进去，跟着打上架构标记发给用户
+            # （self-hosted / 重跑的脏工作区是真实场景，本文件别处已为此踩过一次）。
+            rw="$(mktemp -d)/rw.dmg"
+            hdiutil convert "$dmg" -format UDRW -o "$rw" -ov -quiet
+            # 现有大小 + 20MB 余量：引导只有几 KB，余量是给 HFS+ 元数据的。
+            need=$(( $(du -m "$rw" | cut -f1) + 20 ))
+            hdiutil resize -size "${need}m" "$rw" >/dev/null
+            mnt=$(mktemp -d)
+            hdiutil attach "$rw" -mountpoint "$mnt" -nobrowse -noverify -quiet
+            cp "$guide" "$mnt/$guide_name"
+            detach_retry "$mnt"
+            hdiutil convert "$rw" -format UDZO -o "$dmg" -ov -quiet
+            rm -f "$rw"
+            embedded=$((embedded + 1))
+          done
+          [ "$embedded" -gt 0 ] || { echo "::error::$bundle_dir 里没有 dmg 可处理"; exit 1; }
+          echo "已向 $embedded 个 dmg 内附首次打开引导"
+
+      # 🔴 开箱验：不验的话「注入静默失败」与「注入成功」在日志里长得一模一样 ——
+      # 上面每一步都可能 rc=0 却什么都没塞进去（挂错点、cp 到临时目录、convert 覆盖回旧文件）。
+      # 判据取**最终产物**：把 UDZO 重新挂上，看那个文件名在不在、内容对不对。
+      - name: Verify guide is actually inside the dmg
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_dir="target/${{ matrix.rust_target }}/release/bundle/dmg"
+          guide_name="0 首次打开必读 READ ME FIRST.txt"
+          detach_retry() { hdiutil detach "$1" -quiet || { sleep 2; hdiutil detach "$1" -force -quiet; }; }
+          shopt -s nullglob
+          checked=0
+          for dmg in "$bundle_dir"/*.dmg; do
+            mnt=$(mktemp -d)
+            hdiutil attach "$dmg" -mountpoint "$mnt" -nobrowse -readonly -quiet
+            if [ ! -f "$mnt/$guide_name" ]; then
+              hdiutil detach "$mnt" -quiet || true
+              echo "::error::$(basename "$dmg") 里没有「$guide_name」—— 内附步骤静默失败了"
+              exit 1
+            fi
+            # 内容也要对：空文件 / 半截文件同样是「有名无实」。
+            grep -q 'com.apple.quarantine' "$mnt/$guide_name" || {
+              hdiutil detach "$mnt" -quiet || true
+              echo "::error::$(basename "$dmg") 里的引导缺少 xattr 命令 —— 内容不完整"
+              exit 1
+            }
+            detach_retry "$mnt"
+            checked=$((checked + 1))
+          done
+          [ "$checked" -gt 0 ] || { echo "::error::没有 dmg 被开箱验证"; exit 1; }
+          echo "已开箱验证 $checked 个 dmg"
+
+      # ── mac dmg 打架构标记（更新器契约，**不可省**）──
+      # crates/updater/src/github.rs::find_suitable_update_asset（macOS 分支）按资产名是否含
+      # `mac-arm64` / `mac-x64` 选包，**匹配不到直接返回 None**（2026-07-21 起取消「任意 .dmg」
+      # 回落：分架构后回落 = 给用户发另一架构的包，arm64 包在 Intel 上根本执行不了）。
+      # Tauri 默认 dmg 名是 `Polaris_0.1.0_aarch64.dmg` / `Polaris_0.1.0_x64.dmg`，**都不含**上述 tag
+      # （`_x64` ≠ `mac-x64`）⇒ 若不改名，双架构 release 里两个 dmg 谁都匹配不上，两个架构的用户
+      # 全部**静默收不到更新**。universal 时代只有一个 dmg 故无所谓，分架构后这条契约变成硬要求。
+      - name: Tag macOS dmg with arch
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_dir="target/${{ matrix.rust_target }}/release/bundle/dmg"
+          [ -d "$bundle_dir" ] || { echo "::error::dmg bundle dir not found: $bundle_dir"; exit 1; }
+          shopt -s nullglob
+          # 计数口径是「**结果**上带 tag 的 dmg 数」，不是「本次改名了几个」——
+          # 脏工作区（self-hosted / 重跑）里 dmg 可能已带 tag，那是**正确状态**，
+          # 旧写法 continue 让 renamed 停在 0 而误报 `no dmg to tag`。
+          tagged=0
+          for dmg in "$bundle_dir"/*.dmg; do
+            case "$(basename "$dmg")" in
+              *${{ matrix.mac_arch_tag }}*) tagged=$((tagged + 1)); continue ;;
+            esac
+            mv "$dmg" "$bundle_dir/$(basename "$dmg" .dmg)-${{ matrix.mac_arch_tag }}.dmg"
+            tagged=$((tagged + 1))
+          done
+          [ "$tagged" -gt 0 ] || { echo "::error::no dmg in $bundle_dir"; exit 1; }
+          ls -la "$bundle_dir"
+
+      # 产物命名 ↔ updater 选包规则的机器断言（与 github.rs::find_suitable_update_asset 同口径）：
+      # 本 job 的 dmg 必须恰好命中本架构、且不得出现另一架构 tag。改名步一旦失效即红。
+      - name: Verify macOS update-asset naming contract
+        if: runner.os == 'macOS'
+        shell: bash
+        run: node scripts/verify-packaging.mjs assets --label ${{ matrix.label }} --dir target/${{ matrix.rust_target }}/release/bundle/dmg
+
+      # ── Windows 离线产物（第二 NSIS，§E.2 / §I-Q2）+ 更新器命名契约 ──
+      #
+      # 两次 build 产物路径相同（同名 *-setup.exe），故必须先把第一次的**移走**再打第二次。
+      # 用 Move-Item（不是 Copy-Item）：旧写法 Copy 后 nsis/ 里同时留着 `*-setup.exe` 与副本，
+      # 第二次 build 覆盖 `*-setup.exe` ⇒ 上传的 `*-setup.exe` 与 `*-setup-offline.exe` **字节相同**，
+      # 等于往 release 塞一份 ~127MB 重复物，且名字暗示它才是默认版。
+      #
+      # 🔴 命名契约（crates/updater/src/github.rs:293-296）：Windows 侧选包要求
+      #    「`.exe` 且名含 `win`（大小写敏感）」。Tauri NSIS 默认名是 `Polaris_0.1.0_x64-setup.exe`
+      #    （nsis/mod.rs 的 `{product}_{version}_{arch}-setup.exe` + arch 映射 x86_64→`x64`），
+      #    **不含 `win`** ⇒ find_suitable_update_asset 恒返回 None ⇒ Windows 用户永远收不到更新且静默。
+      #    故在此处（与 mac 改名步同一手法、同一处立契约）把 bootstrapper 改名带上 `win`。
+      #
+      # ⚠️ 离线版**故意不带 `win`**：updater 的 Windows 分支是 `find(is_setup)` 取首个命中，
+      #    命中集里有两个 setup 时选谁取决于 release 资产顺序（不确定）。让「名含 win 的 .exe」
+      #    全局恰好一个，更新目标才是确定的 bootstrapper（小包）；离线版是 LTSC/内网**手动下载**
+      #    变体，本就不该被自动更新选中。该「恰好一个」由后面的 assets 断言机器守住。
+      - name: Stash bootstrapper installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          if (-not $setup) { throw "no *-setup.exe in target/release/bundle/nsis" }
+          New-Item -ItemType Directory -Force dist-win | Out-Null
+          $name = $setup.Name -replace '-setup\.exe$', '-win-setup.exe'
+          Move-Item $setup.FullName "dist-win/$name"
+          Write-Host "bootstrapper -> dist-win/$name"
+
+      # 从**仓库根**跑：`--config` 按进程 CWD 解析，而 `working-directory: src-tauri` + 仓库根相对
+      # 路径已实测硬失败（`invalid value 'src-tauri/tauri.offline.conf.json' for '--config'：
+      # failed to read configuration file … No such file or directory`）——Windows job 会死在这一步，
+      # 走不到后面的 stash/upload。仓库根下 CLI 会自行向下找到 src-tauri/tauri.conf.json（已实测）。
+      # windows 平台 conf 显式再传一次，与 matrix 口径一致（多个 --config 按给出顺序合并）。
+      #
+      # 🔴 命令是 `tauri build`，**不是 `cargo tauri build`**（2026-08-05 修，该步此前从未被执行过）：
+      #    上一步的 `tauri-apps/tauri-action` 装的是 **npm 全局包** —— macos 腿成功日志逐字记录
+      #    `running npm [ 'install', '-g', '@tauri-apps/cli@v2' ]`，而 `@tauri-apps/cli` 的
+      #    `bin` 只有 `{"tauri": "./tauri.js"}` 一个入口，**不产出 `cargo-tauri` 二进制**；
+      #    `cargo <sub>` 严格按 PATH 上有没有 `cargo-<sub>` 决议，workflow 里也没有
+      #    `cargo install tauri-cli`。本机实测（同样无 `cargo-tauri`）复现将会出现的错误：
+      #      $ cargo tauri build
+      #      error: no such command: `tauri`   （exit 101）
+      #    改用全局 `tauri` 还顺带保证两次打包用**同一个 CLI 版本**（都是 tauri-action 装的那份），
+      #    比另装一个 `cargo install tauri-cli` 少一个版本漂移面。
+      - name: Build Windows offline installer
+        if: runner.os == 'Windows'
+        run: tauri build --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.offline.conf.json
+
+      - name: Stash offline installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          if (-not $setup) { throw "no *-setup.exe in target/release/bundle/nsis" }
+          $name = $setup.Name -replace '-setup\.exe$', '-offline-setup.exe'
+          Move-Item $setup.FullName "dist-win/$name"
+          Write-Host "offline -> dist-win/$name"
+
+      # ── Windows portable（§I-Q4，zip 解压即用）──
+      # Tauri 2 NSIS 无原生 portable；从 release exe + resources/ 打成 zip（解压即用，绕过安装器）。
+      # portable 需自带 resources（sing-box/cronet/dashboard）否则无核可起；resources 目录由 Tauri
+      # 打包器铺到 bundle 同级，但 portable 形态无安装器整合，故显式从源 resources/ 拷入。
+      #
+      # 🔴 **`portable.marker` 不是装饰**（2026-07-22，修 #72 形态错配本体）：
+      #    应用靠「exe 同级有没有这个文件」判自己是不是便携形态
+      #    （`src-tauri/src/commands/updater.rs::is_portable_layout`），进而决定检查更新时
+      #    该拿 `polaris-portable-*.zip` 还是 NSIS 安装器。
+      #    此前判据读的是 `PORTABLE_EXECUTABLE_DIR` —— **electron-builder 便携目标特有**的注入
+      #    （它的便携版是自解压 stub，由 stub 设该变量）。本步打的是纯 zip、**没有任何 stub**
+      #    ⇒ 该 env 恒不存在 ⇒ 便携用户恒被判成安装态、被推安装器，装出与便携副本并存的
+      #    第二份程序（配置目录 / 自启项 / 内核资源各一套）。
+      #    漏掉这个文件 = 该缺陷原样复发，故下一步开包核验它确实在 zip 里（fail-closed）。
+      - name: Build Windows portable zip
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = Get-ChildItem target/release/polaris.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw "no target/release/polaris.exe — portable zip cannot be built" }
+          $staging = "staging-portable"
+          New-Item -ItemType Directory -Force $staging | Out-Null
+          Copy-Item $exe.FullName $staging/
+          # 拷 Windows 平台所需资源：sing-box.exe + libcronet.dll + dashboard + data。
+          Copy-Item resources/win $staging/resources/win -Recurse -Force
+          Copy-Item resources/dashboard $staging/resources/dashboard -Recurse -Force
+          Copy-Item resources/data $staging/resources/data -Recurse -Force
+          # 便携形态标记（内容是给用户看的「勿删」说明；判据只看文件在不在）。
+          Set-Content -Path "$staging/portable.marker" -Encoding utf8 -Value @(
+            "Polaris portable edition marker - DO NOT DELETE."
+            "Polaris 便携版标记文件，请勿删除。"
+            ""
+            "This file tells Polaris it is running as the portable (zip) edition, so that"
+            "'Check for updates' offers the portable zip instead of the NSIS installer."
+            "Deleting it makes Polaris think it was installed, and it will then offer an"
+            "installer that creates a SECOND, separate copy of the app."
+          )
+          Compress-Archive -Path "$staging/*" -DestinationPath "polaris-portable-${{ env.BUILD_LABEL }}.zip" -Force
+
+      # 便携标记必须真的在 zip 里 —— 开包核验**产物本身**，不是核验上一步的脚本文本。
+      # 缺它 ⇒ 便携用户恒被推安装器（#72 形态错配本体复发），故这里 throw 让整条腿硬失败，
+      # 而不是让一个「看着成功、装出来错形态」的 zip 进 release。
+      - name: Verify portable marker is inside the zip
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zip = "polaris-portable-${{ env.BUILD_LABEL }}.zip"
+          $probe = "portable-probe"
+          if (Test-Path $probe) { Remove-Item $probe -Recurse -Force }
+          Expand-Archive -Path $zip -DestinationPath $probe -Force
+          if (-not (Test-Path "$probe/portable.marker" -PathType Leaf)) {
+            throw "portable.marker missing from $zip - portable users would be offered the NSIS installer (#72 form mismatch)"
+          }
+          if (-not (Test-Path "$probe/polaris.exe" -PathType Leaf)) {
+            throw "polaris.exe missing from $zip"
+          }
+          Remove-Item $probe -Recurse -Force
+          Write-Host "portable zip contains polaris.exe + portable.marker"
+
+      # 产物命名 ↔ updater 选包规则的机器断言（与 github.rs::find_suitable_update_asset 同口径）：
+      # dist-win/ 下「`.exe` 且名含 `win`」必须**恰好一个**且含 `setup`。
+      # 0 个 = 用户永远收不到更新且静默；>1 个 = 选哪个取决于 release 资产顺序，不确定。
+      - name: Verify Windows update-asset naming contract
+        if: runner.os == 'Windows'
+        shell: bash
+        run: node scripts/verify-packaging.mjs assets --label windows --dir dist-win
+
+      # ── 上传产物 ── 每平台一个 artifact；mac 分架构后 label 为 macos-arm64 / macos-x64，故不撞名。
+      # 路径以**仓库根 target/** 为准（cargo workspace 根在仓库根，见 Build installers 注释）。
+      # 传了 --target 的 mac job 多一层 triple 目录，故 dmg 用 `target/*/release/...` 覆盖。
+      # Windows 两个安装器一律从 dist-win/ 取（已带 win / offline 标记且互不覆盖）；
+      # **不再上传 nsis/ 下的裸 `*-setup.exe`** —— 它是第二次 build 的残留，与 offline 版字节相同。
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: polaris-${{ matrix.label }}-${{ env.BUILD_LABEL }}
+          path: |
+            target/release/bundle/**/*.deb
+            target/release/bundle/**/*.AppImage
+            target/*/release/bundle/**/*.dmg
+            dist-win/*.exe
+            polaris-portable-*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  # ══ 发布 ══ 把四个 job 的产物按命名契约汇进**同一个 GitHub release**。
+  #
+  # 🔴 为什么这一步不可省：`find_suitable_update_asset` 全靠 **release 资产名** 选包，而
+  # 本 workflow 此前既没给 tauri-action 传 `tagName`、也没有任何 gh-release 步骤 ⇒ dmg 的架构
+  # tag 只活在 CI artifact 里，能否进 release 取决于人工上传时有没有保留文件名。改名步 + 三个
+  # 断言的全部价值都押在资产名上，这一环不自动化等于没闭环。
+  #
+  # ── 幂等机制：靠**结构**，不靠冲突重试 ──
+  # ① `needs: package` 把发布收成**单个 job**：matrix 的四条腿并行跑完后，这个 job 只被调度一次。
+  #    「四个 job 各建一个 release / 互相覆盖资产」的竞态在拓扑上就不存在——不是靠 create 失败后
+  #    重试兜住，而是根本只有一个写入者。（对比方案：在每条 matrix 腿里调 gh-release，四个写入者
+  #    抢同一个 tag，create 有 TOCTOU 窗口，且谁先跑完谁定 release 正文，非确定。）
+  # ② 对**同一 tag 重跑 workflow**（第二个写入者来自时间维度）：先 `gh release view` 探在否，
+  #    已存在只传资产、不重建；`gh release upload --clobber` 覆盖同名资产而非追加 `.1` 后缀。
+  #    故重跑收敛到同一状态。
+  # ③ `needs` 默认要求 package 的**每条腿全部成功**：缺一条（比如 macos-x64 挂了）则本 job 跳过，
+  #    绝不发布只有单架构 dmg 的残缺 release —— 与 github.rs 取消跨架构回落是同一条纪律的两端
+  #    （那边保证「宁可不更新」，这边保证「压根不会出现半套 release」）。
+  # ④ 但 ③ 只管「起跑的腿都成功」，管不了「起跑了几条腿」——2026-07-31 加 workflow_dispatch 的
+  #    platform 输入后，这正好是个新缺口：选 platform=windows ⇒ 矩阵只剩一条腿 ⇒ 那条腿成功 ⇒
+  #    `needs: package` 满足 ⇒ 若只有 ③ 把关，release 照发，产出一个**只有 win 安装包**的 release。
+  #    而 `find_suitable_update_asset` 全靠 release 资产名选包：mac/linux 用户会在这个 release 上
+  #    匹配不到自己的资产 —— 走的还是「静默不更新」那条路，坏在没人会收到告警。
+  #    故显式加 `needs.setup.outputs.full == 'true'`，把 ③ 的纪律从「腿都绿」补全成「腿齐且都绿」。
+  #    [选 needs.setup.outputs.full：判据取自**实际解析出的矩阵**（选中条数 == 全量条数），
+  #     将来加平台、加分组选项都不会与真实构建面失配] /
+  #    [不选 inputs.platform == 'all' || event_name != 'workflow_dispatch'：那是「意图」不是「事实」，
+  #     过滤逻辑一变就与实际打了几条腿脱节；且 `inputs` 上下文在 tag push 事件下的取值需要跑起来才确认]
+  release:
+    name: publish release
+    # setup 进 needs 只为读它的 outputs（`needs` 上下文只含 needs 里列出的 job）；
+    # setup 与 ci/ui 并行、ubuntu 1x，不加长关键路径。
+    needs: [setup, package]
+    # 两条闸门，缺一不可：
+    #   · `startsWith(github.ref, 'refs/tags/v')` —— 只有 v* tag 才发布：本 workflow 也可在分支 ref 上
+    #     workflow_dispatch（手动验打包链），那种 ref 的 ref_name 是分支名（main），建出来的 release
+    #     名字是错的。在 tag ref 上 dispatch 则 ref 就是 tag ref，本条为真，幂等补资产路径成立。
+    #   · `needs.setup.outputs.full == 'true'` —— 见上面 ④：只有全平台都构建了才准发布。
+    # `github.ref` 与 `needs` 在 **job 级** 都可用（不同于 matrix 级——见 package job 搬走的那段
+    # github.workspace 教训：那是上下文**求值时机**问题，不是名字拼错）。
+    if: startsWith(github.ref, 'refs/tags/v') && needs.setup.outputs.full == 'true'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      # 只为拿 scripts/verify-packaging.mjs（断言脚本），不构建。
+      - uses: actions/checkout@v4
+
+      # 四个 artifact 合并落进 dist-release/。
+      # upload-artifact v4 的基准是**实际命中文件**的最近公共祖先（不是所列 path 的公共祖先，
+      # 也不是仓库根）：mac 两条腿各自只命中一个 dmg ⇒ 那个 artifact 里是**平铺的裸 dmg**；
+      # linux / windows 命中多个文件才会保留 target/... 、dist-win/... 之类的嵌套目录。
+      # 故 dist-release/ 下平铺与嵌套并存——下面一律用 `find -type f` 取文件，不假设层级。
+      - name: Download all package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-release
+          pattern: polaris-*
+          merge-multiple: true
+
+      - name: List collected assets
+        shell: bash
+        run: find dist-release -type f | sort
+
+      # 上传**之前**先验命名契约：契约不成立就不该产生一个坏 release 再去修。
+      # 聚合口径（--label release）≠ per-job 口径：per-job 断言「本 job 不得出现另一架构」，
+      # 聚合侧两架构本就都在，故用独立分支断言「每架构恰一个」。
+      - name: Verify release asset naming contract
+        shell: bash
+        # `--dir` 按仓库根解析（见下方 publish 步注释），故用 $GITHUB_WORKSPACE 显式锚定。
+        run: node "$GITHUB_WORKSPACE/scripts/verify-packaging.mjs" assets --label release --dir "$GITHUB_WORKSPACE/dist-release"
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+
+          # 显式收集文件列表：`dist-release/*` 会把目录喂给 gh 导致报错，且空目录时
+          # 通配符原样传入会静默上传一个名为 `dist-release/*` 的不存在文件。
+          mapfile -t files < <(find dist-release -type f | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::dist-release/ 下没有任何文件 —— 四个打包 job 的 artifact 未下载成功"
+            exit 1
+          fi
+          printf '待上传资产（%d 个）:\n' "${#files[@]}"
+          printf '  %s\n' "${files[@]}"
+
+          # 幂等②：存在则复用，不存在才建。
+          # `gh release view` 因鉴权/网络失败时也会走 else 分支，但随后的 `gh release create`
+          # 会**硬失败**（非静默跳步），故不存在「探测失败被吞掉」的路径。
+          #
+          # 🔴 `--draft`：create 与 upload 是两次调用，中间有窗口。直接建成**已公开** release 时，
+          #    「create 成功、upload 挂掉」会留下一个**公开且零资产**的 release ——
+          #    `check_app_update` 对它走 `NoUpdate`，用户**静默**收不到更新，且下次重跑因
+          #    `gh release view` 探到它而只补资产，坏状态不自愈。
+          #    「绝不发半套」此前只对「某条腿挂掉」成立（靠 needs: package），对「建完挂了」不成立。
+          #    改成先建草稿：草稿对匿名用户不可见、updater 的 GitHub API 也取不到，
+          #    直到下面 Verify published release assets 验过才 `--draft=false` 转公开。
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $tag 已存在 —— 只覆盖资产，不重建（幂等重跑）"
+          else
+            echo "release $tag 不存在 —— 创建（草稿态，验过再公开）"
+            gh release create "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$tag" \
+              --generate-notes \
+              --verify-tag \
+              --draft
+          fi
+
+          # --clobber：同名资产覆盖而非追加 `.1` 后缀。追加会让 release 里出现
+          # `*-mac-arm64.dmg` 与 `*-mac-arm64.dmg.1` 两个命中，updater 选谁看顺序。
+          gh release upload "$tag" "${files[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+      # 上传后再验一次：这次喂的是**真实 release 资产名**（GitHub 会把空格等字符规范化；
+      # `--clobber` 若未生效会出现 `foo.dmg` + `foo.dmg.1` 并存），只验本地文件名验不到这一层。
+      # `.N` 重复项由 verify-packaging 的 release 分支单独查 —— 它逃过所有扩展名断言
+      # （`foo.dmg.1` 不 endsWith('.dmg')），不单独查就抓不到。
+      #
+      # 本步是**转公开前的最后一道闸门**：release 此时仍是草稿，验不过就停在草稿态，不会公开半套。
+      - name: Verify published release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          # ⚠️ verify-packaging 的 `--dir` 按**仓库根**解析（`resolve(ROOT, dir)`），不是按 shell CWD。
+          # 这里用 $GITHUB_WORKSPACE 显式锚定，两者才恒等 —— 写相对路径虽然在 CI 里碰巧也对
+          # （step 默认 CWD = workspace），但换个 working-directory 就会静默指向别处。
+          # （$GITHUB_WORKSPACE 是 runner 侧**环境变量**，与 matrix 级 `${{ github.workspace }}`
+          #  求值为空串那个坑无关：那是服务端展开时机问题，这里是运行期读 env。）
+          outdir="$GITHUB_WORKSPACE/published-assets"
+          rm -rf "$outdir"
+          mkdir -p "$outdir"
+          # 只造同名空文件供命名断言使用（不回下 ~300MB 真产物）。
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name' > published-names.txt
+          if [ ! -s published-names.txt ]; then
+            echo "::error::release $tag 没有任何资产"
+            exit 1
+          fi
+          echo "release $tag 实际资产："
+          cat published-names.txt
+          while IFS= read -r name; do
+            : > "$outdir/$name"
+          done < published-names.txt
+          node "$GITHUB_WORKSPACE/scripts/verify-packaging.mjs" assets --label release --dir "$outdir"
+
+      # 验过才转公开。
+      #
+      # 覆盖范围要说准：本步只消除**首次发布**那条路径上的「公开且零资产」窗口 ——
+      # 该路径下 release 从 create 到这一步之前一直是草稿（匿名不可见，updater 的 GitHub API
+      # 也取不到），故 create 成功而 upload 挂掉时它停在草稿态，不会被用户看到。
+      # **重跑已存在的 release 时不适用**：那条路径走「已存在」分支不重建，release 本就是公开的，
+      # 重新上传期间它一直公开（资产由 --clobber 逐个覆盖，可能短暂新旧混存）。
+      # 这是有意的取舍——重跑的前提是上一轮已验过，把公开的 release 打回草稿反而会让
+      # 已在分发的下载链接短暂失效。
+      #
+      # 幂等：对已公开的 release 再跑 `--draft=false` 是 no-op。
+      - name: Promote release to public
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false
+          echo "release $tag 已转为公开"

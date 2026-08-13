@@ -1,0 +1,19 @@
+Polaris
+Copyright (c) 2026 Sway-Chan
+
+以子进程 / 二进制资源形式集成的第三方组件（非源码链接，mere aggregation）：
+  - sing-box (GPLv3)        — https://github.com/SagerNet/sing-box     （代理内核，sidecar 子进程）
+  - cronet-go               — https://github.com/SagerNet/cronet-go     （NaiveProxy 核心，libcronet 动态库）
+  - sing-box-dashboard      — https://github.com/SagerNet/sing-box-dashboard（面板 UI）
+  - meta-rules-dat          — https://github.com/MetaCubeX/meta-rules-dat（规则集 / 地理数据 .srs）
+
+Windows 离线安装器（polaris-*-setup-offline.exe）额外内嵌：
+  - Microsoft Edge WebView2 Runtime — https://developer.microsoft.com/microsoft-edge/webview2/
+    （基于 Chromium，BSD-3-Clause；为无 WebView2 的 LTSC / 离线系统提供渲染引擎。主安装器不内嵌。）
+
+**链进产物的源码级依赖**（Tauri / React / 数百个 Rust crate 等）不属 mere aggregation，
+其许可与版权声明随二进制分发，逐包登记在 `THIRD-PARTY-LICENSES.md`
+（由 `scripts/gen-third-party-licenses.mjs` 生成，依赖一变 CI 即要求重生成）。
+
+以上组件版权归各自作者所有，以独立二进制 / 数据形式分发，其许可不改变本项目的 MIT 许可。
+sing-box 以 GPLv3 发布，作为独立子进程集成（mere aggregation），不构成对 Polaris 源码的 GPL 传染。

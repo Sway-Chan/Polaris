@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "update-popup",
+  "description": "更新进度弹窗（label=update-popup）能力集：仅订阅 Rust 侧 `update_popup::emit_to` 推送的更新状态事件（`ui/src/update-popup/main.ts` 的 `listen(EVENT_POPUP_STATE)`）。按钮动作走自定义 command `update_popup_action`（app command 不受 ACL 限制，无需在此声明）；窗口显隐/尺寸由 Rust 侧 `runtime::update_popup` 管理，故不授前端 window 写权限。权限刻意比 `tray.json` 更窄——该窗不读平台标识、不调 core 默认集。\n缺失后果：`listen` 被 ACL 拒 ⇒ 进度事件永远收不到 ⇒ 点「立即更新」后进度条不动；且调用点是 `.catch(() => {})`，静默失效连报错都没有。",
+  "windows": ["update-popup"],
+  "permissions": ["core:event:default"]
+}

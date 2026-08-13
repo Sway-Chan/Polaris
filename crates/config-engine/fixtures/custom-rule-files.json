@@ -1,0 +1,598 @@
+{
+  "planCases": [
+    {
+      "name": "plan_ext_single_domain",
+      "input": {
+        "enabled": true,
+        "id": "r1",
+        "type": "domain",
+        "values": [
+          "a.com"
+        ],
+        "action": "proxy"
+      },
+      "output": {
+        "kind": "ext",
+        "fileRules": [
+          {
+            "domain": [
+              "a.com"
+            ]
+          }
+        ],
+        "dnsRules": null
+      }
+    },
+    {
+      "name": "plan_ext_single_ipCidr",
+      "input": {
+        "enabled": true,
+        "id": "r1",
+        "type": "ipCidr",
+        "values": [
+          "10.0.0.0/8"
+        ],
+        "action": "direct"
+      },
+      "output": {
+        "kind": "ext",
+        "fileRules": [
+          {
+            "ip_cidr": [
+              "10.0.0.0/8"
+            ]
+          }
+        ],
+        "dnsRules": null
+      }
+    },
+    {
+      "name": "plan_ext_single_port",
+      "input": {
+        "enabled": true,
+        "id": "r1",
+        "type": "port",
+        "values": [
+          "443",
+          "1000-2000"
+        ],
+        "action": "proxy"
+      },
+      "output": {
+        "kind": "ext",
+        "fileRules": [
+          {
+            "port": [
+              443
+            ],
+            "port_range": [
+              "1000:2000"
+            ]
+          }
+        ],
+        "dnsRules": null
+      }
+    },
+    {
+      "name": "plan_ext_or_mergeable",
+      "input": {
+        "enabled": true,
+        "id": "r1",
+        "type": "domain",
+        "values": [
+          "a.com"
+        ],
+        "action": "proxy",
+        "conditions": [
+          {
+            "type": "domain",
+            "values": [
+              "a.com"
+            ]
+          },
+          {
+            "type": "ipCidr",
+            "values": [
+              "1.2.3.0/24"
+            ]
+          }
+        ]
+      },
+      "output": {
+        "kind": "ext",
+        "fileRules": [
+          {
+            "domain": [
+              "a.com"
+            ],
+            "ip_cidr": [
+              "1.2.3.0/24"
+            ]
+          }
+        ],
+        "dnsRules": null
+      }
+    },
+    {
+      "name": "plan_ext_cross_dim_logical",
+      "input": {
+        "enabled": true,
+        "id": "r1",
+        "type": "domain",
+        "values": [
+          "a.com"
+        ],
+        "action": "proxy",
+        "conditions": [
+          {
+            "type": "domain",
+            "values": [
+              "a.com"
+            ]
+          },
+          {
+            "type": "port",
+            "values": [
+              "443"
+            ]
+          }
+        ]
+      },
+      "output": {
+        "kind": "ext",
+        "fileRules": [
+          {
+            "type": "logical",
+            "mode": "or",
+            "rules": [
+              {
+                "domain": [
+                  "a.com"
+                ]
+              },
+              {
+                "port": [
+                  443
+                ]
+              }
+            ]
+          }
+        ],
+        "dnsRules": null
+      }
+    },
+    {
+      "name": "plan_ext_and",
+      "input": {
+        "enabled": true,
+        "id": "r1",
+        "type": "domain",
+        "values": [
+          "a.com"
+        ],
+        "action": "proxy",
+        "combineMode": "and",
+        "conditions": [
+          {
+            "type": "domain",
+            "values": [
+              "a.com"
+            ]
+          },
+          {
+            "type": "ipCidr",
+            "values": [
+              "1.2.3.0/24"
+            ]
+          }
+        ]
+      },
+      "output": {
+        "kind": "ext",
+        "fileRules": [
+          {
+            "type": "logical",
+            "mode": "and",
+            "rules": [
+              {
+                "domain": [
+                  "a.com"
+                ]
+              },
+              {
+                "ip_cidr": [
+                  "1.2.3.0/24"
+                ]
+              }
+            ]
+          }
+        ],
+        "dnsRules": null
+      }
+    },
+    {
+      "name": "plan_ext_and_logical",
+      "input": {
+        "enabled": true,
+        "id": "r1",
+        "type": "domain",
+        "values": [
+          "a.com"
+        ],
+        "action": "proxy",
+        "combineMode": "and",
+        "conditions": [
+          {
+            "type": "domain",
+            "values": [
+              "a.com"
+            ]
+          },
+          {
+            "type": "port",
+            "values": [
+              "443"
+            ]
+          }
+        ]
+      },
+      "output": {
+        "kind": "ext",
+        "fileRules": [
+          {
+            "type": "logical",
+            "mode": "and",
+            "rules": [
+              {
+                "domain": [
+                  "a.com"
+                ]
+              },
+              {
+                "port": [
+                  443
+                ]
+              }
+            ]
+          }
+        ],
+        "dnsRules": null
+      }
+    },
+    {
+      "name": "plan_ext_skip_empty",
+      "input": {
+        "enabled": true,
+        "id": "r1",
+        "type": "domain",
+        "values": [
+          "  "
+        ],
+        "action": "proxy"
+      },
+      "output": {
+        "kind": "ext-skip",
+        "dnsRules": null
+      }
+    },
+    {
+      "name": "plan_ext_skip_and_drop",
+      "input": {
+        "enabled": true,
+        "id": "r1",
+        "type": "domain",
+        "values": [
+          "a.com"
+        ],
+        "action": "proxy",
+        "combineMode": "and",
+        "conditions": [
+          {
+            "type": "domain",
+            "values": [
+              "a.com"
+            ]
+          },
+          {
+            "type": "domain",
+            "values": [
+              "  "
+            ]
+          }
+        ]
+      },
+      "output": {
+        "kind": "ext-skip",
+        "dnsRules": null
+      }
+    },
+    {
+      "name": "plan_ext_bypass_fakeip",
+      "input": {
+        "enabled": true,
+        "id": "r1",
+        "type": "domain",
+        "values": [
+          "a.com"
+        ],
+        "action": "proxy",
+        "bypassFakeIP": true
+      },
+      "output": {
+        "kind": "ext",
+        "fileRules": [
+          {
+            "domain": [
+              "a.com"
+            ]
+          }
+        ],
+        "dnsRules": [
+          {
+            "domain": [
+              "a.com"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "plan_ext_bypass_fakeip_suffix",
+      "input": {
+        "enabled": true,
+        "id": "r1",
+        "type": "domainSuffix",
+        "values": [
+          "example.com"
+        ],
+        "action": "direct",
+        "bypassFakeIP": true
+      },
+      "output": {
+        "kind": "ext",
+        "fileRules": [
+          {
+            "domain_suffix": [
+              "example.com"
+            ]
+          }
+        ],
+        "dnsRules": [
+          {
+            "domain_suffix": [
+              "example.com",
+              ".example.com"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "plan_inline_ruleset",
+      "input": {
+        "enabled": true,
+        "id": "r1",
+        "type": "domain",
+        "values": [
+          "a.com"
+        ],
+        "action": "proxy",
+        "conditions": [
+          {
+            "type": "domain",
+            "values": [
+              "a.com"
+            ]
+          },
+          {
+            "type": "ruleSet",
+            "values": [
+              "res:r1"
+            ]
+          }
+        ]
+      },
+      "output": {
+        "kind": "inline"
+      }
+    }
+  ],
+  "condCases": [
+    {
+      "name": "cond_domain",
+      "input": {
+        "type": "domain",
+        "values": [
+          "a.com",
+          "b.com"
+        ]
+      },
+      "output": {
+        "domain": [
+          "a.com",
+          "b.com"
+        ]
+      }
+    },
+    {
+      "name": "cond_domainSuffix_wildcard",
+      "input": {
+        "type": "domainSuffix",
+        "values": [
+          "*.example.com",
+          "test.com"
+        ]
+      },
+      "output": {
+        "domain_suffix": [
+          "example.com",
+          "test.com"
+        ]
+      }
+    },
+    {
+      "name": "cond_domainKeyword",
+      "input": {
+        "type": "domainKeyword",
+        "values": [
+          "ads"
+        ]
+      },
+      "output": {
+        "domain_keyword": [
+          "ads"
+        ]
+      }
+    },
+    {
+      "name": "cond_domainRegex",
+      "input": {
+        "type": "domainRegex",
+        "values": [
+          "^foo.*"
+        ]
+      },
+      "output": {
+        "domain_regex": [
+          "^foo.*"
+        ]
+      }
+    },
+    {
+      "name": "cond_ipCidr",
+      "input": {
+        "type": "ipCidr",
+        "values": [
+          "1.2.3.0/24"
+        ]
+      },
+      "output": {
+        "ip_cidr": [
+          "1.2.3.0/24"
+        ]
+      }
+    },
+    {
+      "name": "cond_sourceIpCidr",
+      "input": {
+        "type": "sourceIpCidr",
+        "values": [
+          "10.0.0.0/8"
+        ]
+      },
+      "output": {
+        "source_ip_cidr": [
+          "10.0.0.0/8"
+        ]
+      }
+    },
+    {
+      "name": "cond_port_mixed",
+      "input": {
+        "type": "port",
+        "values": [
+          "443",
+          "1000-2000",
+          "abc"
+        ]
+      },
+      "output": {
+        "port": [
+          443
+        ],
+        "port_range": [
+          "1000:2000"
+        ]
+      }
+    },
+    {
+      "name": "cond_port_all_invalid",
+      "input": {
+        "type": "port",
+        "values": [
+          "abc",
+          "0"
+        ]
+      },
+      "output": null
+    },
+    {
+      "name": "cond_sourcePort",
+      "input": {
+        "type": "sourcePort",
+        "values": [
+          "1234",
+          "5000-6000"
+        ]
+      },
+      "output": {
+        "source_port": [
+          1234
+        ],
+        "source_port_range": [
+          "5000:6000"
+        ]
+      }
+    },
+    {
+      "name": "cond_processName",
+      "input": {
+        "type": "processName",
+        "values": [
+          "chrome"
+        ]
+      },
+      "output": {
+        "process_name": [
+          "chrome"
+        ]
+      }
+    },
+    {
+      "name": "cond_processPath",
+      "input": {
+        "type": "processPath",
+        "values": [
+          "/usr/bin/curl"
+        ]
+      },
+      "output": {
+        "process_path": [
+          "/usr/bin/curl"
+        ]
+      }
+    },
+    {
+      "name": "cond_non_ext_geosite",
+      "input": {
+        "type": "geosite",
+        "values": [
+          "cn"
+        ]
+      },
+      "output": null
+    },
+    {
+      "name": "cond_empty_values",
+      "input": {
+        "type": "domain",
+        "values": [
+          "  "
+        ]
+      },
+      "output": null
+    }
+  ],
+  "extTypes": [
+    "domain",
+    "domainSuffix",
+    "domainKeyword",
+    "domainRegex",
+    "ipCidr",
+    "sourceIpCidr",
+    "port",
+    "sourcePort",
+    "processName",
+    "processPath"
+  ]
+}

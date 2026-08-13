@@ -1,0 +1,26 @@
+[package]
+name = "polaris-updater"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# serde/serde_json = VersionManifest 解析（GitHub release JSON / 自定义清单）；workspace 既有依赖（非新增第三方）。
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+# polaris-helper-proto = 复用 codec::is_valid_sha256_hex（去重 verify.rs 本地副本；manifest.rs 经 crate::verify:: 路径调用）。
+polaris-helper-proto = { path = "../helper-proto" }
+# sha2/hex = 核心 staged 更新 SHA256 校验（移植自 Polaris shared/file-hash.ts 的 createHash('sha256')）。
+# 与 helper 同口径（crates/helper/Cargo.toml 已用 sha2 = "0.10"）。
+sha2 = "0.10"
+hex = "0.4"
+# thiserror = UpdaterError 枚举 derive（与 core-supervisor / helper / store 等一致）。
+thiserror = "2"
+
+[dev-dependencies]
+# tempfile = mock UpdateFs 落盘 + 原子 rename 的 tmp 目录（与 helper dev-deps 同源）。
+tempfile = "3"
+
+[lib]
+path = "src/lib.rs"

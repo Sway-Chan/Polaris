@@ -1,0 +1,39 @@
+{
+  "compilerOptions": {
+    "target": "ES2021",
+    "useDefineForClassFields": true,
+    "lib": ["ES2021", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+
+    /* Bundler / Vite 模式 */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+
+    /* 严格模式 */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true,
+
+    /* 路径别名（与 vite.config.ts alias 对齐） */
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+
+    /* 类型 */
+    "types": ["vite/client", "node"]
+  },
+  /* 根目录**整层**纳入，不是逐个列举：harness-main.tsx / tray-harness-main.tsx 此前正是因为
+     只写了 "src" + "vite.config.ts" 而逃出类型检查，契约改了它们不红、直到运行时白屏才暴露。
+     用通配收全层，新增的根级 .ts/.tsx 自动在门内，不必有人记得来这里补一行。 */
+  "include": ["src", "*.ts", "*.tsx"],
+  "exclude": ["node_modules", "dist"]
+}

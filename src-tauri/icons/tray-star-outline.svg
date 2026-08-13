@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Polaris 托盘标记 — OUTLINE（断开态）。单色（黑）+ 透明底：alpha 即形状。
+  用途同 filled 版（mac=template / Win-Linux 黑白）。几何同 filled，但星形**只描边**（镂空）+ 轨道环**细**。
+  再叠一道**左下→右上的斜杠**（几何与旧 error 版逐字相同：cut 106 / draw 56，斜杠两侧各留 25 单位透明留白）。
+  加斜杠的理由：只靠「实心 vs 空心」在 22pt 菜单栏里几乎不可分（陈先生 2026-07-29 真机反馈），
+  斜杠才是二值可分的那个特征。ERROR 随之升为**双斜杠**保持三态互不混淆，见 tray-star-error.svg。
+  改此文件后重生 tray-off-black/white.png（rsvg-convert 176 → LANCZOS 缩 44 → PIL 派生白）。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="16 16 480 480" width="176" height="176">
+  <defs>
+    <mask id="rm" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+      <rect width="512" height="512" fill="#fff"/>
+      <circle cx="369" cy="98" r="26" fill="#000"/><circle cx="122" cy="395" r="26" fill="#000"/>
+    </mask>
+    <mask id="slashcut" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+      <rect width="512" height="512" fill="#fff"/>
+      <line x1="104" y1="408" x2="408" y2="104" stroke="#000" stroke-width="106" stroke-linecap="round"/>
+    </mask>
+  </defs>
+  <g mask="url(#slashcut)">
+    <g fill="none" stroke="#000">
+      <circle cx="256" cy="256" r="188" stroke-width="15" mask="url(#rm)"/>
+      <path d="M256 18 C249 91 246 139 217 184 L184 155 L202 202 C151 231 95 247 20 256 C95 265 151 281 202 310 L184 357 L217 328 C246 373 249 421 256 494 C263 421 266 373 295 328 L328 357 L310 310 C361 281 417 265 492 256 C417 247 361 231 310 202 L328 155 L295 184 C266 139 263 91 256 18 Z" stroke-width="22" stroke-linejoin="round"/>
+    </g>
+    <g fill="#000"><circle cx="369" cy="98" r="14"/><circle cx="122" cy="395" r="14"/></g>
+  </g>
+  <line x1="104" y1="408" x2="408" y2="104" stroke="#000" stroke-width="56" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,192 @@
+/**
+ * mini 更新弹窗样式（独立于主窗 Aurora 底座：380px toast 不该拖进整套设计系统 CSS）。
+ *
+ * 底色与主进程建窗时的 backgroundColor **逐档对齐**（`tray::surface_color`：深 #161C24 / 浅 #FFFFFF），
+ * 避免首帧闪一格反色。
+ *
+ * # 主题从哪来（为什么不是 `prefers-color-scheme` 单独说了算）
+ *
+ * 真值是 `config.uiTheme`，不是 OS 明暗：`uiTheme=light` + OS 深色时两者相反。主进程建窗时用同一个
+ * `dark` 折出原生底色**并**经 `theme_boot_script` 注入 `<html data-theme>`（见
+ * `src-tauri/src/runtime/update_popup.rs::build_popup_window`），故这里以 `data-theme` 为准。
+ * `prefers-color-scheme` 只作**注入缺席**时的兜底（浏览器里直接开 dist / 注入失败）。
+ *
+ * 曾经这里只有深色一档（原生底色已按主题折算，页面写死 #161C24）：结果浅色用户从
+ * 「深→深无闪」变成「白底闪一格→深色卡片」——闪烁方向被反转而非修掉（2026-07-28 复审）。
+ * ⇒ **所有随主题变的颜色一律走下面这组自定义属性**，规则体里不得再出现裸的 `rgba(255,255,255,…)`
+ * 之类只在单档成立的取值，否则新增一条就又只改了一半。
+ */
+
+/* 深色档（默认；= tokens 的 --surface #161C24 / --fg / --fg-dim）。 */
+:root {
+  --surface: #161c24;
+  --text: #e6edf3;
+  --text-dim: #8b98a5;
+  --accent: #3b82f6;
+  --err: #f87171;
+  --border: rgba(255, 255, 255, 0.08);
+  /* 按钮 hover 覆盖层与进度槽底：两档的「叠一层对比色」方向相反，故也必须是变量。 */
+  --hover: rgba(255, 255, 255, 0.06);
+  --track: rgba(255, 255, 255, 0.08);
+}
+
+/* 浅色档。取值与 tokens.css 的 light 档同源（--surface 0 0% 100% / --fg 220 32% 13% /
+   --fg-dim 216 15% 40%），且 --surface 与 Rust `surface_color(false)` = #FFFFFF 逐字对齐。 */
+:root[data-theme='light'] {
+  --surface: #ffffff;
+  --text: #16202b;
+  --text-dim: #58657a;
+  --accent: #2563eb;
+  --err: #dc2626;
+  --border: rgba(15, 23, 42, 0.12);
+  --hover: rgba(15, 23, 42, 0.05);
+  --track: rgba(15, 23, 42, 0.09);
+}
+
+/* 注入缺席时的兜底：跟随 OS。`:not([data-theme])` ⇒ 一旦种子脚本落定属性，本段立即失效、零干扰
+   （与 ui/index.html 里那段 FOUC 兜底同款写法）。 */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --surface: #ffffff;
+    --text: #16202b;
+    --text-dim: #58657a;
+    --accent: #2563eb;
+    --err: #dc2626;
+    --border: rgba(15, 23, 42, 0.12);
+    --hover: rgba(15, 23, 42, 0.05);
+    --track: rgba(15, 23, 42, 0.09);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden; /* frameless toast 不滚动 */
+  background: var(--surface);
+  color: var(--text);
+  font: 13px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  /* 无边框窗：整窗可拖（按钮上排除，见 .btn） */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.card {
+  position: relative; /* `.ut-x` 角标的定位基准 */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  padding: 14px 16px;
+}
+
+.title {
+  font-size: 14px;
+  font-weight: 600;
+}
+.title.err {
+  color: var(--err);
+}
+
+.sub {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+/* `.notes` 已随 #311 删除：它对应的 `UpdatePopupState.notes` 自建档（`2076e86`）起从未被任何
+ * 代码赋值，且带 `skip_serializing_if` ⇒ 那个 `<div>` 一次都没进过 DOM。
+ * 连带作废的还有它原先声称的作用「按钮行换行时由本区块 `min-height:0` 让位」——从不渲染的元素
+ * 让不出任何东西，那条因果链一次都没运行过。真实纵向账见 `styles/text-fit.test.ts` 的
+ * `POPUP_ROW_MAX_LINES` 段：184 窗高 − 124.5 内容 = 59.5px 余量，第二行只要 41.5px，本来就够。 */
+
+.badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.18);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--track);
+  overflow: hidden;
+}
+.bar > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+/* 角标关闭钮（原型 `.ut-x`，`proto:2948`）：四态恒在的退出口。绝对定位在卡右上角，不占 flex 行，
+ * 故不会把 `.row` 的贴底布局顶掉。与 `.btn` 一样是普通元素、不做拖拽区排除（本窗未用
+ * `data-tauri-drag-region`，`body` 那句注释描述的是窗口无边框，不是 CSS app-region 拖拽）。 */
+.ut-x {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  padding: 3px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.ut-x:hover {
+  color: var(--text);
+  background: var(--border);
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: auto; /* 按钮恒贴底，四态窗高不同也不跳 */
+  /* 允许换行 —— 380px 单行装不下四个俄语按钮。实测（`styles/text-fit.test.ts` 的宽度模型）：
+   * remind 四钮 en-US 需 347.7px / 可用 348px，**余量 0.3px**，即这一行本来就是按英文顶格设计的；
+   * ru 需 458.6px、fa 需 427.5px。把字号/内边距压到 11.5px/7px（已到可点性下限）仍需 371.4px，
+   * ⇒ 单行容器**在任何合理排版下都容不下**，不是文案写长了。
+   * 于是让它换行（容器容纳 > 截断 > 精简翻译）：窗高由 Rust `popup_height_for` 按 phase 定死
+   * （remind 184 / error 152，1:1 对齐上游，不动），第二行的 41.5px 出自窗高减内容的 59.5px 余量
+   * （原注释写「由 `.notes` 让出」是错的：那个元素从不渲染，见上方已删段落的说明）。
+   * 行数预算 2 行由 text-fit 门钉住：第 3 行会超出固定窗高 ⇒ 转红。 */
+  flex-wrap: wrap;
+}
+.row.between {
+  justify-content: space-between;
+  align-items: center;
+}
+
+.btn {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.btn:hover {
+  background: var(--hover);
+}
+.btn.primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: #fff;
+}
+.btn.primary:hover {
+  background: #2f6fd0;
+}
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

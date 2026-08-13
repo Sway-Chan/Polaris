@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Polaris 托盘标记 — ERROR（异常终态：核崩溃 / 起核失败，非用户主动断开）。单色（黑）+ 透明底。
+  几何 = outline 版（空心星 + 细环）再叠**两道**平行斜杠（左下→右上，中心距 72 单位、各宽 36）；
+  底图先被同向的加宽带（36+50=86，两条并排 ⇒ 合并成一条宽带）挖空——不挖空的话斜杠会与星/环的
+  黑色糊成一团，小尺寸下退化成「一坨黑」而非「被划掉的星」。
+
+  为什么是**两道**：断开态（tray-star-outline）此轮也加了斜杠，单斜杠不再是 error 的专属特征。
+  22px 实测比过三版（scratchpad/tray-{A,B,C}.svg）：细双杠（在原 106 挖口里塞两条 20）在 22px 会与
+  星的笔画糊成一片，本版的宽双杠是唯一在 22px 仍与单斜杠二值可分的。
+  改此文件后重生 tray-error-black/white.png（rsvg-convert 176 → LANCZOS 缩 44 → PIL 派生白）。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="16 16 480 480" width="176" height="176">
+  <defs>
+    <mask id="rm" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+      <rect width="512" height="512" fill="#fff"/>
+      <circle cx="369" cy="98" r="26" fill="#000"/><circle cx="122" cy="395" r="26" fill="#000"/>
+    </mask>
+    <mask id="slashcut" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+      <rect width="512" height="512" fill="#fff"/>
+      <line x1="78.5" y1="382.5" x2="382.5" y2="78.5" stroke="#000" stroke-width="86" stroke-linecap="round"/>
+      <line x1="129.5" y1="433.5" x2="433.5" y2="129.5" stroke="#000" stroke-width="86" stroke-linecap="round"/>
+    </mask>
+  </defs>
+  <g mask="url(#slashcut)">
+    <g fill="none" stroke="#000">
+      <circle cx="256" cy="256" r="188" stroke-width="15" mask="url(#rm)"/>
+      <path d="M256 18 C249 91 246 139 217 184 L184 155 L202 202 C151 231 95 247 20 256 C95 265 151 281 202 310 L184 357 L217 328 C246 373 249 421 256 494 C263 421 266 373 295 328 L328 357 L310 310 C361 281 417 265 492 256 C417 247 361 231 310 202 L328 155 L295 184 C266 139 263 91 256 18 Z" stroke-width="22" stroke-linejoin="round"/>
+    </g>
+    <g fill="#000"><circle cx="369" cy="98" r="14"/><circle cx="122" cy="395" r="14"/></g>
+  </g>
+  <line x1="78.5" y1="382.5" x2="382.5" y2="78.5" stroke="#000" stroke-width="36" stroke-linecap="round"/>
+  <line x1="129.5" y1="433.5" x2="433.5" y2="129.5" stroke="#000" stroke-width="36" stroke-linecap="round"/>
+</svg>

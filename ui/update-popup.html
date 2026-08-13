@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN" dir="ltr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 与主窗同口径的 CSP：禁外部内容嵌入（防点击劫持）。弹窗无远端资源需求，故不放开 img 的 https。 -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    />
+    <title>Polaris Update</title>
+  </head>
+  <body>
+    <!--
+      首帧不依赖任何 IPC：初始状态由主进程经 Tauri initialization_script 注入到
+      window.__POLARIS_UPDATE_POPUP_INITIAL__（见 crates/updater/src/popup.rs 模块文档）。
+      这是 上游 #300「remind 态白屏挂死窗」整类 bug 的结构性解——无 bootstrap 即无页面。
+    -->
+    <div id="update-root"></div>
+    <script type="module" src="/src/update-popup/main.ts"></script>
+  </body>
+</html>

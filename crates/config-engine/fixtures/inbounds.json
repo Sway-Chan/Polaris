@@ -1,0 +1,604 @@
+{
+  "cases": [
+    {
+      "name": "sys_linux",
+      "input": {
+        "config": {
+          "servers": [],
+          "selectedServerId": "s1",
+          "proxyMode": "smart",
+          "proxyModeType": "systemProxy",
+          "tunConfig": {
+            "mtu": 1350,
+            "stack": "auto",
+            "autoRoute": true,
+            "strictRoute": true
+          },
+          "customRules": [],
+          "appRules": [],
+          "autoStart": false,
+          "silentStart": false,
+          "autoConnect": false,
+          "minimizeToTray": false,
+          "mixedPort": 7890,
+          "logLevel": "info"
+        },
+        "platform": "linux",
+        "ports": {}
+      },
+      "output": [
+        {
+          "type": "mixed",
+          "tag": "mixed-in",
+          "listen": "127.0.0.1",
+          "listen_port": 7890
+        }
+      ]
+    },
+    {
+      "name": "sys_mac",
+      "input": {
+        "config": {
+          "servers": [],
+          "selectedServerId": "s1",
+          "proxyMode": "smart",
+          "proxyModeType": "systemProxy",
+          "tunConfig": {
+            "mtu": 1350,
+            "stack": "auto",
+            "autoRoute": true,
+            "strictRoute": true
+          },
+          "customRules": [],
+          "appRules": [],
+          "autoStart": false,
+          "silentStart": false,
+          "autoConnect": false,
+          "minimizeToTray": false,
+          "mixedPort": 7890,
+          "logLevel": "info"
+        },
+        "platform": "darwin",
+        "ports": {}
+      },
+      "output": [
+        {
+          "type": "mixed",
+          "tag": "mixed-in",
+          "listen": "127.0.0.1",
+          "listen_port": 7890
+        }
+      ]
+    },
+    {
+      "name": "sys_win",
+      "input": {
+        "config": {
+          "servers": [],
+          "selectedServerId": "s1",
+          "proxyMode": "smart",
+          "proxyModeType": "systemProxy",
+          "tunConfig": {
+            "mtu": 1350,
+            "stack": "auto",
+            "autoRoute": true,
+            "strictRoute": true
+          },
+          "customRules": [],
+          "appRules": [],
+          "autoStart": false,
+          "silentStart": false,
+          "autoConnect": false,
+          "minimizeToTray": false,
+          "mixedPort": 7890,
+          "logLevel": "info"
+        },
+        "platform": "win32",
+        "ports": {}
+      },
+      "output": [
+        {
+          "type": "mixed",
+          "tag": "mixed-in",
+          "listen": "127.0.0.1",
+          "listen_port": 7890
+        }
+      ]
+    },
+    {
+      "name": "sys_allowlan",
+      "input": {
+        "config": {
+          "servers": [],
+          "selectedServerId": "s1",
+          "proxyMode": "smart",
+          "proxyModeType": "systemProxy",
+          "tunConfig": {
+            "mtu": 1350,
+            "stack": "auto",
+            "autoRoute": true,
+            "strictRoute": true
+          },
+          "customRules": [],
+          "appRules": [],
+          "autoStart": false,
+          "silentStart": false,
+          "autoConnect": false,
+          "minimizeToTray": false,
+          "mixedPort": 7890,
+          "logLevel": "info",
+          "allowLan": true
+        },
+        "platform": "linux",
+        "ports": {}
+      },
+      "output": [
+        {
+          "type": "mixed",
+          "tag": "mixed-in",
+          "listen": "::",
+          "listen_port": 7890
+        }
+      ]
+    },
+    {
+      "name": "tun_linux",
+      "input": {
+        "config": {
+          "servers": [],
+          "selectedServerId": "s1",
+          "proxyMode": "smart",
+          "proxyModeType": "tun",
+          "tunConfig": {
+            "mtu": 1350,
+            "stack": "auto",
+            "autoRoute": true,
+            "strictRoute": true
+          },
+          "customRules": [],
+          "appRules": [],
+          "autoStart": false,
+          "silentStart": false,
+          "autoConnect": false,
+          "minimizeToTray": false,
+          "mixedPort": 7890,
+          "logLevel": "info"
+        },
+        "platform": "linux",
+        "ports": {}
+      },
+      "output": [
+        {
+          "type": "mixed",
+          "tag": "mixed-in",
+          "listen": "127.0.0.1",
+          "listen_port": 7890
+        },
+        {
+          "type": "tun",
+          "tag": "tun-in",
+          "address": [
+            "172.19.0.1/16"
+          ],
+          "mtu": 1350,
+          "auto_route": true,
+          "strict_route": true,
+          "stack": "system"
+        }
+      ]
+    },
+    {
+      "name": "tun_mac",
+      "input": {
+        "config": {
+          "servers": [],
+          "selectedServerId": "s1",
+          "proxyMode": "smart",
+          "proxyModeType": "tun",
+          "tunConfig": {
+            "mtu": 1350,
+            "stack": "auto",
+            "autoRoute": true,
+            "strictRoute": true
+          },
+          "customRules": [],
+          "appRules": [],
+          "autoStart": false,
+          "silentStart": false,
+          "autoConnect": false,
+          "minimizeToTray": false,
+          "mixedPort": 7890,
+          "logLevel": "info"
+        },
+        "platform": "darwin",
+        "ports": {}
+      },
+      "output": [
+        {
+          "type": "mixed",
+          "tag": "mixed-in",
+          "listen": "127.0.0.1",
+          "listen_port": 7890
+        },
+        {
+          "type": "tun",
+          "tag": "tun-in",
+          "address": [
+            "172.19.0.1/30"
+          ],
+          "mtu": 1350,
+          "auto_route": true,
+          "strict_route": true,
+          "stack": "gvisor",
+          "route_exclude_address": [
+            "127.0.0.0/8",
+            "::1/128"
+          ],
+          "platform": {
+            "http_proxy": {
+              "enabled": true,
+              "server": "127.0.0.1",
+              "server_port": 7890
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "tun_win",
+      "input": {
+        "config": {
+          "servers": [],
+          "selectedServerId": "s1",
+          "proxyMode": "smart",
+          "proxyModeType": "tun",
+          "tunConfig": {
+            "mtu": 1350,
+            "stack": "auto",
+            "autoRoute": true,
+            "strictRoute": true
+          },
+          "customRules": [],
+          "appRules": [],
+          "autoStart": false,
+          "silentStart": false,
+          "autoConnect": false,
+          "minimizeToTray": false,
+          "mixedPort": 7890,
+          "logLevel": "info",
+          "bypassLAN": true
+        },
+        "platform": "win32",
+        "ports": {}
+      },
+      "output": [
+        {
+          "type": "mixed",
+          "tag": "mixed-in",
+          "listen": "127.0.0.1",
+          "listen_port": 7890
+        },
+        {
+          "type": "tun",
+          "tag": "tun-in",
+          "address": [
+            "172.19.0.1/16"
+          ],
+          "mtu": 1350,
+          "auto_route": true,
+          "strict_route": true,
+          "stack": "gvisor",
+          "route_exclude_address": [
+            "10.0.0.0/8",
+            "100.64.0.0/10",
+            "127.0.0.0/8",
+            "169.254.0.0/16",
+            "172.16.0.0/12",
+            "192.0.0.0/24",
+            "192.88.99.0/24",
+            "192.168.0.0/16",
+            "224.0.0.0/4",
+            "233.252.0.0/24",
+            "240.0.0.0/4",
+            "fc00::/7",
+            "fe80::/10",
+            "223.5.5.5/32",
+            "223.6.6.6/32",
+            "1.12.12.12/32",
+            "119.29.29.29/32",
+            "119.28.28.28/32",
+            "114.114.114.114/32",
+            "8.8.8.8/32"
+          ],
+          "interface_name": "polaris-tun0"
+        }
+      ]
+    },
+    {
+      "name": "tun_ipv6",
+      "input": {
+        "config": {
+          "servers": [],
+          "selectedServerId": "s1",
+          "proxyMode": "smart",
+          "proxyModeType": "tun",
+          "tunConfig": {
+            "mtu": 1350,
+            "stack": "auto",
+            "autoRoute": true,
+            "strictRoute": true
+          },
+          "customRules": [],
+          "appRules": [],
+          "autoStart": false,
+          "silentStart": false,
+          "autoConnect": false,
+          "minimizeToTray": false,
+          "mixedPort": 7890,
+          "logLevel": "info",
+          "enableIPv6": true
+        },
+        "platform": "linux",
+        "ports": {}
+      },
+      "output": [
+        {
+          "type": "mixed",
+          "tag": "mixed-in",
+          "listen": "127.0.0.1",
+          "listen_port": 7890
+        },
+        {
+          "type": "tun",
+          "tag": "tun-in",
+          "address": [
+            "172.19.0.1/16",
+            "fdfe:dcba:9876::1/126"
+          ],
+          "mtu": 1350,
+          "auto_route": true,
+          "strict_route": true,
+          "stack": "system"
+        }
+      ]
+    },
+    {
+      "name": "tun_manual_addr",
+      "input": {
+        "config": {
+          "servers": [],
+          "selectedServerId": "s1",
+          "proxyMode": "smart",
+          "proxyModeType": "tun",
+          "tunConfig": {
+            "mtu": 1400,
+            "stack": "system",
+            "autoRoute": true,
+            "strictRoute": false,
+            "inet4Address": "10.0.0.1/24"
+          },
+          "customRules": [],
+          "appRules": [],
+          "autoStart": false,
+          "silentStart": false,
+          "autoConnect": false,
+          "minimizeToTray": false,
+          "mixedPort": 7890,
+          "logLevel": "info"
+        },
+        "platform": "linux",
+        "ports": {}
+      },
+      "output": [
+        {
+          "type": "mixed",
+          "tag": "mixed-in",
+          "listen": "127.0.0.1",
+          "listen_port": 7890
+        },
+        {
+          "type": "tun",
+          "tag": "tun-in",
+          "address": [
+            "10.0.0.1/24"
+          ],
+          "mtu": 1400,
+          "auto_route": true,
+          "strict_route": false,
+          "stack": "system"
+        }
+      ]
+    },
+    {
+      "name": "probe_ports",
+      "input": {
+        "config": {
+          "servers": [],
+          "selectedServerId": "s1",
+          "proxyMode": "smart",
+          "proxyModeType": "systemProxy",
+          "tunConfig": {
+            "mtu": 1350,
+            "stack": "auto",
+            "autoRoute": true,
+            "strictRoute": true
+          },
+          "customRules": [],
+          "appRules": [],
+          "autoStart": false,
+          "silentStart": false,
+          "autoConnect": false,
+          "minimizeToTray": false,
+          "mixedPort": 7890,
+          "logLevel": "info"
+        },
+        "platform": "linux",
+        "ports": {
+          "probeDirect": 12345,
+          "probeProxy": 12346
+        }
+      },
+      "output": [
+        {
+          "type": "mixed",
+          "tag": "mixed-in",
+          "listen": "127.0.0.1",
+          "listen_port": 7890
+        },
+        {
+          "type": "http",
+          "tag": "probe-direct-in",
+          "listen": "127.0.0.1",
+          "listen_port": 12345
+        },
+        {
+          "type": "http",
+          "tag": "probe-proxy-in",
+          "listen": "127.0.0.1",
+          "listen_port": 12346
+        }
+      ]
+    },
+    {
+      "name": "update_in",
+      "input": {
+        "config": {
+          "servers": [],
+          "selectedServerId": "s1",
+          "proxyMode": "smart",
+          "proxyModeType": "systemProxy",
+          "tunConfig": {
+            "mtu": 1350,
+            "stack": "auto",
+            "autoRoute": true,
+            "strictRoute": true
+          },
+          "customRules": [],
+          "appRules": [],
+          "autoStart": false,
+          "silentStart": false,
+          "autoConnect": false,
+          "minimizeToTray": false,
+          "mixedPort": 7890,
+          "logLevel": "info"
+        },
+        "platform": "linux",
+        "ports": {
+          "updateIn": 12347
+        }
+      },
+      "output": [
+        {
+          "type": "mixed",
+          "tag": "mixed-in",
+          "listen": "127.0.0.1",
+          "listen_port": 7890
+        },
+        {
+          "type": "socks",
+          "tag": "update-in",
+          "listen": "127.0.0.1",
+          "listen_port": 12347
+        }
+      ]
+    },
+    {
+      "name": "probe_pool",
+      "input": {
+        "config": {
+          "servers": [],
+          "selectedServerId": "s1",
+          "proxyMode": "smart",
+          "proxyModeType": "tun",
+          "tunConfig": {
+            "mtu": 1350,
+            "stack": "auto",
+            "autoRoute": true,
+            "strictRoute": true
+          },
+          "customRules": [],
+          "appRules": [],
+          "autoStart": false,
+          "silentStart": false,
+          "autoConnect": false,
+          "minimizeToTray": false,
+          "mixedPort": 7890,
+          "logLevel": "info"
+        },
+        "platform": "linux",
+        "ports": {
+          "probePool": [
+            20000,
+            20001
+          ]
+        }
+      },
+      "output": [
+        {
+          "type": "mixed",
+          "tag": "mixed-in",
+          "listen": "127.0.0.1",
+          "listen_port": 7890
+        },
+        {
+          "type": "http",
+          "tag": "probe-in-0",
+          "listen": "127.0.0.1",
+          "listen_port": 20000
+        },
+        {
+          "type": "http",
+          "tag": "probe-in-1",
+          "listen": "127.0.0.1",
+          "listen_port": 20001
+        },
+        {
+          "type": "tun",
+          "tag": "tun-in",
+          "address": [
+            "172.19.0.1/16"
+          ],
+          "mtu": 1350,
+          "auto_route": true,
+          "strict_route": true,
+          "stack": "system"
+        }
+      ]
+    },
+    {
+      "name": "manual",
+      "input": {
+        "config": {
+          "servers": [],
+          "selectedServerId": "s1",
+          "proxyMode": "smart",
+          "proxyModeType": "manual",
+          "tunConfig": {
+            "mtu": 1350,
+            "stack": "auto",
+            "autoRoute": true,
+            "strictRoute": true
+          },
+          "customRules": [],
+          "appRules": [],
+          "autoStart": false,
+          "silentStart": false,
+          "autoConnect": false,
+          "minimizeToTray": false,
+          "mixedPort": 7890,
+          "logLevel": "info"
+        },
+        "platform": "linux",
+        "ports": {}
+      },
+      "output": [
+        {
+          "type": "mixed",
+          "tag": "mixed-in",
+          "listen": "127.0.0.1",
+          "listen_port": 7890
+        }
+      ]
+    }
+  ]
+}

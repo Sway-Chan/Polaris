@@ -1,0 +1,726 @@
+/**
+ * Logs 屏 —— 逐字对齐原型 polaris-prototype.html #s-logs（L2041-2076）。
+ *
+ * DOM 结构 1:1：
+ *  - .phead（h1 + .sub）
+ *  - #log-privacy-note.mode-warn（隐私锁提示条，原型内联覆盖 flow 色而非默认 warn 色）
+ *  - .card.log-toolbar（**布局已按 2026-07-29 真机反馈重排，不再是原型的三行**）：
+ *      .log-tb-lvl（级别 seg + 分隔竖线 + 来源 seg —— 两个都是「筛什么」，同排）
+ *      .log-tb-main（级别说明文案 + 搜索 + .log-tb-actions）
+ *    动作区的脱敏 / 自动滚动 / 清空三颗**只用底色表达状态、文案恒定**；状态的读屏通路改由
+ *    `aria-pressed`（前两颗）与 `aria-label`（清空的武装态）承担，暂停期的缓冲行数改由 `.cnt` 徽标带。
+ *  - #log-view.log-view（动态行 = 原型 renderLogs() 的 .log-line 模板逐行 .map）
+ *  - .log-foot（.log-live + 行数）
+ *
+ * 接线（保留，见 vault ~/docs/polaris/design/polaris-ui-rebuild-plan.md C3 台账）：
+ *  - useAppStore(config/saveConfig/privacyMode)
+ *  - api.logs.get（初始水合）/ .onReceivedBatch（~150ms coalesce 批量推送）/ .clear / .export（纯日志导出）
+ *  - api.diagnostic.export（诊断包导出，与纯日志导出是两个不同产物，各自独立按钮）
+ *  - 级别：configApi.save 写 config.logLevel（核记录 + 视图显示同一级别，无独立视图侧级别）。
+ *    后端经 config.rs::broadcast_config_changed → logging::set_level 即刻改 max_level，而**内核日志
+ *    也由同一个 max_level 在客户端筛**（proxy.rs 的核日志 relay 订阅管理 API `SubscribeLog`，该流恒
+ *    全级别）⇒ 本页两侧日志改完即刻跟上。仍需重启内核的只有内核写进自己那份日志文件的级别。
+ *    （因此曾经的「诊断采集」——临时把内核提级到 debug 再还原——已整体删除，不再有采集条与按钮。）
+ *  - 核在跑的真实级别：api.logs.runtimeLevel（管理 API `GetDefaultLogLevel`）→ `.log-core-lvl` 徽标。
+ *    分段控件显示的是**我写下的值**，这颗徽标显示的是**核此刻实际在用的值**。
+ *    **它管的是核写自己那份日志文件（`singbox.log`）时用的级别**，也就是「导出日志」「导出诊断包」
+ *    两个产物里核的那一半；本页显示的核日志不受它影响（那一份恒按分段控件选的级别在客户端筛）。
+ *    屏幕上那份不会骗人了之后，盘上那份就是唯一还会与设置不一致的东西 —— 徽标的职责因此从
+ *    「守屏幕」变成「守导出物」。
+ *    只在**核记得比控件选的少**时才报（反向无后果，见 runtime-level.ts「方向性」）；成因二分
+ *    （暂存未应用 / 核没重启）与全部不变量同见该文件。
+ *  - 来源：后端 logging.rs::ui_source 把 target 归一为 'sing-box' | 'app'（裸 log::info! 默认 target
+ *    是 Rust 模块路径，不归一则「应用」筛选恒空）
+ *  - follow：暂停时缓冲新行入 pendingRef，恢复回填（对齐原型 logPending + updateLogPausedLabel）；
+ *    用户上滚脱离底部亦自动暂停 follow 并露出「回到底部」（契约：自动吸底跟随 + 回到底部）
+ *  - 清空：confirmTwice 双击确认模式（对齐原型 L3211，2.6s 超时自动回退，非 onBlur）
+ *
+ * 明确偏离原型静态 markup 的两点（均为 vault 台账已决策，非本次自选设计）：
+ *  1. 「打开目录」(open-log-dir) 按钮已整体移除 —— rebuild-plan C3：
+ *     "⚠️上游 Logs 无「打开目录」（现状 stub 该删非补）"。无路径可传的禁用按钮不算真实功能。
+ *  2. #log-view 空状态不渲染占位文案 —— 原型 renderLogs() 对空数组是 `[].map().join('')`＝空字符串，
+ *     无占位 markup；逐字复现故不额外发明空态提示。
+ */
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { api } from '@/ipc';
+import { toast } from '@/lib/error-handler';
+import { useAppStore, useEffectiveConfig } from '@/store/app-store';
+import { useStagedConfigStore } from '@/store/staged-config-store';
+import { useStagingActive } from '@/store/use-staging-active';
+import { editRoute } from '@/lib/staged-config';
+import { useLogRedactStore } from '@/store/use-log-redact-store';
+import { useConfirmTwice } from '@/lib/confirm-twice';
+import { redactSensitive, shouldRedactLogs } from '@/domain/privacy';
+import { mergeHydration, maxLogId, type LogRow } from './logs-buffer';
+import { runtimeLevelView } from './runtime-level';
+import type { LogLevel, RuntimeLogLevel } from '@/contracts/types';
+
+/** 级别 → 数字权重（对齐原型 LVL，越大越严重）。 */
+const LVL: Record<LogLevel, number> = {
+  debug: 0,
+  info: 1,
+  warn: 2,
+  error: 3,
+  fatal: 4,
+};
+const LEVEL_OPTS: LogLevel[] = ['debug', 'info', 'warn', 'error', 'fatal'];
+const MAX_BUFFER = 500; // 渲染端缓冲上限（防日志风暴拖死 DOM）
+/** 本屏唯一的原地二次确认项（原型 :4130 `log-clear`）。超时/复位语义全在 `lib/confirm-twice.ts`。 */
+const CLEAR_KEY = 'logs-clear';
+/** 距底 ≤ 此像素即算「贴底」（对齐 上游 `checkIsAtBottom` 的 30px 容差，容子像素/行高抖动）。 */
+const AT_BOTTOM_PX = 30;
+/** 核内级别的重读间隔（仅 Logs 屏挂载期间）。理由见下方轮询 effect 的注释。 */
+const RUNTIME_LEVEL_POLL_MS = 5000;
+
+type LogSource = 'all' | 'sing-box' | 'app';
+
+/* `LogRow` 与两条腿的合并语义已下沉 `./logs-buffer.ts`（纯函数 + 单测），见该文件模块头。 */
+
+/** 时间戳 → HH:MM:SS（对齐原型 log-ts 格式）。 */
+function fmtTs(ts: string): string {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+export function LogsScreen() {
+  const { t } = useTranslation();
+  /** 展示口径：级别下拉要回显用户刚改的值，否则暂存一开「改完级别没变」。 */
+  const config = useEffectiveConfig();
+  /** 磁盘口径：落盘入参的基准（拿暂存合成值当基准会把未应用的暂存值一并落盘）。 */
+  const diskConfig = useAppStore((s) => s.config);
+  const saveConfig = useAppStore((s) => s.saveConfig);
+  const stagingEnabled = useStagingActive();
+  const stage = useStagedConfigStore((s) => s.stage);
+  const privacyMode = useAppStore((s) => s.privacyMode);
+  // C18 实时日志脱敏偏好（localStorage，与隐私锁正交）：开 → 常态对域名/IP 打码；隐私锁开时恒脱敏。
+  const redactLogs = useLogRedactStore((s) => s.redactLogs);
+  const toggleRedactLogs = useLogRedactStore((s) => s.toggleRedactLogs);
+
+  const [logs, setLogs] = useState<LogRow[]>([]);
+  /** 核在跑的真实日志级别（`null` = 还没取回；轮询见下方 effect）。 */
+  const [runtimeLevel, setRuntimeLevel] = useState<RuntimeLogLevel | null>(null);
+  const [source, setSource] = useState<LogSource>('all');
+  const [search, setSearch] = useState('');
+  const [follow, setFollow] = useState(true);
+  /** 暂停时缓冲的新行（恢复即回填，对齐原型 logPending）；count 单独入 state 供 label 响应式渲染。 */
+  const pendingRef = useRef<LogRow[]>([]);
+  const [pendingCount, setPendingCount] = useState(0);
+  /**
+   * 已收下的最大 `_id`（去重游标）。清空日志**不复位**：后端 seq 全局单调、清空也不重置发号器，
+   * 复位反而会让清空前的残留批次被当成新行重新收下。
+   */
+  const lastIdRef = useRef(-1);
+
+  /** 清空的原地二次确认 —— 走全仓唯一实现（`lib/confirm-twice.ts`），不再自己管定时器。 */
+  const { armed, confirmTwice } = useConfirmTwice();
+  const confirmClear = armed === CLEAR_KEY;
+
+  const viewRef = useRef<HTMLDivElement>(null);
+
+  const level: LogLevel = config?.logLevel ?? 'info';
+  /**
+   * 核在跑的真实级别徽标（纯投影）。第三参取**盘上**那份 logLevel（非 staged 合并值），
+   * 用来区分「改动还在暂存区」与「已落盘但核没重启」—— 两者补救动作不同。
+   * 不变量与方向性见 runtime-level.ts。
+   */
+  const runtimeView = runtimeLevelView(runtimeLevel, level, diskConfig?.logLevel ?? null);
+  /**
+   * 徽标浮窗按分叉成因分文案（补救动作不同：应用+重启 / 只需重启）。
+   * 写成三元而非 `t(\`logs.coreLevelDrift.${d}\`)` 是**故意的**：i18n-coverage 的 G6b
+   * （声明而无消费点 = 死键）只认静态字面量键，拼出来的键会让这两条被判成死键。
+   */
+  const coreLevelTip =
+    runtimeView.kind === 'known' && runtimeView.drift === 'unsaved'
+      ? t('logs.coreLevelDriftUnsaved')
+      : runtimeView.kind === 'known' && runtimeView.drift === 'coreRestart'
+        ? t('logs.coreLevelDriftRestart')
+        : t('logs.coreLevelHint');
+
+  /**
+   * 按 `_id` 去重并推进游标：只放行 `_id` 大于已见最大值的行。
+   *
+   * 缺 `_id`（非 Tauri mock / 旧后端）→ 一律放行：宁可偶有重复行，也不能因为字段缺失把日志吞掉——
+   * 日志页是排障的最后一根线。
+   */
+  const dedupe = useCallback((batch: LogRow[]): LogRow[] => {
+    const fresh: LogRow[] = [];
+    for (const l of batch) {
+      if (typeof l._id !== 'number') {
+        fresh.push(l);
+        continue;
+      }
+      if (l._id <= lastIdRef.current) continue;
+      lastIdRef.current = l._id;
+      fresh.push(l);
+    }
+    return fresh;
+  }, []);
+
+  /* ── 初始水合：logsApi.get ──
+   *
+   * **合并进缓冲，不是整体替换，也不走游标去重**：两条腿同时起跑，订阅腿完全可能先送到一批
+   * （核在高频输出时必然如此）。走 `dedupe` + `setLogs(...)` 的那一版会把游标推到 N 之后再拿快照
+   * 去重成空，然后用空数组替换掉已入列的行 ⇒ 进页历史区恒空直到新行到达。理由详见 logs-buffer.ts。
+   * 游标仍要**快进到快照最大 id**，否则快照里比游标新的行会被随后的流式批当成新行再收一次。 */
+  useEffect(() => {
+    api.logs
+      .get(MAX_BUFFER)
+      .then((batch) => {
+        if (!Array.isArray(batch)) return;
+        const snapshot = batch.slice(-MAX_BUFFER);
+        const top = maxLogId(snapshot);
+        if (top !== null && top > lastIdRef.current) lastIdRef.current = top;
+        setLogs((prev) => mergeHydration(prev, snapshot, MAX_BUFFER));
+      })
+      .catch(() => {
+        /* 非 Tauri 忽略 */
+      });
+  }, []);
+
+  /* ── 核在跑的真实级别：轮询 logs:runtimeLevel（仅本屏挂载期间）──
+   *
+   * # 为什么是轮询，而不是「监听某个事件后重取」
+   *
+   * 核内级别只在**起核那一刻**定下（生成配置时注入），此后到停核为止不变。能改变它的事件面却很宽：
+   * 起核 / 停核 / 换核 / 任何触发重启的配置改动 / 后台去抖重启 —— 逐个去挂监听，等于把「哪些事件
+   * 蕴含一次重启」这份判断复制到渲染端，漏掉一条，徽标就静默显示上一轮的级别。**一个显示着陈旧真值
+   * 的自证，与它要揭穿的那句谎是同一类东西**，所以这里宁可用最笨、最不会漏的办法。
+   *
+   * 成本可忽略：本屏打开时才跑，一次 loopback 上的 unary（后端带 2s deadline 必 settle）。
+   * 卸载即停（`clearInterval` + `alive` 闸），不留后台轮询。
+   */
+  useEffect(() => {
+    let alive = true;
+    const read = () => {
+      api.logs
+        .runtimeLevel()
+        .then((r) => {
+          if (alive) setRuntimeLevel(r);
+        })
+        .catch(() => {
+          /* 非 Tauri（mock）/ IPC 抛错：保持 pending，不编一个级别出来。 */
+        });
+    };
+    read();
+    const timer = window.setInterval(read, RUNTIME_LEVEL_POLL_MS);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  /* ── 流式订阅：批量追加（follow 时入缓冲，暂停入 pending）── */
+  useEffect(() => {
+    const off = api.logs.onReceivedBatch((raw) => {
+      if (!Array.isArray(raw) || raw.length === 0) return;
+      // 去重在分流**之前**：无论进 logs 还是进 pending，重复行都不该被收下。
+      const batch = dedupe(raw);
+      if (batch.length === 0) return;
+      if (follow) {
+        setLogs((prev) => {
+          const next = [...prev, ...batch];
+          return next.length > MAX_BUFFER ? next.slice(-MAX_BUFFER) : next;
+        });
+      } else {
+        pendingRef.current.push(...batch);
+        if (pendingRef.current.length > MAX_BUFFER) {
+          pendingRef.current = pendingRef.current.slice(-MAX_BUFFER);
+        }
+        setPendingCount(pendingRef.current.length);
+      }
+    });
+    return off;
+  }, [follow, dedupe]);
+
+  const scrollToBottom = useCallback(() => {
+    const el = viewRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
+
+  /* ── follow 时自动滚动到底 ── */
+  useEffect(() => {
+    if (follow) scrollToBottom();
+  }, [logs, follow, scrollToBottom]);
+
+  /* ── 离底检测：用户上滚脱离底部即暂停 follow（新行转入 pending，「回到底部」按钮露出）──
+   *
+   * 无条件吸底的话，用户往上翻查一条报错时每来一批新日志就被拽回底部，等于看不了历史。
+   *
+   * 只做「离底 → 暂停」，不做「回底 → 自动恢复」：恢复要把 pending 一次性回填并跳到底部，那是个有
+   * 可见后果的动作，得由「回到底部」/「自动滚动」按钮显式触发，不该被一次滚过头的滚轮顺带做掉。
+   * 程序化吸底本身落在贴底区内 → 不会自触发暂停（无反馈环）。 */
+  useEffect(() => {
+    const el = viewRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const atBottom =
+        el.scrollHeight - el.scrollTop - el.clientHeight <= AT_BOTTOM_PX;
+      if (!atBottom) setFollow((f) => (f ? false : f));
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
+
+  /* 清空按钮的两段式确认超时由 `useConfirmTwice` 自己在卸载时清理，此处不再各管一份。 */
+
+  /* ── 级别切换：写 config.logLevel（核记录 + 视图显示同一级别）── */
+  const onLevelChange = useCallback(
+    async (v: LogLevel) => {
+      if (!diskConfig) return;
+      // 配置暂存闸门（与 NodeDialog 同形）。`logLevel` 本轮起是 `UserConfig` 字段（Class B）——
+      // 它喂 sing-box 的 `log.level`，改了核要重启才跟上（「第四类重启」，spec §Q3-b E-3）。
+      // 此前被判豁免直落盘 ⇒ 核继续按旧级别跑而暂存条只字不提，正是要修的那条静默。
+      if (editRoute('logLevel', stagingEnabled) === 'staged') {
+        stage({
+          id: 'setting:logLevel',
+          kind: 'setting',
+          label: `${t('logs.currentLevel', '日志级别')} ${v}`,
+          entityPath: ['logLevel'],
+          nextValue: v,
+        });
+        return; // 零 IPC 写、零磁盘写（FR-1）
+      }
+      try {
+        await saveConfig({ ...diskConfig, logLevel: v });
+      } catch (err) {
+        console.error('[logs] set level failed:', err);
+      }
+    },
+    [diskConfig, saveConfig, stagingEnabled, stage, t]
+  );
+
+  /* ── 清空：confirmTwice 原地二次确认（对齐原型 :4130 log-clear，2.6s 未二次点击自动回退）──
+   * 原型 log-clear → confirmTwice 后 notify('日志已清空')（中性 kind）。 */
+  const onClearClick = useCallback(() => {
+    confirmTwice(CLEAR_KEY, () => {
+      void (async () => {
+        try {
+          await api.logs.clear();
+          setLogs([]);
+          pendingRef.current = [];
+          setPendingCount(0);
+          toast.info(t('logs.clearDone', '日志已清空'));
+        } catch (err) {
+          console.error('[logs] clear failed:', err);
+          toast.error(
+            t('logs.clearFailed', '清空日志失败'),
+            err instanceof Error ? err.message : undefined,
+          );
+        }
+      })();
+    });
+  }, [confirmTwice, t]);
+
+  /* ── 导出诊断包：diagnosticApi.export（弹出系统保存对话框）──
+   * 原型 :export-diag notify('已生成脱敏诊断包 polaris-diag.zip','ok')。取消保存对话框不算失败。 */
+  const onExportDiag = useCallback(async () => {
+    try {
+      const res = await api.diagnostic.export();
+      if (res.success) {
+        toast.success(t('logs.exportDiagDone', '已导出诊断包'));
+      } else if (res.error !== 'cancelled') {
+        toast.error(t('logs.exportDiagFailed', '导出诊断包失败'), res.error);
+      }
+    } catch (err) {
+      console.error('[logs] export diag failed:', err);
+      toast.error(t('logs.exportDiagFailed', '导出诊断包失败'), err instanceof Error ? err.message : undefined);
+    }
+  }, [t]);
+
+  /* ── 导出纯日志：logsApi.export（logs_export），与导出诊断包（diagnostic.export）是两个不同产物 ──
+   * 原型 :log-export notify('已导出 polaris-logs.txt','ok')。取消保存对话框不算失败。 */
+  const onExportLogs = useCallback(async () => {
+    try {
+      const res = await api.logs.export();
+      if (res.success) {
+        toast.success(t('logs.exportDone', '已导出日志'));
+      } else if (res.error !== 'cancelled') {
+        toast.error(t('logs.exportFailed', '导出日志失败'), res.error);
+      }
+    } catch (err) {
+      console.error('[logs] export failed:', err);
+      toast.error(t('logs.exportFailed', '导出日志失败'), err instanceof Error ? err.message : undefined);
+    }
+  }, [t]);
+
+  /* ── 打开日志目录（G3，原型 :2065 `open-log-dir` + :4122 notify「已在文件管理器中打开日志目录」）──
+   * 路径解析与 shell.open 都在后端一步做完（前端拼路径会在三平台 / portable 形态上分叉）。 */
+  const onOpenLogDir = useCallback(async () => {
+    try {
+      await api.logs.openDir();
+      toast.success(t('logs.openDirDone', '已在文件管理器中打开日志目录'));
+    } catch (err) {
+      console.error('[logs] open dir failed:', err);
+      toast.error(
+        t('logs.openDirFailed', '打开日志目录失败'),
+        err instanceof Error ? err.message : undefined,
+      );
+    }
+  }, [t]);
+
+  /* 此处曾有 onStartCapture / onStopCapture（「诊断采集」：临时把内核提级到 debug 再还原）。
+     整条机制已删除 —— 内核日志改由管理 API 的 SubscribeLog 全级别送来、级别筛在客户端，
+     上面那颗级别分段控件拨到 DEBUG 就立刻能看到内核的 debug 行（不落盘、不重启内核）。 */
+
+  /* ── 过滤：级别阈值 + 来源 + 搜索（对齐原型 renderLogs 的 filter 条件）── */
+  const thr = LVL[level];
+  const q = search.trim().toLowerCase();
+  const visible = useMemo(
+    () =>
+      logs.filter(
+        (l) =>
+          LVL[l.level] >= thr &&
+          (source === 'all' || l.source === source) &&
+          (!q || (l.message + l.level).toLowerCase().includes(q))
+      ),
+    [logs, thr, source, q]
+  );
+
+  /** 是否对日志正文脱敏（隐私锁 或 C18 常态脱敏偏好）—— 渲染与复制**同一判定、同一函数**。 */
+  const redacting = shouldRedactLogs(privacyMode, redactLogs);
+  const renderMessage = useCallback(
+    (msg: string) => (redacting ? redactSensitive(msg) : msg),
+    [redacting]
+  );
+
+  /* ── 复制当前可见行到剪贴板 ──
+   * 复用 `visible` + `renderMessage`：复制路径此前自己抄了一份过滤条件、且**绕过了脱敏**——脱敏开关/
+   * 隐私锁全开时点复制，粘出来的仍是明文域名与 IP（用户以为已脱敏，直接贴进 issue）。两份过滤条件
+   * 各自演化本身就是这类漂移的成因，故一并收敛到同一处，而不是在副本上补一个 redact 调用。 */
+  const onCopy = useCallback(async () => {
+    const text = visible
+      .map(
+        (l) =>
+          `[${fmtTs(l.timestamp)}] ${l.level.toUpperCase()}: ${renderMessage(l.message)}`
+      )
+      .join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      // 原型 :log-copy notify('已复制日志','ok')。
+      toast.success(t('logs.copyDone', '已复制日志'));
+    } catch (err) {
+      console.error('[logs] copy failed:', err);
+      toast.error(t('common.copyFail', '复制失败'));
+    }
+  }, [visible, renderMessage, t]);
+
+  /* ── 恢复跟随：回填 pending 并吸回底部（对齐原型 log-follow case）── */
+  const resumeFollow = useCallback(() => {
+    if (pendingRef.current.length) {
+      const pending = pendingRef.current;
+      pendingRef.current = [];
+      setPendingCount(0);
+      setLogs((prev) => {
+        const merged = [...prev, ...pending];
+        return merged.length > MAX_BUFFER ? merged.slice(-MAX_BUFFER) : merged;
+      });
+    }
+    setFollow(true);
+    scrollToBottom();
+  }, [scrollToBottom]);
+
+  const toggleFollow = useCallback(() => {
+    if (follow) setFollow(false);
+    else resumeFollow();
+  }, [follow, resumeFollow]);
+
+  /* ── 搜索高亮：转义正则，<mark> 包裹命中（对齐原型 renderLogs 的 mark 替换）── */
+  const highlight = useCallback(
+    (msg: string) => {
+      if (!q) return msg;
+      try {
+        const esc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const parts = msg.split(new RegExp(`(${esc})`, 'ig'));
+        return parts.map((p, i) =>
+          p.toLowerCase() === q ? <mark key={i}>{p}</mark> : <span key={i}>{p}</span>
+        );
+      } catch {
+        return msg;
+      }
+    },
+    [q]
+  );
+
+  /* follow 按钮的文案已固定为「自动滚动」（态由底色表达），但**暂停期间缓冲了多少行**这条信息
+     不能跟着丢 —— 它原先挂在 `autoScrollPausedCount` 那个变体文案里，是全屏唯一的出口。
+     改由按钮上的 `.cnt` 计数徽标承载（同 `.nav-item .cnt` 的既有形态）。 */
+  const pendingBadge = !follow && pendingCount > 0 ? pendingCount : null;
+
+  return (
+    <section className="screen" id="s-logs" hidden={false}>
+      <div className="phead">
+        <div>
+          <h1>{t('logs.pageTitle')}</h1>
+          <div className="sub">{t('logs.pageDesc')}</div>
+        </div>
+      </div>
+
+      {/* 隐私锁提示条（原型内联覆盖为 flow 色，非默认 mode-warn 的 warn 色） */}
+      {privacyMode && (
+        <div
+          className="mode-warn show"
+          id="log-privacy-note"
+          style={{
+            color: 'hsl(var(--flow-hi))',
+            background: 'hsl(var(--flow-weak))',
+            borderColor: 'hsl(var(--flow)/0.3)',
+          }}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+            <rect x="5" y="11" width="14" height="9" rx="2" />
+            <path d="M8 11V8a4 4 0 018 0v3" />
+          </svg>
+          <span>{t('logs.privacyNote')}</span>
+        </div>
+      )}
+
+      <div className="card log-toolbar">
+        {/* 日志级别（统一：核记录 + 视图显示同一级别及以上） */}
+        <div className="log-tb-lvl">
+          <span className="log-flow-tag">{t('logs.currentLevel')}</span>
+          <div className="log-levels" role="group" aria-label="Log level">
+            {LEVEL_OPTS.map((lv) => (
+              <button
+                key={lv}
+                type="button"
+                className={level === lv ? 'on' : ''}
+                onClick={() => onLevelChange(lv)}
+              >
+                {lv.toUpperCase()}
+              </button>
+            ))}
+          </div>
+          {/* 级别说明不再占一行正文 —— 收进这颗 `i` 的浮窗（陈先生 2026-07-29 裁定：长文案挤占空间）。
+              `data-tip` 走本仓的 tooltip 引擎；`aria-label` 让读屏也拿得到同一段。
+              **生效范围那句已按本批改写**：内核日志现在经管理 API 的 SubscribeLog 全级别送来、级别筛在
+              客户端，故本页显示的内核行**改完即刻**跟上；只有内核写进它自己那份日志文件的级别仍是起核时
+              注入的，要重启内核才变。 */}
+          <button
+            type="button"
+            className="log-lvl-info"
+            data-tip={`${t('logs.levelCaption')}${t('logs.levelCoreRestartHint')}`}
+            aria-label={t('logs.levelCaption')}
+          >
+            <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 11v5M12 7.6v.6" />
+            </svg>
+          </button>
+          {/* 「核在跑的真实级别」徽标 —— 左边那排分段控件显示的是**我写下的值**，这里显示的是
+              **核此刻实际在用的值**（管理 API `GetDefaultLogLevel` 读回）。核日志改吃 `SubscribeLog`
+              之后它管的只剩一格：核写进 `singbox.log` 时用的级别，即两个导出产物里的核那一半 ——
+              屏幕上那份已经不会骗人了，盘上那份才是唯一还会与设置不一致的东西。
+              只在**核记得比你要的少**时才报（反向 = 盘上多几行，无后果；照报的话调低级别后徽标常年亮着）；
+              成因二分（暂存未应用 / 核没重启）补救动作不同，故浮窗按因分文案。
+              读不到时明说「未运行 / 读不到」，**绝不回落成某个具体级别**（见 runtime-level.ts）。 */}
+          {runtimeView.kind !== 'pending' && (
+            <span
+              className={`log-core-lvl${runtimeView.kind === 'known' && runtimeView.drift ? ' diverged' : ''}`}
+              data-tip={coreLevelTip}
+            >
+              {runtimeView.kind === 'known'
+                ? t('logs.coreLevelValue', { level: runtimeView.level.toUpperCase() })
+                : runtimeView.kind === 'notRunning'
+                  ? t('logs.coreLevelNotRunning')
+                  : t('logs.coreLevelUnavailable')}
+            </span>
+          )}
+          {/* 来源分段自第二行上移至此，与「日志级别」同排（陈先生 2026-07-29 真机裁定）：两者都是
+              「筛什么」的选择器，原来一个在首行、一个混在搜索/动作那排里，是按控件类型分行而非按语义分行。
+              中间用既有 `.log-tb-sep` 竖线分隔，不新造分隔件。 */}
+          <span className="log-tb-sep" />
+          <span className="log-flow-tag">{t('logs.sourceLabel', '来源')}</span>
+          <div className="seg2" role="group" aria-label="Source">
+            {(['all', 'sing-box', 'app'] as LogSource[]).map((src) => (
+              <button
+                key={src}
+                type="button"
+                className={source === src ? 'on' : ''}
+                onClick={() => setSource(src)}
+              >
+                {src === 'all' ? t('common.all') : src === 'app' ? t('logs.sourceApp') : 'sing-box'}
+              </button>
+            ))}
+          </div>
+        </div>
+        {/* 级别说明 + 生效范围如实标注：本页显示的两侧日志（应用 + 内核）都在改完那一刻就跟上 ——
+            应用侧是 logging.rs::set_level 跟随 config.logLevel，内核侧是 SubscribeLog 恒送全级别、
+            由同一个 max_level 在客户端筛。**仍需重启内核**的只有内核写进自己那份日志文件的级别
+            （起核时注入进生成配置，不追溯已在跑的核），那条由上面那颗 `i` 的浮窗说清楚。 */}
+        <div className="log-tb-main">
+          {/* 搜索 */}
+          <label
+            className="input log-tb-search"
+            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 11px', cursor: 'text' }}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="15"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              style={{ color: 'hsl(var(--fg-faint))', flex: 'none' }}
+            >
+              <circle cx="11" cy="11" r="7" />
+              <path d="M20 20l-3-3" />
+            </svg>
+            <input
+              id="log-search"
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={t('logs.searchPlaceholder')}
+              style={{ border: 0, background: 'none', outline: 'none', flex: 1, padding: '8px 0', font: 'inherit', color: 'inherit' }}
+            />
+          </label>
+
+          {/* 动作 */}
+          <div className="log-tb-actions">
+            {/* C18 实时脱敏开关：开 → 常态对域名/IP 打码（复用 redactSensitive）。隐私锁开时恒脱敏，此开关
+                控的是「非锁定态是否也脱敏」的持久偏好（localStorage）。'on' 视觉随实际脱敏态（锁定或偏好）。 */}
+            <button
+              type="button"
+              className={`btn ghost sm${shouldRedactLogs(privacyMode, redactLogs) ? ' on' : ''}`}
+              onClick={toggleRedactLogs}
+              data-tip={t('logs.redactTip')}
+              aria-pressed={redactLogs}
+            >
+              <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <rect x="5" y="11" width="14" height="9" rx="2" />
+                <path d="M8 11V8a4 4 0 018 0v3" />
+              </svg>
+              <span>{t('logs.redact')}</span>
+            </button>
+            <button
+              type="button"
+              className={`btn ghost sm${follow ? ' on' : ''}`}
+              onClick={toggleFollow}
+              /* 浮窗随态切换。原文案「暂停/恢复自动滚动」把两个态写在一句里 ⇒ 读完也不知道**当前**是哪态，
+                 而文字与 `aria-pressed` 都已经把状态收进底色/属性，浮窗是鼠标用户读到状态的唯一出口。 */
+              data-tip={follow ? t('logs.followTipOn') : t('logs.followTipOff')}
+              aria-pressed={follow}
+            >
+              <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="M12 5v14M6 13l6 6 6-6" />
+              </svg>
+              {/* 文案恒定「自动滚动」，开关态只由底色表达（陈先生 2026-07-29 裁定：切文字会让按钮
+                  宽度跳动，且「跟随中/已暂停」两个词还要用户读完才知道当前是哪态）。
+                  **`aria-pressed` 是补偿**：文字不再变 ⇒ 读屏失去唯一状态线索，必须由它承担。 */}
+              <span id="log-follow-state">{t('logs.follow', '自动滚动')}</span>
+              {pendingBadge !== null && <span className="cnt">{pendingBadge}</span>}
+            </button>
+            <button
+              type="button"
+              className={`btn ghost sm${confirmClear ? ' confirming' : ''}`}
+              onClick={onClearClick}
+              /* 武装态同样只走底色（`.confirming` 已有红底皮肤，components.css:964）。
+                 视觉文案不变，但 `aria-label` 仍随态切换 —— 二次确认对读屏用户必须可感知，
+                 否则第二下点下去之前他们不知道自己已经武装了。 */
+              aria-label={confirmClear ? t('logs.clearConfirm') : t('home.clear')}
+            >
+              <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" />
+              </svg>
+              {/* 文案随武装态切换（陈先生 2026-07-29 复议：只有底色变，用户不知道还要再点一次）。
+                  底色 `.confirming` 保留 —— 两个通道一起给，比只给其中一个都强。 */}
+              <span>{confirmClear ? t('logs.clearConfirm') : t('home.clear')}</span>
+            </button>
+            <span className="log-tb-sep" />
+            <button type="button" className="btn ghost sm" onClick={onExportLogs}>
+              <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="M12 3v11M8 10l4 4 4-4M4 19h16" />
+              </svg>
+              <span>{t('logs.exportLogs')}</span>
+            </button>
+            {/* G3「目录」：文件夹图标 + 原型同款短文案 */}
+            <button
+              type="button"
+              className="btn ghost sm"
+              onClick={onOpenLogDir}
+              data-tip={t('logs.openDirTip', '在文件管理器中打开日志所在目录')}
+            >
+              <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="M3 7a1 1 0 011-1h5l2 3h9a1 1 0 011 1v9a1 1 0 01-1 1H4a1 1 0 01-1-1z" />
+              </svg>
+              <span>{t('logs.openDir', '目录')}</span>
+            </button>
+            <button
+              type="button"
+              className="btn ghost sm"
+              onClick={onExportDiag}
+              data-tip={t('logs.exportDiagTip')}
+            >
+              <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="M3 7l2-3h5l2 3h7a1 1 0 011 1v11a1 1 0 01-1 1H3a1 1 0 01-1-1V8a1 1 0 011-1z" />
+                <path d="M12 11v6M9 14l3 3 3-3" />
+              </svg>
+              <span>{t('logs.exportDiag')}</span>
+            </button>
+            {/* 此处曾有「开始诊断采集 / 结束采集」两颗按钮。整条机制已删除 —— 想看更详细的内核日志，
+                直接把上面的级别分段控件拨到 DEBUG 即可（即刻生效，不落盘、不重启内核）。 */}
+            <button type="button" className="btn ghost sm" onClick={onCopy}>
+              <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <rect x="9" y="9" width="11" height="11" rx="2" />
+                <path d="M5 15V5a2 2 0 012-2h10" />
+              </svg>
+              <span>{t('common.copy')}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* 日志流：原型 renderLogs() 的 .log-line 模板逐行 .map，空数组即空渲染（不发明占位态） */}
+      <div className="log-view" id="log-view" ref={viewRef}>
+        {visible.map((l, i) => (
+          // key 用后端单调 `_id`（环形缓冲 seq）：缓冲滑动丢最旧时剩余行 key 不变。
+          // 回落 `timestamp-index` 仅为缺字段的非 Tauri / 旧后端兜底（那时才有整列重 key 的老问题）。
+          <div className="log-line" key={l._id ?? `${l.timestamp}-${i}`}>
+            {/* 脱敏（域名/IP）：隐私锁开（#log-privacy-note 承诺 + 覆盖抬级前缓冲的旧行）**或**用户开了
+                「常态脱敏」偏好（C18，redact 工具栏开关）时生效——统一走 shouldRedactLogs 判定，复用同一
+                redactSensitive（不重写正则）；复制路径走同一个 renderMessage。 */}
+            <span className="log-ts">[{fmtTs(l.timestamp)}]</span> <span className={`log-${l.level.toUpperCase()}`}>{l.level.toUpperCase()}:</span> {highlight(renderMessage(l.message))}
+          </div>
+        ))}
+      </div>
+
+      <div className="log-foot">
+        <span className="log-live">
+          <span className="log-live-dot" />
+          <span>{t('logs.liveStream')}</span>
+        </span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+          {/* 回到底部：follow 暂停时才出现（手动按暂停 或 上滚脱离底部）。点它＝回填 pending + 吸回底部
+              + 恢复跟随，是「恢复直播」的唯一显式入口。 */}
+          {!follow && (
+            <button
+              type="button"
+              className="btn ghost sm"
+              onClick={resumeFollow}
+              /* 这颗只在暂停态出现，点它就是恢复 ⇒ 恒用 off 文案（「已暂停 · 点击恢复」）。 */
+              data-tip={t('logs.followTipOff')}
+            >
+              <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="M12 5v14M6 13l6 6 6-6" />
+              </svg>
+              {/* logs 域自己的键：借 `home.scrollToBottom` 会让首页改文案时把日志页一起改掉
+                  （两处的按钮语义相近但不同——首页那个只滚动，这里还要回填 pending + 恢复跟随）。 */}
+              <span>{t('logs.scrollToBottom')}</span>
+            </button>
+          )}
+          <span>
+            <b style={{ color: 'hsl(var(--fg))' }} id="log-count">
+              {visible.length}
+            </b>{' '}
+            <span>{t('logs.linesUnit')}</span>
+          </span>
+        </span>
+      </div>
+    </section>
+  );
+}
+
+export default LogsScreen;

@@ -1,0 +1,190 @@
+name: CI
+
+# B0 验证门禁：Rust 单链（fmt + clippy + build + test），无 Go 工具链（§D.1 day-1 全 Rust）。
+# 职责 = 「改动是否正确」，快速反馈。打包（出安装包）拆到 package.yml（B10 发布工程批补）。
+#
+# ── 额度架构（2026-07-24 重构，root cause：私有仓 Actions 计费 mac=10x/win=2x，
+#    此前每次 push main = 3-OS CI + 4 平台 Package 并行 ≈ 7 个重 job，2000 min/月额度烧穿）──
+#   · push main（调试热路径）：只跑 ubuntu-22.04 单腿 —— 最便宜、最快反馈；
+#   · pull_request / workflow_dispatch / 被 package.yml workflow_call（发布）：完整 3-OS 矩阵；
+#   · 发布质量不降级：tag 发布经 package.yml 的 `ci` gate job 调回本 workflow 跑满 3-OS，
+#     CI 不绿不打包（见 package.yml jobs.ci）。
+# 建议：main 开 ruleset，把 cargo-test 设为 required checks（PR 侧是全矩阵，口径不变）。
+on:
+  push:
+    branches: [main]
+    # 纯文档/UI 改动不碰 Rust 链，push 直跑是纯浪费（本 workflow 无 UI 门，UI 由本地 gate +
+    # 发布期 package.yml 的 tauri build 覆盖）。注意 paths-ignore 只在**全部**改动文件命中时跳过。
+    # 只对 push 生效：PR 不加，避免将来设 required checks 后文档 PR 卡在 pending。
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'ui/**'
+      - 'LICENSE'
+      - 'NOTICE'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      os:
+        # 单平台确认专用（2026-08-05）：要回答的是「**这一个**平台还能不能编/跑」时，另外两条腿
+        # 是纯浪费——mac 计费 10x，一次全矩阵 93 计费分钟。缺省仍是 `all`，不改任何既有语义。
+        #
+        # ⚠️ 它**只影响手动 dispatch**：push / pull_request / package.yml 的 workflow_call 都不传
+        # inputs ⇒ 下面的表达式落到原来那条判定上。发布门跑满 3-OS 这条口径一字未动。
+        description: '跑哪些平台（单平台用于确认某平台能否编译，省额度；发布门不受影响）'
+        type: choice
+        default: all
+        options:
+          - all
+          - ubuntu-22.04
+          - windows-2022
+          - macos-14
+  # 供 package.yml 复用作发布前置门（先过检测再打包），零重复定义。
+  workflow_call:
+
+# 同一 ref 上新跑取消在途旧跑。
+# 2026-07-31 把 main push 也纳入取消：连着推几笔时，被顶掉的那几跑的结论没有任何消费者
+# （只有 tip 会发布），却照样计费。判据用 `github.ref` 而不是 `github.event_name == 'push'`——
+# 经 package.yml workflow_call 作发布门时 event_name 取**调用方**的（tag push 也是 'push'），
+# 用 event_name 会把发布门也变成可取消的。tag ref 是 refs/tags/*，走不进下面这条。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+
+jobs:
+  lint-and-test:
+    name: fmt + clippy + test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 为什么不改成 fail-fast: true 省额度（2026-07-31 复核，**这条别优化掉**）：
+      # true 的收益只来自「取消**在途**的 job」，所以只在「快腿先挂、慢腿还在跑」时才兑现。
+      # 2026-07-28 run 30328102467 是反例：挂的是 windows（墙钟 23min），而 ubuntu(7)/macos(4)
+      # 那时早已各自跑完 —— 没有任何在途 job 可取消，true 省下的是 0 分钟。
+      # 会先挂的那类失败（fmt/clippy）多半平台无关，取消掉的另外两腿信息量本就低；而三平台矩阵
+      # 存在的理由（平台特定失败）恰恰浮现在最慢的那条腿上，true 帮不到。
+      # 代价一侧则是确定的：true 之后看不到「只有 win 挂」还是「三平台全挂」，为补这个信息重跑
+      # 一次就是整份矩阵（93 计费分钟）重付。故维持 false。
+      fail-fast: false
+      matrix:
+        # 事件条件矩阵（额度架构核心）：
+        #   push main → 只 ubuntu（调试期 1 个 1x 计费 job）；
+        #   其余（PR / dispatch / 经 workflow_call 的 tag 发布）→ 三平台全跑。
+        # 三平台语义必留（helper crate 平台特定，mac/win 分支代码只有本平台 native build 能验），
+        # 只是把「每次 push 都验三平台」降频到「合 PR / 发布时验」。
+        # workflow_call 时 github.event_name/ref 取**调用方**的事件：tag push → ref=refs/tags/* →
+        # 走全矩阵分支，正确。
+        #
+        # 最前面多一段 dispatch 单平台分支（2026-08-05）：手动 dispatch 且选了具体平台 → 只跑那一条。
+        # 判据用 `github.event.inputs.os` 而**不是** `inputs.os`，与 package.yml 里那条同理——
+        # workflow_call / push 的 payload 里根本没有 inputs 键，`inputs.os` 在那些路径上会报错或取到
+        # 调用方的输入，而 `github.event.inputs.os` 恒为空串 ⇒ 干净地落到原判定上。
+        os: >-
+          ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.os != 'all')
+              && fromJSON(format('["{0}"]', github.event.inputs.os))
+              || ((github.event_name == 'push' && github.ref == 'refs/heads/main')
+                  && fromJSON('["ubuntu-22.04"]')
+                  || fromJSON('["ubuntu-22.04","windows-2022","macos-14"]')) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── 核 ↔ cronet 版本耦合（2026-08-10 新增）──
+      # 只 curl 一次 go.mod（~10KB）比对 manifest 的 cronetModuleVersion，不下载任何库。
+      # 装在**最便宜的那条腿**上、且排在装 Rust 之前：判据只要 manifest + 一次 curl，几秒出结果，
+      # 没理由让它跟在 clippy/build 后面。此前同一判据只存在于 package.yml，于是漂移要等到
+      # 发布/手动打包才暴露 —— 实测代价是 macos-arm64 腿（10x 计费）挂在第 15 个 step。
+      # 限 Linux：push main 只起 ubuntu 一条腿，全矩阵时另外两腿跑同一判据纯属重复付费。
+      - name: Core ↔ cronet version coupling
+        if: runner.os == 'Linux'
+        run: node scripts/fetch-cronet.mjs --check-only
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      # 原生构建前置：protoc（singbox-grpc build.rs 三平台都要）、Windows NASM（boring-sys2/
+      # BoringSSL 汇编）、Linux webkit/gtk（Tauri）。首次 CI 运行前 workspace 从未在 runner 上
+      # 全量构建过，这些系统依赖一直缺 → clippy/build 在 build-script 阶段就炸。
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install NASM (Windows — boring-sys2/BoringSSL asm)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+
+      - name: Install Linux system dependencies (Tauri webkit/gtk)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libglib2.0-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+
+      # tauri build.rs 校验 bundle.resources 路径存在。resources/{dashboard,linux,win,mac-*}
+      # 被 .gitignore 排除（仅 .gitkeep + data/ 入库，核/仪表盘运行期 fetch），裸 checkout 无这些
+      # 目录 → build-script 报 "resource path doesn't exist" 而炸。ci 不打包、不需真产物，建空占位
+      # 目录 + .keep 占位文件（防 glob 零匹配）即可让 cargo build/clippy/test 通过。
+      - name: Create resource placeholder dirs (tauri build.rs 路径校验)
+        shell: bash
+        run: |
+          for d in dashboard linux win mac-arm64 mac-x64; do
+            mkdir -p "resources/$d" && touch "resources/$d/.keep"
+          done
+
+      # fmt 独立 job 之外的快速门：直接检 fmt 是否干净（--check 不改文件）。
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (deny warnings)
+        env:
+          # helper crate 平台特定：本平台 build 才编对应 crate（避免无平台头文件的 target 编不过）。
+          RUSTFLAGS: "-D warnings"
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build --workspace --verbose
+
+      # 平台特定代码在 Linux 腿上的**唯一**检出通道（2026-08-09 新增）。
+      #
+      # 背景：`#[cfg(windows)]` / `#[cfg(target_os = "macos")]` 里的代码 Linux 编译单元根本不含
+      # ⇒ 本腿对平台特定代码的检出力此前**恒为 0**（不是「这次没抓到」）。踩过一次：本地 + ubuntu
+      # 全绿而 windows-2022 红。
+      #
+      # 此前记的结论是「本地补不上：msvc 交叉卡 `lib.exe`」—— 那是**链接**期的限制，而 `cargo check`
+      # 不链接 ⇒ 对**不含 C 依赖**的三个纯 Rust crate 完全可行（本机实测 5s）。
+      #
+      # 覆盖边界（别当成「平台代码都验过了」）：只有 `polaris`(src-tauri) 不在内 —— 它的依赖树里有
+      # C 组件（cc-rs 要 `lib.exe` / `x86_64-w64-mingw32-gcc`），本机与 Linux runner 都给不出。
+      #
+      # 🔴 `polaris-helper` **在内**（2026-08-09 补）：上一版把它排除在外，理由是「build script 要 C
+      # 工具链」—— 那是**推断，没实测**。实测两个 target 都是秒过（它只依赖纯 Rust 的 windows-sys / nix）。
+      # 而 helper 恰恰是全仓平台特定代码最密集的 crate（Windows SCM + 命名管道 + wintun + WFP、
+      # macOS launchd + sysctl），排除它等于把最大的一块留在盲区里。
+      - name: Cross-check platform targets (cfg(windows) / cfg(macos) 分支)
+        if: runner.os == 'Linux'
+        run: |
+          rustup target add x86_64-pc-windows-msvc x86_64-apple-darwin
+          for t in x86_64-pc-windows-msvc x86_64-apple-darwin; do
+            # `--features polaris-helper/ctrl-break-probe`：G3 探针 bin 被 required-features 挡在
+            # 默认构建之外（见 helper/Cargo.toml），不显式点名就**永远没人编它** —— 那样它会随
+            # helper 的 Windows API 改动悄悄烂掉，等到真要跑实验那天才发现编不过。
+            cargo check --target "$t" \
+              --features polaris-helper/ctrl-break-probe \
+              -p polaris-system-integration -p polaris-core-supervisor \
+              -p polaris-helper-client -p polaris-helper
+          done
+
+      - name: Test
+        # `--no-fail-fast`（2026-08-05）：默认行为是**某个 crate 挂了就不再跑后面的 crate**，
+        # 于是一次 run 只能看见「第一个」失败。修 Windows 腿时这一条把成本放大成 N 倍——
+        # 每修一条要再等一整轮（Windows 冷编译约 20 分钟），而那一轮又只暴露下一条。
+        # 实测连剥四层（checkout 保留名 → uninstall+dns → launchd → helper-client）才见底。
+        # 加上它之后，一次 run 给出**全部**失败清单，代价只是失败时多跑几个 crate 的测试（秒级）。
+        run: cargo test --workspace --no-fail-fast

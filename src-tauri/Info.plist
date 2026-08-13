@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS 专用 Info.plist 增量（tauri-bundler 打包时合并进生成的 Info.plist）。
+
+  ══ 为什么必须有这个文件（2026-07-31 真机，一条根因三个症状）══
+
+  macOS 用「用户 AppleLanguages ∩ **应用声明的本地化集合**」算出应用的**有效本地化**，
+  应用内一切依赖 locale 的东西都取自它。此前 Polaris 声明为空
+  （CFBundleLocalizations 未声明、CFBundleDevelopmentRegion=English、零个 .lproj），
+  于是即便系统是 zh-Hans-CN，macOS 也判定「这应用只会英文」，发给它 en：
+
+    ① sing-box dashboard 恒英文 —— 它的默认语言就是 auto、走 navigator.languages
+       （WKWebView 的这个值取自应用有效本地化）。面板逻辑没错，被喂了错的输入。
+    ② Polaris 自己的「跟随系统」失效 —— `ui/src/i18n/index.ts:95` 同样读 navigator.languages。
+       该缺陷此前**潜伏**：陈先生在设置里显式选过中文（config.language 存了具体码，绕开
+       auto 分支），所以看不出来；全新安装到中文 Mac 上会起成英文。
+    ③ 原生文件夹选择框恒英文 —— tauri-plugin-dialog → rfd → NSOpenPanel，
+       AppKit 按有效本地化取自己的按钮/标签文案。
+
+  三处都不是各自的 bug，修法也不在各自那一侧。
+
+  ══ 为什么不需要真建 .lproj 目录 ══
+
+  CFBundleLocalizations 正是为「不走 .lproj 机制、自己管翻译」的应用准备的键：它只参与
+  locale 协商，不要求存在对应资源目录。Polaris 的翻译全在 ui/src/i18n/locales/ 里由 i18next 管。
+
+  ══ 列表必须与实际出货语种一致 ══
+
+  下面 5 项 ↔ ui/src/i18n/locales/{en-US,zh-CN,zh-TW,ru,fa}.json 一一对应。
+  **加语种时这里要同步加**，否则新语种的用户在 macOS 上拿不到匹配、回落英文
+  —— 而且这个失败是静默的（应用里翻译好好的，只有原生 UI 与 navigator.languages 不对）。
+
+  ══ 射程：仅 macOS ══
+
+  Linux 的 WebKitGTK 读环境 locale、Windows 的 WebView2 读系统设置，都不经这层协商，不受影响。
+
+  ══ 未覆盖：跟随**应用内**语言设置 ══
+
+  本键只解决「跟随系统」。用户在设置里把语言显式改成与系统不同的值时，原生对话框仍按系统走
+  —— 那需要在 AppKit 初始化**之前**把 AppleLanguages 写进应用自己的 UserDefaults 域并重启，
+  是另一件事。数据是拿得到的（真值源是 config.language，Rust 侧可读，见 i18n/index.ts:123）。
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>zh-Hans</string>
+		<string>zh-Hant</string>
+		<string>ru</string>
+		<string>fa</string>
+	</array>
+</dict>
+</plist>

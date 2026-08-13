@@ -1,0 +1,115 @@
+[package]
+name = "polaris-helper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# polaris-helper：三平台（mac/win/linux）特权 helper 的唯一实现处。
+# 合并自 helper-mac + helper-win + helper-linux + helper-common —— crate 边界本身是重复的来源
+# （每加一份共享逻辑就要开一层转发壳），故收敛为单 crate + cfg 隔离真差异。组织原则见 src/lib.rs。
+#
+# 【依赖账本】本文件相对合并前四个 Cargo.toml 是**零新增第三方依赖**，只做两件事：
+#   1. 求并集（sha2/hex/thiserror/log/tokio/nix/windows-sys/tempfile 全部来自被合并的 crate）；
+#   2. 统一 nix 版本：合并前 linux=0.29 / mac=0.31，单一 Cargo.toml 里两个 0.x 无法共存
+#      （semver 不兼容且同名同 feature 集），且无版本特定 API 依赖，故统一取新的 0.31。
+#
+# 【依赖隔离硬约束】平台专用依赖必须 target-specific —— 合并前三个 Cargo.toml 天然隔离了这点，
+# 平铺进普通 [dependencies] 会导致编 Linux 时把 windows-sys 一起拉进来（合并新增的回归风险）。
+# 实证：cargo tree --target <triple> 三平台交叉核对，见交付报告。
+
+[dependencies]
+polaris-helper-proto = { path = "../helper-proto" }
+# 以下四个是**跨平台**依赖（纯 Rust，无 OS 绑定），三平台编译单元都可能用到，故不 target-gate：
+# sha2/hex = core_install 的内核 sha256 校验 + hex 编码（共用层，mac/linux 都走）。
+sha2 = "0.10"
+hex = "0.4"
+# thiserror = win 的 HelperError/HandlerError + linux 的 ServerError/SpawnError 枚举 derive。
+thiserror = "2"
+# log = win SCM 服务日志 + winproc 旁路 stderr 的 facade（生产侧由 host 接管）。
+log = "0.4"
+
+# ===== macOS 专用 =====
+# nix = sysctl/syscall 的安全封装（移植自 Go `syscall.SYS___SYSCTL` / `proc_starttime_darwin.go`）。
+# forbid(unsafe_code) 下替代裸 unsafe syscall。
+# features: process/signal = proc_start 的 kill(0) syscall；user = Uid::current()（handler uid()，
+# Go `os.Getuid()` 等价，替代 nix 0.31 feature-gated 的 getuid）。
+# 仅 platform::macos 的 #[cfg(target_os = "macos")] 门内代码使用 —— 编 linux/windows 时不参与解析。
+[target.'cfg(target_os = "macos")'.dependencies]
+nix = { version = "0.31", features = ["process", "signal", "user"] }
+
+# ===== Linux 专用 =====
+# tokio = linux helper 的 async runtime：peer_cred() 取 SO_PEERCRED、tokio::process 调
+# systemctl/ip/resolvectl、UnixListener accept 循环。unix-only 语义，不进 mac/win 编译单元。
+# nix = kill(2)（freeport）+ getuid/setuid/setgid/setgroups/getgrouplist/User（auth + L10 降权拉核）的
+#   safe wrapper（deny(unsafe_code) 下替代 libc unsafe FFI；features user 覆盖 set*id/User/getgrouplist）。
+# caps = L10 AmbientCaps 拉核（securebits::set_keepcaps + raise Inheritable/Ambient；对照 Go
+#   SysProcAttr.AmbientCaps）。Capability::X.index() 与 Go L16 常量一致（BIND_SERVICE=10/ADMIN=12/RAW=13）。
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio = { version = "1", features = ["process", "rt", "rt-multi-thread", "net", "sync", "time", "macros", "io-util", "signal"] }
+nix = { version = "0.31", features = ["process", "signal", "user"] }
+caps = "0.5"
+
+# ===== Windows 专用 =====
+# windows-sys = Windows FFI 替代 Go 的 golang.org/x/sys/windows（service.go/winproc.go）。
+#   Win32_System_* (Job Object / Threading / ProcessStatus / Services / Registry / Console)
+#   Win32_NetworkManagement_IpHelper (GetExtendedTcpTable)
+#   Win32_Foundation (HANDLE / CloseHandle)
+#   Win32_Security (SDDL / SECURITY_ATTRIBUTES for named pipe)
+# 仅 platform::windows::{winproc,service}（整模块 #[cfg(windows)]）使用 —— 编非 Windows target 时
+# 本依赖不参与编译（cargo tree --target linux/darwin 实证无 windows-sys）。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_Pipes",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Registry",
+    "Win32_System_Services",
+    "Win32_System_Threading",
+    "Win32_System_WindowsProgramming",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+] }
+
+[dev-dependencies]
+# tempfile = core_install / token / launchd / core_installer 单测的临时目录。
+tempfile = "3"
+
+# tokio test-util = linux handler / ops 单测的时间控制（仅 linux 平台模块有测试用到）。
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tokio = { version = "1", features = ["process", "rt", "rt-multi-thread", "net", "sync", "time", "macros", "io-util", "signal", "test-util"] }
+
+[lib]
+path = "src/lib.rs"
+
+# daemon 二进制（C6-0 底座）：单 crate + cfg(target_os) 出三平台 daemon（组织原则见 src/platform/mod.rs 文档末节）。
+# 一次交叉编译一个 target，main() 只编到该平台那一支，产物即该平台的 LaunchDaemon/systemd/SCM 可执行体。
+[[bin]]
+name = "polaris-helper"
+path = "src/bin/main.rs"
+
+# G3 探针（真机协议 §组 G）：Windows 服务能否给无 console 的子进程投递 CTRL_BREAK。
+#
+# 三点刻意的安排：
+#   · 放 `probes/` 而不是 `src/bin/` —— 后者会被 autobins 自动发现，那样它就会跟着每一次
+#     helper 构建一起编，包括打包腿。这里要的是「只有显式点名才编」。
+#   · `required-features` 把它挡在默认构建之外：`cargo build -p polaris-helper` 不碰它，
+#     只有 `--features ctrl-break-probe` 才编。默认构建耗时与产物**零变化**。
+#   · 复用 helper 已有的 windows-sys（target-gated），不新起 crate、不加第三方依赖。
+[[bin]]
+name = "ctrl-break-probe"
+path = "probes/ctrl_break_probe.rs"
+required-features = ["ctrl-break-probe"]
+
+[features]
+# 只影响上面那个探针 bin 编不编；lib 与 daemon bin 的代码路径不读这个 feature。
+ctrl-break-probe = []

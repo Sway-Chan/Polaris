@@ -1,0 +1,184 @@
+/*
+ * 托盘自绘浮层专属样式（浮层窗独立入口用）。
+ *
+ * 复用主窗 index.css 的全部 tokens + `.tray-*` / `.dot` / 品牌星规则；本文件**只做浮层窗差异覆盖**：
+ *  1. 窗口内只渲染 `.tray-menu` 卡片 → body 透明、只余卡片可见（mac/win 透明窗浮起；Linux 不透明窗
+ *     底色 = 卡片 surface，方角无异色）。
+ *  2. 原型 `.tray-menu` 是主窗内嵌用的**视口角绝对定位**（bottom/right + os-mac top）——浮层窗里窗口
+ *     本身即菜单，改为静态填充 + 去阴影(边框定边) + 有界高度内滚 = 无箭头「面板风」菜单栏 App 观感
+ *     （对齐原生 NSMenu/panel：卡片直接贴菜单栏、靠 1px 边框定边而非箭头指向图标，见 tray.rs 头注）。
+ *
+ * 不改 ui/src/styles/*（主线程在改 CSS）——本文件在 tray 组件目录内，仅覆盖不修改原文件。
+ */
+
+/* !important：index.css 里 tokens 分区的 `body{background:hsl(var(--bg))}` 与本文件同 specificity，
+ * 依赖 import 顺序取胜太脆（打包器合并顺序一变就回归成实底方块 = 卡片外那圈「波纹」边）。
+ * 窗口本体的系统阴影另在 Rust 侧 `.shadow(false)` 关掉（阴影沿窗口矩形画，透明窗上同样成灰边）。 */
+html,
+body,
+#tray-root {
+  margin: 0;
+  background: transparent !important;
+}
+body {
+  overflow: hidden;
+}
+#tray-root {
+  /* 无箭头后不再需要为其留定位上下文/顶部留白——面板风惯例：卡片直接贴窗顶，间隙改由下方
+   * `.tray-menu` 的 margin-top 承担（native 菜单栏间隙，非箭头预留空间）。 */
+  padding-top: 0;
+}
+
+.tray-menu {
+  /* 脱离原型的视口角绝对定位（那是主窗内嵌用）→ 浮层窗内静态填充。 */
+  position: static;
+  inset: auto;
+  top: auto;
+  bottom: auto;
+  right: auto;
+  /* 无箭头「面板风」：卡片离窗顶留 native 小间隙（2px——真机反馈 6px+窗口 gap(≈1px) 合计 7px 偏远，缩到
+   * 贴近菜单栏图标；仍非 0，圆角不贴死窗顶防裁切），非箭头预留空间。左右 11 / 底 10 = 让卡片圆角+1px
+   * 边框不贴窗沿、免被 body overflow:hidden 裁掉（defect#1「截断」）。去阴影后无需大边距承接投影。 */
+  margin: 2px 11px 10px;
+  width: auto;
+  max-width: none;
+  /* 有界高度：仅在节点极多时卡片内滚。上限对齐 Rust 窗口 clamp（80..720）减去上下外边距（6+10）≈704
+   * → 完整主视图（连接+节点+模式+接管+工具+退出，实测 ~550px）绝不触内滚上限、末项不被自身 max-height
+   * 裁掉（旧值 560 与主视图内容近乎等高，字体/渲染微差即越界内滚 → 「退出 Polaris」被裁）。 */
+  max-height: 704px;
+  overflow-y: auto;
+  /* 去投影（defect#2「不该有的阴影」）：透明窗上 CSS box-shadow 会被 body overflow:hidden 裁成硬边=
+   * 「截断」观感；面板风质感改由原型基线的 1px 边框 + native 顶部间隙承担（无箭头，卡片贴菜单栏，
+   * 仿 NSMenu/panel 菜单栏 App 惯例）。必须显式 none —— 否则回落到 prototype.css 基线 .tray-menu 的
+   * 重投影（阴影没真去掉）。 */
+  box-shadow: none;
+}
+
+/* ── 紧凑度收紧（浮层窗专属，不改 components.css 的原型基线）──
+ * 实测原型 `.tray-i` = 35px 逻辑高（padding:8px + 16px 图标 + normal 行高），比原生 macOS 菜单项
+ * （~22px）明显偏松。这里在**浮层窗内**把纵向 padding/行高收紧到 ~28px（近原生、仍舒适可点），
+ * 只覆盖不改原文件——主窗内嵌用的原型基线不受影响。tray_resize 按内容高自适应窗高，收紧即整体变矮。 */
+.tray-menu .tray-i {
+  padding: 6px 11px;
+  line-height: 1.25;
+}
+.tray-menu .tray-back {
+  padding: 6px 9px;
+}
+.tray-menu .tray-status {
+  padding: 8px 11px;
+}
+.tray-menu .tray-group-h,
+.tray-menu .tray-sub-label {
+  padding: 6px 11px 3px;
+}
+.tray-menu .tray-sep {
+  margin: 4px 6px;
+}
+
+/* 菜单容器（role=menu, tabindex=-1）作鼠标弹出/切视图时的焦点落点（TrayMenu focusMenu，defect#2）：
+ * 它是**非交互**容器，去掉它自身的焦点环——鼠标打开时不再有任何按钮/容器显示 :focus-visible 框。
+ * 各 `.tray-i` 按钮的 `:focus-visible` 环（components.css，键盘方向键导航的 a11y）保留不动：只在键盘
+ * 触发聚焦时出现。 */
+.tray-menu:focus,
+.tray-menu:focus-visible {
+  outline: none;
+}
+
+/* 连接按钮在无节点/无配置时置灰不可点（避免 proxy.start 无节点必失败）；测速在测时同样置灰（互斥闸）。 */
+.tray-i:disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+/* 节点行延迟色点（原型 `:3785` 内联 `width:6px;height:6px;border-radius:50%;background:hsl(var(--…))`）。
+ * 原型把色写成内联样式；这里落成类，色阶映射逐字照搬原型那张表
+ * （fast→--ok / mid→--flow / slow→--warn / dead→--err / none→--fg-faint）。
+ * 注意 mid 用 `--flow` 而非 `.tray-lat.mid` 的 `--flow-hi`：点是实心块、字是描边字，同一色号在两种
+ * 载体上的观感不同，原型也分开取的。 */
+.tray-menu .tray-node-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: hsl(var(--fg-faint));
+}
+.tray-menu .tray-node-dot.fast { background: hsl(var(--ok)); }
+.tray-menu .tray-node-dot.mid { background: hsl(var(--flow)); }
+.tray-menu .tray-node-dot.slow { background: hsl(var(--warn)); }
+.tray-menu .tray-node-dot.dead { background: hsl(var(--err)); }
+.tray-menu .tray-node-dot.none { background: hsl(var(--fg-faint)); }
+
+/* 节点行：名占弹性主轴并省略号截断，让协议短标签 + 延迟徽标恒靠右不被长名挤走。 */
+.tray-menu .tray-node-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 协议短标签（WG/TS/SS/Hy2）：克制的次要信息，弱化于名与延迟之间；大小写由 protoShort 决定（勿 CSS 转大写，否则 Hy2→HY2）。 */
+.tray-menu .tray-proto {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: hsl(var(--fg-faint));
+}
+
+/* ── 「全部节点」分组头 → 可折叠展开钮 ──
+ * 默认全折叠、只展开含当前出口节点的那组（判据在 `domain/server-grouping.defaultOpenGroupIds`，
+ * 与主窗两处节点选择器共用）。**为什么托盘尤其需要折叠**：浮层窗高由 `tray_resize` 按内容自适应，
+ * 几十上百个节点平铺时整窗会被拉成一条贴不下屏的长条，二级视图等于不可用；折叠后一屏就是分组目录。
+ *
+ * 视觉沿用 `.tray-group-h` 基线（字号/字重/字距/颜色），只补按钮所需的 flex 布局 + 对称内边距
+ * （基线的 `6px 11px 3px` 是给静态标签写的，作为点击目标上下不对称、命中区也偏薄）。
+ * 落这里而不是 components.css/prototype.css：那两个是原型逐字镜像的禁区，且原型的托盘分组头
+ * 本来就没有可折叠形态；本文件是浮层窗专属覆盖层，@import 顺序在后，同特异性后者胜。 */
+.tray-menu .tray-grp-t {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 11px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.tray-menu .tray-grp-t:hover {
+  background: hsl(var(--surface-2));
+  color: hsl(var(--fg-dim));
+}
+.tray-menu .tray-grp-chev {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  transition: transform 0.15s;
+}
+.tray-menu .tray-grp-t.open .tray-grp-chev {
+  transform: rotate(90deg);
+}
+.tray-menu .tray-grp-c {
+  margin-left: auto;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 一次性提示行（A1/A5/A6）：浮层没有 toast 层、没有 dialog 层 —— 主窗那两条路径在这里都不可用
+ * （268px 的浮层塞不下，且它随时会因失焦收起）。故给一行克制的文字位承载「测速集为空 / 已是最新 /
+ * 检查更新失败 / 已自动启用 FakeIP」这类必须让用户看见的回执。
+ * 高度自适应（可换行），窄浮层里长句照样完整可读；不渲染时 DOM 里根本没有这个节点 → 不占高度，
+ * `tray_resize` 的自适应窗高随之收回。 */
+.tray-menu .tray-note {
+  margin: 2px 8px 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: hsl(var(--surface-2));
+  border: 1px solid hsl(var(--hair));
+  color: hsl(var(--fg-dim));
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: normal;
+  word-break: break-word;
+}
