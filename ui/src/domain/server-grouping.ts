@@ -1,5 +1,5 @@
 import type { ServerConfig, SubscriptionConfig } from '../contracts/types';
-import { isMeshNode } from './endpoint-routes';
+import { landsInEndpoints } from './endpoint-routes';
 
 /**
  * 节点分组（自建 + 组网 + 各订阅），供节点选择器 / 节点列表页 tab / 任意需要「分组」展示处共用，
@@ -18,7 +18,9 @@ export interface ServerGroup {
 
 /**
  * 把节点按归属分组：自建（无 subscriptionId，或 subscriptionId 指向已删订阅的孤儿）→ 再拆出**组网**
- * （endpoint 协议 WireGuard/WARP/Tailscale）独立成组，置于自建之后；其后每个订阅一组。
+ * （endpoint 协议 WireGuard/WARP/Tailscale/OpenConnect/OpenVPN）独立成组，置于自建之后；
+ * 其后每个订阅一组。这里判的是 UI 产品归属，不是「是否配置了内网路由」：OpenConnect/OpenVPN
+ * 即使未填 `meshRoutes` 也仍是网络接入，只是作为普通 VPN 出口使用。
  * 顺序：自建 → 组网 → 各订阅（与订阅入参一致），与节点列表页 tab 顺序一致。
  * 空组是否保留由 `includeEmptyGroups` 决定（见该参数注释）。
  */
@@ -40,10 +42,12 @@ export function groupServersBySubscription(
   const knownIds = new Set(subscriptions.map((s) => s.id));
   const groups: ServerGroup[] = [];
 
-  // 自建 = 无归属 或 归属订阅已不存在（孤儿不丢，并入自建）；再按 endpoint 协议拆出「组网」。
+  // 自建 = 无归属 或 归属订阅已不存在（孤儿不丢，并入自建）；再按 endpoint 数据模型拆出「组网」。
+  // 路由能力仍由 isMeshNode/meshRoutes 判定，不能拿来决定 UI 桶，否则从组网入口创建的企业 VPN
+  // 在不填内网段时会保存后“消失”到自建 Tab。
   const manualAll = servers.filter((s) => !s.subscriptionId || !knownIds.has(s.subscriptionId));
-  const manual = manualAll.filter((s) => !isMeshNode(s));
-  const mesh = manualAll.filter((s) => isMeshNode(s));
+  const manual = manualAll.filter((s) => !landsInEndpoints(s.protocol));
+  const mesh = manualAll.filter((s) => landsInEndpoints(s.protocol));
   // 自建常驻：节点列表页（includeEmptyGroups）即使无自建节点也保留空的「自建」tab 作默认落地。
   if (manual.length > 0 || includeEmptyGroups) {
     groups.push({ id: 'manual', name: 'manual', isManual: true, servers: manual });

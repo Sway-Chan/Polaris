@@ -41,7 +41,7 @@ function renderDialog(desc: DialogDesc) {
     case 'import':
       return <ImportDialog />;
     case 'sub':
-      return <SubDialog subId={desc.subId} focus={desc.focus} />;
+      return <SubDialog subId={desc.subId} focus={desc.focus} onAdded={desc.onAdded} />;
     case 'warp':
       return <WarpDialog edit={desc.edit} />;
     case 'ts-login':

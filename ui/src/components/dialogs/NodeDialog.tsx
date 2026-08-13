@@ -43,8 +43,8 @@ import {
 import {
   ND_SPEC,
   PROTO_OPTIONS,
-  PROTO_GROUP_ORDER,
   protosInGroup,
+  protoGroupsForNodeForm,
   defaultPortPlaceholder,
   allFields,
   describeProbeResult,
@@ -169,7 +169,7 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
 
   // 分组下拉（`Csel` 原生支持 `CselGroup[]`）。分组与组内顺序的判据见 node-spec 的 `PROTO_GROUP_ORDER`。
   const protoLabel = new Map<string, string>(PROTO_OPTIONS.map(([v, l]) => [v, l]));
-  const protoGroups: CselGroup[] = PROTO_GROUP_ORDER.map((g) => ({
+  const protoGroups: CselGroup[] = protoGroupsForNodeForm(isEdit, initialProto).map((g) => ({
     // 单参 `t`：`node-spec.ts` 2026-08-07 起不留中文缺省（151 条 zh/hintZh 一次删净），组头照同一口径。
     label: t(`node.protoGroup.${g}`),
     options: protosInGroup(g).map((v) => ({ value: v, label: protoLabel.get(v) ?? v })),
@@ -312,10 +312,16 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
   return (
     <Modal
       titleId="nd-title"
-      title={isEdit ? t('node.editTitle', '编辑节点') : t('node.addTitle', '添加节点')}
+      title={
+        isEdit
+          ? t('node.editTitle', '编辑节点')
+          : initialProto
+            ? t('meshJoin.title', '添加接入')
+            : t('node.addTitle', '添加节点')
+      }
       onClose={requestClose}
       icon={<NodeIcon />}
-      style={{ width: groups ? 'min(620px, 100%)' : undefined }}
+      className="entry-form-dlg"
       footer={
         <>
           <button type="button" className="btn ghost" onClick={requestClose}>

@@ -1255,7 +1255,7 @@
     "wg": "Import .conf or enter manually",
     "oc": "Enterprise VPN via AnyConnect / GlobalProtect and others",
     "ovpn": "Account, certificates, and enterprise network access",
-    "routesHint": "OpenConnect / OpenVPN appear under Mesh after you add internal routes; leave them empty to use the node as a regular VPN exit."
+    "routesHint": "OpenConnect / OpenVPN always appear under Mesh. Internal routes only control which private subnets are forced through the connection; leave them empty to use it as a regular VPN exit."
   },
   "node": {
     "add": "Add",
@@ -1464,8 +1464,8 @@
     },
     "lanOnly": "LAN only",
     "lanOnlyHint": "This mesh node has no internet egress — it only carries LAN subnets and is not used as an internet exit",
-    "manualAdd": "Manual Add",
-    "manualImport": "Manual Import",
+    "manualAdd": "Add proxy node",
+    "manualImport": "Import node config",
     "meshInfoAcceptRoutes": "Accept subnet routes",
     "meshInfoActiveExit": "Active exit",
     "meshInfoAria": "Mesh info",
@@ -1480,10 +1480,8 @@
     "meshInfoRoutes": "Routes",
     "meshInfoRuntime": "Live",
     "meshInfoStale": "last known",
-    "meshNodesLabel": "Mesh nodes",
-    "meshAddAccess": "Add access",
-    "meshListSummary": "{{count}} access node(s) configured; edit and inspect them in the node cards below",
-    "meshEmpty": "No mesh access configured — click Add access above to get started",
+    "meshAddAccess": "Add mesh access",
+    "meshEmpty": "No mesh access configured — choose “Add → Mesh access” in the top right",
     "meshTsLogoutFail": "Failed to sign out of Tailscale",
     "meshTsLogoutOk": "Signed out of Tailscale",
     "meshWarpDeregisterMsg": "This anonymous device will be deregistered with Cloudflare and its node removed. This cannot be undone. A bound WARP+ license must be re-applied to a new device.",

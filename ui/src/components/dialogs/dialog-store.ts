@@ -62,7 +62,7 @@ export type DialogDesc =
   // D3：订阅 + 组网接入选择器
   // focus：订阅「更多」菜单的「重命名」/「编辑 URL」两项落到同一弹窗的不同字段（原型 subMenu 是两项，
   // 但 Polaris 只有一个订阅表单）——用 autoFocus 落点区分，而不是摆两个点了完全一样的菜单项。
-  | { kind: 'sub'; subId?: string; focus?: 'name' | 'url' }
+  | { kind: 'sub'; subId?: string; focus?: 'name' | 'url'; onAdded?: (subId: string) => void }
   | { kind: 'warp'; edit?: boolean } // WARP 单例槽，无 serverId（弹窗自查现有节点）
   | { kind: 'ts-login' }
   | { kind: 'ts-settings' }

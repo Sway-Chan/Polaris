@@ -3,7 +3,8 @@
  *
  * openconnect / openvpn-client 落 sing-box `endpoints[]`，但它们的可达网段由服务端在隧道建立后
  * push、配置期不可知 —— 所以它们**不是**组网协议。用户在 `meshRoutes` 里显式声明了段，该节点才
- * 具备组网能力：段被强制路由到它、节点归入组网分组、节点卡开始渲染内网信息。
+ * 具备组网路由能力：段被强制路由到它、节点卡开始渲染内网信息。节点页的 UI 分组是产品归属，
+ * endpoint 腿始终在组网 Tab；不能再拿能力判据决定它保存后出现在哪。
  *
  * 判据镜像 Rust（`is_mesh_node` / `endpoint_forced_route_cidrs`），成员集一致性另由
  * `contracts/mesh-predicates-parity.test.ts` 与 Rust 源码对拍。
@@ -60,13 +61,13 @@ describe('endpoint 腿 VPN 客户端的组网资格', () => {
     expect(meshAllowsInternet(node({ protocol: 'openconnect' }))).toBe(true);
   });
 
-  it('分组跟着能力走：没声明段的在「自建」，声明了的进「组网」', () => {
+  it('UI 分组与路由能力解耦：不论是否声明段，企业 VPN endpoint 都留在「组网」', () => {
     const bare = node({ id: 'a', protocol: 'openconnect' });
     const declared = node({ id: 'b', protocol: 'openvpn-client', meshRoutes: ['10.10.0.0/16'] });
     const groups = groupServersBySubscription([bare, declared], [], true);
     const manual = groups.find((g) => g.isManual);
     const mesh = groups.find((g) => g.isMesh);
-    expect(manual?.servers.map((s) => s.id)).toEqual(['a']);
-    expect(mesh?.servers.map((s) => s.id)).toEqual(['b']);
+    expect(manual?.servers.map((s) => s.id)).toEqual([]);
+    expect(mesh?.servers.map((s) => s.id)).toEqual(['a', 'b']);
   });
 });

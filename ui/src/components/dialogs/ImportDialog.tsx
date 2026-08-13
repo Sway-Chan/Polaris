@@ -296,6 +296,7 @@ export function ImportDialog() {
       titleId="add-dlg-title"
       title={t('import.title', '导入节点')}
       onClose={requestClose}
+      className="entry-form-dlg"
       icon={
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
           <path d="M12 15V4M8 8l4-4 4 4M4 15v3a2 2 0 002 2h12a2 2 0 002-2v-3" />

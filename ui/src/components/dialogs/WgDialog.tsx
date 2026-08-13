@@ -269,7 +269,7 @@ function WgForm({ base }: { base?: ServerConfig }) {
       title={isEdit ? t('wg.editTitle', '编辑 WireGuard 节点') : t('wg.addTitle', '添加 WireGuard 节点')}
       onClose={requestClose}
       icon={<WgIcon />}
-      style={{ width: 'min(620px, 100%)' }}
+      className="entry-form-dlg"
       footer={
         <>
           {/* 提交中**不锁**「取消」：原型 `:2545` 的 ghost 钮无 disabled，且本仓此前四个弹窗锁、

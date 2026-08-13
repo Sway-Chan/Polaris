@@ -10,8 +10,8 @@
  *     .node-toolbar#node-shared-tools（.seg2 视图 + .input.search-box 搜索 + .sel 协议/排序（方向固定，无 .nh-dir）+ 测速（可见集）+ 多选）
  *       —— 多选按钮（.nt-hide-sub）仅在订阅 tab 隐藏（原型 syncNodeToolbar：isSub && 隐藏 + 自动退出批选）
  *     .batch-bar（多选批量操作条）
- *     .mesh-list-head + 独立接入选择器（组网页只保留摘要与已配置节点，避免协议入口常驻膨胀）
- *     .node-grid > .nd-card（各 tab pane）
+ *     .node-grid > .nd-card（组网协议从页头统一「添加」菜单进入，不在列表区重复铺入口）
+ *       —— 各 tab pane
  *
  * 数据流：useAppStore（config.servers + config.subscriptions + selectedServerId）。
  * 测速经 api.server.speedTest 发起；延迟结果读全局 `use-latency-store`、进度走全局 sticky toast
@@ -818,6 +818,37 @@ export function NodesScreen() {
     [openDialog, closeDialog, servers, selectedServerId, latencies, stagedOnly, stagedEntries, revertStaged, t],
   );
 
+  /**
+   * 全局「添加」菜单中的组网接入腿。所有 Tab 共用同一个入口；打开前先切到组网，提交后新增卡片
+   * 直接出现在用户当前所见的分组里。接入协议选择继续由 MeshJoinDialog 承担，避免把五种协议铺满菜单。
+   */
+  const openMeshJoin = useCallback(() => {
+    setActiveTab('mesh');
+    openDialog({
+      kind: 'mesh-join',
+      onTsLogout: (node) => void tsLogout(node),
+      onWarpReregister: (node) =>
+        removeWarpNode(node, {
+          title: t('nodes.meshWarpReRegisterTitle', '重新注册 WARP'),
+          message: t(
+            'nodes.meshWarpReRegisterMsg',
+            '将先注销当前 WARP 设备（并移除该节点），再开始注册一台新的匿名设备。当前设备的 WARP+ 许可不会转移到新设备。',
+          ),
+          okToast: t('nodes.meshWarpReRegisterOk', '已注销旧设备，请继续注册'),
+          afterDelete: () => openDialog({ kind: 'warp', edit: false }),
+        }),
+      onWarpDeregister: (node) =>
+        removeWarpNode(node, {
+          title: t('nodes.meshWarpDeregisterTitle', '注销 WARP 设备'),
+          message: t(
+            'nodes.meshWarpDeregisterMsg',
+            '将向 Cloudflare 注销此匿名设备并移除该节点，此操作无法撤销。若已绑定 WARP+ 许可，注销后需要重新绑定到新设备。',
+          ),
+          okToast: t('nodes.meshWarpDeregisterOk', '已注销 WARP 设备'),
+        }),
+    });
+  }, [openDialog, removeWarpNode, tsLogout, t]);
+
   /** 批量删除 —— 原地二次点击（原型 :4137 `batch-del`，确认文案「删除选中节点？」直接换在按钮上）。 */
   const deleteBatch = useCallback(() => {
     if (selectedIds.size === 0) return;
@@ -913,7 +944,7 @@ export function NodesScreen() {
             </svg>
             <span>{t('nodes.testAll', '全部测速')}</span>
           </button>
-          {!activeGroup?.isMesh && <div ref={addWrapRef} style={{ position: 'relative' }}>
+          <div ref={addWrapRef} style={{ position: 'relative' }}>
             <button
               ref={addAnchored.anchorRef}
               type="button"
@@ -943,14 +974,30 @@ export function NodesScreen() {
                   role="menuitem"
                   onClick={() => {
                     setAddMenu(false);
+                    setActiveTab('manual');
                     openDialog({ kind: 'node' });
                   }}
                 >
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
                     <path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" />
                   </svg>
-                  <span>{t('nodes.manualAdd', '手动添加')}</span>
+                  <span>{t('nodes.manualAdd', '添加代理节点')}</span>
                 </button>
+                <button
+                  type="button"
+                  className="mi"
+                  role="menuitem"
+                  onClick={() => {
+                    setAddMenu(false);
+                    openMeshJoin();
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
+                    <path d="M9 15l6-6M8 8a3 3 0 10-3 3M16 16a3 3 0 103 3" />
+                  </svg>
+                  <span>{t('nodes.meshAddAccess', '添加组网接入')}</span>
+                </button>
+                <div className="mm-sep" role="separator" />
                 <button
                   type="button"
                   className="mi"
@@ -963,7 +1010,7 @@ export function NodesScreen() {
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
                     <path d="M12 15V4M8 8l4-4 4 4M4 15v3a2 2 0 002 2h12a2 2 0 002-2v-3" />
                   </svg>
-                  <span>{t('nodes.manualImport', '手动导入')}</span>
+                  <span>{t('nodes.manualImport', '导入节点配置')}</span>
                 </button>
                 <button
                   type="button"
@@ -971,7 +1018,7 @@ export function NodesScreen() {
                   role="menuitem"
                   onClick={() => {
                     setAddMenu(false);
-                    openDialog({ kind: 'sub' });
+                    openDialog({ kind: 'sub', onAdded: setActiveTab });
                   }}
                 >
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
@@ -981,7 +1028,7 @@ export function NodesScreen() {
                 </button>
               </div>
             )}
-          </div>}
+          </div>
         </div>
       </div>
 
@@ -1214,55 +1261,6 @@ export function NodesScreen() {
           </button>
         </div>
       )}
-      {/* 组网页只承担“选择接入 + 管理已配置节点”。协议选择进入独立弹窗，避免协议越多页面首部越膨胀。 */}
-      {activeGroup?.isMesh && (
-        <div className="mesh-list-head">
-          <div>
-            <div className="card-h">{t('nodes.meshNodesLabel', '组网节点')}</div>
-            <div className="card-sub">
-              {t('nodes.meshListSummary', {
-                defaultValue: '已配置 {{count}} 个接入；编辑与状态操作在下方节点卡片中完成',
-                count: activeGroup.servers.length,
-              })}
-            </div>
-          </div>
-          <button
-            type="button"
-            className="btn flow"
-            onClick={() =>
-              openDialog({
-                kind: 'mesh-join',
-                onTsLogout: (node) => void tsLogout(node),
-                onWarpReregister: (node) =>
-                  removeWarpNode(node, {
-                    title: t('nodes.meshWarpReRegisterTitle', '重新注册 WARP'),
-                    message: t(
-                      'nodes.meshWarpReRegisterMsg',
-                      '将先注销当前 WARP 设备（并移除该节点），再开始注册一台新的匿名设备。当前设备的 WARP+ 许可不会转移到新设备。',
-                    ),
-                    okToast: t('nodes.meshWarpReRegisterOk', '已注销旧设备，请继续注册'),
-                    afterDelete: () => openDialog({ kind: 'warp', edit: false }),
-                  }),
-                onWarpDeregister: (node) =>
-                  removeWarpNode(node, {
-                    title: t('nodes.meshWarpDeregisterTitle', '注销 WARP 设备'),
-                    message: t(
-                      'nodes.meshWarpDeregisterMsg',
-                      '将向 Cloudflare 注销此匿名设备并移除该节点，此操作无法撤销。若已绑定 WARP+ 许可，注销后需要重新绑定到新设备。',
-                    ),
-                    okToast: t('nodes.meshWarpDeregisterOk', '已注销 WARP 设备'),
-                  }),
-              })
-            }
-          >
-            <svg viewBox="0 0 24 24" width={15} fill="none" stroke="currentColor" strokeWidth={1.8}>
-              <path d="M12 5v14M5 12h14" />
-            </svg>
-            <span>{t('nodes.meshAddAccess', '添加接入')}</span>
-          </button>
-        </div>
-      )}
-
       {/* 节点网格 */}
       <div className="node-grid">
         {visibleServers.length === 0 ? (
@@ -1276,7 +1274,7 @@ export function NodesScreen() {
                 : activeSub
                   ? t('nodes.emptySub', '该订阅当前没有节点，点上方「刷新」重新拉取')
                   : activeGroup?.isMesh
-                    ? t('nodes.meshEmpty', '暂无组网接入，点上方「添加接入」开始配置')
+                    ? t('nodes.meshEmpty', '暂无组网接入，请从右上角「添加 → 组网接入」开始配置')
                   : t('nodes.empty', '暂无节点，点右上「添加」')}
             </p>
           </div>

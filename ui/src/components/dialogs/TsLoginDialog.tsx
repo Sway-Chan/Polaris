@@ -191,6 +191,7 @@ export function TsLoginDialog() {
       title={t('ts.loginTitle', '连接 Tailscale')}
       onClose={requestClose}
       icon={<TsIcon />}
+      className="entry-form-dlg"
       footer={
         <>
           {/* 提交中**不锁**「取消」：原型 `:2545` 的 ghost 钮无 disabled，且本仓此前四个弹窗锁、

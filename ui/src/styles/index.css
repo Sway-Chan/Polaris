@@ -323,6 +323,11 @@ dialog:focus-visible,
 .dlg:focus,
 .dlg:focus-visible { outline: none; }
 
+/* 统一「添加」菜单下的实际录入表单统一为 620px；接入方式选择器因双列卡片单独使用 700px。
+   两者都保留 20px 视口边距，避免各弹窗自行写 `min(...,100%)` 后在窄窗贴边。 */
+.dlg.entry-form-dlg{ width:min(620px, calc(100vw - 40px)); }
+.dlg.access-picker-dlg{ width:min(700px, calc(100vw - 40px)); }
+
 /* 换屏后被程序化聚焦的主标题同理（`AppShell` 的 route 副作用把焦点转到 h1，供读屏宣告换屏）。
  * WKWebView 给这次聚焦判 `:focus-visible`（Chromium 不判），真机上表现为首次点导航时右侧主标题
  * 冒一圈蓝框（陈先生 2026-07-29 报）。h1 是聚焦兜底载体、非交互控件，与上面 dialog 同一条理由。

@@ -78,7 +78,7 @@ export function MeshJoinDialog({ onTsLogout, onWarpReregister, onWarpDeregister 
       title={t('meshJoin.title', '添加接入')}
       icon={<JoinIcon />}
       onClose={close}
-      style={{ width: 'min(700px, 100%)' }}
+      className="access-picker-dlg"
       footer={
         <button type="button" className="btn ghost" onClick={close}>
           {t('common.cancel', '取消')}
@@ -136,7 +136,10 @@ export function MeshJoinDialog({ onTsLogout, onWarpReregister, onWarpDeregister 
         <Choice title="OpenVPN" description={t('meshJoin.ovpn', '账号、证书与企业内网接入')} icon={shield} onClick={() => go({ kind: 'node', initialProto: 'openvpn-client' })} />
       </div>
       <div className="fld-hint mesh-join-hint">
-        {t('meshJoin.routesHint', 'OpenConnect / OpenVPN 填写“内网段”后归入组网；留空时仍可作为普通 VPN 出口。')}
+        {t(
+          'meshJoin.routesHint',
+          'OpenConnect / OpenVPN 始终归入组网；“内网段”只决定强制路由的企业网段，留空时仍可作为普通 VPN 出口。',
+        )}
       </div>
     </Modal>
   );

@@ -45,6 +45,7 @@ function SubIcon() {
 
 interface SubFormProps {
   base?: SubscriptionConfig;
+  onAdded?: (subId: string) => void;
   /**
    * 打开时自动聚焦的字段。订阅「更多」菜单的「重命名」/「编辑 URL」两项都开本弹窗（Polaris 只有
    * 一个订阅表单），靠这个落点区分——否则两个菜单项点下去完全一样，等于摆了个同义按钮。
@@ -52,7 +53,7 @@ interface SubFormProps {
   focus?: 'name' | 'url';
 }
 
-function SubForm({ base, focus }: SubFormProps) {
+function SubForm({ base, focus, onAdded }: SubFormProps) {
   const { t } = useTranslation();
   const open = useDialogStore((s) => s.open);
   const close = useDialogStore((s) => s.close);
@@ -200,10 +201,13 @@ function SubForm({ base, focus }: SubFormProps) {
           updateViaProxy: viaProxy,
         });
         toast.success(t('sub.added', '订阅已添加'));
-        void loadConfig(true);
         // add 命令只写 config、不拉取节点 → 主动拉一次并三态 toast（对齐 上游「add 后 updateServers」），
         // 让用户明确知道解析到几个节点，而非误以为「add 成功=订阅可用」。
         await refreshSubscriptionWithToast(newSub.id, t);
+        // 先刷新 store、再通知节点页切 Tab；反过来 activeTab 的失效组守卫会把尚不存在的新 id
+        // 立即回落到第一组，形成“添加成功却看不到新订阅”的假象。
+        await loadConfig(true);
+        onAdded?.(newSub.id);
         close();
       }
     } catch (e) {
@@ -219,6 +223,7 @@ function SubForm({ base, focus }: SubFormProps) {
       title={isEdit ? t('sub.editTitle', '编辑订阅') : t('sub.addTitle', '添加订阅')}
       onClose={requestClose}
       icon={<SubIcon />}
+      className="entry-form-dlg"
       footer={
         <>
           <button type="button" className="btn ghost sm" onClick={() => void runPreview()} disabled={previewing || submitting} style={{ marginRight: 'auto' }}>
@@ -369,12 +374,22 @@ function SubForm({ base, focus }: SubFormProps) {
   );
 }
 
-export function SubDialog({ subId, focus }: { subId?: string; focus?: 'name' | 'url' }) {
+export function SubDialog({
+  subId,
+  focus,
+  onAdded,
+}: {
+  subId?: string;
+  focus?: 'name' | 'url';
+  onAdded?: (subId: string) => void;
+}) {
   const config = useEffectiveConfig();
   const base = subId ? config?.subscriptions?.find((s) => s.id === subId) : undefined;
   // R1：key 绑 subId + focus —— 切换编辑目标或聚焦落点 = 重挂 = 同步重新初始化（autoFocus 仅挂载生效，
   // 不进 key 的话「重命名」开着时再点「编辑 URL」不会重新聚焦）。
-  return <SubForm key={`${subId ?? 'new'}:${focus ?? ''}`} base={base} focus={focus} />;
+  return (
+    <SubForm key={`${subId ?? 'new'}:${focus ?? ''}`} base={base} focus={focus} onAdded={onAdded} />
+  );
 }
 
 export default SubDialog;

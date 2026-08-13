@@ -514,8 +514,6 @@
 .mesh-col-sub{ font-size:11px; color:hsl(var(--fg-dim)); line-height:1.4;
   display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
 .mesh-acts{ display:flex; align-items:center; gap:6px; flex:none; }
-.mesh-list-head{ display:flex; align-items:center; gap:14px; justify-content:space-between; margin:2px 0 12px; }
-.mesh-list-head .card-sub{ margin-top:2px; }
 .mesh-choice-grid{ grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); margin-top:8px; }
 .mesh-choice{ min-width:0; }
 .mesh-choice > .mesh-col{ width:100%; text-align:left; }

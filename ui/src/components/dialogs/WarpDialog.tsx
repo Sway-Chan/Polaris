@@ -324,6 +324,7 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
       title={isEdit ? t('warp.editTitle', '编辑 WARP') : t('warp.addTitle', '接入 Cloudflare WARP')}
       onClose={requestClose}
       icon={<WarpIcon />}
+      className="entry-form-dlg"
       footer={
         <>
           {/* 提交中**不锁**「取消」：原型 `:2545` 的 ghost 钮无 disabled，且本仓此前四个弹窗锁、

@@ -280,6 +280,7 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
       title={t('ts.settingsTitle', 'Tailscale 设置')}
       onClose={requestClose}
       icon={<TsSetIcon />}
+      className="entry-form-dlg"
       footer={
         <>
           <button

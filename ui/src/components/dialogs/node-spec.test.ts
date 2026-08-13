@@ -11,6 +11,7 @@ import {
   describeProbeResult,
   PROTO_GROUP_ORDER,
   PROTO_OPTIONS,
+  protoGroupsForNodeForm,
   protosInGroup,
   type ProbeOutboundResult,
 } from './node-spec';
@@ -108,5 +109,12 @@ describe('协议下拉的分组与顺序', () => {
   it('OpenConnect 的标签带上 AnyConnect —— 否则找它的人扫不到', () => {
     // 内核不设独立的 anyconnect 类型，它是 OpenConnect 的一个 flavor（六选一，默认就是它）。
     expect(new Map(PROTO_OPTIONS).get('openconnect')).toContain('AnyConnect');
+  });
+
+  it('创建入口互斥：普通节点不含 VPN，组网接入只含 VPN；编辑态保留全集', () => {
+    expect(protoGroupsForNodeForm(false)).toEqual(['common', 'proxy', 'custom']);
+    expect(protoGroupsForNodeForm(false, 'openconnect')).toEqual(['vpn']);
+    expect(protoGroupsForNodeForm(false, 'openvpn-client')).toEqual(['vpn']);
+    expect(protoGroupsForNodeForm(true)).toEqual(PROTO_GROUP_ORDER);
   });
 });

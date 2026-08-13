@@ -1255,7 +1255,7 @@
     "wg": "导入 .conf 或手动填写",
     "oc": "AnyConnect / GlobalProtect 等企业 VPN",
     "ovpn": "账号、证书与企业内网接入",
-    "routesHint": "OpenConnect / OpenVPN 填写“内网段”后归入组网；留空时仍可作为普通 VPN 出口。"
+    "routesHint": "OpenConnect / OpenVPN 始终归入组网；“内网段”只决定强制路由的企业网段，留空时仍可作为普通 VPN 出口。"
   },
   "node": {
     "add": "添加",
@@ -1464,8 +1464,8 @@
     },
     "lanOnly": "仅局域网",
     "lanOnlyHint": "该组网节点没有公网出口，只承载内网网段，不作外网出口",
-    "manualAdd": "手动添加",
-    "manualImport": "手动导入",
+    "manualAdd": "添加代理节点",
+    "manualImport": "导入节点配置",
     "meshInfoAcceptRoutes": "接受子网路由",
     "meshInfoActiveExit": "生效出口",
     "meshInfoAria": "组网信息",
@@ -1480,10 +1480,8 @@
     "meshInfoRoutes": "路由",
     "meshInfoRuntime": "运行期",
     "meshInfoStale": "上次已知",
-    "meshNodesLabel": "组网节点",
-    "meshAddAccess": "添加接入",
-    "meshListSummary": "已配置 {{count}} 个接入；编辑与状态操作在下方节点卡片中完成",
-    "meshEmpty": "暂无组网接入，点上方「添加接入」开始配置",
+    "meshAddAccess": "添加组网接入",
+    "meshEmpty": "暂无组网接入，请从右上角「添加 → 组网接入」开始配置",
     "meshTsLogoutFail": "登出 Tailscale 失败",
     "meshTsLogoutOk": "已登出 Tailscale",
     "meshWarpDeregisterMsg": "将向 Cloudflare 注销此匿名设备并移除该节点，此操作无法撤销。若已绑定 WARP+ 许可，注销后需要重新绑定到新设备。",

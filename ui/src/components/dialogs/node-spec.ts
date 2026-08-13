@@ -122,6 +122,22 @@ export function protosInGroup(g: ProtoGroupId): NodeProto[] {
     .map(([v]) => v);
 }
 
+/**
+ * 节点表单在不同入口允许展示的协议组。
+ *
+ * - 普通「添加代理节点」不展示 VPN endpoint，避免与「添加组网接入」重复；
+ * - 从组网接入预选协议进入时，只允许在 OpenConnect / OpenVPN 之间切换；
+ * - 编辑存量节点仍展示全集，保证历史配置可编辑、也不改变既有改型能力。
+ */
+export function protoGroupsForNodeForm(
+  isEdit: boolean,
+  initialProto?: NodeProto,
+): ProtoGroupId[] {
+  if (isEdit) return [...PROTO_GROUP_ORDER];
+  if (initialProto) return [protoGroupOf(initialProto)];
+  return PROTO_GROUP_ORDER.filter((group) => group !== 'vpn');
+}
+
 /** 端口占位符（原型 ndRenderFields :3716：ss=8388 / socks=1080 / http=8080 / ssh=22 / 其余=443）。 */
 export function defaultPortPlaceholder(proto: NodeProto): string {
   return { shadowsocks: '8388', socks: '1080', http: '8080', ssh: '22' }[proto as string] ?? '443';

@@ -63,6 +63,26 @@ describe('groupServersBySubscription —— 空订阅的可达性', () => {
     expect(groups.find((g) => g.isManual)!.servers.map((s) => s.id)).toEqual(['a']);
     expect(groups.find((g) => g.id === 's1')!.servers).toEqual([]);
   });
+
+  it('OpenConnect/OpenVPN 始终归组网；meshRoutes 只决定路由能力、不决定 UI 分组', () => {
+    const groups = groupServersBySubscription([
+      server('oc', { protocol: 'openconnect' }),
+      server('ovpn', { protocol: 'openvpn-client', meshRoutes: ['10.10.0.0/16'] }),
+      server('proxy'),
+    ]);
+    expect(groups.find((g) => g.id === 'mesh')!.servers.map((s) => s.id)).toEqual(['oc', 'ovpn']);
+    expect(groups.find((g) => g.id === 'manual')!.servers.map((s) => s.id)).toEqual(['proxy']);
+  });
+
+  it('订阅归属优先：订阅下发的 endpoint 不会被抽到本地组网组', () => {
+    const groups = groupServersBySubscription(
+      [server('oc-sub', { protocol: 'openconnect', subscriptionId: 's1' })],
+      [sub('s1')],
+      true,
+    );
+    expect(groups.find((g) => g.id === 'mesh')!.servers).toEqual([]);
+    expect(groups.find((g) => g.id === 's1')!.servers.map((s) => s.id)).toEqual(['oc-sub']);
+  });
 });
 
 /**

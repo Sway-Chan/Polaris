@@ -39,7 +39,8 @@ export function landsInEndpoints(protocol: string | undefined): boolean {
  *
  * 判据仍是「配置期能否声明可达网段」，只是对 openconnect / openvpn-client 而言这件事由用户填没填
  * `meshRoutes` 决定：填了，生成侧就为它发 force-route 规则，它与一个填了 `allowedIPs` 的 WG 节点在
- * 路由上再无分别；没填，它只是个普通出口。分组、测速排除、出口兜底这些**看能力**的地方用本函数。
+ * 路由上再无分别；没填，它只是个普通出口。force-route、出口兜底等**看能力**的地方用本函数；
+ * 节点页的 UI 归组看 [`landsInEndpoints`]，两者不能再耦合。
  */
 export function isMeshNode(server: { protocol?: string; meshRoutes?: string[] }): boolean {
   const p = server.protocol?.toLowerCase();
