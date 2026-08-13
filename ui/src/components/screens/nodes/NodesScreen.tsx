@@ -155,7 +155,6 @@ export function NodesScreen() {
   const meshCount = groups.find((g) => g.isMesh)?.servers.length ?? 0;
   const subCount = servers.length - manualCount - meshCount;
   const statsText = t('nodes.stats', {
-    defaultValue: '共 {{total}} · 自建 {{manual}} · 组网 {{mesh}} · 订阅 {{sub}}',
     total: servers.length,
     manual: manualCount,
     mesh: meshCount,
@@ -283,11 +282,9 @@ export function NodesScreen() {
           action === 'confirm-restart'
             ? t('nodes.useConfirmRestartToast', {
                 node: server.name,
-                defaultValue: '再点一次切换到 {{node}} —— 该节点需重启内核，现有连接会断开',
               })
             : t('nodes.useConfirmToast', {
                 node: server.name,
-                defaultValue: '再点一次切换到 {{node}}',
               })
         );
       }
@@ -419,7 +416,7 @@ export function NodesScreen() {
   const runSpeedTest = useCallback(
     async (ids: string[], ctx: string) => {
       if (ids.length === 0) {
-        toast.info(t('nodes.noTestableNodes', '无可测节点'));
+        toast.info(t('nodes.noTestableNodes'));
         return;
       }
       setTesting(true);
@@ -505,17 +502,17 @@ export function NodesScreen() {
         url = await api.server.generateUrl(server);
       } catch (err) {
         console.error('[NodesScreen] generate share url failed:', err);
-        toast.error(t('nodes.copyLinkUnsupported', '该协议没有标准分享链接，无法复制'));
+        toast.error(t('nodes.copyLinkUnsupported'));
         return;
       }
       // 剪贴板失败与「协议无分享链接」是两回事：原先同一个 catch 兜住两者，把「链接生成好了但没写进剪贴板」
       // 谎报成「该协议不支持分享」——用户据此以为协议不支持，实际重试即可。批量版 copyLinksBatch 本就分段，此处对齐。
       try {
         await navigator.clipboard.writeText(url);
-        toast.success(t('nodes.copyLinkOk', '已复制分享链接'));
+        toast.success(t('nodes.copyLinkOk'));
       } catch (err) {
         console.error('[NodesScreen] copy link to clipboard failed:', err);
-        toast.error(t('nodes.copyLinksFailed', '复制到剪贴板失败'));
+        toast.error(t('nodes.copyLinksFailed'));
       }
     },
     [t]
@@ -534,13 +531,13 @@ export function NodesScreen() {
       if (slot) {
         toast.error(
           slot === 'warp'
-            ? t('nodes.cloneWarpSingleton', 'WARP 为单例：已存在 WARP 节点，无法克隆出第二个')
-            : t('nodes.cloneTsSingleton', 'Tailscale 为单例：同一设备只允许一个 Tailscale 节点，无法克隆')
+            ? t('nodes.cloneWarpSingleton')
+            : t('nodes.cloneTsSingleton')
         );
         return;
       }
       const { id, subscriptionId, providerName, ...rest } = server;
-      const cloneName = `${server.name} 副本`;
+      const cloneName = t('nodes.cloneName', { name: server.name });
       try {
         // 配置暂存闸门（与 NodeDialog 同形）。克隆 = 造一个新 `servers` 元素，无任何副作用 ⇒ 默认腿。
         // **删除**那几条腿不同：`server_delete` 会把 WARP 设备推进远端注销队列、清 TS state（W-3），
@@ -550,7 +547,7 @@ export function NodesScreen() {
           stage({
             id: `server:${entityId}`,
             kind: 'server',
-            label: `${t('node.addTitle', '添加节点')} ${cloneName}`,
+            label: `${t('node.addTitle')} ${cloneName}`,
             entityPath: ['servers', entityId],
             nextValue: { ...rest, id: entityId, name: cloneName },
           });
@@ -559,10 +556,10 @@ export function NodesScreen() {
         }
         // 原型 :4514 克隆成功即 notify('已克隆节点','ok')。副本落在**自建**分组（上方剥了 subscriptionId），
         // 当前若停在订阅 tab，新卡不在本 tab 可见 → 无 toast 时点了完全没反应，比原型更需要这条反馈。
-        toast.success(t('nodes.cloneSuccess', '已克隆到自建节点'));
+        toast.success(t('nodes.cloneSuccess'));
       } catch (err) {
         console.error('[NodesScreen] clone failed:', err);
-        toast.error(t('nodes.cloneFail', '克隆节点失败'));
+        toast.error(t('nodes.cloneFail'));
       }
     },
     [servers, t, stagingEnabled, stage]
@@ -584,16 +581,16 @@ export function NodesScreen() {
         'servers'
       );
       if (split.blocked.length > 0) {
-        toast.info(t('home.stagedOnlyBlocked', '该项还没保存到配置文件，此操作要保存后才能进行。点条上的「保存」后再试'));
+        toast.info(t('home.stagedOnlyBlocked'));
         return;
       }
       try {
         await api.server.tailscaleLogout(node.id);
         setTailscaleLoginState(node.id, false);
-        toast.success(t('nodes.meshTsLogoutOk', '已登出 Tailscale'));
+        toast.success(t('nodes.meshTsLogoutOk'));
       } catch (err) {
         console.error('[NodesScreen] tailscale logout failed:', err);
-        toast.error(t('nodes.meshTsLogoutFail', '登出 Tailscale 失败'));
+        toast.error(t('nodes.meshTsLogoutFail'));
       }
     },
     [setTailscaleLoginState, stagedOnly, stagedEntries, t]
@@ -627,14 +624,12 @@ export function NodesScreen() {
       openDialog({
         kind: 'confirm',
         payload: {
-          title: t('nodes.subDeleteTitle', '删除订阅'),
+          title: t('nodes.subDeleteTitle'),
           message: t('nodes.subDeleteConfirm', {
-            defaultValue:
-              '确定删除订阅 "{{name}}" 吗？其下 {{count}} 个节点将一并移除，此操作无法撤销。',
             name: sub.name,
             count,
           }),
-          confirmLabel: t('common.delete', '删除'),
+          confirmLabel: t('common.delete'),
           danger: true,
           onConfirm: () => {
             closeDialog(); // pop confirm
@@ -643,7 +638,6 @@ export function NodesScreen() {
               .then(() =>
                 toast.info(
                   t('nodes.subDeleteOk', {
-                    defaultValue: '已删除订阅，移除 {{count}} 个节点',
                     count,
                   }),
                 ),
@@ -652,7 +646,7 @@ export function NodesScreen() {
                 // 删失败时订阅 tab 原地不动，与「按钮没反应」不可区分 → 必须透出后端真实原因。
                 console.error('[NodesScreen] sub delete:', err);
                 toast.error(
-                  t('nodes.deleteFail', '删除失败'),
+                  t('nodes.deleteFail'),
                   err instanceof Error ? err.message : undefined,
                 );
               });
@@ -683,10 +677,10 @@ export function NodesScreen() {
         case 'copy-url':
           navigator.clipboard
             .writeText(sub.url)
-            .then(() => toast.success(t('nodes.subCopyUrlOk', '已复制订阅 URL')))
+            .then(() => toast.success(t('nodes.subCopyUrlOk')))
             .catch((err) => {
               console.error('[NodesScreen] copy sub url failed:', err);
-              toast.error(t('nodes.copyLinksFailed', '复制到剪贴板失败'));
+              toast.error(t('nodes.copyLinksFailed'));
             });
           return;
         case 'interval':
@@ -736,7 +730,7 @@ export function NodesScreen() {
         for (const entryId of split.revertEntryIds) revertStaged(entryId);
         if (split.backend.length === 0) {
           // 用户看到的结果与真删除逐字一致（卡片消失）——他删掉的就是他刚加的那个节点。
-          toast.info(t('nodes.deleteSuccess', '服务器已删除'));
+          toast.info(t('nodes.deleteSuccess'));
           return;
         }
         void api.server
@@ -748,10 +742,10 @@ export function NodesScreen() {
           )
           // 原型 :4140 node-del 成功即 notify('节点已删除')（中性 kind，非 ok）——删除是用户已预期的结果，
           // 报的是「确实删掉了」而非「恭喜」。
-          .then(() => toast.info(t('nodes.deleteSuccess', '服务器已删除')))
+          .then(() => toast.info(t('nodes.deleteSuccess')))
           .catch((err) => {
             console.error('[NodesScreen] delete:', err);
-            toast.error(t('nodes.deleteFail', '删除失败'));
+            toast.error(t('nodes.deleteFail'));
           });
       });
     },
@@ -778,7 +772,7 @@ export function NodesScreen() {
         payload: {
           title: opts.title,
           message: opts.message,
-          confirmLabel: t('common.confirm', '确定'),
+          confirmLabel: t('common.confirm'),
           danger: true,
           onConfirm: () => {
             closeDialog(); // pop confirm
@@ -809,7 +803,7 @@ export function NodesScreen() {
               })
               .catch((err) => {
                 console.error('[NodesScreen] warp remove failed:', err);
-                toast.error(t('nodes.deleteFail', '删除失败'));
+                toast.error(t('nodes.deleteFail'));
               });
           },
         },
@@ -829,22 +823,16 @@ export function NodesScreen() {
       onTsLogout: (node) => void tsLogout(node),
       onWarpReregister: (node) =>
         removeWarpNode(node, {
-          title: t('nodes.meshWarpReRegisterTitle', '重新注册 WARP'),
-          message: t(
-            'nodes.meshWarpReRegisterMsg',
-            '将先注销当前 WARP 设备（并移除该节点），再开始注册一台新的匿名设备。当前设备的 WARP+ 许可不会转移到新设备。',
-          ),
-          okToast: t('nodes.meshWarpReRegisterOk', '已注销旧设备，请继续注册'),
+          title: t('nodes.meshWarpReRegisterTitle'),
+          message: t('nodes.meshWarpReRegisterMsg'),
+          okToast: t('nodes.meshWarpReRegisterOk'),
           afterDelete: () => openDialog({ kind: 'warp', edit: false }),
         }),
       onWarpDeregister: (node) =>
         removeWarpNode(node, {
-          title: t('nodes.meshWarpDeregisterTitle', '注销 WARP 设备'),
-          message: t(
-            'nodes.meshWarpDeregisterMsg',
-            '将向 Cloudflare 注销此匿名设备并移除该节点，此操作无法撤销。若已绑定 WARP+ 许可，注销后需要重新绑定到新设备。',
-          ),
-          okToast: t('nodes.meshWarpDeregisterOk', '已注销 WARP 设备'),
+          title: t('nodes.meshWarpDeregisterTitle'),
+          message: t('nodes.meshWarpDeregisterMsg'),
+          okToast: t('nodes.meshWarpDeregisterOk'),
         }),
     });
   }, [openDialog, removeWarpNode, tsLogout, t]);
@@ -866,9 +854,7 @@ export function NodesScreen() {
         for (const entryId of split.revertEntryIds) revertStaged(entryId);
         if (split.backend.length === 0) {
           exitBatch();
-          toast.info(
-            t('nodes.batchDeleteOk', { count: ids.size, defaultValue: '已删除 {{count}} 个节点' })
-          );
+          toast.info(t('nodes.batchDeleteOk', { count: ids.size }));
           return;
         }
         try {
@@ -881,12 +867,10 @@ export function NodesScreen() {
           exitBatch();
           // 原型 :4137 batch-del 成功即 notify('已删除')（中性）。这里带上条数：批删同时退出批选模式、
           // 选中态一并清空，用户失去「刚才选了几个」的参照，报数才对得上账。
-          toast.info(
-            t('nodes.batchDeleteOk', { count: ids.size, defaultValue: '已删除 {{count}} 个节点' })
-          );
+          toast.info(t('nodes.batchDeleteOk', { count: ids.size }));
         } catch (err) {
           console.error('[NodesScreen] batch delete failed:', err);
-          toast.error(t('nodes.deleteFail', '删除失败'));
+          toast.error(t('nodes.deleteFail'));
         }
       })();
     });
@@ -903,19 +887,19 @@ export function NodesScreen() {
       .map((r) => r.value);
     const skipped = settled.length - urls.length;
     if (urls.length === 0) {
-      toast.error(t('nodes.copyLinkUnsupported', '该协议没有标准分享链接，无法复制'));
+      toast.error(t('nodes.copyLinkUnsupported'));
       return;
     }
     try {
       await navigator.clipboard.writeText(urls.join('\n'));
       toast.success(
         skipped > 0
-          ? t('nodes.copyLinksPartial', { count: urls.length, skipped, defaultValue: '已复制 {{count}} 条，{{skipped}} 条不支持分享链接已跳过' })
-          : t('nodes.copyLinksOk', { count: urls.length, defaultValue: '已复制 {{count}} 条分享链接' })
+          ? t('nodes.copyLinksPartial', { count: urls.length, skipped })
+          : t('nodes.copyLinksOk', { count: urls.length })
       );
     } catch (err) {
       console.error('[NodesScreen] batch copy links failed:', err);
-      toast.error(t('nodes.copyLinksFailed', '复制到剪贴板失败'));
+      toast.error(t('nodes.copyLinksFailed'));
     }
   }, [visibleServers, selectedIds, t]);
 
@@ -929,7 +913,7 @@ export function NodesScreen() {
       {/* phead */}
       <div className="phead">
         <div className="ph-title">
-          <h1>{t('sidebar.server', '节点')}</h1>
+          <h1>{t('sidebar.server')}</h1>
           <span className="nd-count">{statsText}</span>
         </div>
         <div className="acts">
@@ -942,7 +926,7 @@ export function NodesScreen() {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
               <path d="M13 2L4 14h6l-1 8 9-12h-6z" />
             </svg>
-            <span>{t('nodes.testAll', '全部测速')}</span>
+            <span>{t('nodes.testAll')}</span>
           </button>
           <div ref={addWrapRef} style={{ position: 'relative' }}>
             <button
@@ -956,7 +940,7 @@ export function NodesScreen() {
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
                 <path d="M12 5v14M5 12h14" />
               </svg>
-              <span>{t('nodes.add', '添加')}</span>
+              <span>{t('nodes.add')}</span>
               <svg viewBox="0 0 24 24" className="nd-chev" fill="none" stroke="currentColor" strokeWidth={1.9}>
                 <path d="M6 9l6 6 6-6" />
               </svg>
@@ -981,7 +965,7 @@ export function NodesScreen() {
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
                     <path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" />
                   </svg>
-                  <span>{t('nodes.manualAdd', '添加代理节点')}</span>
+                  <span>{t('nodes.manualAdd')}</span>
                 </button>
                 <button
                   type="button"
@@ -995,7 +979,7 @@ export function NodesScreen() {
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
                     <path d="M9 15l6-6M8 8a3 3 0 10-3 3M16 16a3 3 0 103 3" />
                   </svg>
-                  <span>{t('nodes.meshAddAccess', '添加组网接入')}</span>
+                  <span>{t('nodes.meshAddAccess')}</span>
                 </button>
                 <div className="mm-sep" role="separator" />
                 <button
@@ -1010,7 +994,7 @@ export function NodesScreen() {
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
                     <path d="M12 15V4M8 8l4-4 4 4M4 15v3a2 2 0 002 2h12a2 2 0 002-2v-3" />
                   </svg>
-                  <span>{t('nodes.manualImport', '导入节点配置')}</span>
+                  <span>{t('nodes.manualImport')}</span>
                 </button>
                 <button
                   type="button"
@@ -1024,7 +1008,7 @@ export function NodesScreen() {
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
                     <path d="M4 11a9 9 0 019 9M4 4a16 16 0 0116 16" />
                   </svg>
-                  <span>{t('nodes.addSubscription', '添加订阅')}</span>
+                  <span>{t('nodes.addSubscription')}</span>
                 </button>
               </div>
             )}
@@ -1037,9 +1021,9 @@ export function NodesScreen() {
         <div className="sub-tabs" data-tabgroup="">
           {groups.map((g) => {
             const label = g.isManual
-              ? t('nodes.tab.manual', '自建节点')
+              ? t('nodes.tab.manual')
               : g.isMesh
-                ? t('nodes.tab.mesh', '组网')
+                ? t('nodes.tab.mesh')
                 : g.name;
             return (
               <button
@@ -1077,12 +1061,12 @@ export function NodesScreen() {
 
       {/* 工具栏 */}
       <div className="node-toolbar" id="node-shared-tools">
-        <div className="seg2 nh-view" role="group" aria-label="View">
+        <div className="seg2 nh-view" role="group" aria-label={t('nodes.view.aria')}>
           <button
             type="button"
             className={cn(view === 'cards' && 'on')}
             onClick={() => setView('cards')}
-            aria-label={t('nodes.view.cards', '卡片视图')}
+            aria-label={t('nodes.view.cards')}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
               <rect x="3" y="3" width="8" height="8" rx="1.5" />
@@ -1095,7 +1079,7 @@ export function NodesScreen() {
             type="button"
             className={cn(view === 'list' && 'on')}
             onClick={() => setView('list')}
-            aria-label={t('nodes.view.list', '列表视图')}
+            aria-label={t('nodes.view.list')}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
               <path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01" />
@@ -1111,7 +1095,7 @@ export function NodesScreen() {
           <input
             id="node-search"
             type="search"
-            placeholder={t('nodes.search.placeholder', '搜索节点名称、地址…')}
+            placeholder={t('nodes.search.placeholder')}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -1120,11 +1104,11 @@ export function NodesScreen() {
         <Csel
           className="nt-proto"
           id="node-proto-filter"
-          ariaLabel={t('nodes.filter.protocol', '协议')}
+          ariaLabel={t('nodes.filter.protocol')}
           value={protoFilter}
           onChange={setProtoFilter}
           options={[
-            { value: '', label: t('nodes.filter.allProto', '全部协议') },
+            { value: '', label: t('nodes.filter.allProto') },
             ...protoOptions.map((p) => ({ value: p, label: p })),
           ]}
         />
@@ -1132,14 +1116,14 @@ export function NodesScreen() {
         <Csel
           className="nh-sort"
           id="node-sort"
-          ariaLabel={t('nodes.sortBy', '排序方式')}
+          ariaLabel={t('nodes.sortBy')}
           value={sortKey}
           onChange={(v) => setSortKey(v as SortKey)}
           options={[
-            { value: 'default', label: t('nodes.sort.default', '默认顺序') },
-            { value: 'name', label: t('nodes.sort.name', '名称') },
-            { value: 'lat', label: t('nodes.sort.latency', '延迟') },
-            { value: 'proto', label: t('nodes.sort.protocol', '协议') },
+            { value: 'default', label: t('nodes.sort.default') },
+            { value: 'name', label: t('nodes.sort.name') },
+            { value: 'lat', label: t('nodes.sort.latency') },
+            { value: 'proto', label: t('nodes.sort.protocol') },
           ]}
         />
 
@@ -1150,12 +1134,12 @@ export function NodesScreen() {
           className="btn ghost sm"
           onClick={testVisible}
           disabled={testing}
-          data-tip={t('nodes.testVisibleHint', '测速当前筛选后可见的节点')}
+          data-tip={t('nodes.testVisibleHint')}
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
             <path d="M13 2L4 14h6l-1 8 9-12h-6z" />
           </svg>
-          <span>{t('nodes.testVisible', '测速')}</span>
+          <span>{t('nodes.testVisible')}</span>
         </button>
 
         {/* 多选。原型 `.nt-hide-sub` 在订阅 tab 整颗隐藏，**本仓不再隐藏**（理由见上方 syncNodeToolbar
@@ -1171,7 +1155,7 @@ export function NodesScreen() {
             <path d="M9 11l3 3L22 4" />
             <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" />
           </svg>
-          <span>{t('nodes.batch', '多选')}</span>
+          <span>{t('nodes.batch')}</span>
         </button>
       </div>
 
@@ -1186,7 +1170,7 @@ export function NodesScreen() {
             aria-checked={selectedIds.size === visibleServers.length && visibleServers.length > 0}
             onClick={selectAll}
             style={{ position: 'static' }}
-            aria-label={t('nodes.selectAll', '全选')}
+            aria-label={t('nodes.selectAll')}
           >
             {selectedIds.size === visibleServers.length && visibleServers.length > 0 && (
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4}>
@@ -1195,9 +1179,9 @@ export function NodesScreen() {
             )}
           </button>
           <b>
-            {t('nodes.selectedPrefix', '已选 ')}
+            {t('nodes.selectedPrefix')}
             <span className="mono">{selectedIds.size}</span>
-            {t('nodes.selectedSuffix', ' 个')}
+            {t('nodes.selectedSuffix')}
           </b>
           <div className="sp" />
           <button
@@ -1207,7 +1191,7 @@ export function NodesScreen() {
             onClick={testSelected}
             disabled={testing || selectedIds.size === 0}
           >
-            {t('nodes.testGroup', '测速')}
+            {t('nodes.testGroup')}
           </button>
           {/*
             「移动到分组」恒禁用 —— **诚实置灰，不是待办**。根因不是"后端命令还没写"，而是
@@ -1227,10 +1211,9 @@ export function NodesScreen() {
               disabled={!canMoveToGroup()}
               data-tip={t(
                 'nodes.batchMoveUnavailable',
-                'Polaris 的分组由订阅归属与协议派生，没有可自由分配的分组；把节点写进订阅分组会在下次订阅刷新时被当作已下架删除，故不提供此操作',
               )}
             >
-              {t('nodes.batchMove', '移动到分组')}
+              {t('nodes.batchMove')}
             </button>
           )}
           <button
@@ -1239,7 +1222,7 @@ export function NodesScreen() {
             onClick={copyLinksBatch}
             disabled={selectedIds.size === 0}
           >
-            {t('nodes.batchCopyLinks', '复制链接')}
+            {t('nodes.batchCopyLinks')}
           </button>
           {/* 订阅 tab 下不渲染：删掉的订阅节点会在下次订阅刷新的 reconcile 里原样拉回来
               ⇒ 操作无净效果、只剩误删风险（陈先生 2026-07-29 裁定，与单卡删除入口同一处置）。 */}
@@ -1252,12 +1235,12 @@ export function NodesScreen() {
               disabled={selectedIds.size === 0}
             >
               {confirmArmed === BATCH_DEL_KEY
-                ? t('nodes.batchDeleteConfirmAgain', '删除选中节点？')
-                : t('common.delete', '删除')}
+                ? t('nodes.batchDeleteConfirmAgain')
+                : t('common.delete')}
             </button>
           )}
           <button type="button" className="btn ghost sm" onClick={exitBatch}>
-            {t('nodes.batchExit', '退出')}
+            {t('nodes.batchExit')}
           </button>
         </div>
       )}
@@ -1270,12 +1253,12 @@ export function NodesScreen() {
                 见 server-grouping 的 includeEmptyGroups 注释，正是为了留住刷新/删除入口）。 */}
             <p>
               {search || protoFilter
-                ? t('nodes.emptyFiltered', '无匹配节点')
+                ? t('nodes.emptyFiltered')
                 : activeSub
-                  ? t('nodes.emptySub', '该订阅当前没有节点，点上方「刷新」重新拉取')
+                  ? t('nodes.emptySub')
                   : activeGroup?.isMesh
-                    ? t('nodes.meshEmpty', '暂无组网接入，请从右上角「添加 → 组网接入」开始配置')
-                  : t('nodes.empty', '暂无节点，点右上「添加」')}
+                    ? t('nodes.meshEmpty')
+                  : t('nodes.empty')}
             </p>
           </div>
         ) : (

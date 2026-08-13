@@ -66,45 +66,45 @@ function mainSpec(
   detourOpts: readonly SelectOption[]
 ): FieldSpec[] {
   return [
-    { t: 'text', k: 'hostname', label: 'ts.hostname', zh: '主机名', ph: 'sway-macbook' },
-    { t: 'select', k: 'exitNode', label: 'ts.exitNode', zh: '出口节点', options: exitOpts },
-    { t: 'text', k: 'exitNodeCustom', label: 'ts.exitNodeCustom', zh: '自定义出口', ph: '100.x.y.z / hostname', mono: true, when: (v) => v.exitNode === EXIT_CUSTOM },
+    { t: 'text', k: 'hostname', label: 'ts.hostname', ph: 'sway-macbook' },
+    { t: 'select', k: 'exitNode', label: 'ts.exitNode', options: exitOpts },
+    { t: 'text', k: 'exitNodeCustom', label: 'ts.exitNodeCustom', ph: '100.x.y.z / hostname', mono: true, when: (v) => v.exitNode === EXIT_CUSTOM },
     // 接入模式（上游 `AccessModeField`，同绑 reverseMesh）：上游 归常显的「接入与出口」段，故**不入高级折叠**——
     // 它决定 `meshUsesSystemInterface`，进而决定该节点是否参与测速（domain/endpoint-routes.ts:320）。
     // 藏起来 = 用户卡在「为什么这个节点测不出速」。降级由后端兜底（builder/outbounds.rs:145 在非 TUN /
     // Windows 上把 system_interface 打回 false），故此处只需如实告知，不必复刻 上游的置灰选择器。
-    { t: 'switch', k: 'reverseMesh', label: 'ts.reverseMesh', zh: 'System 接入模式（内核接口）', hint: 'ts.reverseMeshHint', hintZh: '建真实内核接口：可被 tailnet 对端反向访问、可替子网转发。需 TUN 模式，Windows 不支持，不满足时自动降级为 gVisor 用户态。开启后该节点不参与测速。' },
-    { t: 'switch', k: 'alwaysRouteSubnets', label: 'ts.alwaysRoute', zh: '始终路由子网', hint: 'ts.alwaysRouteHint', hintZh: '即便本节点非当前出口，也保持对端广告的子网可达。' },
-    { t: 'switch', k: 'acceptRoutes', label: 'ts.acceptRoutes', zh: '接受子网路由', hint: 'ts.acceptRoutesHint', hintZh: '接受 tailnet 对端广告的子网路由。填写下方「经此节点路由的网段」时自动开启。' },
+    { t: 'switch', k: 'reverseMesh', label: 'ts.reverseMesh', hint: 'ts.reverseMeshHint' },
+    { t: 'switch', k: 'alwaysRouteSubnets', label: 'ts.alwaysRoute', hint: 'ts.alwaysRouteHint' },
+    { t: 'switch', k: 'acceptRoutes', label: 'ts.acceptRoutes', hint: 'ts.acceptRoutesHint' },
     // routes ≠ advertiseRoutes（两个相反方向，上游 同样分列两处、绝不合并）：
     //   routes         = 把这些网段的流量**送进**此节点（force-route 源，等价 WG allowedIPs）；
     //   advertiseRoutes= 本机作子网路由器**对外宣告**我能到达这些段。
-    { t: 'text', k: 'routes', label: 'ts.routes', zh: '经此节点路由的网段', ph: '192.168.50.0/24, 10.0.0.0/24', mono: true, opt: true },
-    { t: 'switch', k: 'exitNodeAllowLanAccess', label: 'ts.allowLan', zh: '出口时允许局域网访问', hint: 'ts.allowLanHint', hintZh: '作为出口节点时仍可访问本地局域网。' },
-    { t: 'text', k: 'advertiseRoutes', label: 'ts.advertiseRoutes', zh: '对外广告的子网（本机作子网路由器）', ph: '192.168.1.0/24, 10.0.0.0/8', mono: true, opt: true },
+    { t: 'text', k: 'routes', label: 'ts.routes', ph: '192.168.50.0/24, 10.0.0.0/24', mono: true, opt: true },
+    { t: 'switch', k: 'exitNodeAllowLanAccess', label: 'ts.allowLan', hint: 'ts.allowLanHint' },
+    { t: 'text', k: 'advertiseRoutes', label: 'ts.advertiseRoutes', ph: '192.168.1.0/24, 10.0.0.0/8', mono: true, opt: true },
     // 前置代理 —— **对 上游的有意偏离**（它的 Tailscale 表单没有这一项）。接线与实测见
     // `detour-options.ts` 文件头 / `crates/config-engine/src/singbox/endpoint.rs`。
     //
     // **提示文案与 WG/WARP 那两处刻意不同**：Tailscale 经前置代理的是**控制面 / DERP 的 TCP 拨号**
     // （2026-07-31 loopback A/B 实测：有 detour ⇒ 控制面直连 0 次、SOCKS5 `CONNECT` 32 次），
     // 只需 TCP，没有 WG 那条「必须支持 UDP 转发」的硬约束。抄同一句话会误导用户去换代理。
-    { t: 'select', k: 'detour', label: 'ts.detour', zh: '前置代理 / detour', options: detourOpts, hint: 'ts.detourHint', hintZh: '先经该节点再拨号。Tailscale 走的是控制面 / DERP 的 TCP 连接，前置代理支持 TCP 即可（无需 UDP 转发）。前置代理不可用时本节点静默不通——不会回落直连。' },
+    { t: 'select', k: 'detour', label: 'ts.detour', options: detourOpts, hint: 'ts.detourHint' },
   ];
 }
 const ADV_SPEC: FieldSpec[] = [
-  { t: 'text', k: 'controlUrl', label: 'ts.controlUrl', zh: '控制服务器 URL', ph: 'https://controlplane.tailscale.com', mono: true, opt: true },
-  { t: 'text', k: 'advertiseTags', label: 'ts.aclTags', zh: 'ACL 标签', ph: 'tag:server, tag:exit', mono: true, opt: true },
-  { t: 'switch', k: 'ephemeral', label: 'ts.ephemeral', zh: '临时节点', hint: 'ts.ephemeralHint', hintZh: '离线后自动从 tailnet 移除。' },
+  { t: 'text', k: 'controlUrl', label: 'ts.controlUrl', ph: 'https://controlplane.tailscale.com', mono: true, opt: true },
+  { t: 'text', k: 'advertiseTags', label: 'ts.aclTags', ph: 'tag:server, tag:exit', mono: true, opt: true },
+  { t: 'switch', k: 'ephemeral', label: 'ts.ephemeral', hint: 'ts.ephemeralHint' },
   // 低频专家项，跟 上游 一样归「高级」。u16：越界值会让整份 UserConfig 反序列化失败（同 server_config.rs:208
   // 记的那类整机不可用），故提交前限 1..=65535，越界按未填处理。
-  { t: 'number', k: 'relayServerPort', label: 'ts.relayPort', zh: 'Peer relay 端口', ph: '0', mono: true, opt: true },
-  { t: 'switch', k: 'sshServer', label: 'ts.ssh', zh: 'Tailscale SSH', hint: 'ts.sshHint', hintZh: '允许经 tailnet SSH 到本设备（受 ACL 控制）。' },
+  { t: 'number', k: 'relayServerPort', label: 'ts.relayPort', ph: '0', mono: true, opt: true },
+  { t: 'switch', k: 'sshServer', label: 'ts.ssh', hint: 'ts.sshHint' },
   // P4b 按名解析：与 acceptDefaultResolvers 强联动。后端 `accept_default_resolvers` **只在 resolveByName
   // 为真的分支里被读**（builder/dns.rs:1069，选节点的谓词就是 resolve_by_name==Some(true)）—— 故此前
   // 「接受 DNS（MagicDNS）」那个常显开关是**恒无效**的：resolveByName 无处可设 ⇒ dns-tailscale server 永不发射。
   // 两者同归高级并加 `when` 门控，既复刻 上游 分区，也让「开了没反应」这件事结构上不再可能。
-  { t: 'switch', k: 'resolveByName', label: 'ts.resolveByName', zh: '按名解析 tailnet（MagicDNS）', hint: 'ts.resolveByNameHint', hintZh: '让 tailnet 短名 / MagicDNS 名经此节点解析；与常规 DNS 并存，仅 tailnet 名走它。仅当此节点为选中出口时生效。' },
-  { t: 'switch', k: 'acceptDefaultResolvers', label: 'ts.acceptDefaultResolvers', zh: '接受 tailnet 默认解析器', hint: 'ts.acceptDefaultResolversHint', hintZh: '额外接受 tailnet 下发的默认 DNS 解析器（split-DNS）。可选。', when: (v) => v.resolveByName === true },
+  { t: 'switch', k: 'resolveByName', label: 'ts.resolveByName', hint: 'ts.resolveByNameHint' },
+  { t: 'switch', k: 'acceptDefaultResolvers', label: 'ts.acceptDefaultResolvers', hint: 'ts.acceptDefaultResolversHint', when: (v) => v.resolveByName === true },
 ];
 
 function TsSettingsForm({ node }: { node?: ServerConfig }) {
@@ -153,17 +153,17 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
   // 判据取**已保存值**而非草稿值（禁用豁免须在整个弹窗生命期内稳定，见 exitNodeOptions 头注）。
   const savedExit = node?.tailscaleSettings?.exitNode ?? '';
   const exitOpts = exitNodeOptions(peers, savedExit, {
-    none: t('ts.exitNone', '无（不使用出口）'),
-    custom: t('common.customEllipsis', '自定义…'),
-    inUse: t('ts.exitInUse', '使用中'),
-    offline: t('ts.exitOffline', '离线'),
-    notAdvertised: t('ts.exitNotAdvertised', '未广告出口'),
+    none: t('ts.exitNone'),
+    custom: t('common.customEllipsis'),
+    inUse: t('ts.exitInUse'),
+    offline: t('ts.exitOffline'),
+    notAdvertised: t('ts.exitNotAdvertised'),
   });
   // 前置代理候选：排除自身与 endpoint 类节点（判据对齐生成侧，见 `detour-options.ts`）。
   const detourOpts = endpointDetourOptions(
     effectiveServers,
     node?.id,
-    t('node.detourDirect', '直连（不串联）')
+    t('node.detourDirect')
   );
   const spec = mainSpec(exitOpts, detourOpts);
   const setField = (k: string, v: FormValue) => {
@@ -183,9 +183,9 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
     open({
       kind: 'confirm',
       payload: {
-        title: t('ts.discardTitle', '放弃更改？'),
-        message: t('ts.discardMsg', '已填写的内容将不会保存。'),
-        confirmLabel: t('ts.discard', '放弃'),
+        title: t('ts.discardTitle'),
+        message: t('ts.discardMsg'),
+        confirmLabel: t('ts.discard'),
         danger: true,
         onConfirm: () => {
           close();
@@ -203,7 +203,7 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
     // 非法 CIDR 必须前端拦：后端 sanitize 对非法项是**静默丢弃**，不拦就成了「界面收下了、盘上没有」。
     const badCidr = invalidTsCidrs(draft);
     if (badCidr.length) {
-      toast.error(t('ts.errCidr', '网段格式非法，请检查：{{list}}', { list: badCidr.join(', ') }));
+      toast.error(t('ts.errCidr', { list: badCidr.join(', ') }));
       return;
     }
     // control_url 必须前端拦，且必须拦在**保存**这一刻：IP 形式会让 sing-box 在初始化 tailscale
@@ -212,7 +212,7 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
     // 拦在这里，光标还在这个输入框旁边，改一下就好了。
     const badControl = invalidControlUrl(draft);
     if (badControl) {
-      toast.error(t('ts.errControlUrl', '控制服务器 URL 无效'), t(INVALID_NODE_REASON_KEY[badControl]));
+      toast.error(t('ts.errControlUrl'), t(INVALID_NODE_REASON_KEY[badControl]));
       return;
     }
     setBusy(true);
@@ -226,7 +226,7 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
         stage({
           id: `server:${node.id}`,
           kind: 'server',
-          label: `${t('ts.settingsTitle', 'Tailscale 设置')} ${node.name}`,
+          label: `${t('ts.settingsTitle')} ${node.name}`,
           entityPath: ['servers', node.id],
           nextValue: next,
         });
@@ -237,7 +237,7 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
       void loadConfig(true);
       close();
     } catch (e) {
-      toast.error(t('common.saveFailed', '保存失败'), e instanceof Error ? e.message : String(e));
+      toast.error(t('common.saveFailed'), e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -257,7 +257,7 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
       // 与 NodesScreen:687 的同一条闸门同一形态：这是「还不能做」的提示而非错误，走 info 单参
       // （文案自述完整，不套 title）。
       toast.info(
-        t('home.stagedOnlyBlocked', '该项还没保存到配置文件，此操作要保存后才能进行。点条上的「保存」后再试')
+        t('home.stagedOnlyBlocked')
       );
       return;
     }
@@ -268,7 +268,7 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
       close();
     } catch (e) {
       // 登出不是保存 —— 标题取 NodesScreen:696 同一操作已在用的那个键，别套 `common.saveFailed`。
-      toast.error(t('nodes.meshTsLogoutFail', '登出 Tailscale 失败'), e instanceof Error ? e.message : String(e));
+      toast.error(t('nodes.meshTsLogoutFail'), e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -277,7 +277,7 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
   return (
     <Modal
       titleId="ts-set-title"
-      title={t('ts.settingsTitle', 'Tailscale 设置')}
+      title={t('ts.settingsTitle')}
       onClose={requestClose}
       icon={<TsSetIcon />}
       className="entry-form-dlg"
@@ -290,17 +290,17 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
             disabled={busy || !node}
             style={{ marginRight: 'auto', color: 'hsl(var(--err))', borderColor: 'hsl(var(--err)/0.3)' }}
           >
-            {t('ts.logout', '退出登录')}
+            {t('ts.logout')}
           </button>
           {/* 提交中**不锁**「取消」：原型 `:2545` 的 ghost 钮无 disabled，且本仓此前四个弹窗锁、
               两个不锁（NodeDialog/SubDialog）—— 不是与原型的差，是实现自己两套。统一为不锁：
               提交卡住（IPC 无应答）时用户必须还能退出，否则弹窗成了死窗。 */}
           <button type="button" className="btn ghost" onClick={requestClose}>
-            {t('common.cancel', '取消')}
+            {t('common.cancel')}
           </button>
           <button type="button" className="btn flow" onClick={() => void handleSave()} disabled={busy || !node}>
             {busy && <span className="spinner spin-inline" style={{ marginRight: 6 }} />}
-            {t('common.save', '保存')}
+            {t('common.save')}
           </button>
         </>
       }
@@ -311,7 +311,7 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
             <circle cx="12" cy="12" r="9" />
             <path d="M12 8v5M12 16h.01" />
           </svg>
-          <span>{t('ts.noNode', '尚无 Tailscale 节点，请先登录 Tailscale。')}</span>
+          <span>{t('ts.noNode')}</span>
         </div>
       )}
 
@@ -321,11 +321,11 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
 
       {connected === false && (
         <div className="card-sub" style={{ marginTop: -2 }}>
-          {t('ts.exitEmptyHint', '未连接或无可用出口节点，可选「自定义…」手动填写。')}
+          {t('ts.exitEmptyHint')}
         </div>
       )}
 
-      <Fold title={t('common.advanced', '高级')}>
+      <Fold title={t('common.advanced')}>
         {visibleAdv.map((f) => (
           <FieldRenderer key={f.k} spec={f} value={draft[f.k]} onChange={(v) => setField(f.k, v)} />
         ))}

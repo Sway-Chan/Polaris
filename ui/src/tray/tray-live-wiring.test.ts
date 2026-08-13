@@ -32,6 +32,7 @@ function code(src: string): string {
 
 const MENU_RAW = read('./TrayMenu.tsx');
 const LABELS_RAW = read('./labels.ts');
+const OVERLAY_RAW = read('./tray-overlay.css');
 /** 语言的**活性状态**自 2026-07-31 起住在共享的 aux i18n 里（浮层与更新弹窗同一份），故一并扫。 */
 const AUX_RAW = read('../i18n/auxiliary.ts');
 const MENU = code(MENU_RAW);
@@ -42,6 +43,7 @@ describe('守卫自检：扫到的确实是源码（防读空文件恒绿）', (
   it('三个源文件非空且是托盘/aux 的文件', () => {
     expect(MENU_RAW.length).toBeGreaterThan(1000);
     expect(LABELS_RAW.length).toBeGreaterThan(200);
+    expect(OVERLAY_RAW.length).toBeGreaterThan(500);
     expect(AUX_RAW.length).toBeGreaterThan(200);
     expect(MENU).toContain('export default function TrayMenu');
     // 形态无关（`export function t(` / `export const t =` 都算）：断的是「浮层有取文案的出口」。
@@ -53,6 +55,32 @@ describe('守卫自检：扫到的确实是源码（防读空文件恒绿）', (
     expect(MENU.length).toBeGreaterThan(MENU_RAW.length / 3);
     expect(LABELS.length).toBeGreaterThan(LABELS_RAW.length / 3);
     expect(MENU).not.toContain('原型 `.tray-menu` L2905-2963 移植');
+  });
+});
+
+describe('状态卡超长出口 IP：默认截断，悬停或聚焦时才滚动', () => {
+  it('溢出由真实布局量测，且没有 IP 时长节点名仍保持静态', () => {
+    expect(MENU).toMatch(/el\.scrollWidth\s*-\s*el\.clientWidth/);
+    expect(MENU).toMatch(/const overflowing = !!ip && distance > 1/);
+    expect(MENU, 'RTL 语言的滚动方向必须与 LTR 相反').toMatch(
+      /getComputedStyle\(el\)\.direction === 'rtl'/,
+    );
+    expect(MENU).toContain("className={`tray-status-detail${statusDetailOverflowing ? ' is-overflowing' : ''}`}");
+    expect(MENU).toContain('aria-label={statusDetail}');
+    expect(MENU, '不得绕过全局 tooltip 门重新加入原生 title').not.toContain(
+      'title={statusDetailOverflowing',
+    );
+  });
+
+  it('动画只挂在 overflow 类的 hover/focus，且尊重 reduced-motion', () => {
+    expect(OVERLAY_RAW).toMatch(
+      /\.tray-status-detail\.is-overflowing:hover\s+\.tray-status-detail-track/,
+    );
+    expect(OVERLAY_RAW).toMatch(
+      /\.tray-status-detail\.is-overflowing:focus-visible\s+\.tray-status-detail-track/,
+    );
+    expect(OVERLAY_RAW).toContain('@keyframes tray-status-detail-scroll');
+    expect(OVERLAY_RAW).toContain('@media (prefers-reduced-motion: reduce)');
   });
 });
 

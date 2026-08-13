@@ -76,6 +76,34 @@ body {
   margin: 4px 6px;
 }
 
+/* 状态副标题：正常态维持基线 ellipsis；只有 TrayMenu 实测 scrollWidth 超出且存在出口 IP 时才加
+ * `.is-overflowing`。悬停/键盘聚焦后在两端各停片刻，再按真实溢出距离往返，短 IPv4 不会无故晃动。
+ * 完整文本通过 aria-label 暴露；reduced-motion 用户不依赖动画才能获得可访问名称。 */
+.tray-menu .tray-status-detail-track {
+  display: inline-block;
+  width: max-content;
+}
+.tray-menu .tray-status-detail.is-overflowing:hover,
+.tray-menu .tray-status-detail.is-overflowing:focus-visible {
+  text-overflow: clip;
+  outline: none;
+}
+.tray-menu .tray-status-detail.is-overflowing:hover .tray-status-detail-track,
+.tray-menu .tray-status-detail.is-overflowing:focus-visible .tray-status-detail-track {
+  animation: tray-status-detail-scroll var(--tray-status-scroll-duration) linear infinite alternate;
+  will-change: transform;
+}
+@keyframes tray-status-detail-scroll {
+  0%, 15% { transform: translateX(0); }
+  85%, 100% { transform: translateX(var(--tray-status-scroll-distance)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tray-menu .tray-status-detail.is-overflowing:hover .tray-status-detail-track,
+  .tray-menu .tray-status-detail.is-overflowing:focus-visible .tray-status-detail-track {
+    animation: none;
+  }
+}
+
 /* 菜单容器（role=menu, tabindex=-1）作鼠标弹出/切视图时的焦点落点（TrayMenu focusMenu，defect#2）：
  * 它是**非交互**容器，去掉它自身的焦点环——鼠标打开时不再有任何按钮/容器显示 :focus-visible 框。
  * 各 `.tray-i` 按钮的 `:focus-visible` 环（components.css，键盘方向键导航的 a11y）保留不动：只在键盘

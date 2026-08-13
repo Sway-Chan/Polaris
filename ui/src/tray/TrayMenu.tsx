@@ -111,6 +111,8 @@ export default function TrayMenu() {
   // 不做常驻轮询：浮层是「弹出才可见、几秒就收起」的窗，常驻查询纯烧 exec（理由见 use-system-proxy-live 头注）。
   const [systemProxyLive, setSystemProxyLive] = useState<SystemProxyLive>('unknown');
   const [ip, setIp] = useState('');
+  const statusDetailRef = useRef<HTMLDivElement>(null);
+  const [statusDetailOverflowing, setStatusDetailOverflowing] = useState(false);
   const [view, setView] = useState<'main' | 'nodes'>('main');
   // 「全部节点」二级视图里当前展开的分组（多组可同时展开，非手风琴互斥）。默认全折叠 ——
   // 浮层窗高按内容自适应，几十上百个节点平铺时整窗会拉成一条贴不下屏的长条；折叠后一屏就是分组目录。
@@ -575,6 +577,33 @@ export default function TrayMenu() {
     : blockSelected
       ? t('tray.blocked')
       : selected?.name ?? t('tray.noNode');
+  const statusDetail = ip ? `${nodeName} · ${ip}` : nodeName;
+
+  // 状态副标题保留默认 ellipsis；仅「确实显示 IP 且确实溢出」时开放悬停跑马灯。
+  // 距离从真实 scrollWidth 量，不按 IPv4/IPv6 字符数猜：节点名、字体与 locale 都会改变最终宽度。
+  useLayoutEffect(() => {
+    const el = statusDetailRef.current;
+    if (!el) return;
+
+    const measure = () => {
+      const distance = Math.max(0, el.scrollWidth - el.clientWidth);
+      const overflowing = !!ip && distance > 1;
+      const direction = getComputedStyle(el).direction === 'rtl' ? 1 : -1;
+      el.style.setProperty('--tray-status-scroll-distance', `${direction * distance}px`);
+      el.style.setProperty(
+        '--tray-status-scroll-duration',
+        `${Math.max(5, 2 + distance / 28).toFixed(2)}s`,
+      );
+      setStatusDetailOverflowing((current) =>
+        current === overflowing ? current : overflowing,
+      );
+    };
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ip, statusDetail]);
   const currentMode = config?.proxyMode ?? 'smart';
   /** 与首页 blockDisabledReason 同判据：直连模式下阻断不生效 ⇒ 托盘该项也禁用。
    *  文案比首页短：浮层宽 268px，行内提示与「阻断」标签同行，长句会挤掉标签。 */
@@ -648,7 +677,14 @@ export default function TrayMenu() {
           </span>
           <div className="ts-tx">
             <b>{statusLabel}</b>
-            <div>{ip ? `${nodeName} · ${ip}` : nodeName}</div>
+            <div
+              ref={statusDetailRef}
+              className={`tray-status-detail${statusDetailOverflowing ? ' is-overflowing' : ''}`}
+              aria-label={statusDetail}
+              tabIndex={statusDetailOverflowing ? 0 : undefined}
+            >
+              <span className="tray-status-detail-track">{statusDetail}</span>
+            </div>
           </div>
           <span className={`dot ${TRAY_TONE_DOT_CLASS[tone]}`} />
         </div>

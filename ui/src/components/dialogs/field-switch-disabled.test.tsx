@@ -172,7 +172,9 @@ describe('FieldSpec 表里的 reverseMesh 项：可见但禁用（源码结构�
       expect(e, `${name} 的 reverseMesh 禁用了却没说为什么`).toMatch(
         /disabledHint:\s*'wg\.reverseMeshWarp'/
       );
-      expect(e, `${name} 缺 zh 缺省`).toMatch(/disabledHintZh:\s*'/);
+      expect(e, `${name} 不应保留 locale 之外的中文第二真值`).not.toMatch(
+        /disabledHintZh:\s*'/,
+      );
     }
   });
 

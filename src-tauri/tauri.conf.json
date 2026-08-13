@@ -14,9 +14,9 @@
       {
         "label": "main",
         "title": "Polaris",
-        "width": 925,
+        "width": 980,
         "height": 740,
-        "minWidth": 925,
+        "minWidth": 980,
         "minHeight": 740,
         "decorations": false,
         "transparent": false,

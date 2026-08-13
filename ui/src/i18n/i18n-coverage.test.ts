@@ -269,18 +269,12 @@ const BARE_CJK_DEBT: Record<string, number> = {
   'src/components/dialogs/node-spec.ts': 1,
   // 规则域的枚举显示名（条件类型/动作/逻辑词）。
   'src/domain/rules.ts': 33,
-  // Tailscale 设置弹窗的内联提示（**另有 agent 在改此文件**，动它前先对齐）。
-  'src/components/dialogs/TsSettingsDialog.tsx': 0,
   // 暂存层的字段中文名（`FIELD_LABELS` 之类），用于「待应用」条目描述。
   'src/lib/staged-config.ts': 16,
   // 悬浮卡里的规则摘要文案。
   'src/components/hover-cards/RuleHoverCard.tsx': 13,
-  // WireGuard 弹窗的字段名与校验提示。
-  'src/components/dialogs/WgDialog.tsx': 0,
   // 应用分流页的分组/状态短语。
   'src/components/screens/apppolicy/AppPolicyScreen.tsx': 8,
-  // WARP 弹窗的字段名与说明。
-  'src/components/dialogs/WarpDialog.tsx': 2,
   // 备份导入的类别名（`CATEGORY_LABELS`）。
   'src/components/dialogs/BackupImportDialog.tsx': 6,
   // 地区规则卡的说明文案。
@@ -301,11 +295,9 @@ const BARE_CJK_DEBT: Record<string, number> = {
   // 显示设置里的语言名（自称名，按惯例不翻译，但仍是裸字面量）。
   'src/components/screens/settings/SettingsDisplay.tsx': 3,
   'src/components/dialogs/RuleDialog.tsx': 0,
-  'src/components/dialogs/SubDialog.tsx': 2,
   'src/components/screens/connections/ConnectionsScreen.tsx': 2,
   'src/ipc/ipc-client.ts': 2,
   'src/components/screens/nodes/NodeCard.tsx': 1,
-  'src/components/screens/nodes/NodesScreen.tsx': 1,
   'src/components/screens/settings/SettingsPage.tsx': 1,
   'src/components/screens/settings/useConfig.ts': 1,
   'src/domain/rule-resource-catalog.ts': 1,

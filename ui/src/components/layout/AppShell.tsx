@@ -1,5 +1,5 @@
 /**
- * AppShell —— 925×740 窗口容器 + flex(shell) 布局（原型 .win / .shell L104-236）。
+ * AppShell —— 980×740 窗口容器 + flex(shell) 布局（原型 .win / .shell L104-236）。
  *
  * 原型结构：
  *   .win（925×740，圆角，overflow:hidden，border，shadow）
@@ -182,7 +182,7 @@ export default function AppShell({ children }: AppShellProps) {
   return (
     <div className="stage">
       <PolarisStarSprite />
-      {/* .win：原型 925×740 卡片（真实窗口锁 925×740 → 卡片填满窗口，无 stage 露边）。样式全走 prototype.css。 */}
+      {/* .win：原型 925×740 卡片；真实窗口锁 980×740，覆盖层让卡片填满窗口、无 stage 露边。 */}
       <div className="win">
         {os !== 'mac' && <WinCtl />}
 

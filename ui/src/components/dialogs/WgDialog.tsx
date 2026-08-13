@@ -59,21 +59,21 @@ export function wgSpec(
   detourOpts: readonly SelectOption[]
 ): FieldSpec[] {
   return [
-    { t: 'text', k: 'address', label: 'wg.address', zh: '对端地址', ph: '203.0.113.7', mono: true },
-    { t: 'number', k: 'port', label: 'wg.port', zh: '端口', ph: '51820', mono: true },
-    { t: 'text', k: 'privateKey', label: 'wg.priv', zh: '本机私钥 PrivateKey', ph: 'wOE... =', mono: true, secret: true },
-    { t: 'text', k: 'localAddress', label: 'wg.local', zh: '接口地址 Address', ph: '10.0.0.2/32, fd00::2/128', mono: true },
-    { t: 'text', k: 'peerPublicKey', label: 'wg.pub', zh: '对端公钥 PublicKey', ph: 'HIg... =', mono: true },
-    { t: 'text', k: 'preSharedKey', label: 'wg.psk', zh: '预共享密钥', mono: true, opt: true, secret: true },
-    { t: 'text', k: 'allowedIPs', label: 'wg.allowed', zh: '路由网段 AllowedIPs', ph: '10.0.0.0/24', mono: true, opt: true },
-    { t: 'number', k: 'persistentKeepalive', label: 'wg.keep', zh: '保活（秒）', ph: '25', mono: true },
-    { t: 'number', k: 'mtu', label: 'wg.mtu', zh: 'MTU', ph: '1408', mono: true },
+    { t: 'text', k: 'address', label: 'wg.address', ph: '203.0.113.7', mono: true },
+    { t: 'number', k: 'port', label: 'wg.port', ph: '51820', mono: true },
+    { t: 'text', k: 'privateKey', label: 'wg.priv', ph: 'wOE... =', mono: true, secret: true },
+    { t: 'text', k: 'localAddress', label: 'wg.local', ph: '10.0.0.2/32, fd00::2/128', mono: true },
+    { t: 'text', k: 'peerPublicKey', label: 'wg.pub', ph: 'HIg... =', mono: true },
+    { t: 'text', k: 'preSharedKey', label: 'wg.psk', mono: true, opt: true, secret: true },
+    { t: 'text', k: 'allowedIPs', label: 'wg.allowed', ph: '10.0.0.0/24', mono: true, opt: true },
+    { t: 'number', k: 'persistentKeepalive', label: 'wg.keep', ph: '25', mono: true },
+    { t: 'number', k: 'mtu', label: 'wg.mtu', ph: '1408', mono: true },
     // Reserved：**对所有 WG 节点开放**，不是 WARP 专属。上游 `wireguard-form.tsx:488` 同样把它放在
     // 通用 WG 表单里（其 `:53` 注释「reserved 仅 Cloudflare WARP 等需要」说的是**用途**，不是限制）——
     // 「等」不是虚指：任何在 WG 之上做多路复用的服务端（WARP 类网关、自建 xray/sing-box 对端）都靠
     // 这 3 字节把包分派回正确的会话，填不上就只是**连得上、不通**，没有任何报错。此前它只有
     // `WarpDialog` 有入口，普通 WG 节点在 UI 上改不了（`wg-logic.ts` 靠 `...base` 原样带过）。
-    { t: 'text', k: 'reserved', label: 'wg.reserved', zh: 'Reserved', ph: '0, 0, 0', mono: true, opt: true },
+    { t: 'text', k: 'reserved', label: 'wg.reserved', ph: '0, 0, 0', mono: true, opt: true },
     // 接入模式（上游 `shared/mesh-fields.tsx:32` 的 `AccessModeField`，同绑 reverseMesh）：上游 归常显的
     // 「接入与出口」段、紧邻全隧道开关，故摆在 allowInternet 之前，不入任何折叠——它决定
     // `meshUsesSystemInterface`，进而决定该节点是否参与测速（domain/endpoint-routes.ts:320）。
@@ -92,9 +92,9 @@ export function wgSpec(
     // `wg-logic.ts#isWarpDraft`），但**隐藏且不解释**会让用户分不清「不支持」与「没做」——
     // 同一形态本轮已在 `WarpDialog` 一并改掉，两个弹窗对同一个概念呈现一致。
     // ⚠️ 禁用只挡住「这次编辑新写入」，提交侧另有否决（`buildWgServer` 的 `isWarpDraft` 那支）。
-    { t: 'switch', k: 'reverseMesh', label: 'wg.reverseMesh', zh: 'System 接入模式（内核接口）', hint: 'wg.reverseMeshHint', hintZh: '建真实内核接口：可被对端反向访问、可替子网转发。需 TUN 模式，Windows 不支持，不满足时自动降级为 gVisor 用户态。开启后该节点不参与测速。', disabled: isWarpDraft(draft, base), disabledHint: 'wg.reverseMeshWarp', disabledHintZh: 'WARP 不支持 System 接入模式：它会与主 TUN 抢同一个内核接口，开启后内核直接起不来（Connect: resource busy）。WARP 固定走 gVisor 用户态。' },
-    { t: 'switch', k: 'allowInternet', label: 'wg.allowInternet', zh: '允许访问外网（全隧道）', hint: 'wg.allowInternetHint', hintZh: '在对端 AllowedIPs 注入 0.0.0.0/0, ::/0' },
-    { t: 'switch', k: 'alwaysRouteSubnets', label: 'wg.alwaysRoute', zh: '始终路由子网', hint: 'wg.alwaysRouteHint', hintZh: '非当前出口时也保持上面网段可达' },
+    { t: 'switch', k: 'reverseMesh', label: 'wg.reverseMesh', hint: 'wg.reverseMeshHint', disabled: isWarpDraft(draft, base), disabledHint: 'wg.reverseMeshWarp' },
+    { t: 'switch', k: 'allowInternet', label: 'wg.allowInternet', hint: 'wg.allowInternetHint' },
+    { t: 'switch', k: 'alwaysRouteSubnets', label: 'wg.alwaysRoute', hint: 'wg.alwaysRouteHint' },
     // 前置代理 —— **对 上游的有意偏离**（它的 WG 表单没有这一项，`SingBoxEndpoint` 类型也没有
     // 这个键；生成侧的接线与实测见 `detour-options.ts` 文件头 / `singbox/endpoint.rs`）。
     //
@@ -102,7 +102,7 @@ export function wgSpec(
     // （2026-07-31 loopback A/B 实测：有 detour ⇒ 直达 peer 的 UDP 包 **0**、SOCKS UDP_ASSOCIATE 15 次）。
     // 前置代理只支持 TCP ⇒ 本节点起不来，且**不回落直连**、没有任何报错 —— 用户看到的就是「连上了不通」。
     // 不写这句，这个控件就是个陷阱。
-    { t: 'select', k: 'detour', label: 'wg.detour', zh: '前置代理 / detour', options: detourOpts, hint: 'wg.detourHint', hintZh: '先经该节点再拨号。WireGuard 握手走 UDP，前置代理必须支持 UDP 转发（SOCKS5 UDP ASSOCIATE），否则本节点静默不通——不会回落直连。' },
+    { t: 'select', k: 'detour', label: 'wg.detour', options: detourOpts, hint: 'wg.detourHint' },
   ];
 }
 
@@ -165,14 +165,14 @@ function WgForm({ base }: { base?: ServerConfig }) {
   };
 
   // 前置代理候选：排除自身与 endpoint 类节点（判据对齐生成侧，见 `detour-options.ts`）。
-  const detourOpts = endpointDetourOptions(servers, base?.id, t('node.detourDirect', '直连（不串联）'));
+  const detourOpts = endpointDetourOptions(servers, base?.id, t('node.detourDirect'));
   const visible = wgSpec(draft, base, detourOpts).filter((f) => !f.when || f.when(draft));
 
   const onParse = () => {
     const d = parseConfToDraft(confText);
     if (!d) {
       setPreview(null);
-      setConfErr(t('wg.parseErr', '无法解析该 .conf——请检查内容或改用「手动填写」'));
+      setConfErr(t('wg.parseErr'));
       return;
     }
     setConfErr(null);
@@ -189,9 +189,9 @@ function WgForm({ base }: { base?: ServerConfig }) {
     open({
       kind: 'confirm',
       payload: {
-        title: t('wg.discardTitle', '放弃更改？'),
-        message: t('wg.discardMsg', '已填写的内容将不会保存。'),
-        confirmLabel: t('wg.discard', '放弃'),
+        title: t('wg.discardTitle'),
+        message: t('wg.discardMsg'),
+        confirmLabel: t('wg.discard'),
         danger: true,
         onConfirm: () => {
           close();
@@ -210,7 +210,7 @@ function WgForm({ base }: { base?: ServerConfig }) {
         setSrc('manual');
         setFormTab('basic');
         // 文案自述完整（列全了缺哪些字段），不套 title。
-        toast.error(t('wg.errRequired', '缺少必填字段：地址 / 私钥 / 接口地址 / 对端公钥'));
+        toast.error(t('wg.errRequired'));
       }
       return;
     }
@@ -219,7 +219,7 @@ function WgForm({ base }: { base?: ServerConfig }) {
     if (reservedInputInvalid(draft.reserved)) {
       setSrc('manual');
       setFormTab('advanced');
-      toast.error(t('wg.errReserved', 'Reserved 需填 3 个 0–255 的整数，例如 0, 0, 0'));
+      toast.error(t('wg.errReserved'));
       return;
     }
     const server = buildWgServer(name, draft, base);
@@ -241,7 +241,7 @@ function WgForm({ base }: { base?: ServerConfig }) {
         stage({
           id: `server:${entityId}`,
           kind: 'server',
-          label: `${isEdit ? t('wg.editTitle', '编辑 WireGuard 节点') : t('wg.addTitle', '添加 WireGuard 节点')} ${server.name}`,
+          label: `${isEdit ? t('wg.editTitle') : t('wg.addTitle')} ${server.name}`,
           entityPath: ['servers', entityId],
           nextValue: { ...server, id: entityId },
         });
@@ -257,7 +257,7 @@ function WgForm({ base }: { base?: ServerConfig }) {
       void loadConfig(true);
       close();
     } catch (e) {
-      toast.error(t('common.saveFailed', '保存失败'), e instanceof Error ? e.message : String(e));
+      toast.error(t('common.saveFailed'), e instanceof Error ? e.message : String(e));
     } finally {
       setSubmitting(false);
     }
@@ -266,7 +266,7 @@ function WgForm({ base }: { base?: ServerConfig }) {
   return (
     <Modal
       titleId="wg-dlg-title"
-      title={isEdit ? t('wg.editTitle', '编辑 WireGuard 节点') : t('wg.addTitle', '添加 WireGuard 节点')}
+      title={isEdit ? t('wg.editTitle') : t('wg.addTitle')}
       onClose={requestClose}
       icon={<WgIcon />}
       className="entry-form-dlg"
@@ -276,17 +276,17 @@ function WgForm({ base }: { base?: ServerConfig }) {
               两个不锁（NodeDialog/SubDialog）—— 不是与原型的差，是实现自己两套。统一为不锁：
               提交卡住（IPC 无应答）时用户必须还能退出，否则弹窗成了死窗。 */}
           <button type="button" className="btn ghost" onClick={requestClose}>
-            {t('common.cancel', '取消')}
+            {t('common.cancel')}
           </button>
           <button type="button" className="btn flow" onClick={() => void handleSubmit()} disabled={submitting}>
-            {isEdit ? t('common.save', '保存') : t('wg.add', '添加')}
+            {isEdit ? t('common.save') : t('wg.add')}
           </button>
         </>
       }
     >
       <div className="fld">
         <label className="fld-l" htmlFor="wg-name">
-          {t('wg.name', '节点名称')}
+          {t('wg.name')}
         </label>
         <input
           id="wg-name"
@@ -297,19 +297,19 @@ function WgForm({ base }: { base?: ServerConfig }) {
             setErrName(false);
             setDirty(true);
           }}
-          placeholder={t('wg.namePh', '自建 · WireGuard')}
+          placeholder={t('wg.namePh')}
         />
-        {errName && <div className="err-line">{t('wg.errName', '请先填写节点名称')}</div>}
+        {errName && <div className="err-line">{t('wg.errName')}</div>}
       </div>
 
       <div className="fld">
-        <label className="fld-l">{t('wg.source', '来源')}</label>
-        <div className="seg2" role="group" aria-label={t('wg.source', '来源')} style={{ display: 'flex' }}>
+        <label className="fld-l">{t('wg.source')}</label>
+        <div className="seg2" role="group" aria-label={t('wg.source')} style={{ display: 'flex' }}>
           <button type="button" style={{ flex: 1 }} className={src === 'manual' ? 'on' : ''} onClick={() => setSrc('manual')}>
-            {t('wg.manual', '手动填写')}
+            {t('wg.manual')}
           </button>
           <button type="button" style={{ flex: 1 }} className={src === 'conf' ? 'on' : ''} onClick={() => setSrc('conf')}>
-            {t('wg.paste', '粘贴 .conf')}
+            {t('wg.paste')}
           </button>
         </div>
       </div>
@@ -318,7 +318,7 @@ function WgForm({ base }: { base?: ServerConfig }) {
         <>
           <div className="fld">
             <label className="fld-l" htmlFor="wg-conf">
-              {t('wg.pasteLabel', '粘贴 wg-quick .conf')}
+              {t('wg.pasteLabel')}
             </label>
             <textarea
               id="wg-conf"
@@ -339,7 +339,7 @@ function WgForm({ base }: { base?: ServerConfig }) {
             <svg viewBox="0 0 24 24" width={14} fill="none" stroke="currentColor" strokeWidth={1.8}>
               <path d="M9 15l6-6M8 8a3 3 0 10-3 3M16 16a3 3 0 103 3" />
             </svg>
-            <span>{t('wg.parse', '解析预览')}</span>
+            <span>{t('wg.parse')}</span>
           </button>
           {confErr && <div className="wg-conf-err">{confErr}</div>}
           {preview && (
@@ -348,13 +348,13 @@ function WgForm({ base }: { base?: ServerConfig }) {
                 <svg viewBox="0 0 24 24" width={14} fill="none" stroke="currentColor" strokeWidth={2.6}>
                   <path d="M20 6L9 17l-5-5" />
                 </svg>
-                {t('wg.parsed', '解析成功 · 字段已填入表单')}
+                {t('wg.parsed')}
               </div>
-              <div className="wpv-row"><span>{t('wg.pvPeer', '对端地址')}</span><span>{preview.peer}</span></div>
-              <div className="wpv-row"><span>{t('wg.pvAddr', '接口地址')}</span><span>{preview.address}</span></div>
-              <div className="wpv-row"><span>{t('wg.pvPub', '对端公钥')}</span><span>{preview.pubKey}</span></div>
-              <div className="wpv-row"><span>{t('wg.pvRoute', '路由网段')}</span><span>{preview.routing}</span></div>
-              <div className="wpv-row"><span>{t('wg.pvKeep', '保活')}</span><span>{preview.keepalive}</span></div>
+              <div className="wpv-row"><span>{t('wg.pvPeer')}</span><span>{preview.peer}</span></div>
+              <div className="wpv-row"><span>{t('wg.pvAddr')}</span><span>{preview.address}</span></div>
+              <div className="wpv-row"><span>{t('wg.pvPub')}</span><span>{preview.pubKey}</span></div>
+              <div className="wpv-row"><span>{t('wg.pvRoute')}</span><span>{preview.routing}</span></div>
+              <div className="wpv-row"><span>{t('wg.pvKeep')}</span><span>{preview.keepalive}</span></div>
             </div>
           )}
         </>
@@ -365,7 +365,7 @@ function WgForm({ base }: { base?: ServerConfig }) {
         const tabs: WgFormTab[] = ['basic', 'routing', 'advanced'];
         return (
           <>
-            <div className="sub-tabs form-tabs" role="tablist" aria-label={t('node.formGroup.aria', '配置分组')}>
+            <div className="sub-tabs form-tabs" role="tablist" aria-label={t('node.formGroup.aria')}>
               {tabs.map((tab) => (
                 <button
                   key={tab}

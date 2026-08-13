@@ -73,23 +73,26 @@ function parseHostPort(ep: string): { host: string; port: number } | null {
   return { host, port };
 }
 
-function advSpec(detourOpts: readonly SelectOption[]): FieldSpec[] {
+function advSpec(
+  detourOpts: readonly SelectOption[],
+  routeAllLabel: string,
+  routeCustomLabel: string,
+): FieldSpec[] {
   return [
-    { t: 'text', k: 'endpoint', label: 'warp.endpoint', zh: '端点 Endpoint', mono: true },
+    { t: 'text', k: 'endpoint', label: 'warp.endpoint', mono: true },
     {
       t: 'select',
       k: 'route',
       label: 'warp.route',
-      zh: '路由 AllowedIPs',
       options: [
-        ['all', '全局出口（0.0.0.0/0, ::/0）'],
-        ['custom', '仅特定网段'],
+        ['all', routeAllLabel],
+        ['custom', routeCustomLabel],
       ],
     },
-    { t: 'text', k: 'allowedIPs', label: 'warp.allowed', zh: '自定义网段', ph: '10.0.0.0/24, 192.168.1.0/24', mono: true, when: (v) => v.route === 'custom' },
-    { t: 'number', k: 'mtu', label: 'warp.mtu', zh: 'MTU', ph: '1280', mono: true },
-    { t: 'number', k: 'keepalive', label: 'warp.keepalive', zh: '保活（秒）', ph: '25', mono: true },
-    { t: 'text', k: 'reserved', label: 'warp.reserved', zh: 'Reserved', ph: '0, 0, 0', mono: true, opt: true },
+    { t: 'text', k: 'allowedIPs', label: 'warp.allowed', ph: '10.0.0.0/24, 192.168.1.0/24', mono: true, when: (v) => v.route === 'custom' },
+    { t: 'number', k: 'mtu', label: 'warp.mtu', ph: '1280', mono: true },
+    { t: 'number', k: 'keepalive', label: 'warp.keepalive', ph: '25', mono: true },
+    { t: 'text', k: 'reserved', label: 'warp.reserved', ph: '0, 0, 0', mono: true, opt: true },
     // 接入模式 —— **可见但禁用**，位置与 `WgDialog` 的 `wgSpec` 那条对齐（同在 `reserved` 之后）。
     //
     // 此前本弹窗**干脆不渲染**这一项，`WgDialog` 那条也用 `when` 把 WARP 草稿整条隐掉。隐藏是对的
@@ -100,14 +103,14 @@ function advSpec(detourOpts: readonly SelectOption[]): FieldSpec[] {
     //
     // label 复用 `wg.*` 键：WARP 就是 WireGuard 节点，同一个概念不再造第二份五语翻译。
     // ⚠️ 禁用只挡住「这次编辑新写入」，提交侧另有恒否决（`wg-logic.ts#buildWarpSettings`）。
-    { t: 'switch', k: 'reverseMesh', label: 'wg.reverseMesh', zh: 'System 接入模式（内核接口）', disabled: true, disabledHint: 'wg.reverseMeshWarp', disabledHintZh: 'WARP 不支持 System 接入模式：它会与主 TUN 抢同一个内核接口，开启后内核直接起不来（Connect: resource busy）。WARP 固定走 gVisor 用户态。' },
+    { t: 'switch', k: 'reverseMesh', label: 'wg.reverseMesh', disabled: true, disabledHint: 'wg.reverseMeshWarp' },
     // 前置代理 —— **对 上游的有意偏离**（它的 WARP 表单没有这一项）。本轮之前这个控件是个
     // **装饰开关**：值写进了 `server.detour`，但 Rust 侧 `Endpoint` 结构体压根没有 detour 字段，
     // 序列化时被丢掉。现已真生效（`builder/outbounds.rs` 的 WG 腿；WARP = reverseMesh 的 WG 节点）。
     //
     // hint 那句 UDP 与 `WgDialog` 同源同因：WARP 就是 WireGuard，握手走 UDP，前置代理不支持
     // UDP 转发就静默不通且不回落直连（实测见 `singbox/endpoint.rs`）。
-    { t: 'select', k: 'detour', label: 'warp.detour', zh: '前置代理 / detour', options: detourOpts, hint: 'warp.detourHint', hintZh: '先经该节点再拨号。WARP 是 WireGuard，握手走 UDP，前置代理必须支持 UDP 转发（SOCKS5 UDP ASSOCIATE），否则本节点静默不通——不会回落直连。' },
+    { t: 'select', k: 'detour', label: 'warp.detour', options: detourOpts, hint: 'warp.detourHint' },
   ];
 }
 
@@ -130,8 +133,8 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
   // 前置代理候选。此前是「除自身外的全部节点」—— 其中的 WG/TS 节点在生成侧会被
   // `is_mesh_protocol` 那一支直接丢弃（选了等于没选）。收口到与 `WgDialog` /
   // `TsSettingsDialog` 同一个函数，排除判据一处定义、三处生效。
-  const detourOpts = endpointDetourOptions(servers, editNode?.id, t('node.detourDirect', '直连（不串联）'));
-  const spec = advSpec(detourOpts);
+  const detourOpts = endpointDetourOptions(servers, editNode?.id, t('node.detourDirect'));
+  const spec = advSpec(detourOpts, t('warp.routeAll'), t('warp.routeCustom'));
 
   // R1 同步初始化。
   const initWs = editNode?.wireguardSettings;
@@ -184,9 +187,9 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
     open({
       kind: 'confirm',
       payload: {
-        title: t('warp.discardTitle', '放弃更改？'),
-        message: t('warp.discardMsg', '已填写的内容将不会保存。'),
-        confirmLabel: t('warp.discard', '放弃'),
+        title: t('warp.discardTitle'),
+        message: t('warp.discardMsg'),
+        confirmLabel: t('warp.discard'),
         danger: true,
         onConfirm: () => {
           close();
@@ -245,7 +248,7 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
     if (split.blocked.length > 0) {
       // 同 NodesScreen:687 / TsSettingsDialog：「还不能做」走 info 单参，文案自述完整。
       toast.info(
-        t('home.stagedOnlyBlocked', '该项还没保存到配置文件，此操作要保存后才能进行。点条上的「保存」后再试')
+        t('home.stagedOnlyBlocked')
       );
       throw new Error('staged-only-blocked');
     }
@@ -254,9 +257,9 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
       if (!r.ok) {
         // r.error 是后端原始串（非自述）⇒ 套 title；no-credentials 那支本身自述，单参。
         if (r.error === 'no-credentials') {
-          toast.error(t('warp.errNoCreds', '该节点缺少 WARP 设备凭据，无法应用 WARP+ 许可'));
+          toast.error(t('warp.errNoCreds'));
         } else {
-          toast.error(t('warp.errLicense', 'WARP+ 许可应用失败'), r.error ?? undefined);
+          toast.error(t('warp.errLicense'), r.error ?? undefined);
         }
         throw new Error('applyLicense-failed');
       }
@@ -289,7 +292,7 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
     // M6：端点解析失败必须内联报错并保持弹窗打开，不得静默回退旧地址后假装提交成功。
     const ep = parseHostPort(String(draft.endpoint ?? ''));
     if (!ep) {
-      toast.error(t('warp.errEndpoint', '端点格式应为 host:port（IPv6 用 [::1]:port），请检查后重试'));
+      toast.error(t('warp.errEndpoint'));
       return;
     }
     setSubmitting(true);
@@ -305,7 +308,7 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
       }
     } catch (e) {
       if (!(e instanceof Error && e.message === 'applyLicense-failed')) {
-        toast.error(t('common.saveFailed', '保存失败'), e instanceof Error ? e.message : String(e));
+        toast.error(t('common.saveFailed'), e instanceof Error ? e.message : String(e));
       }
     } finally {
       setSubmitting(false);
@@ -313,15 +316,15 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
   };
 
   const primaryLabel = done
-    ? t('common.done', '完成')
+    ? t('common.done')
     : isEdit
-      ? t('common.save', '保存')
-      : t('warp.register', '注册并接入');
+      ? t('common.save')
+      : t('warp.register');
 
   return (
     <Modal
       titleId="warp-dlg-title"
-      title={isEdit ? t('warp.editTitle', '编辑 WARP') : t('warp.addTitle', '接入 Cloudflare WARP')}
+      title={isEdit ? t('warp.editTitle') : t('warp.addTitle')}
       onClose={requestClose}
       icon={<WarpIcon />}
       className="entry-form-dlg"
@@ -331,7 +334,7 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
               两个不锁（NodeDialog/SubDialog）—— 不是与原型的差，是实现自己两套。统一为不锁：
               提交卡住（IPC 无应答）时用户必须还能退出，否则弹窗成了死窗。 */}
           <button type="button" className="btn ghost" onClick={requestClose}>
-            {t('common.cancel', '取消')}
+            {t('common.cancel')}
           </button>
           <button type="button" className="btn flow" onClick={() => void handleSubmit()} disabled={submitting}>
             {submitting && <span className="spinner spin-inline" style={{ marginRight: 6 }} />}
@@ -348,14 +351,14 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
                 <path d="M18 10h-1.26A8 8 0 109 20h9a5 5 0 000-10z" />
               </svg>
               <span>
-                {t('warp.note', '一键注册匿名 WARP 设备并加入为 WireGuard 节点——无需填写密钥；之后可在「编辑」里微调路由。')}
+                {t('warp.note')}
               </span>
             </div>
           )}
 
           <div className="fld" style={{ marginTop: 12 }}>
             <label className="fld-l" htmlFor="warp-name">
-              {t('warp.name', '节点名称')}
+              {t('warp.name')}
             </label>
             <input
               id="warp-name"
@@ -367,12 +370,12 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
                 setDirty(true);
               }}
             />
-            {errName && <div className="err-line">{t('warp.errName', '请填写节点名称')}</div>}
+            {errName && <div className="err-line">{t('warp.errName')}</div>}
           </div>
 
           <div className="fld">
-            <label className="fld-l">{t('warp.plan', '许可类型')}</label>
-            <div className="seg2" role="group" aria-label={t('warp.plan', '许可类型')}>
+            <label className="fld-l">{t('warp.plan')}</label>
+            <div className="seg2" role="group" aria-label={t('warp.plan')}>
               <button
                 type="button"
                 className={plan === 'free' ? 'on' : ''}
@@ -382,7 +385,7 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
                   setDirty(true);
                 }}
               >
-                {t('warp.planFree', '免费 WARP')}
+                {t('warp.planFree')}
               </button>
               <button
                 type="button"
@@ -400,7 +403,7 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
           {plan === 'plus' && (
             <div className="fld">
               <label className="fld-l" htmlFor="warp-license">
-                {t('warp.licenseLabel', 'WARP+ 许可密钥')}
+                {t('warp.licenseLabel')}
               </label>
               <input
                 id="warp-license"
@@ -413,14 +416,14 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
                 }}
                 placeholder="xxxxxxxx-xxxxxxxx-xxxxxxxx"
               />
-              {errLicense && <div className="err-line">{t('warp.errLicense2', '请填写 WARP+ 许可密钥')}</div>}
+              {errLicense && <div className="err-line">{t('warp.errLicense2')}</div>}
               <div className="card-sub" style={{ marginTop: 6 }}>
-                {t('warp.licenseHint', '填入 WARP+ 许可密钥即注册/升级为 WARP+；免费版无需填写。')}
+                {t('warp.licenseHint')}
               </div>
             </div>
           )}
 
-          <Fold title={t('warp.advanced', '路由 / 高级')}>
+          <Fold title={t('warp.advanced')}>
             {visible.map((f) => (
               <FieldRenderer key={f.k} spec={f} value={draft[f.k]} onChange={(v) => setField(f.k, v)} />
             ))}
@@ -429,7 +432,7 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
           {submitting && !isEdit && (
             <div className="ts-status">
               <span className="spinner spin-inline" />
-              <span>{t('warp.registering', '正在注册匿名设备…')}</span>
+              <span>{t('warp.registering')}</span>
             </div>
           )}
         </>
@@ -441,9 +444,9 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
             <path d="M20 6L9 17l-5-5" />
           </svg>
           <div>
-            <b>{t('warp.doneTitle', 'WARP 设备已注册')}</b>
+            <b>{t('warp.doneTitle')}</b>
             <div className="card-sub" style={{ marginTop: 3 }}>
-              {t('warp.doneSub', '已加入为 WireGuard 节点。')}
+              {t('warp.doneSub')}
             </div>
           </div>
         </div>

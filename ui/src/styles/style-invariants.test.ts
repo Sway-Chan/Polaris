@@ -1835,6 +1835,19 @@ describe('浅色 --warn / --ok / --dn 的文字对比度，与深色 .btn.danger
   });
 });
 
+describe('主窗最小尺寸契约', () => {
+  it('默认尺寸不得小于 980×740，且与最小尺寸一致', () => {
+    const conf = JSON.parse(read('../../../src-tauri/tauri.conf.json'));
+    const main = conf.app.windows.find((window: { label?: string }) => window.label === 'main');
+    expect(main).toMatchObject({
+      width: 980,
+      height: 740,
+      minWidth: 980,
+      minHeight: 740,
+    });
+  });
+});
+
 describe('规则资源表：列边界不得随「这一行有几颗按钮」漂移（2026-08-05 真机：大小列内置/外置错位）', () => {
   /**
    * 缺陷不在名称列的收口，而在**弹性轨的位置**。
@@ -1844,12 +1857,13 @@ describe('规则资源表：列边界不得随「这一行有几颗按钮」漂�
    * 右边缘，看不见；窄档 `minmax(0,1fr) 88px auto` 把弹性轨挪到了**行首** ⇒ 行尾的逐行差异反向
    * 倒灌进 1fr，把它右边每一条列边界一起推走：
    *   外置行 更新+删除 60px → 大小列 703px ／ 内置行 不可删只剩 27px → 736px
-   *   下载中 spinner+取消 53px → 710px ／ 表头行 空格 0px → 763px（925×740 headless 实测）
-   * 窗口锁 925（tauri.conf.json minWidth）− 侧栏 148 = `.main` 恒 777 ≤ 780 ⇒ 窄档是**默认态**。
+   *   下载中 spinner+取消 53px → 710px ／ 表头行 空格 0px → 763px（旧 925×740 headless 实测）。
+   * 当前窗口锁 980（tauri.conf.json minWidth）− 侧栏 148 = `.main` 恒 832 > 780，宽档已是默认态；
+   * 窄档保留为未来若下调最小宽度时的兜底，因此同样不能重新引入列漂移。
    *
    * 断言的是关系不是像素：① 弹性轨只准出现在**末轨**（宽档），② 窄档把末轨钉成定宽，
    * ③ 该定宽 == 动作簇最宽那态（`.nd-a`×2 + gap）现场算出来的值，④ 覆盖落在 @import 之后，
-   * ⑤ 窄档真的会命中（否则 ③ 是死规则）。改按钮尺寸 / 改断点 / 把定宽改回 auto，任一即红。
+   * ⑤ 当前最小窗口应落在宽档。改按钮尺寸 / 改断点 / 把定宽改回 auto，任一即红。
    */
   const protoCss = stripComments(read('./prototype.css'));
   const screensCss = stripComments(read('./screens.css'));
@@ -1930,7 +1944,7 @@ describe('规则资源表：列边界不得随「这一行有几颗按钮」漂�
     );
   });
 
-  it('⑥ 窄档在默认窗口就命中（窗口最小宽 − 侧栏宽 ≤ 断点），否则 ③④ 是死规则', () => {
+  it('⑥ 980px 最小窗口使用宽档，780px 窄档只作更窄窗口的防御性兜底', () => {
     const conf = JSON.parse(read('../../../src-tauri/tauri.conf.json'));
     const minW = conf.app.windows[0].minWidth;
     const side = protoCss.match(/\.side\s*\{\s*width:\s*(\d+)px/);
@@ -1938,7 +1952,7 @@ describe('规则资源表：列边界不得随「这一行有几颗按钮」漂�
     expect(typeof minW, 'tauri.conf.json 里读不到 minWidth').toBe('number');
     expect(
       minW - Number(side![1]),
-      `.main 的最小内联宽 ${minW}-${side![1]} 已超出窄档断点 —— 缺陷改在别处了，本门要重估`
-    ).toBeLessThanOrEqual(narrowOf(protoCss).bp);
+      `.main 的最小内联宽 ${minW}-${side![1]} 仍命中窄档 —— 980px 窗口没有切回四列宽档`
+    ).toBeGreaterThan(narrowOf(protoCss).bp);
   });
 });

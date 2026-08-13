@@ -177,7 +177,7 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
 
   // 前置代理 detour：direct + 其它节点（排除自身）。
   const detourOpts: CselOption[] = [
-    { value: 'direct', label: t('node.detourDirect', '直连（不串联）') },
+    { value: 'direct', label: t('node.detourDirect') },
     ...servers
       .filter((s) => s.id !== base?.id)
       .map((s) => ({ value: s.id, label: s.name })),
@@ -191,9 +191,9 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
     open({
       kind: 'confirm',
       payload: {
-        title: t('node.discardTitle', '放弃更改？'),
-        message: t('node.discardMsg', '已填写的内容将不会保存。'),
-        confirmLabel: t('node.discard', '放弃'),
+        title: t('node.discardTitle'),
+        message: t('node.discardMsg'),
+        confirmLabel: t('node.discard'),
         danger: true,
         onConfirm: () => {
           close(); // pop confirm
@@ -216,8 +216,8 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
       setVpnTab(vpnError.tab);
       toast.error(
         vpnError.key === 'json'
-          ? t('node.vpnJsonInvalid', '扩展配置必须是合法的 JSON 对象')
-          : t('node.vpnRequired', '请补全当前协议的必填认证字段')
+          ? t('node.vpnJsonInvalid')
+          : t('node.vpnRequired')
       );
       return;
     }
@@ -260,7 +260,7 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
         stage({
           id: `server:${entityId}`,
           kind: 'server',
-          label: `${isEdit ? t('node.editTitle', '编辑节点') : t('node.addTitle', '添加节点')} ${meta.name}`,
+          label: `${isEdit ? t('node.editTitle') : t('node.addTitle')} ${meta.name}`,
           entityPath: ['servers', entityId],
           nextValue: { ...full, id: entityId },
         });
@@ -279,7 +279,7 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
       void loadConfig(true);
       close();
     } catch (e) {
-      toast.error(t('common.saveFailed', '保存失败'), e instanceof Error ? e.message : String(e));
+      toast.error(t('common.saveFailed'), e instanceof Error ? e.message : String(e));
     } finally {
       setSubmitting(false);
     }
@@ -291,11 +291,11 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
   const detourField = (
     <div className="fld">
       <label className="fld-l" htmlFor="nd-detour">
-        {t('node.chainVia', '经由')}
+        {t('node.chainVia')}
       </label>
       <Csel
         id="nd-detour"
-        ariaLabel={t('node.chainVia', '经由')}
+        ariaLabel={t('node.chainVia')}
         value={detour || 'direct'}
         onChange={(v) => {
           setDetour(v === 'direct' ? '' : v);
@@ -304,7 +304,7 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
         options={detourOpts}
       />
       <div className="fld-hint">
-        {t('node.chainHint', '先经另一节点再出站（链式代理）')}
+        {t('node.chainHint')}
       </div>
     </div>
   );
@@ -314,10 +314,10 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
       titleId="nd-title"
       title={
         isEdit
-          ? t('node.editTitle', '编辑节点')
+          ? t('node.editTitle')
           : initialProto
-            ? t('meshJoin.title', '添加接入')
-            : t('node.addTitle', '添加节点')
+            ? t('meshJoin.title')
+            : t('node.addTitle')
       }
       onClose={requestClose}
       icon={<NodeIcon />}
@@ -325,7 +325,7 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
       footer={
         <>
           <button type="button" className="btn ghost" onClick={requestClose}>
-            {t('common.cancel', '取消')}
+            {t('common.cancel')}
           </button>
           <button
             type="button"
@@ -333,7 +333,7 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
             onClick={() => void handleSubmit()}
             disabled={submitting}
           >
-            {isEdit ? t('common.save', '保存') : t('node.add', '添加')}
+            {isEdit ? t('common.save') : t('node.add')}
           </button>
         </>
       }
@@ -341,11 +341,11 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
       {/* 协议 */}
       <div className="fld">
         <label className="fld-l" htmlFor="nd-proto">
-          {t('node.protocol', '协议')}
+          {t('node.protocol')}
         </label>
         <Csel
           id="nd-proto"
-          ariaLabel={t('node.protocol', '协议')}
+          ariaLabel={t('node.protocol')}
           value={proto}
           onChange={(v) => changeProto(v as NodeProto)}
           options={protoGroups}
@@ -355,7 +355,7 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
       {/* 备注名 */}
       <div className="fld">
         <label className="fld-l" htmlFor="nd-name">
-          <span>{t('node.label', '备注名')}</span> <span className="req-star">*</span>
+          <span>{t('node.label')}</span> <span className="req-star">*</span>
         </label>
         <input
           id="nd-name"
@@ -366,15 +366,15 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
             setDirty(true);
             setErrName(false);
           }}
-          placeholder={t('node.labelPh', '香港 · 01')}
+          placeholder={t('node.labelPh')}
         />
-        {errName && <div className="err-line">{t('node.errName', '请填写备注名')}</div>}
+        {errName && <div className="err-line">{t('node.errName')}</div>}
       </div>
 
       {/* 地址 / 端口 */}
       <div className="fld">
         <label className="fld-l">
-          <span>{t('node.serverPort', '地址 / 端口')}</span> <span className="req-star">*</span>
+          <span>{t('node.serverPort')}</span> <span className="req-star">*</span>
         </label>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 96px', gap: 10 }}>
           <input
@@ -386,7 +386,7 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
               setErrAddr(false);
             }}
             placeholder="example.com"
-            aria-label={t('node.server', '服务器地址')}
+            aria-label={t('node.server')}
           />
           <input
             className="input mono"
@@ -402,11 +402,11 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
               }
             }}
             placeholder={defaultPortPlaceholder(proto)}
-            aria-label={t('node.port', '端口')}
+            aria-label={t('node.port')}
           />
         </div>
         {errAddr && (
-          <div className="err-line">{t('node.errAddr', '请填写服务器地址与端口')}</div>
+          <div className="err-line">{t('node.errAddr')}</div>
         )}
       </div>
 
@@ -419,7 +419,7 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
           一个含义不准确的“传输 / 安全”折叠段。公共名称与地址仍固定在上方，切页不会丢上下文。 */}
       {groups && (
         <>
-          <div className="sub-tabs form-tabs" role="tablist" aria-label={t('node.formGroup.aria', '配置分组')}>
+          <div className="sub-tabs form-tabs" role="tablist" aria-label={t('node.formGroup.aria')}>
             {groups.map((group) => (
               <button
                 key={group.id}
@@ -454,39 +454,39 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
             disabled={probing || !(typeof draft.outbound === 'string' && draft.outbound.trim())}
           >
             {probing
-              ? t('node.customProbe.testing', '检测中…')
-              : t('node.customProbe.test', '测试内核兼容性')}
+              ? t('node.customProbe.testing')
+              : t('node.customProbe.test')}
           </button>
           {probeResult?.kind === 'invalidJson' && (
             <div className="err-line">
-              {t('node.customProbe.invalidJson', '不是合法 JSON，无法检测')}
+              {t('node.customProbe.invalidJson')}
             </div>
           )}
           {probeResult?.kind === 'supported' && (
-            <div className="fld-hint">{t('node.customProbe.supported', '内核支持该协议')}</div>
+            <div className="fld-hint">{t('node.customProbe.supported')}</div>
           )}
           {probeResult?.kind === 'indeterminate' && (
             <div className="fld-hint">
-              {t('node.customProbe.indeterminate', '内核不可用或超时，无法判定兼容性')}
+              {t('node.customProbe.indeterminate')}
             </div>
           )}
           {probeResult?.kind === 'unsupported' && (
             <>
               <div className="err-line">
                 {probeResult.keyPath
-                  ? t('node.customProbe.errorWithPath', '键 {{path}}：{{message}}', {
+                  ? t('node.customProbe.errorWithPath', {
                       // 插值变量名保持 `path`（locale 里是 `{{path}}`）；源字段叫 `keyPath` 的理由见 node-spec.ts。
                       path: probeResult.keyPath,
                       message: probeResult.message,
                     })
-                  : t('node.customProbe.error', '校验失败：{{message}}', {
+                  : t('node.customProbe.error', {
                       message: probeResult.message,
                     })}
               </div>
               {/* 结构化提取失败或用户想看全貌时的兜底——原始诊断原样保留，不因为解析出了 path/message
                   就丢弃（解析器本身也可能挑错行/挑错 keypath，全貌是最后一道校验）。 */}
               <details className="fld-fold" onToggle={revealOnToggle}>
-                <summary>{t('node.customProbe.rawOutput', '原始输出')}</summary>
+                <summary>{t('node.customProbe.rawOutput')}</summary>
                 <pre
                   className="mono"
                   style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: 0 }}
@@ -501,7 +501,7 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
 
       {/* 传输 / 安全（折叠） */}
       {adv.length > 0 && (
-        <Fold defaultOpen title={t('node.transportSecurity', '传输 / 安全')}>
+        <Fold defaultOpen title={t('node.transportSecurity')}>
           {visible(adv).map((f) => (
           <FieldRenderer key={f.k} spec={f} value={draft[f.k]} onChange={(v) => setField(f.k, v)} />
           ))}
@@ -509,7 +509,7 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
       )}
 
       {/* 前置代理 / detour（折叠） */}
-      {!groups && <Fold title={t('node.frontProxy', '前置代理 / detour')}>{detourField}</Fold>}
+      {!groups && <Fold title={t('node.frontProxy')}>{detourField}</Fold>}
     </Modal>
   );
 }

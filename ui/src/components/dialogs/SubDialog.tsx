@@ -106,9 +106,9 @@ function SubForm({ base, focus, onAdded }: SubFormProps) {
     open({
       kind: 'confirm',
       payload: {
-        title: t('sub.discardTitle', '放弃更改？'),
-        message: t('sub.discardMsg', '已填写的内容将不会保存。'),
-        confirmLabel: t('sub.discard', '放弃'),
+        title: t('sub.discardTitle'),
+        message: t('sub.discardMsg'),
+        confirmLabel: t('sub.discard'),
         danger: true,
         onConfirm: () => {
           close(); // pop confirm
@@ -133,7 +133,7 @@ function SubForm({ base, focus, onAdded }: SubFormProps) {
       if (r.ok) {
         setPreviewMsg({
           ok: true,
-          text: t('sub.previewOk', '预检通过：解析到 {{n}} 个节点', {
+          text: t('sub.previewOk', {
             n: r.nodeCount ?? 0,
           }),
         });
@@ -144,8 +144,8 @@ function SubForm({ base, focus, onAdded }: SubFormProps) {
         setPreviewMsg({
           ok: false,
           text: key
-            ? t(key.detail, t(key.title, '订阅预检失败'))
-            : t('sub.previewFail', '订阅预检失败'),
+            ? t(key.detail)
+            : t('sub.previewFail'),
         });
       }
     } catch (e) {
@@ -175,7 +175,7 @@ function SubForm({ base, focus, onAdded }: SubFormProps) {
         };
         // 编辑：仅写 config（对齐 上游 updateSubscription——edit 不自动拉取）+ 成功 toast。
         await api.subscription.update(next);
-        toast.success(t('sub.updated', '订阅配置已更新'));
+        toast.success(t('sub.updated'));
         void loadConfig(true);
         close();
       } else {
@@ -189,8 +189,8 @@ function SubForm({ base, focus, onAdded }: SubFormProps) {
           const key = pre.errorKind ? SUBSCRIPTION_ERROR_I18N_KEY[pre.errorKind] : undefined;
           // 错误表本就是 title/detail 两段（contracts/subscription-preview.ts:45），此前挤在一条
           // `.dlg-err` 里只显 detail、title 沦为兜底默认值；toast 的两段结构正好把它摊开。
-          if (key) toast.error(t(key.title, '订阅预检失败'), t(key.detail, ''));
-          else toast.error(t('sub.previewFail', '订阅预检失败'));
+          if (key) toast.error(t(key.title), t(key.detail));
+          else toast.error(t('sub.previewFail'));
           return; // 留窗、保留用户输入；不建任何记录（无先加后删闪现）
         }
         const newSub = await api.subscription.add({
@@ -200,7 +200,7 @@ function SubForm({ base, focus, onAdded }: SubFormProps) {
           userAgent: ua.trim() || undefined,
           updateViaProxy: viaProxy,
         });
-        toast.success(t('sub.added', '订阅已添加'));
+        toast.success(t('sub.added'));
         // add 命令只写 config、不拉取节点 → 主动拉一次并三态 toast（对齐 上游「add 后 updateServers」），
         // 让用户明确知道解析到几个节点，而非误以为「add 成功=订阅可用」。
         await refreshSubscriptionWithToast(newSub.id, t);
@@ -211,7 +211,7 @@ function SubForm({ base, focus, onAdded }: SubFormProps) {
         close();
       }
     } catch (e) {
-      toast.error(t('common.saveFailed', '保存失败'), e instanceof Error ? e.message : String(e));
+      toast.error(t('common.saveFailed'), e instanceof Error ? e.message : String(e));
     } finally {
       setSubmitting(false);
     }
@@ -220,7 +220,7 @@ function SubForm({ base, focus, onAdded }: SubFormProps) {
   return (
     <Modal
       titleId="sub-title"
-      title={isEdit ? t('sub.editTitle', '编辑订阅') : t('sub.addTitle', '添加订阅')}
+      title={isEdit ? t('sub.editTitle') : t('sub.addTitle')}
       onClose={requestClose}
       icon={<SubIcon />}
       className="entry-form-dlg"
@@ -231,20 +231,20 @@ function SubForm({ base, focus, onAdded }: SubFormProps) {
             {/* 键名故意避开 `sub.preview.*`（locale 里是预检失败错误文案的嵌套命名空间，
                 同名会被 i18next 判定为对象而非字符串，控制台报 "returned an object instead of string"，
                 按钮显示原始警告文本而非「预检」——实测发现，见 SubDialog 交付说明）。 */}
-            <span>{t('sub.previewBtn', '预检')}</span>
+            <span>{t('sub.previewBtn')}</span>
           </button>
           <button type="button" className="btn ghost" onClick={requestClose}>
-            {t('common.cancel', '取消')}
+            {t('common.cancel')}
           </button>
           <button type="button" className="btn flow" onClick={() => void handleSubmit()} disabled={submitting}>
-            {isEdit ? t('common.save', '保存') : t('sub.add', '添加')}
+            {isEdit ? t('common.save') : t('sub.add')}
           </button>
         </>
       }
     >
       <div className="fld">
         <label className="fld-l" htmlFor="sub-name">
-          <span>{t('sub.name', '名称')}</span> <span className="req-star">*</span>
+          <span>{t('sub.name')}</span> <span className="req-star">*</span>
         </label>
         <input
           id="sub-name"
@@ -256,14 +256,14 @@ function SubForm({ base, focus, onAdded }: SubFormProps) {
             setErrName(false);
             touch();
           }}
-          placeholder={t('sub.namePh', '机场名称')}
+          placeholder={t('sub.namePh')}
         />
-        {errName && <div className="err-line">{t('sub.errName', '请填写订阅名称')}</div>}
+        {errName && <div className="err-line">{t('sub.errName')}</div>}
       </div>
 
       <div className="fld">
         <label className="fld-l" htmlFor="sub-url">
-          <span>{t('sub.url', '订阅链接')}</span> <span className="req-star">*</span>
+          <span>{t('sub.url')}</span> <span className="req-star">*</span>
         </label>
         <input
           id="sub-url"
@@ -278,13 +278,13 @@ function SubForm({ base, focus, onAdded }: SubFormProps) {
           }}
           placeholder="https://example.com/sub?token=…"
         />
-        {errUrl && <div className="err-line">{t('sub.errUrl', '请填写合法订阅链接（http/https）')}</div>}
+        {errUrl && <div className="err-line">{t('sub.errUrl')}</div>}
       </div>
 
       <div className="fld">
         <label className="fld-l" htmlFor="sub-ua">
-          <span>{t('sub.ua', '自定义 User-Agent')}</span>
-          <span className="fld-opt"> {t('common.optional', '可选')}</span>
+          <span>{t('sub.ua')}</span>
+          <span className="fld-opt"> {t('common.optional')}</span>
         </label>
         <input
           id="sub-ua"
@@ -294,24 +294,24 @@ function SubForm({ base, focus, onAdded }: SubFormProps) {
             setUa(e.target.value);
             touch();
           }}
-          placeholder={t('sub.uaPh', '默认 Polaris/1.0')}
+          placeholder={t('sub.uaPh')}
         />
         <div className="fld-hint">
-          {t('sub.uaHint', '拉取此订阅时携带的 User-Agent，留空则使用默认值')}
+          {t('sub.uaHint')}
         </div>
       </div>
 
-      <Fold title={t('common.advanced', '高级')}>
+      <Fold title={t('common.advanced')}>
         <div className="fld swt-row">
           <div className="swt-tx">
-            <b>{t('sub.autoUpdate', '自动更新')}</b>
-            <div className="fld-hint">{t('sub.autoUpdateHint', '按设定间隔自动刷新此订阅')}</div>
+            <b>{t('sub.autoUpdate')}</b>
+            <div className="fld-hint">{t('sub.autoUpdateHint')}</div>
           </div>
           <button
             type="button"
             role="switch"
             aria-checked={autoUpdate}
-            aria-label={t('sub.autoUpdate', '自动更新')}
+            aria-label={t('sub.autoUpdate')}
             className={`swt${autoUpdate ? ' on' : ''}`}
             onClick={() => {
               setAutoUpdate((v) => !v);
@@ -325,27 +325,27 @@ function SubForm({ base, focus, onAdded }: SubFormProps) {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
               <path d="M12 9v4M12 17h.01M10.3 3.9L2 18a2 2 0 001.7 3h16.6a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" />
             </svg>
-            <span>{t('sub.autoUpdateWarn', '开启后订阅刷新带来的节点变动会重启代理、短暂断流')}</span>
+            <span>{t('sub.autoUpdateWarn')}</span>
           </div>
         )}
 
         {/* per-sub「经代理更新」：全局策略 follow 时可设；proxy/direct 被全局覆盖 → 置灰并提示（对齐 上游）。 */}
         <div className="fld swt-row" style={{ marginTop: 14 }}>
           <div className="swt-tx">
-            <b>{t('sub.viaProxy', '经代理更新')}</b>
+            <b>{t('sub.viaProxy')}</b>
             <div className="fld-hint">
               {proxyPolicy === 'proxy'
-                ? t('sub.viaProxyOverrideProxy', '已由全局策略覆盖：全部订阅经代理（见设置）')
+                ? t('sub.viaProxyOverrideProxy')
                 : proxyPolicy === 'direct'
-                  ? t('sub.viaProxyOverrideDirect', '已由全局策略覆盖：全部订阅直连（见设置）')
-                  : t('sub.viaProxyHint', '经运行中的代理拉取而非直连（全局策略可覆盖，见设置）')}
+                  ? t('sub.viaProxyOverrideDirect')
+                  : t('sub.viaProxyHint')}
             </div>
           </div>
           <button
             type="button"
             role="switch"
             aria-checked={viaProxy}
-            aria-label={t('sub.viaProxy', '经代理更新')}
+            aria-label={t('sub.viaProxy')}
             className={`swt${viaProxy ? ' on' : ''}`}
             disabled={proxyOverridden}
             onClick={() => {

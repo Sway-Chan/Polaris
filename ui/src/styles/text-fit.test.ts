@@ -836,8 +836,8 @@ const langMatches = (tag: string, locale: string) =>
 
 // ── S11 节点弹窗表单字段（`.fld` 一族）：几何链 ──────────────────────────────────────────
 //
-// 弹窗定宽是本节能立门的前提：`.dlg{width:min(460px, calc(100vw - 40px))}`，而主窗最小宽 925
-// ⇒ calc 支恒 ≥ 885px，永远不是较小的那个 ⇒ **460px 与窗口大小无关**。若哪天改成随窗口变，
+// 弹窗定宽是本节能立门的前提：`.dlg{width:min(460px, calc(100vw - 40px))}`，而主窗最小宽 980
+// ⇒ calc 支恒 ≥ 940px，永远不是较小的那个 ⇒ **460px 与窗口大小无关**。若哪天改成随窗口变，
 // 下面 `DLG_W` 的解析就会 throw，而不是拿一个错的常数继续发绿。
 const DLG_W = (() => {
   const v = decl('./components.css', '.dlg', 'width');
@@ -1398,11 +1398,11 @@ describe('⑦ 首页右列 seg2（.cc-col.right .seg-wrap .seg2）：横排装�
   it('几何链必须从 CSS / tauri.conf.json 现场解出（这些数变了，下面的阈值全部要重推）', () => {
     expect(groups.length).toBe(2);
     expect(groups.every((g) => g.keys.length === 3)).toBe(true);
-    expect(TAURI_MIN_WIDTH, 'tauri.conf.json 的 minWidth 变了 → 重新过一遍 :lang() 名单').toBe(925);
-    expect(CONTAINER_MIN).toBe(925 - 148); // 777
+    expect(TAURI_MIN_WIDTH, 'tauri.conf.json 的 minWidth 变了 → 重新过一遍 :lang() 名单').toBe(980);
+    expect(CONTAINER_MIN).toBe(980 - 148); // 832
     expect(CC_RIGHT_SHARE).toBeCloseTo(1 / 3, 6); // 1.7 / (3.4+1.7)
     expect(screenPadX + cardBorderX + connCardPadX).toBe(48 + 2 + 32); // 82
-    expect(trackFromContainer(CONTAINER_MIN)).toBeCloseTo(211.667, 2);
+    expect(trackFromContainer(CONTAINER_MIN)).toBeCloseTo(230, 2);
   });
 
   it('修法的前提仍在位：轨道被钉成 100%、三档均分、按钮 nowrap 且无 ellipsis', () => {

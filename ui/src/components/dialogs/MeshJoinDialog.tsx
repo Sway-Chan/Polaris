@@ -75,36 +75,36 @@ export function MeshJoinDialog({ onTsLogout, onWarpReregister, onWarpDeregister 
   return (
     <Modal
       titleId="mesh-join-title"
-      title={t('meshJoin.title', '添加接入')}
+      title={t('meshJoin.title')}
       icon={<JoinIcon />}
       onClose={close}
       className="access-picker-dlg"
       footer={
         <button type="button" className="btn ghost" onClick={close}>
-          {t('common.cancel', '取消')}
+          {t('common.cancel')}
         </button>
       }
     >
       <p className="card-sub mesh-join-intro">
-        {t('meshJoin.intro', '选择接入方式后再填写配置；组网页只展示已配置节点，不长期堆放协议入口。')}
+        {t('meshJoin.intro')}
       </p>
 
-      <div className="field-lbl"><span>{t('meshJoin.managed', '账号与托管网络')}</span></div>
+      <div className="field-lbl"><span>{t('meshJoin.managed')}</span></div>
       <div className="mesh-grid mesh-choice-grid">
         <Choice
           title="Tailscale"
           description={tsNode
-            ? t('meshJoin.tsConfigured', '已配置 · 打开设置或切换账号')
-            : t('meshJoin.tsNew', '交互登录或使用 Auth Key')}
+            ? t('meshJoin.tsConfigured')
+            : t('meshJoin.tsNew')}
           icon={<JoinIcon />}
           onClick={() => go({ kind: tsNode ? 'ts-settings' : 'ts-login' })}
           actions={tsNode && (
             <>
               <button type="button" className="btn ghost sm" onClick={() => go({ kind: 'ts-login' })}>
-                {t('meshJoin.switchAccount', '切换账号')}
+                {t('meshJoin.switchAccount')}
               </button>
               <button type="button" className="btn ghost sm danger-text" onClick={() => action(() => onTsLogout(tsNode))}>
-                {t('meshJoin.logout', '登出')}
+                {t('meshJoin.logout')}
               </button>
             </>
           )}
@@ -112,34 +112,31 @@ export function MeshJoinDialog({ onTsLogout, onWarpReregister, onWarpDeregister 
         <Choice
           title="Cloudflare WARP"
           description={warpNode
-            ? t('meshJoin.warpConfigured', '已注册 · 管理路由或设备')
-            : t('meshJoin.warpNew', '注册匿名设备，支持免费与 WARP+')}
+            ? t('meshJoin.warpConfigured')
+            : t('meshJoin.warpNew')}
           icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}><path d="M13 2L4 14h6l-1 8 9-12h-6z" /></svg>}
           onClick={() => go({ kind: 'warp', edit: !!warpNode })}
           actions={warpNode && (
             <>
               <button type="button" className="btn ghost sm" onClick={() => action(() => onWarpReregister(warpNode))}>
-                {t('meshJoin.reregister', '重新注册')}
+                {t('meshJoin.reregister')}
               </button>
               <button type="button" className="btn ghost sm danger-text" onClick={() => action(() => onWarpDeregister(warpNode))}>
-                {t('meshJoin.deregister', '注销设备')}
+                {t('meshJoin.deregister')}
               </button>
             </>
           )}
         />
       </div>
 
-      <div className="field-lbl"><span>{t('meshJoin.tunnels', '标准与企业隧道')}</span></div>
+      <div className="field-lbl"><span>{t('meshJoin.tunnels')}</span></div>
       <div className="mesh-grid mesh-choice-grid">
-        <Choice title="WireGuard" description={t('meshJoin.wg', '导入 .conf 或手动填写')} icon={shield} onClick={() => go({ kind: 'wg' })} />
-        <Choice title="OpenConnect" description={t('meshJoin.oc', 'AnyConnect / GlobalProtect 等企业 VPN')} icon={shield} onClick={() => go({ kind: 'node', initialProto: 'openconnect' })} />
-        <Choice title="OpenVPN" description={t('meshJoin.ovpn', '账号、证书与企业内网接入')} icon={shield} onClick={() => go({ kind: 'node', initialProto: 'openvpn-client' })} />
+        <Choice title="WireGuard" description={t('meshJoin.wg')} icon={shield} onClick={() => go({ kind: 'wg' })} />
+        <Choice title="OpenConnect" description={t('meshJoin.oc')} icon={shield} onClick={() => go({ kind: 'node', initialProto: 'openconnect' })} />
+        <Choice title="OpenVPN" description={t('meshJoin.ovpn')} icon={shield} onClick={() => go({ kind: 'node', initialProto: 'openvpn-client' })} />
       </div>
       <div className="fld-hint mesh-join-hint">
-        {t(
-          'meshJoin.routesHint',
-          'OpenConnect / OpenVPN 始终归入组网；“内网段”只决定强制路由的企业网段，留空时仍可作为普通 VPN 出口。',
-        )}
+        {t('meshJoin.routesHint')}
       </div>
     </Modal>
   );
