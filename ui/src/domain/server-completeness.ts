@@ -27,6 +27,10 @@ export const ALL_PROTOCOLS: readonly Protocol[] = [
   'ssh',
   'wireguard',
   'tailscale',
+  'hysteria',
+  'tor',
+  'openconnect',
+  'openvpn-client',
   'custom',
 ];
 
@@ -85,6 +89,26 @@ export function protocolRequirementError(server: ServerConfig): string | null {
         server.wireguardSettings?.localAddress?.length
         ? null
         : 'WireGuard server requires privateKey, peerPublicKey and localAddress';
+    case 'hysteria':
+      return (server.hysteriaSettings?.authStr?.trim() || server.hysteriaSettings?.auth?.trim()) &&
+        (server.hysteriaSettings?.upMbps ?? 0) > 0 &&
+        (server.hysteriaSettings?.downMbps ?? 0) > 0
+        ? null
+        : 'Hysteria server requires auth, upMbps and downMbps';
+    case 'tor':
+      return null;
+    case 'openconnect': {
+      const settings = server.openconnectSettings;
+      return settings?.server?.trim() && settings.username?.trim() && settings.password?.trim() && settings.flavor?.trim()
+        ? null
+        : 'OpenConnect server requires server, username, password and flavor';
+    }
+    case 'openvpn-client': {
+      const settings = server.openvpnClientSettings;
+      return settings?.server?.trim() && settings.server_port && settings.username?.trim() && settings.password?.trim() && settings.tls
+        ? null
+        : 'OpenVPN server requires server, port, username, password and tls';
+    }
     case 'socks':
     case 'http':
     case 'ssh':
@@ -110,7 +134,7 @@ export function isServerComplete(server: ServerConfig | undefined | null): boole
   const p = server.protocol?.toLowerCase();
   if (!KNOWN.has(p as string)) return false;
   // 账号制协议（Tailscale）连控制面、custom（raw-JSON 自带 server/port）→ 无 ServerConfig address/port；其余必须有。
-  if (!isAccountBasedProtocol(p) && p !== 'custom') {
+  if (!isAccountBasedProtocol(p) && p !== 'custom' && p !== 'tor') {
     if (!server.address || server.address.trim() === '') return false;
     if (!server.port || server.port <= 0) return false;
   }

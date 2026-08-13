@@ -1,6 +1,6 @@
 /**
  * NodesScreen —— 节点屏（1:1 提取自原型 polaris-prototype.html L1737-1868 #s-nodes
- * + renderMesh/meshItem L4816-4842/4806-4815 组网三卡 + syncNodeToolbar L4482-4485 工具栏行为）。
+ * + renderMesh/meshItem L4816-4842/4806-4815 组网入口 + syncNodeToolbar L4482-4485 工具栏行为）。
  *
  * 原型 DOM（class/层级对齐，样式见 src/styles/screens.css L「NODES」段 + components.css 通用类）：
  *   .screen
@@ -10,7 +10,7 @@
  *     .node-toolbar#node-shared-tools（.seg2 视图 + .input.search-box 搜索 + .sel 协议/排序（方向固定，无 .nh-dir）+ 测速（可见集）+ 多选）
  *       —— 多选按钮（.nt-hide-sub）仅在订阅 tab 隐藏（原型 syncNodeToolbar：isSub && 隐藏 + 自动退出批选）
  *     .batch-bar（多选批量操作条）
- *     .mesh-card > .mesh-grid > .mesh-col（组网三卡：Tailscale/WARP/WireGuard，整卡可点，原型 meshItem()）
+ *     .mesh-list-head + 独立接入选择器（组网页只保留摘要与已配置节点，避免协议入口常驻膨胀）
  *     .node-grid > .nd-card（各 tab pane）
  *
  * 数据流：useAppStore（config.servers + config.subscriptions + selectedServerId）。
@@ -46,7 +46,6 @@ import {
   speedTestableIds,
   type SpeedTestCaps,
 } from '@/domain/endpoint-routes';
-import { findWarpNode, isWarpServer } from '@/domain/warp';
 import { sortServersByLatency } from '@/domain/server-latency-sort';
 import { refreshSubscriptionWithToast } from '@/domain/subscription-refresh';
 import { useSubscriptionProgress } from '@/store/use-subscription-progress-store';
@@ -57,7 +56,6 @@ import { SubInfoBar } from './SubInfoBar';
 import { NdFlagDefs } from './nd-flag';
 import { editDialogFor } from './node-edit-routing';
 import { fallbackExitAfterDelete } from './node-delete-fallback';
-import { deriveTsCardState } from '@/domain/tailscale-conn-state';
 import { useNavStore } from '@/store/nav-store';
 import { useNodeViewStore } from '@/store/use-node-view-store';
 import { useStagedConfigStore } from '@/store/staged-config-store';
@@ -73,7 +71,6 @@ import {
   type SpeedTestBlockReason,
   invalidNodeIndex,
   canMoveToGroup,
-  warpCardAction,
   subDeleteNodeCount,
   type SubMenuItem,
   nodeUseAction,
@@ -113,45 +110,6 @@ export function NodesScreen() {
 
   const subscriptions = config?.subscriptions ?? [];
 
-  /* ── 组网三卡状态（由节点集派生；卡本身即唯一入口，移植自 Home，原型 renderMesh :4816）── */
-  const warpNode = useMemo(() => findWarpNode(servers), [servers]);
-  const tsNode = useMemo(() => servers.find((s) => s.protocol === 'tailscale'), [servers]);
-  const wgCount = useMemo(
-    () => servers.filter((s) => s.protocol === 'wireguard' && !isWarpServer(s)).length,
-    [servers]
-  );
-
-  // Tailscale 卡角标：原先只要节点存在就无条件显示绿色「已登录」——节点建了但没登录也这么显，是假 UI。
-  // 改走 deriveTsCardState（domain 层单一真值，此前定义了却无人调用）。
-  // authUrl/loginInitiated 已提进 store（TsLoginDialog 落 store，单一真值）→ logging-in 态可达。
-  // loginActive = 显式发起过 OR 该节点是当前选中出口（app 自动连它=登录进行中）：1.14 主核 always-emit
-  // 会给未选中/未就绪节点持续推 AUTH_URL，只凭 hasAuthUrl 判「登录中」会把它们误推进连接中态
-  // （门控语义见 domain/tailscale-conn-state.ts 的注释）。
-  const tsLoggedIn = useAppStore((s) => (tsNode ? s.tailscaleLoginStates[tsNode.id] : undefined));
-  const tsAuthUrl = useAppStore((s) => (tsNode ? s.tailscaleAuthUrls[tsNode.id] : undefined));
-  const tsLoginInitiated = useAppStore((s) =>
-    tsNode ? !!s.tailscaleLoginInitiated[tsNode.id] : false
-  );
-  const tsBadge = useMemo((): { pill: string; text: string } | null => {
-    const state = deriveTsCardState(
-      tsNode,
-      tsLoggedIn,
-      !!tsAuthUrl,
-      tsLoginInitiated || (!!tsNode && tsNode.id === selectedServerId)
-    );
-    switch (state) {
-      case 'connected':
-        return { pill: 'ok', text: t('nodes.meshTsSignedIn', '已登录') };
-      case 'key-ready':
-        // authKey = 静态凭据，等同 WG，本就没有登录态可言，别显示「已登录」。
-        return { pill: 'region', text: t('nodes.meshTsKeyReady', 'Auth Key') };
-      case 'needs-login':
-        return { pill: 'warn', text: t('nodes.meshTsNeedsLogin', '未登录') };
-      default:
-        return null; // no-node：卡片本身即「连接 Tailscale」入口，无角标
-    }
-  }, [tsNode, tsLoggedIn, tsAuthUrl, tsLoginInitiated, selectedServerId, t]);
-
   // 「添加 ▾」下拉菜单（原型 nodesAddMenu :3750：手动添加 / 手动导入 / 添加订阅）。
   const [addMenu, setAddMenu] = useState(false);
   const addWrapRef = useRef<HTMLDivElement>(null);
@@ -186,46 +144,6 @@ export function NodesScreen() {
     setServerPageAction(null);
     openDialog(serverPageAction === 'add-server' ? { kind: 'node' } : { kind: 'sub' });
   }, [serverPageAction, setServerPageAction, openDialog]);
-
-  // WARP「管理」下拉菜单（已注册时整卡点击弹出，原型 meshWarpManage :5003-5013）。
-  const [warpMenu, setWarpMenu] = useState(false);
-  const warpWrapRef = useRef<HTMLDivElement>(null);
-  const warpAnchored = useAnchoredMenu<HTMLButtonElement, HTMLDivElement>(warpMenu, 'left');
-  useEffect(() => {
-    if (!warpMenu) return;
-    const onDown = (e: MouseEvent) => {
-      if (!warpWrapRef.current?.contains(e.target as Node)) setWarpMenu(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setWarpMenu(false);
-    };
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [warpMenu]);
-
-  // Tailscale「管理」下拉菜单（已登录时整卡点击弹出：设置 / 切换账号 / 登出，1:1 对齐原型 meshTsManage :4877-4883）。
-  const [tsMenu, setTsMenu] = useState(false);
-  const tsWrapRef = useRef<HTMLDivElement>(null);
-  const tsAnchored = useAnchoredMenu<HTMLButtonElement, HTMLDivElement>(tsMenu, 'left');
-  useEffect(() => {
-    if (!tsMenu) return;
-    const onDown = (e: MouseEvent) => {
-      if (!tsWrapRef.current?.contains(e.target as Node)) setTsMenu(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setTsMenu(false);
-    };
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [tsMenu]);
 
   // 分组（单一真值：自建 → 组网 → 各订阅）
   const groups = useMemo(
@@ -995,7 +913,7 @@ export function NodesScreen() {
             </svg>
             <span>{t('nodes.testAll', '全部测速')}</span>
           </button>
-          <div ref={addWrapRef} style={{ position: 'relative' }}>
+          {!activeGroup?.isMesh && <div ref={addWrapRef} style={{ position: 'relative' }}>
             <button
               ref={addAnchored.anchorRef}
               type="button"
@@ -1063,7 +981,7 @@ export function NodesScreen() {
                 </button>
               </div>
             )}
-          </div>
+          </div>}
         </div>
       </div>
 
@@ -1296,251 +1214,53 @@ export function NodesScreen() {
           </button>
         </div>
       )}
-
-      {/* 接入组网（仅组网 tab 激活时显示；整卡可点，1:1 移植自原型 meshItem()，原型 renderMesh :4816 / meshItem :4806-4815） */}
+      {/* 组网页只承担“选择接入 + 管理已配置节点”。协议选择进入独立弹窗，避免协议越多页面首部越膨胀。 */}
       {activeGroup?.isMesh && (
-        <>
-          <div className="card mesh-card">
-            <div className="mesh-head">
-              <span className="card-h" style={{ margin: 0 }}>{t('nodes.meshCardTitle', '接入组网')}</span>
-              <span className="card-sub">
-                {t('nodes.meshCardSub', '把本机加入组网：账号制 Tailscale 或节点制 WireGuard / WARP')}
-              </span>
-            </div>
-            <div className="mesh-grid">
-              {/* Tailscale（账号制单例；已登录→整卡弹「设置/切换账号」菜单，未登录→整卡直接登录） */}
-              <div ref={tsWrapRef} style={{ position: 'relative' }}>
-                <button
-                  ref={tsAnchored.anchorRef}
-                  type="button"
-                  className="mesh-col clickable"
-                  onClick={() => (tsNode ? setTsMenu((v) => !v) : openDialog({ kind: 'ts-login' }))}
-                >
-                  <span className="mesh-ic">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
-                      <path d="M9 15l6-6M8 8a3 3 0 10-3 3M16 16a3 3 0 103 3" />
-                    </svg>
-                  </span>
-                  <div className="mesh-tx">
-                    <div className="mesh-col-h">
-                      <b>Tailscale</b>
-                      {tsBadge && (
-                        <span className="mesh-badge">
-                          <span className={`pill ${tsBadge.pill}`}>
-                            <span className="dot" style={{ width: 5, height: 5, background: 'currentColor' }} />
-                            {tsBadge.text}
-                          </span>
-                        </span>
-                      )}
-                    </div>
-                    <div className="mesh-col-sub">
-                      {tsNode
-                        ? `${tsNode.tailscaleSettings?.hostname || tsNode.name} · ${t('nodes.meshExitPrefix', '出口：')}${tsNode.tailscaleSettings?.exitNode || t('nodes.meshExitNone', '无')}`
-                        : t('home.meshTsSub', '账号制组网 · 交互登录 / Auth Key')}
-                    </div>
-                  </div>
-                  {!tsNode && (
-                    <svg className="mesh-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                      <path d="M9 6l6 6-6 6" />
-                    </svg>
-                  )}
-                </button>
-                {tsMenu && tsNode && (
-                  <div ref={tsAnchored.menuRef} className="mini-menu" role="menu" style={tsAnchored.style}>
-                    <button
-                      type="button"
-                      className="mi"
-                      role="menuitem"
-                      onClick={() => {
-                        setTsMenu(false);
-                        openDialog({ kind: 'ts-settings' });
-                      }}
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
-                        <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6" />
-                      </svg>
-                      <span>{t('nodes.meshTsSettingsMenu', '设置（出口节点）')}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="mi"
-                      role="menuitem"
-                      onClick={() => {
-                        setTsMenu(false);
-                        openDialog({ kind: 'ts-login' });
-                      }}
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
-                        <path d="M4 4v6h6M20 20v-6h-6M4 10a8 8 0 0114-3M20 14a8 8 0 01-14 3" />
-                      </svg>
-                      <span>{t('home.meshSwitchAccount', '切换账号')}</span>
-                    </button>
-                    <div className="mm-sep" />
-                    <button
-                      type="button"
-                      className="mi danger"
-                      role="menuitem"
-                      onClick={() => {
-                        setTsMenu(false);
-                        void tsLogout(tsNode);
-                      }}
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
-                        <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9" />
-                      </svg>
-                      <span>{t('nodes.meshTsLogoutMenu', '登出')}</span>
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {/* WARP（单例槽：已注册 → 整卡弹「管理」菜单；未注册 → 整卡接入。原型 meshWarpManage :5003）
-                  未移植原型的「取消 WARP+ 授权」：那是纯本地 mock 翻转，Cloudflare 无撤销许可端点，
-                  且 plan 根本没持久化（注册只落 warpDevice）——理由详见 nodes-logic.ts WarpMenuItem 头注。
-                  降级回免费版的真实做法 = 本菜单的「重新注册」时选免费档。 */}
-              <div ref={warpWrapRef} style={{ position: 'relative' }}>
-              <button
-                ref={warpAnchored.anchorRef}
-                type="button"
-                className="mesh-col clickable"
-                aria-haspopup={warpNode ? 'menu' : undefined}
-                aria-expanded={warpNode ? warpMenu : undefined}
-                onClick={() =>
-                  warpCardAction(!!warpNode) === 'menu'
-                    ? setWarpMenu((v) => !v)
-                    : openDialog({ kind: 'warp', edit: false })
-                }
-              >
-                <span className="mesh-ic">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
-                    <path d="M13 2L4 14h6l-1 8 9-12h-6z" />
-                  </svg>
-                </span>
-                <div className="mesh-tx">
-                  <div className="mesh-col-h">
-                    <b>WARP</b>
-                    {warpNode && (
-                      <span className="mesh-badge">
-                        <span className="pill ok">
-                          <span className="dot" style={{ width: 5, height: 5, background: 'currentColor' }} />
-                          {t('home.meshRegistered', '已注册')}
-                        </span>
-                      </span>
-                    )}
-                  </div>
-                  <div className="mesh-col-sub">
-                    {warpNode ? warpNode.name : t('home.meshWarpSub', '注册匿名设备接入 · 免费 / WARP+')}
-                  </div>
-                </div>
-                {!warpNode && (
-                  <svg className="mesh-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                    <path d="M9 6l6 6-6 6" />
-                  </svg>
-                )}
-              </button>
-              {warpMenu && warpNode && (
-                <div ref={warpAnchored.menuRef} className="mini-menu" role="menu" style={warpAnchored.style}>
-                  <div className="mm-lbl">WARP</div>
-                  {/* 设置：路由 / MTU / Reserved / 前置代理 + WARP+ 许可（applyWarpLicense 真升级）。
-                      原型的「升级为 WARP+（填入许可密钥）」即此弹窗的 WARP+ 档，不另开一项。 */}
-                  <button
-                    type="button"
-                    className="mi"
-                    role="menuitem"
-                    data-act="warp-edit"
-                    onClick={() => {
-                      setWarpMenu(false);
-                      openDialog({ kind: 'warp', edit: true });
-                    }}
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
-                      <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6" />
-                    </svg>
-                    <span>{t('nodes.meshWarpSettingsMenu', '设置（路由 / WARP+ 许可）')}</span>
-                  </button>
-                  {/* 重新注册：WARP 是单例槽，必须先删旧设备（同时向 CF 注销）再开注册向导，
-                      否则 warpSlotTaken 硬闸门会拦下第二个。 */}
-                  <button
-                    type="button"
-                    className="mi"
-                    role="menuitem"
-                    data-act="warp-reregister"
-                    onClick={() => {
-                      setWarpMenu(false);
-                      removeWarpNode(warpNode, {
-                        title: t('nodes.meshWarpReRegisterTitle', '重新注册 WARP'),
-                        message: t(
-                          'nodes.meshWarpReRegisterMsg',
-                          '将先注销当前 WARP 设备（并移除该节点），再开始注册一台新的匿名设备。当前设备的 WARP+ 许可不会转移到新设备。',
-                        ),
-                        okToast: t('nodes.meshWarpReRegisterOk', '已注销旧设备，请继续注册'),
-                        afterDelete: () => openDialog({ kind: 'warp', edit: false }),
-                      });
-                    }}
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
-                      <path d="M13 2L4 14h6l-1 8 9-12h-6z" />
-                    </svg>
-                    <span>{t('nodes.meshWarpReRegister', '重新注册')}</span>
-                  </button>
-                  <div className="mm-sep" />
-                  <button
-                    type="button"
-                    className="mi danger"
-                    role="menuitem"
-                    data-act="warp-deregister"
-                    onClick={() => {
-                      setWarpMenu(false);
-                      removeWarpNode(warpNode, {
-                        title: t('nodes.meshWarpDeregisterTitle', '注销 WARP 设备'),
-                        message: t(
-                          'nodes.meshWarpDeregisterMsg',
-                          '将向 Cloudflare 注销此匿名设备并移除该节点，此操作无法撤销。若已绑定 WARP+ 许可，注销后需要重新绑定到新设备。',
-                        ),
-                        okToast: t('nodes.meshWarpDeregisterOk', '已注销 WARP 设备'),
-                      });
-                    }}
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
-                      <path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" />
-                    </svg>
-                    <span>{t('nodes.meshWarpDeregister', '注销设备')}</span>
-                  </button>
-                </div>
-              )}
-              </div>
-
-              {/* WireGuard（可多实例；整卡恒为「新增」入口，编辑现有节点走下方节点网格） */}
-              <button
-                type="button"
-                className="mesh-col add clickable"
-                onClick={() => openDialog({ kind: 'wg' })}
-              >
-                <span className="mesh-ic add">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
-                    <path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z" />
-                  </svg>
-                </span>
-                <div className="mesh-tx">
-                  <div className="mesh-col-h">
-                    <b>WireGuard</b>
-                  </div>
-                  <div className="mesh-col-sub">
-                    {wgCount > 0
-                      ? t('home.meshWgAdded', '已添加 {{n}} 个 · .conf 导入 / 手动填写', { n: wgCount })
-                      : t('home.meshWgSub', '.conf 导入 / 手动填写')}
-                  </div>
-                </div>
-                <svg className="mesh-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                  <path d="M12 5v14M5 12h14" />
-                </svg>
-              </button>
+        <div className="mesh-list-head">
+          <div>
+            <div className="card-h">{t('nodes.meshNodesLabel', '组网节点')}</div>
+            <div className="card-sub">
+              {t('nodes.meshListSummary', {
+                defaultValue: '已配置 {{count}} 个接入；编辑与状态操作在下方节点卡片中完成',
+                count: activeGroup.servers.length,
+              })}
             </div>
           </div>
-          <div className="field-lbl">
-            <span>{t('nodes.meshNodesLabel', '组网节点')}</span>
-          </div>
-        </>
+          <button
+            type="button"
+            className="btn flow"
+            onClick={() =>
+              openDialog({
+                kind: 'mesh-join',
+                onTsLogout: (node) => void tsLogout(node),
+                onWarpReregister: (node) =>
+                  removeWarpNode(node, {
+                    title: t('nodes.meshWarpReRegisterTitle', '重新注册 WARP'),
+                    message: t(
+                      'nodes.meshWarpReRegisterMsg',
+                      '将先注销当前 WARP 设备（并移除该节点），再开始注册一台新的匿名设备。当前设备的 WARP+ 许可不会转移到新设备。',
+                    ),
+                    okToast: t('nodes.meshWarpReRegisterOk', '已注销旧设备，请继续注册'),
+                    afterDelete: () => openDialog({ kind: 'warp', edit: false }),
+                  }),
+                onWarpDeregister: (node) =>
+                  removeWarpNode(node, {
+                    title: t('nodes.meshWarpDeregisterTitle', '注销 WARP 设备'),
+                    message: t(
+                      'nodes.meshWarpDeregisterMsg',
+                      '将向 Cloudflare 注销此匿名设备并移除该节点，此操作无法撤销。若已绑定 WARP+ 许可，注销后需要重新绑定到新设备。',
+                    ),
+                    okToast: t('nodes.meshWarpDeregisterOk', '已注销 WARP 设备'),
+                  }),
+              })
+            }
+          >
+            <svg viewBox="0 0 24 24" width={15} fill="none" stroke="currentColor" strokeWidth={1.8}>
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+            <span>{t('nodes.meshAddAccess', '添加接入')}</span>
+          </button>
+        </div>
       )}
 
       {/* 节点网格 */}
@@ -1555,6 +1275,8 @@ export function NodesScreen() {
                 ? t('nodes.emptyFiltered', '无匹配节点')
                 : activeSub
                   ? t('nodes.emptySub', '该订阅当前没有节点，点上方「刷新」重新拉取')
+                  : activeGroup?.isMesh
+                    ? t('nodes.meshEmpty', '暂无组网接入，点上方「添加接入」开始配置')
                   : t('nodes.empty', '暂无节点，点右上「添加」')}
             </p>
           </div>

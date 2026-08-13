@@ -178,6 +178,7 @@ const SAMPLES: Record<NodeProto, ServerConfig> = {
   // OpenConnect：server 是 host:port **单串**；flavor 决定按哪家商用 VPN 的方言握手。
   openconnect: {
     ...META,
+    address: 'vpn.example.com',
     protocol: 'openconnect',
     openconnectSettings: {
       server: 'vpn.example.com:443', username: 'u', password: 'p',
@@ -2571,11 +2572,38 @@ describe('endpoint 腿 VPN 客户端的内网段与全隧道开关', () => {
   it('meshRoutes 落 ServerConfig **顶层**，不进 settings 块', () => {
     // 那两个 settings 块的键名 = sing-box 键名、整体 flatten 下发；混进一个内核不认的键会硬报错。
     const cfg = protoCodec.openconnect.toConfig(
-      { ocServer: 'vpn.example.com:443', meshRoutes: '10.10.0.0/16\n  \n192.168.1.0/24' },
-      { id: 'x', name: 'X', protocol: 'openconnect', address: '', port: 0 } as ServerConfig
+      { meshRoutes: '10.10.0.0/16\n  \n192.168.1.0/24' },
+      { id: 'x', name: 'X', protocol: 'openconnect', address: 'vpn.example.com', port: 443 } as ServerConfig
     );
     expect(cfg.meshRoutes).toEqual(['10.10.0.0/16', '192.168.1.0/24']);
     expect(JSON.stringify(cfg.openconnectSettings)).not.toContain('meshRoutes');
+  });
+
+  it('OpenConnect server 只由公共地址/端口派生，IPv6 自动补方括号', () => {
+    const base = { id: 'x', name: 'X', protocol: 'openconnect', address: '2001:db8::1', port: 4443 } as ServerConfig;
+    expect(protoCodec.openconnect.toConfig({}, base).openconnectSettings?.server).toBe('[2001:db8::1]:4443');
+  });
+
+  it('OpenVPN 根级与 TLS 扩展使用两个独立透传袋', () => {
+    const base = {
+      id: 'x', name: 'X', protocol: 'openvpn-client', address: 'vpn.example.com', port: 1194,
+      openvpnClientSettings: {
+        tls: { certificate: ['CA'], server_name: 'old.example.com' },
+      },
+    } as ServerConfig;
+    const cfg = protoCodec['openvpn-client'].toConfig(
+      {
+        ovpnCa: 'CA',
+        extraJson: '{"route_no_pull":true,"server":"must-not-win.example"}',
+        ovpnTlsExtraJson: '{"server_name":"new.example.com","certificate":["must-not-win"]}',
+      },
+      base
+    );
+    expect(cfg.openvpnClientSettings?.route_no_pull).toBe(true);
+    expect(cfg.openvpnClientSettings?.tls?.server_name).toBe('new.example.com');
+    expect(cfg.openvpnClientSettings?.tls?.route_no_pull).toBeUndefined();
+    expect(cfg.openvpnClientSettings?.server).toBe('vpn.example.com');
+    expect(cfg.openvpnClientSettings?.tls?.certificate).toEqual(['CA']);
   });
 
   it('meshRoutes 往返无损；空文本 → 删键而非空数组', () => {

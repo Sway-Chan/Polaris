@@ -404,6 +404,24 @@ const bagOf = (settings: unknown): Record<string, unknown> => {
   );
 };
 
+/** OpenVPN `tls` 是独立嵌套命名空间，不能复用父 settings 的建模键表。 */
+const OPENVPN_TLS_KEYS = ['certificate', 'client_certificate', 'client_key'] as const;
+const openvpnTlsBagOf = (tls: unknown): Record<string, unknown> => {
+  if (!tls || typeof tls !== 'object') return {};
+  return Object.fromEntries(
+    Object.entries(tls as Record<string, unknown>).filter(
+      ([key]) => !OPENVPN_TLS_KEYS.includes(key as (typeof OPENVPN_TLS_KEYS)[number])
+    )
+  );
+};
+
+/** OpenConnect 的内核字段为单串 `host:port`；IPv6 地址必须补方括号。 */
+export function endpointHostPort(address: string, port: number): string {
+  const host = address.trim();
+  const bracketed = host.startsWith('[') && host.endsWith(']');
+  return `${host.includes(':') && !bracketed ? `[${host}]` : host}:${port}`;
+}
+
 /** 透传袋 ⇄ 表单：袋子在表单里是一段原样 JSON。空对象 → 空串（不给用户看 `{}`）。 */
 const bagToText = (bag: unknown): string => {
   const m = bag && typeof bag === 'object' ? (bag as Record<string, unknown>) : {};
@@ -609,7 +627,6 @@ export const protoCodec: Record<NodeProto, ProtoCodec> = {
   openconnect: {
     fromConfig(cfg) {
       const d = base0('openconnect');
-      d.ocServer = cfg.openconnectSettings?.server ?? '';
       d.user = cfg.openconnectSettings?.username ?? '';
       d.pwd = cfg.openconnectSettings?.password ?? '';
       d.flavor = cfg.openconnectSettings?.flavor ?? 'anyconnect';
@@ -633,7 +650,8 @@ export const protoCodec: Record<NodeProto, ProtoCodec> = {
         meshRoutes: cidrLines(draft.meshRoutes),
         openconnectSettings: {
           ...base.openconnectSettings,
-          server: str(draft.ocServer),
+          ...(textToBag(draft.extraJson) ?? bagOf(base.openconnectSettings)),
+          server: base.address && base.port ? endpointHostPort(base.address, base.port) : undefined,
           username: str(draft.user),
           password: str(draft.pwd),
           flavor: str(draft.flavor),
@@ -646,7 +664,6 @@ export const protoCodec: Record<NodeProto, ProtoCodec> = {
           user_agent: str(draft.userAgent),
           reported_os: str(draft.reportedOs),
           system: draft.sysIface === true ? true : undefined,
-          ...(textToBag(draft.extraJson) ?? bagOf(base.openconnectSettings)),
         },
       };
     },
@@ -669,6 +686,7 @@ export const protoCodec: Record<NodeProto, ProtoCodec> = {
       d.sysIface = cfg.openvpnClientSettings?.system === true;
       d.meshRoutes = (cfg.meshRoutes ?? []).join('\n');
       d.extraJson = bagToText(bagOf(cfg.openvpnClientSettings));
+      d.ovpnTlsExtraJson = bagToText(openvpnTlsBagOf(cfg.openvpnClientSettings?.tls));
       return d;
     },
     toConfig(draft, base) {
@@ -681,6 +699,7 @@ export const protoCodec: Record<NodeProto, ProtoCodec> = {
         meshRoutes: cidrLines(draft.meshRoutes),
         openvpnClientSettings: {
           ...base.openvpnClientSettings,
+          ...(textToBag(draft.extraJson) ?? bagOf(base.openvpnClientSettings)),
           server: base.address || undefined,
           server_port: base.port || undefined,
           username: str(draft.user),
@@ -695,12 +714,11 @@ export const protoCodec: Record<NodeProto, ProtoCodec> = {
           redirect_gateway: draft.redirectGw === true ? true : false,
           system: draft.sysIface === true ? true : undefined,
           tls: {
+            ...(textToBag(draft.ovpnTlsExtraJson) ?? openvpnTlsBagOf(base.openvpnClientSettings?.tls)),
             certificate: lines(draft.ovpnCa),
             client_certificate: lines(draft.ovpnCert),
             client_key: lines(draft.ovpnKey),
-            ...(textToBag(draft.extraJson) ?? bagOf(base.openvpnClientSettings)),
-        },
-          ...(textToBag(draft.extraJson) ?? bagOf(base.openvpnClientSettings)),
+          },
         },
       };
     },

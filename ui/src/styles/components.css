@@ -109,6 +109,20 @@
 .sub-tabs .cnt::before{ content:"·"; margin-right:4px; color:hsl(var(--fg-faint)); }
 .sub-tabs button.on .cnt{ color:hsl(var(--fg-dim)); }
 
+/* 长协议表单页签：固定在公共端点字段之后，面板只渲染当前任务层，避免纵向表单无限膨胀。 */
+.form-tabs{ display:flex; width:100%; margin:4px 0 12px; }
+.form-tabs button{ flex:1; justify-content:center; }
+.form-tab-panel{ min-height:180px; }
+.secret-field{ position:relative; }
+.secret-field > .input{ width:100%; padding-right:38px; }
+.secret-masked{ -webkit-text-security:disc; }
+.secret-toggle{
+  position:absolute; top:8px; right:8px; display:grid; width:26px; height:26px;
+  place-items:center; border:0; border-radius:6px; color:hsl(var(--muted));
+  background:hsl(var(--surface)); cursor:pointer;
+}
+.secret-toggle:hover{ color:hsl(var(--text)); background:hsl(var(--surface-2)); }
+
 /* stub（空态占位，L1302-1306）*/
 .stub{ border:1px dashed hsl(var(--hair)); border-radius:var(--r); padding:40px 22px; text-align:center; color:hsl(var(--fg-faint)); }
 .stub h4{ font-size:14px; font-weight:640; color:hsl(var(--fg-dim)); margin:0 0 5px; }
@@ -500,6 +514,15 @@
 .mesh-col-sub{ font-size:11px; color:hsl(var(--fg-dim)); line-height:1.4;
   display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
 .mesh-acts{ display:flex; align-items:center; gap:6px; flex:none; }
+.mesh-list-head{ display:flex; align-items:center; gap:14px; justify-content:space-between; margin:2px 0 12px; }
+.mesh-list-head .card-sub{ margin-top:2px; }
+.mesh-choice-grid{ grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); margin-top:8px; }
+.mesh-choice{ min-width:0; }
+.mesh-choice > .mesh-col{ width:100%; text-align:left; }
+.mesh-choice-actions{ display:flex; justify-content:flex-end; gap:6px; padding:6px 4px 0; }
+.mesh-join-intro{ margin:0 0 14px; line-height:1.6; }
+.mesh-join-hint{ margin-top:12px; }
+.danger-text{ color:hsl(var(--err)) !important; }
 /* 弹窗内提示 / 进行态 / 成功态 / .conf 预览 */
 .warn-line{ display:flex; gap:7px; align-items:flex-start; font-size:11px; color:hsl(var(--warn));
   background:hsl(var(--warn)/0.1); padding:8px 10px; border-radius:var(--r-sm); margin-top:10px; line-height:1.5; }

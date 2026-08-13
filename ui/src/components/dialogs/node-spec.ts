@@ -488,7 +488,24 @@ const whenStls = (v: FormValues): boolean => v.stls === true;
  * ND_SPEC —— 每协议 { cred, adv }。字段键与 protoCodec 读写键一一对应。
  * label/hint 用 `node.field.*` i18n 键，**没有 zh 缺省**（真值源只有 locale 一处，见文件头）。
  */
-export const ND_SPEC: Record<NodeProto, { cred: FieldSpec[]; adv: FieldSpec[] }> = {
+export type NodeFieldGroupId = 'basic' | 'routing' | 'advanced';
+
+export interface NodeFieldGroup {
+  id: NodeFieldGroupId;
+  fields: FieldSpec[];
+}
+
+interface NodeSpec {
+  cred: FieldSpec[];
+  adv: FieldSpec[];
+  /**
+   * 长表单专用的信息架构。存在时 NodeDialog 按页签渲染，`cred/adv` 留空；短协议继续沿用
+   * inline + 折叠段，避免为了统一外观把全部 17 个协议一并复杂化。
+   */
+  groups?: NodeFieldGroup[];
+}
+
+export const ND_SPEC: Record<NodeProto, NodeSpec> = {
   vless: {
     cred: [{ t: 'text', k: 'uuid', label: 'node.field.uuid', mono: true }],
     adv: [
@@ -777,37 +794,46 @@ export const ND_SPEC: Record<NodeProto, { cred: FieldSpec[]; adv: FieldSpec[] }>
     ],
   },
   // ── OpenConnect（2026-08-11）──
-  // 一个协议覆盖六家商用 VPN，由 flavor 区分。server 是 `host:port` **单串**（内核这支就是整串）。
+  // 一个协议覆盖六家商用 VPN，由 flavor 区分。内核需要的 `server: host:port` 由 NodeDialog 顶部
+  // 公共地址/端口派生，表单不再维护第二份 server 真值。
   // csd / hip / tncc / fortinet_host_check / form_entries 刻意**不进表单**：各家专有的外部认证
   // 脚本钩子，语义强绑定厂商，做成通用控件只会误导 —— 需要的走「自定义」协议直通。
   openconnect: {
-    cred: [
-      { t: 'text', k: 'ocServer', label: 'node.field.ocServer', ph: 'vpn.example.com:443', mono: true },
-      { t: 'text', k: 'user', label: 'node.field.user' },
-      { t: 'text', k: 'pwd', label: 'node.field.pwd', mono: true },
-      { t: 'select', k: 'flavor', label: 'node.field.flavor', options: [
-        ['anyconnect', 'Cisco AnyConnect'], ['gp', 'Palo Alto GlobalProtect'], ['fortinet', 'Fortinet'],
-        ['f5', 'F5'], ['pulse', 'Pulse Secure'], ['nc', 'Juniper Network Connect'],
-      ] },
-    ],
-    adv: [
-      { t: 'textarea', k: 'meshRoutes', label: 'node.field.meshRoutes', hint: 'node.field.meshRoutesHint', mono: true, rows: 3, opt: true, ph: '10.10.0.0/16' },
-      { t: 'text', k: 'authGroup', label: 'node.field.authGroup', opt: true },
-      { t: 'text', k: 'token', label: 'node.field.token', mono: true, opt: true },
-      { t: 'number', k: 'mtu', label: 'node.field.mtu', opt: true },
-      { t: 'switch', k: 'noUdp', label: 'node.field.noUdp' },
-      { t: 'switch', k: 'pfs', label: 'node.field.pfs' },
-      { t: 'switch', k: 'insecureCrypto', label: 'node.field.insecureCrypto', hint: 'node.field.insecureCryptoHint' },
-      { t: 'text', k: 'userAgent', label: 'node.field.userAgent', opt: true },
-      { t: 'text', k: 'reportedOs', label: 'node.field.reportedOs', opt: true },
-      { t: 'switch', k: 'sysIface', label: 'node.field.sysIface', hint: 'node.field.sysIfaceHint' },
-      // ── 透传袋入口（2026-08-11）──
-      // 表单是**精选子集**，其余键（openconnect 61 键里的 csd/cookie/compression_mode…）
-      // 此前只有「从本地文件导入」才进得了袋子，手建节点根本够不到 —— 等于「支持」只对导入成立。
-      // 与其再铺几十个控件，不如给袋子一个入口：一个控件覆盖全部剩余字段，
-      // 且**不需要改用自定义协议**（那会丢掉本协议的表单与校验）。
-      // 内容原样合并进下发配置；同名键由上面的具名字段压过（生成侧显式 remove，见 outbound.rs）。
-      { t: 'textarea', k: 'extraJson', label: 'node.field.extraJson', hint: 'node.field.extraJsonHint', mono: true, rows: 4, opt: true },
+    cred: [],
+    adv: [],
+    groups: [
+      {
+        id: 'basic',
+        fields: [
+          { t: 'text', k: 'user', label: 'node.field.user' },
+          { t: 'text', k: 'pwd', label: 'node.field.pwd', mono: true, secret: true },
+          { t: 'select', k: 'flavor', label: 'node.field.flavor', options: [
+            ['anyconnect', 'Cisco AnyConnect'], ['gp', 'Palo Alto GlobalProtect'], ['fortinet', 'Fortinet'],
+            ['f5', 'F5'], ['pulse', 'Pulse Secure'], ['nc', 'Juniper Network Connect'],
+          ] },
+          { t: 'text', k: 'authGroup', label: 'node.field.authGroup', opt: true },
+          { t: 'text', k: 'token', label: 'node.field.token', mono: true, opt: true, secret: true },
+        ],
+      },
+      {
+        id: 'routing',
+        fields: [
+          { t: 'textarea', k: 'meshRoutes', label: 'node.field.meshRoutes', hint: 'node.field.meshRoutesHint', mono: true, rows: 3, opt: true, ph: '10.10.0.0/16' },
+          { t: 'switch', k: 'sysIface', label: 'node.field.sysIface', hint: 'node.field.sysIfaceHint' },
+        ],
+      },
+      {
+        id: 'advanced',
+        fields: [
+          { t: 'number', k: 'mtu', label: 'node.field.mtu', opt: true },
+          { t: 'switch', k: 'noUdp', label: 'node.field.noUdp' },
+          { t: 'switch', k: 'pfs', label: 'node.field.pfs' },
+          { t: 'switch', k: 'insecureCrypto', label: 'node.field.insecureCrypto', hint: 'node.field.insecureCryptoHint' },
+          { t: 'text', k: 'userAgent', label: 'node.field.userAgent', opt: true },
+          { t: 'text', k: 'reportedOs', label: 'node.field.reportedOs', opt: true },
+          { t: 'textarea', k: 'extraJson', label: 'node.field.extraJson', hint: 'node.field.extraJsonHint', mono: true, rows: 4, opt: true },
+        ],
+      },
     ],
   },
   // ── OpenVPN 客户端（2026-08-11）──
@@ -815,28 +841,38 @@ export const ND_SPEC: Record<NodeProto, { cred: FieldSpec[]; adv: FieldSpec[] }>
   // 只给 certificate（CA）——peer_fingerprint 必须是规范小写十六进制，做成输入框会制造一类
   // 只有真连才暴露的错误。server 端不做。
   'openvpn-client': {
-    cred: [
-      { t: 'text', k: 'user', label: 'node.field.user' },
-      { t: 'text', k: 'pwd', label: 'node.field.pwd', mono: true },
-      { t: 'text', k: 'ovpnCa', label: 'node.field.ovpnCa', hint: 'node.field.ovpnCaHint', mono: true },
-    ],
-    adv: [
-      { t: 'select', k: 'network', label: 'node.field.net', options: [['', 'UDP (default)'], ['tcp', 'TCP'], ['udp', 'UDP']] },
-      { t: 'text', k: 'cipher', label: 'node.field.cipher', ph: 'AES-256-GCM', opt: true },
-      { t: 'text', k: 'ovpnAuth', label: 'node.field.ovpnAuth', ph: 'SHA256', opt: true },
-      { t: 'number', k: 'mtu', label: 'node.field.mtu', opt: true },
-      { t: 'textarea', k: 'meshRoutes', label: 'node.field.meshRoutes', hint: 'node.field.meshRoutesHint', mono: true, rows: 3, opt: true, ph: '10.10.0.0/16' },
-      { t: 'switch', k: 'redirectGw', label: 'node.field.redirectGw', hint: 'node.field.redirectGwHint' },
-      { t: 'switch', k: 'sysIface', label: 'node.field.sysIface', hint: 'node.field.sysIfaceHint' },
-      { t: 'text', k: 'ovpnCert', label: 'node.field.ovpnCert', mono: true, opt: true },
-      { t: 'text', k: 'ovpnKey', label: 'node.field.ovpnKey', mono: true, opt: true },
-      // ── 透传袋入口（2026-08-11）──
-      // 表单是**精选子集**，其余键（openconnect 61 键里的 csd/cookie/compression_mode…）
-      // 此前只有「从本地文件导入」才进得了袋子，手建节点根本够不到 —— 等于「支持」只对导入成立。
-      // 与其再铺几十个控件，不如给袋子一个入口：一个控件覆盖全部剩余字段，
-      // 且**不需要改用自定义协议**（那会丢掉本协议的表单与校验）。
-      // 内容原样合并进下发配置；同名键由上面的具名字段压过（生成侧显式 remove，见 outbound.rs）。
-      { t: 'textarea', k: 'extraJson', label: 'node.field.extraJson', hint: 'node.field.extraJsonHint', mono: true, rows: 4, opt: true },
+    cred: [],
+    adv: [],
+    groups: [
+      {
+        id: 'basic',
+        fields: [
+          { t: 'text', k: 'user', label: 'node.field.user' },
+          { t: 'text', k: 'pwd', label: 'node.field.pwd', mono: true, secret: true },
+          { t: 'textarea', k: 'ovpnCa', label: 'node.field.ovpnCa', hint: 'node.field.ovpnCaHint', mono: true, rows: 5 },
+          { t: 'textarea', k: 'ovpnCert', label: 'node.field.ovpnCert', mono: true, rows: 5, opt: true },
+          { t: 'textarea', k: 'ovpnKey', label: 'node.field.ovpnKey', mono: true, rows: 5, opt: true, secret: true },
+        ],
+      },
+      {
+        id: 'routing',
+        fields: [
+          { t: 'textarea', k: 'meshRoutes', label: 'node.field.meshRoutes', hint: 'node.field.meshRoutesHint', mono: true, rows: 3, opt: true, ph: '10.10.0.0/16' },
+          { t: 'switch', k: 'redirectGw', label: 'node.field.redirectGw', hint: 'node.field.redirectGwHint' },
+          { t: 'switch', k: 'sysIface', label: 'node.field.sysIface', hint: 'node.field.sysIfaceHint' },
+        ],
+      },
+      {
+        id: 'advanced',
+        fields: [
+          { t: 'select', k: 'network', label: 'node.field.net', options: [['', 'UDP (default)'], ['tcp', 'TCP'], ['udp', 'UDP']] },
+          { t: 'text', k: 'cipher', label: 'node.field.cipher', ph: 'AES-256-GCM', opt: true },
+          { t: 'text', k: 'ovpnAuth', label: 'node.field.ovpnAuth', ph: 'SHA256', opt: true },
+          { t: 'number', k: 'mtu', label: 'node.field.mtu', opt: true },
+          { t: 'textarea', k: 'ovpnTlsExtraJson', label: 'node.field.ovpnTlsExtraJson', hint: 'node.field.ovpnTlsExtraJsonHint', mono: true, rows: 4, opt: true },
+          { t: 'textarea', k: 'extraJson', label: 'node.field.extraJson', hint: 'node.field.extraJsonHint', mono: true, rows: 4, opt: true },
+        ],
+      },
     ],
   },
   // SSH：无强制必填字段（后端 protocol_requirement_ok 仅需 address/port）。
@@ -880,7 +916,10 @@ export const ND_SPEC: Record<NodeProto, { cred: FieldSpec[]; adv: FieldSpec[] }>
 
 /** 某协议的全部字段（cred + adv 展平），供草稿构造/显隐过滤。 */
 export function allFields(proto: NodeProto): FieldSpec[] {
-  return [...ND_SPEC[proto].cred, ...ND_SPEC[proto].adv];
+  const spec = ND_SPEC[proto];
+  return spec.groups
+    ? spec.groups.flatMap((group) => group.fields)
+    : [...spec.cred, ...spec.adv];
 }
 
 // ── C10：custom 协议内核兼容性 probe（`kernel:probeOutbound`）显示态 ──────────────────────

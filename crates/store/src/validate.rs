@@ -126,7 +126,50 @@ pub fn protocol_requirement_ok(proto_lower: &str, server: &Value) -> bool {
                     .and_then(|v| v.as_array())
                     .is_some_and(|a| !a.is_empty())
         }
-        "socks" | "http" | "ssh" | "tailscale" => true, // 仅需 address/port（通用校验）或账号制无硬必填
+        "hysteria" => {
+            let hs = obj.get("hysteriaSettings");
+            let auth = hs
+                .and_then(|s| s.get("authStr").or_else(|| s.get("auth")))
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.trim().is_empty());
+            let positive = |key: &str| {
+                hs.and_then(|s| s.get(key))
+                    .and_then(Value::as_u64)
+                    .is_some_and(|n| n > 0)
+            };
+            auth && positive("upMbps") && positive("downMbps")
+        }
+        "openconnect" => {
+            let settings = obj.get("openconnectSettings");
+            ["server", "username", "password", "flavor"]
+                .iter()
+                .all(|key| {
+                    settings
+                        .and_then(|s| s.get(*key))
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| !value.trim().is_empty())
+                })
+        }
+        "openvpn-client" => {
+            let settings = obj.get("openvpnClientSettings");
+            let text = |key: &str| {
+                settings
+                    .and_then(|s| s.get(key))
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty())
+            };
+            text("server")
+                && text("username")
+                && text("password")
+                && settings
+                    .and_then(|s| s.get("server_port"))
+                    .and_then(Value::as_u64)
+                    .is_some_and(|port| (1..=65535).contains(&port))
+                && settings
+                    .and_then(|s| s.get("tls"))
+                    .is_some_and(Value::is_object)
+        }
+        "socks" | "http" | "ssh" | "tailscale" | "tor" => true, // 仅需通用 address/port，或协议本身无地址/无硬必填
         "custom" => {
             // raw-JSON 透传：须是含 type 字段的 outbound 对象
             obj.get("customSettings")
@@ -312,6 +355,24 @@ mod tests {
         // wireguard 缺 localAddress → 不通过
         let wg = serde_json::json!({"wireguardSettings":{"privateKey":"k","peerPublicKey":"p"}});
         assert!(!protocol_requirement_ok("wireguard", &wg));
+
+        let hysteria =
+            serde_json::json!({"hysteriaSettings":{"authStr":"a","upMbps":10,"downMbps":20}});
+        assert!(protocol_requirement_ok("hysteria", &hysteria));
+        assert!(protocol_requirement_ok("tor", &serde_json::json!({})));
+
+        let oc = serde_json::json!({"openconnectSettings":{
+            "server":"vpn.example.com:443","username":"u","password":"p","flavor":"anyconnect"
+        }});
+        assert!(protocol_requirement_ok("openconnect", &oc));
+        let ovpn = serde_json::json!({"openvpnClientSettings":{
+            "server":"vpn.example.com","server_port":1194,"username":"u","password":"p","tls":{}
+        }});
+        assert!(protocol_requirement_ok("openvpn-client", &ovpn));
+        assert!(!protocol_requirement_ok(
+            "openvpn-client",
+            &serde_json::json!({"openvpnClientSettings":{"server":"x"}})
+        ));
     }
 
     #[test]

@@ -26,6 +26,7 @@
  * select 选项文案多为专有名词（TCP/xtls-rprx-vision/…）直接字面量，不入 i18n。
  */
 
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Csel, type CselOption } from './Csel';
 
@@ -91,9 +92,9 @@ interface FieldBase {
  * 新增字段类型 → 加一支 union + 一个 case（never 兜底保证补全）。
  */
 export type FieldSpec =
-  | (FieldBase & { t: 'text'; ph?: string; mono?: boolean })
+  | (FieldBase & { t: 'text'; ph?: string; mono?: boolean; secret?: boolean })
   | (FieldBase & { t: 'number'; ph?: string; mono?: boolean })
-  | (FieldBase & { t: 'textarea'; ph?: string; mono?: boolean; rows?: number })
+  | (FieldBase & { t: 'textarea'; ph?: string; mono?: boolean; rows?: number; secret?: boolean })
   | (FieldBase & { t: 'select'; options: readonly SelectOption[] })
   | (FieldBase & {
       t: 'switch';
@@ -165,6 +166,7 @@ export interface FieldRendererProps {
  */
 export function FieldRenderer({ spec, value, onChange }: FieldRendererProps) {
   const { t } = useTranslation();
+  const [secretVisible, setSecretVisible] = useState(false);
   /**
    * `t(key, zh?)` —— zh 缺省可选之后必须分两条调用路径，**不能写成 `t(key, zh)` 直接把 undefined 递进去**：
    * i18next 的 `t` 是重载并集，第二参为 `undefined` 时会选中 `options?: TOptions` 那一支，`tsc` 直接报
@@ -255,33 +257,66 @@ export function FieldRenderer({ spec, value, onChange }: FieldRendererProps) {
   }
 
   if (spec.t === 'textarea') {
+    const textarea = (
+      <textarea
+        id={fid}
+        className={`input${spec.mono ? ' mono' : ''}${spec.secret && !secretVisible ? ' secret-masked' : ''}`}
+        rows={spec.rows ?? 4}
+        value={typeof value === 'string' ? value : ''}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={spec.ph}
+      />
+    );
     return (
       <div className="fld">
         {labelEl}
-        <textarea
-          id={fid}
-          className={`input${spec.mono ? ' mono' : ''}`}
-          rows={spec.rows ?? 4}
-          value={typeof value === 'string' ? value : ''}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={spec.ph}
-        />
+        {spec.secret ? (
+          <div className="secret-field">
+            {textarea}
+            <button
+              type="button"
+              className="secret-toggle"
+              aria-label={secretVisible ? t('common.hideSecret', '隐藏敏感内容') : t('common.showSecret', '显示敏感内容')}
+              aria-pressed={secretVisible}
+              onClick={() => setSecretVisible((visible) => !visible)}
+            >
+              {secretVisible ? '◉' : '◎'}
+            </button>
+          </div>
+        ) : textarea}
         {hintEl}
       </div>
     );
   }
 
   // text（默认）
+  const input = (
+    <input
+      id={fid}
+      type={spec.secret && !secretVisible ? 'password' : 'text'}
+      className={`input${spec.mono ? ' mono' : ''}`}
+      value={typeof value === 'string' ? value : ''}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={spec.ph ?? '—'}
+    />
+  );
   return (
     <div className="fld">
       {labelEl}
-      <input
-        id={fid}
-        className={`input${spec.mono ? ' mono' : ''}`}
-        value={typeof value === 'string' ? value : ''}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={spec.ph ?? '—'}
-      />
+      {spec.secret ? (
+        <div className="secret-field">
+          {input}
+          <button
+            type="button"
+            className="secret-toggle"
+            aria-label={secretVisible ? t('common.hideSecret', '隐藏敏感内容') : t('common.showSecret', '显示敏感内容')}
+            aria-pressed={secretVisible}
+            onClick={() => setSecretVisible((visible) => !visible)}
+          >
+            {secretVisible ? '◉' : '◎'}
+          </button>
+        </div>
+      ) : input}
       {hintEl}
     </div>
   );

@@ -42,6 +42,10 @@ function protocolLabel(proto: string): string {
     socks: 'SOCKS',
     http: 'HTTP',
     ssh: 'SSH',
+    hysteria: 'Hysteria',
+    tor: 'Tor',
+    openconnect: 'OpenConnect',
+    'openvpn-client': 'OpenVPN',
     custom: 'Custom',
   };
   return map[proto.toLowerCase()] ?? proto;
@@ -52,6 +56,8 @@ function transferSummary(server: ServerConfig): string {
   const proto = server.protocol.toLowerCase();
   if (proto === 'wireguard') return 'udp · wg';
   if (proto === 'tailscale') return 'mesh · wg';
+  if (proto === 'openconnect') return 'enterprise vpn';
+  if (proto === 'openvpn-client') return server.openvpnClientSettings?.network || 'udp · vpn';
   const parts: string[] = [];
   if (server.network) {
     const netMap: Record<string, string> = {

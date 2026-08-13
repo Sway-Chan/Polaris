@@ -24,6 +24,56 @@ export interface SettingsDnsProps {
 }
 
 type RaceStrategy = 'race' | 'single';
+const MAX_DOH_RACE_UPSTREAMS = 3;
+
+/** 启用池变更：system 属兜底层不计额度；Tier1 达上限时拒绝第 4 个。 */
+export function nextRacePool(pool: readonly string[], id: string, on: boolean): string[] {
+  const set = new Set(pool);
+  if (!on) {
+    set.delete(id);
+    return [...set];
+  }
+  if (id !== 'system' && !set.has(id)) {
+    const tier1Count = [...set].filter((value) => value !== 'system').length;
+    if (tier1Count >= MAX_DOH_RACE_UPSTREAMS) return [...set];
+  }
+  set.add(id);
+  return [...set];
+}
+
+/**
+ * 字符串编辑器没有实体 id，故在提交时做稳定对账：同值优先保 id，原位编辑其次保 id，新行才铸 id。
+ * 新增项只进入配置库存，不自动进入启用池。
+ */
+export function reconcileCustomUpstreams(
+  previous: readonly CustomDnsUpstream[],
+  specs: readonly string[],
+  createId: () => string
+): CustomDnsUpstream[] {
+  const used = new Set<string>();
+  const seenSpecs = new Set<string>();
+  // 后续仍以原值出现的条目先保留其 id；否则在列表头插入新项会“偷走”下一行的启用身份。
+  const incomingSpecs = new Set(specs.map((spec) => spec.trim()).filter(Boolean));
+  const reserved = new Set(
+    previous.filter((item) => incomingSpecs.has(item.spec.trim())).map((item) => item.id)
+  );
+  const next: CustomDnsUpstream[] = [];
+  for (let index = 0; index < specs.length; index += 1) {
+    const spec = specs[index].trim();
+    const specKey = spec.toLowerCase();
+    if (!spec || seenSpecs.has(specKey)) continue;
+    seenSpecs.add(specKey);
+    const exact = previous.find((item) => !used.has(item.id) && item.spec.trim() === spec);
+    const samePosition = previous[index];
+    const samePositionAvailable = samePosition && !used.has(samePosition.id) && !reserved.has(samePosition.id);
+    const remaining = previous.find((item) => !used.has(item.id) && !reserved.has(item.id));
+    const id = exact?.id ??
+      (samePositionAvailable ? samePosition.id : remaining?.id ?? createId());
+    used.add(id);
+    next.push({ id, spec });
+  }
+  return next;
+}
 
 /**
  * 上游预设。标签只有「按 IP / 按域名的 DoH」与「阿里 / 腾讯」两类词需要翻译，服务商域名与 IP
@@ -372,16 +422,16 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
   // 只数「有实际对应项」的 id：内置 ali/dnspod，或仍存在于 nodeResolverCustom 的自定义 id——
   // 排除自定义条目被删除后残留在 pool 里的孤儿 id（否则会多算一个不存在的启用项）。
   const validRaceIds = new Set(['ali', 'dnspod', ...customUpstreams.map((u) => u.id)]);
-  const dohRaceCount = racePool.filter((id) => id !== 'system' && validRaceIds.has(id)).length;
+  const activeRacePool = racePool.filter((id) => id === 'system' || validRaceIds.has(id));
+  const dohRaceCount = new Set(
+    activeRacePool.filter((id) => id !== 'system'),
+  ).size;
   // 引导层：任一列为域名形式 DoH 时显示引导端点；两栏均为 IP DoH 则「无需引导层」
   // （原型 `#dns-bootstrap-row.no-boot` 纯 CSS 切换 .dns-bs-endpoints ↔ .dns-bs-none，两个 div 都常渲染）
   const bootstrapNeeded = !isIpDoh(dns.foreignDns) || !isIpDoh(dns.domesticDns);
 
   function toggleRaceUpstream(id: string, on: boolean) {
-    const set = new Set(racePool);
-    if (on) set.add(id);
-    else set.delete(id);
-    patchDns({ nodeResolverPool: Array.from(set) });
+    patchDns({ nodeResolverPool: nextRacePool(activeRacePool, id, on) });
   }
 
   // 本地编辑态：允许列表里出现一行空白（供「添加」后输入），但空白/纯空格 spec 不落盘
@@ -395,23 +445,22 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dns.nodeResolverCustom]);
 
-  // 自定义 DoH 上游（上限 1）：存 nodeResolverCustom，同时把非空条目的 id 计入 nodeResolverPool
-  // （存在即启用，对齐原型），移除时从两处一并清除。
+  // 自定义 DoH 是配置库存，不设数量上限；启用状态只存 nodeResolverPool，新建默认关闭。
+  // 删除配置时清理 pool 中对应 id，防止留下孤儿启用项。
   function setCustomUpstreams(specs: string[]) {
-    const capped = specs.slice(0, 1);
-    setDraftCustomSpecs(capped);
-    const prevId = customUpstreams[0]?.id;
-    const nonBlank = capped.filter((spec) => spec.trim() !== '');
-    const nextCustom: CustomDnsUpstream[] = nonBlank.map((spec) => ({
-      id: prevId ?? `doh-${Date.now().toString(36)}`,
-      spec,
-    }));
-    const prevIds = new Set(customUpstreams.map((u) => u.id));
-    const poolBase = racePool.filter((id) => !prevIds.has(id));
-    const enabledCustomIds = nextCustom.map((u) => u.id);
+    setDraftCustomSpecs(specs);
+    // 非法项留在草稿中标红，但不落盘；否则用户看到错误提示的同时坏配置已经触发重启评估。
+    if (specs.some((spec) => spec.trim() !== '' && !isPureIpSpec(spec))) return;
+    const nextCustom = reconcileCustomUpstreams(
+      customUpstreams,
+      specs,
+      () => `doh-${crypto.randomUUID()}`
+    );
+    const nextIds = new Set(nextCustom.map((item) => item.id));
+    const previousIds = new Set(customUpstreams.map((item) => item.id));
     patchDns({
       nodeResolverCustom: nextCustom,
-      nodeResolverPool: [...poolBase, ...enabledCustomIds],
+      nodeResolverPool: racePool.filter((id) => !previousIds.has(id) || nextIds.has(id)),
     });
   }
 
@@ -637,7 +686,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
                   <span className="mono" id="race-doh-count">
                     {dohRaceCount}
                   </span>
-                  /3
+                  /{MAX_DOH_RACE_UPSTREAMS}
                 </span>
               </div>
               <label className="race-up">
@@ -645,28 +694,60 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
                   {t('settings.dns.brandAli')} DoH <span className="mono">223.5.5.5</span>{' '}
                   <span className="race-tag">{t('settings.dns.builtinTag')}</span>
                 </span>
-                <Switch checked={racePool.includes('ali')} onChange={(v) => toggleRaceUpstream('ali', v)} />
+                <Switch
+                  checked={racePool.includes('ali')}
+                  disabled={!racePool.includes('ali') && dohRaceCount >= MAX_DOH_RACE_UPSTREAMS}
+                  tip={!racePool.includes('ali') && dohRaceCount >= MAX_DOH_RACE_UPSTREAMS ? t('settings.dns.raceQuotaReached') : undefined}
+                  onChange={(v) => toggleRaceUpstream('ali', v)}
+                />
               </label>
               <label className="race-up">
                 <span>
                   DNSPod DoH <span className="mono">1.12.12.12</span>{' '}
                   <span className="race-tag">{t('settings.dns.builtinTag')}</span>
                 </span>
-                <Switch checked={racePool.includes('dnspod')} onChange={(v) => toggleRaceUpstream('dnspod', v)} />
+                <Switch
+                  checked={racePool.includes('dnspod')}
+                  disabled={!racePool.includes('dnspod') && dohRaceCount >= MAX_DOH_RACE_UPSTREAMS}
+                  tip={!racePool.includes('dnspod') && dohRaceCount >= MAX_DOH_RACE_UPSTREAMS ? t('settings.dns.raceQuotaReached') : undefined}
+                  onChange={(v) => toggleRaceUpstream('dnspod', v)}
+                />
               </label>
 
-              {/* 自定义 DoH 上游（上限 1）：绑定 nodeResolverCustom（原型 dns-custom L2201） */}
+              {/* 配置库存不限量；每行开关单独决定是否进入最多 3 个的竞速池。 */}
               <ListEditor
                 id="dns-custom-list"
                 className="race-custom"
                 value={draftCustomSpecs}
                 onChange={setCustomUpstreams}
-                max={1}
                 placeholder="https://223.5.5.5/dns-query"
                 ariaLabel="DoH URL"
                 addLabel={t('settings.dns.addCustomDoh')}
                 importLabel={t('common.bulkImport')}
+                renderRowEnd={(entry) => {
+                  const upstream = customUpstreams.find((item) => item.spec.trim() === entry.trim());
+                  const checked = !!upstream && racePool.includes(upstream.id);
+                  const disabled = !upstream || (!checked && dohRaceCount >= MAX_DOH_RACE_UPSTREAMS);
+                  return (
+                    <Switch
+                      checked={checked}
+                      disabled={disabled}
+                      tip={
+                        !upstream
+                          ? t('settings.dns.saveCustomFirst')
+                          : !checked && dohRaceCount >= MAX_DOH_RACE_UPSTREAMS
+                            ? t('settings.dns.raceQuotaReached')
+                            : undefined
+                      }
+                      aria-label={t('settings.dns.enableCustomDoh')}
+                      onChange={(on) => upstream && toggleRaceUpstream(upstream.id, on)}
+                    />
+                  );
+                }}
               />
+              {dohRaceCount >= MAX_DOH_RACE_UPSTREAMS && (
+                <div className="card-sub">{t('settings.dns.raceQuotaReached')}</div>
+              )}
               {draftCustomSpecs.some((spec) => spec.trim() !== '' && !isPureIpSpec(spec)) && (
                 <div className="err-line">{t('settings.dns.customDohIpOnly')}</div>
               )}
@@ -679,7 +760,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
                 <span>{t('settings.advanced.nodeResolverSystem')}</span>
                 <Switch checked={racePool.includes('system')} onChange={(v) => toggleRaceUpstream('system', v)} />
               </label>
-              {racePool.length === 0 && (
+              {activeRacePool.length === 0 && (
                 <div className="card-sub">{t('settings.dns.raceEmptyFallback')}</div>
               )}
             </div>

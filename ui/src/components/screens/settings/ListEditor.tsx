@@ -13,7 +13,7 @@
  * （与既有条目及批内互相去重，同 AppAddDialog.handleProcPick 的既定口径），再一次性追加。
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { revealElement } from '@/components/reveal';
 import { TextInput, Button } from './primitives';
@@ -34,6 +34,8 @@ export interface ListEditorProps {
   /** 额外挂在 .cidr-list 根上的 class（如 race-custom） */
   className?: string;
   id?: string;
+  /** 行尾附加控件（DNS 自定义上游的启用开关）；位于删除按钮之前。 */
+  renderRowEnd?: (entry: string, index: number) => ReactNode;
 }
 
 /**
@@ -100,6 +102,7 @@ export function ListEditor({
   mono = true,
   className,
   id,
+  renderRowEnd,
 }: ListEditorProps) {
   const { t } = useTranslation();
   const [importOpen, setImportOpen] = useState(false);
@@ -171,6 +174,7 @@ export function ListEditor({
               placeholder={placeholder}
               className={mono ? 'mono' : undefined}
             />
+            {renderRowEnd?.(entry, idx)}
             <button type="button" onClick={() => remove(idx)} aria-label="Remove" className="cidr-del">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
                 <path d="M5 5l14 14M19 5L5 19" />

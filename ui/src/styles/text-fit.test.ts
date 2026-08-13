@@ -934,7 +934,9 @@ interface FldPoint {
   opt: boolean;
 }
 /**
- * 遍历 ND_SPEC 的 13 协议 × {cred, adv}，把每个字段摊成「键 → 槽」。
+ * 遍历 ND_SPEC 的协议字段，把传统 {cred, adv} 与长表单的 groups 一起摊成「键 → 槽」。
+ * groups 在 620px 弹窗的 tab panel 内，比传统 cred 槽更宽；这里仍按 cred 的 422px 保守量，
+ * 这样无需为少数协议另开一套更松、也更容易漂移的预算。
  *
  * 槽由 `FieldSpec.t` 决定，与 `FieldRenderer` 的分支一一对应：
  *  - `switch` → 标签渲染成 `.swt-tx b`（12.5px）、hint/disabledHint 渲染成 `.swt-tx` 内的 `.fld-hint`，
@@ -957,7 +959,7 @@ function nodeFieldPoints(): FldPoint[] {
     }
   };
   let n = 0;
-  for (const proto of Object.keys(ND_SPEC) as NodeProto[])
+  for (const proto of Object.keys(ND_SPEC) as NodeProto[]) {
     for (const section of ['cred', 'adv'] as const)
       for (const f of ND_SPEC[proto][section]) {
         n++;
@@ -970,6 +972,19 @@ function nodeFieldPoints(): FldPoint[] {
           if (f.hint) put(f.hint, 'HINT', section, false);
         }
       }
+    for (const group of ND_SPEC[proto].groups ?? [])
+      for (const f of group.fields) {
+        n++;
+        if (f.t === 'switch') {
+          put(f.label, 'SWT_LABEL', 'cred', false);
+          if (f.hint) put(f.hint, 'SWT_HINT', 'cred', false);
+          if (f.disabledHint) put(f.disabledHint, 'SWT_HINT', 'cred', false);
+        } else {
+          put(f.label, 'LABEL', 'cred', f.opt === true);
+          if (f.hint) put(f.hint, 'HINT', 'cred', false);
+        }
+      }
+  }
   if (n < 100) throw new Error(`ND_SPEC 只走到 ${n} 个字段实例 —— 表结构变了？`);
   return [...byId.values()];
 }

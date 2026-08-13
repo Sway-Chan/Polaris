@@ -12,8 +12,43 @@ import {
   fakeIpTogglePatch,
   needsFakeIpOffConfirm,
   normalizeDnsTimeoutInput,
+  nextRacePool,
   parseDnsServerSpec,
+  reconcileCustomUpstreams,
 } from './SettingsDns';
+
+describe('DoH 配置库存与启用池解耦', () => {
+  it('Tier1 最多启用 3 个，system 不占额度', () => {
+    expect(nextRacePool(['ali', 'dnspod', 'doh-a'], 'doh-b', true)).toEqual(['ali', 'dnspod', 'doh-a']);
+    expect(nextRacePool(['ali', 'dnspod', 'doh-a'], 'system', true)).toEqual(['ali', 'dnspod', 'doh-a', 'system']);
+    expect(nextRacePool(['ali', 'dnspod', 'doh-a'], 'dnspod', false)).toEqual(['ali', 'doh-a']);
+  });
+
+  it('配置列表不限量；原项编辑/重排保 id，新项只进入库存', () => {
+    const previous = [
+      { id: 'a', spec: 'https://1.1.1.1/dns-query' },
+      { id: 'b', spec: 'https://8.8.8.8/dns-query' },
+    ];
+    let n = 0;
+    const next = reconcileCustomUpstreams(
+      previous,
+      ['https://8.8.8.8/dns-query', 'https://9.9.9.9/dns-query', 'tls://1.0.0.1:853'],
+      () => `new-${++n}`
+    );
+    expect(next).toEqual([
+      previous[1],
+      { id: 'a', spec: 'https://9.9.9.9/dns-query' },
+      { id: 'new-1', spec: 'tls://1.0.0.1:853' },
+    ]);
+
+    const inserted = reconcileCustomUpstreams(
+      previous,
+      ['https://9.9.9.9/dns-query', 'https://1.1.1.1/dns-query', 'https://8.8.8.8/dns-query'],
+      () => 'new-head'
+    );
+    expect(inserted.map((item) => item.id)).toEqual(['new-head', 'a', 'b']);
+  });
+});
 
 describe('fakeIpTogglePatch', () => {
   it('打开 FakeIP 时同写 fakeIpTunAutoEnable:false（消费一次性自动纠正资格）', () => {

@@ -41,6 +41,7 @@ import { useStagedConfigStore } from '@/store/staged-config-store';
 import { useStagingActive } from '@/store/use-staging-active';
 import { editRoute } from '@/lib/staged-config';
 import { useDialogStore } from './dialog-store';
+import { groupWgFields, type WgFormTab } from './vpn-form-layout';
 
 const CATCH_ALL = new Set(['0.0.0.0/0', '::/0']);
 
@@ -52,7 +53,7 @@ const CATCH_ALL = new Set(['0.0.0.0/0', '::/0']);
  * `draft` 是**必传**：`FieldSpec.disabled` 是静态布尔（见 `field-spec.tsx` 那条的文档），少传一个
  * 可选参数就会把禁用静默退化成可用，而这个开关禁用与否是阻断级的。
  */
-function wgSpec(
+export function wgSpec(
   draft: FormValues,
   base: ServerConfig | undefined,
   detourOpts: readonly SelectOption[]
@@ -60,10 +61,10 @@ function wgSpec(
   return [
     { t: 'text', k: 'address', label: 'wg.address', zh: '对端地址', ph: '203.0.113.7', mono: true },
     { t: 'number', k: 'port', label: 'wg.port', zh: '端口', ph: '51820', mono: true },
-    { t: 'text', k: 'privateKey', label: 'wg.priv', zh: '本机私钥 PrivateKey', ph: 'wOE... =', mono: true },
+    { t: 'text', k: 'privateKey', label: 'wg.priv', zh: '本机私钥 PrivateKey', ph: 'wOE... =', mono: true, secret: true },
     { t: 'text', k: 'localAddress', label: 'wg.local', zh: '接口地址 Address', ph: '10.0.0.2/32, fd00::2/128', mono: true },
     { t: 'text', k: 'peerPublicKey', label: 'wg.pub', zh: '对端公钥 PublicKey', ph: 'HIg... =', mono: true },
-    { t: 'text', k: 'preSharedKey', label: 'wg.psk', zh: '预共享密钥', mono: true, opt: true },
+    { t: 'text', k: 'preSharedKey', label: 'wg.psk', zh: '预共享密钥', mono: true, opt: true, secret: true },
     { t: 'text', k: 'allowedIPs', label: 'wg.allowed', zh: '路由网段 AllowedIPs', ph: '10.0.0.0/24', mono: true, opt: true },
     { t: 'number', k: 'persistentKeepalive', label: 'wg.keep', zh: '保活（秒）', ph: '25', mono: true },
     { t: 'number', k: 'mtu', label: 'wg.mtu', zh: 'MTU', ph: '1408', mono: true },
@@ -156,6 +157,7 @@ function WgForm({ base }: { base?: ServerConfig }) {
   const [dirty, setDirty] = useState(false);
   const [errName, setErrName] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [formTab, setFormTab] = useState<WgFormTab>('basic');
 
   const setField = (k: string, v: FormValue) => {
     setDraft((d) => ({ ...d, [k]: v }) as WgDraft);
@@ -206,6 +208,7 @@ function WgForm({ base }: { base?: ServerConfig }) {
         setErrName(true);
       } else {
         setSrc('manual');
+        setFormTab('basic');
         // 文案自述完整（列全了缺哪些字段），不套 title。
         toast.error(t('wg.errRequired', '缺少必填字段：地址 / 私钥 / 接口地址 / 对端公钥'));
       }
@@ -215,6 +218,7 @@ function WgForm({ base }: { base?: ServerConfig }) {
     // （判据与理由见 `wg-logic.ts#reservedInputInvalid`）。回手动填写页，让出错的那个框可见。
     if (reservedInputInvalid(draft.reserved)) {
       setSrc('manual');
+      setFormTab('advanced');
       toast.error(t('wg.errReserved', 'Reserved 需填 3 个 0–255 的整数，例如 0, 0, 0'));
       return;
     }
@@ -265,7 +269,7 @@ function WgForm({ base }: { base?: ServerConfig }) {
       title={isEdit ? t('wg.editTitle', '编辑 WireGuard 节点') : t('wg.addTitle', '添加 WireGuard 节点')}
       onClose={requestClose}
       icon={<WgIcon />}
-      style={{ width: 'min(480px, 100%)' }}
+      style={{ width: 'min(620px, 100%)' }}
       footer={
         <>
           {/* 提交中**不锁**「取消」：原型 `:2545` 的 ghost 钮无 disabled，且本仓此前四个弹窗锁、
@@ -356,10 +360,33 @@ function WgForm({ base }: { base?: ServerConfig }) {
         </>
       )}
 
-      {src === 'manual' &&
-        visible.map((f) => (
-          <FieldRenderer key={f.k} spec={f} value={draft[f.k]} onChange={(v) => setField(f.k, v)} />
-        ))}
+      {src === 'manual' && (() => {
+        const groups = groupWgFields(visible);
+        const tabs: WgFormTab[] = ['basic', 'routing', 'advanced'];
+        return (
+          <>
+            <div className="sub-tabs form-tabs" role="tablist" aria-label={t('node.formGroup.aria', '配置分组')}>
+              {tabs.map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  role="tab"
+                  className={formTab === tab ? 'on' : ''}
+                  aria-selected={formTab === tab}
+                  onClick={() => setFormTab(tab)}
+                >
+                  {t(`node.formGroup.${tab}`)}
+                </button>
+              ))}
+            </div>
+            <div role="tabpanel" className="form-tab-panel">
+              {groups[formTab].map((f) => (
+                <FieldRenderer key={f.k} spec={f} value={draft[f.k]} onChange={(v) => setField(f.k, v)} />
+              ))}
+            </div>
+          </>
+        );
+      })()}
     </Modal>
   );
 }

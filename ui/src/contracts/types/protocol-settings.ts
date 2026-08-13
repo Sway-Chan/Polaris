@@ -88,6 +88,7 @@ export interface TorSettings {
 
 /** OpenConnect 设置。**字段名 = sing-box 键名**（Rust 侧整体序列化后 flatten 进 endpoint）。 */
 export interface OpenconnectSettings {
+  [key: string]: unknown;
   /** `host:port` 单串。 */
   server?: string;
   username?: string;
@@ -107,6 +108,7 @@ export interface OpenconnectSettings {
 
 /** OpenVPN 的 TLS 材料（内核 OpenVPNOutboundTLSOptions 的子集）。 */
 export interface OpenvpnTlsSettings {
+  [key: string]: unknown;
   certificate?: string[];
   client_certificate?: string[];
   client_key?: string[];
@@ -114,6 +116,7 @@ export interface OpenvpnTlsSettings {
 
 /** OpenVPN 客户端设置。`tls` **必填**——缺了内核判 missing `tls` options。 */
 export interface OpenvpnClientSettings {
+  [key: string]: unknown;
   server?: string;
   server_port?: number;
   username?: string;

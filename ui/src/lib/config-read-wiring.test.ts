@@ -509,6 +509,13 @@ const MIRROR_SITES: readonly MirrorSite[] = [
     why: '两处：表单里的组网单例槽判据 + 外层的编辑基准，同为「用户现在看到的节点集」',
   },
   {
+    file: 'components/dialogs/MeshJoinDialog.tsx',
+    shape: 'useEffectiveServers()',
+    count: 1,
+    surface: 'display',
+    why: '组网接入选择器的 Tailscale/WARP 状态映射与对应管理动作，必须包含尚未应用的暂存编辑',
+  },
+  {
     file: 'components/screens/apppolicy/AppPolicyScreen.tsx',
     shape: 'useEffectiveServers()',
     count: 1,

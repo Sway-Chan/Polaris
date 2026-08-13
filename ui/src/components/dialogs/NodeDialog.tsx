@@ -49,12 +49,14 @@ import {
   allFields,
   describeProbeResult,
   type NodeProto,
+  type NodeFieldGroupId,
   type ProbeDisplay,
 } from './node-spec';
 import { protoCodec } from './proto-codec';
 import { blockedByMeshSingleton } from '@/domain/mesh-singleton-guard';
 import { Fold } from '@/components/Fold';
 import { revealOnToggle } from '@/components/reveal';
+import { vpnDraftError } from './vpn-form-layout';
 
 const NODE_PROTOS = new Set<string>(PROTO_OPTIONS.map(([p]) => p));
 function isNodeProto(p: string): p is NodeProto {
@@ -75,9 +77,12 @@ interface NodeFormProps {
   base?: ServerConfig;
   isEdit: boolean;
   servers: ServerConfig[];
+  initialProto?: NodeProto;
 }
 
-function NodeForm({ base, isEdit, servers }: NodeFormProps) {
+type VpnTab = NodeFieldGroupId;
+
+function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
   const { t } = useTranslation();
   const open = useDialogStore((s) => s.open);
   const close = useDialogStore((s) => s.close);
@@ -87,7 +92,7 @@ function NodeForm({ base, isEdit, servers }: NodeFormProps) {
 
   // 同步初始化（R1）：挂载即带正确值，绝不挂载后 reset。
   const initProto: NodeProto =
-    base && isNodeProto(base.protocol) ? base.protocol : 'vless';
+    base && isNodeProto(base.protocol) ? base.protocol : initialProto ?? 'vless';
   const [proto, setProto] = useState<NodeProto>(initProto);
   const [name, setName] = useState(base?.name ?? '');
   const [address, setAddress] = useState(base?.address ?? '');
@@ -96,13 +101,14 @@ function NodeForm({ base, isEdit, servers }: NodeFormProps) {
   const [draft, setDraft] = useState<FormValues>(() =>
     base && isNodeProto(base.protocol)
       ? protoCodec[base.protocol].fromConfig(base)
-      : draftFromSpecs(allFields('vless')),
+      : draftFromSpecs(allFields(initProto)),
   );
 
   const [dirty, setDirty] = useState(false);
   const [errName, setErrName] = useState(false);
   const [errAddr, setErrAddr] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [vpnTab, setVpnTab] = useState<VpnTab>('basic');
 
   // C10：custom 协议内核兼容性 probe（`kernel:probeOutbound`）——套 `SubDialog.previewing`/
   // `previewMsg` 同一形态，非本弹窗首创。`probeResult` 只在协议为 custom 时被读，但状态放这里
@@ -124,6 +130,7 @@ function NodeForm({ base, isEdit, servers }: NodeFormProps) {
     setDraft(draftFromSpecs(allFields(next)));
     setDirty(true);
     setProbeResult(null); // 换出 custom 协议后旧探测结果同样失效。
+    setVpnTab('basic');
   };
 
   /**
@@ -204,6 +211,17 @@ function NodeForm({ base, isEdit, servers }: NodeFormProps) {
     setErrAddr(addrEmpty);
     if (nameEmpty || addrEmpty) return;
 
+    const vpnError = vpnDraftError(proto, draft);
+    if (vpnError) {
+      setVpnTab(vpnError.tab);
+      toast.error(
+        vpnError.key === 'json'
+          ? t('node.vpnJsonInvalid', '扩展配置必须是合法的 JSON 对象')
+          : t('node.vpnRequired', '请补全当前协议的必填认证字段')
+      );
+      return;
+    }
+
     setSubmitting(true);
     try {
       const meta: ServerConfig = {
@@ -268,6 +286,28 @@ function NodeForm({ base, isEdit, servers }: NodeFormProps) {
   };
 
   const adv = ND_SPEC[proto].adv;
+  const groups = ND_SPEC[proto].groups;
+
+  const detourField = (
+    <div className="fld">
+      <label className="fld-l" htmlFor="nd-detour">
+        {t('node.chainVia', '经由')}
+      </label>
+      <Csel
+        id="nd-detour"
+        ariaLabel={t('node.chainVia', '经由')}
+        value={detour || 'direct'}
+        onChange={(v) => {
+          setDetour(v === 'direct' ? '' : v);
+          setDirty(true);
+        }}
+        options={detourOpts}
+      />
+      <div className="fld-hint">
+        {t('node.chainHint', '先经另一节点再出站（链式代理）')}
+      </div>
+    </div>
+  );
 
   return (
     <Modal
@@ -275,6 +315,7 @@ function NodeForm({ base, isEdit, servers }: NodeFormProps) {
       title={isEdit ? t('node.editTitle', '编辑节点') : t('node.addTitle', '添加节点')}
       onClose={requestClose}
       icon={<NodeIcon />}
+      style={{ width: groups ? 'min(620px, 100%)' : undefined }}
       footer={
         <>
           <button type="button" className="btn ghost" onClick={requestClose}>
@@ -368,6 +409,33 @@ function NodeForm({ base, isEdit, servers }: NodeFormProps) {
         <FieldRenderer key={f.k} spec={f} value={draft[f.k]} onChange={(v) => setField(f.k, v)} />
       ))}
 
+      {/* Endpoint VPN 字段多且语义横跨认证/路由/兼容性，使用页签分层；不把它们继续塞进组网页或
+          一个含义不准确的“传输 / 安全”折叠段。公共名称与地址仍固定在上方，切页不会丢上下文。 */}
+      {groups && (
+        <>
+          <div className="sub-tabs form-tabs" role="tablist" aria-label={t('node.formGroup.aria', '配置分组')}>
+            {groups.map((group) => (
+              <button
+                key={group.id}
+                type="button"
+                role="tab"
+                className={vpnTab === group.id ? 'on' : ''}
+                aria-selected={vpnTab === group.id}
+                onClick={() => setVpnTab(group.id)}
+              >
+                {t(`node.formGroup.${group.id}`)}
+              </button>
+            ))}
+          </div>
+          <div role="tabpanel" className="form-tab-panel">
+            {visible(groups.find((group) => group.id === vpnTab)?.fields ?? []).map((f) => (
+              <FieldRenderer key={f.k} spec={f} value={draft[f.k]} onChange={(v) => setField(f.k, v)} />
+            ))}
+            {vpnTab === 'advanced' && detourField}
+          </div>
+        </>
+      )}
+
       {/* C10：custom 协议内核兼容性 probe——只有 custom 协议的原始 JSON 才需要问「内核认不认识这个
           outbound」，其余 12 协议走本仓自建的 outbound builder，协议合法性由表单本身的必填/枚举
           约束兜底，没有「核认不认识」这一档风险。 */}
@@ -435,36 +503,25 @@ function NodeForm({ base, isEdit, servers }: NodeFormProps) {
       )}
 
       {/* 前置代理 / detour（折叠） */}
-      <Fold title={t('node.frontProxy', '前置代理 / detour')}>
-        <div className="fld">
-          <label className="fld-l" htmlFor="nd-detour">
-            {t('node.chainVia', '经由')}
-          </label>
-          <Csel
-            id="nd-detour"
-            ariaLabel={t('node.chainVia', '经由')}
-            value={detour || 'direct'}
-            onChange={(v) => {
-              setDetour(v === 'direct' ? '' : v);
-              setDirty(true);
-            }}
-            options={detourOpts}
-          />
-          <div className="fld-hint">
-            {t('node.chainHint', '先经另一节点再出站（链式代理）')}
-          </div>
-        </div>
-      </Fold>
+      {!groups && <Fold title={t('node.frontProxy', '前置代理 / detour')}>{detourField}</Fold>}
     </Modal>
   );
 }
 
-export function NodeDialog({ serverId }: { serverId?: string }) {
+export function NodeDialog({ serverId, initialProto }: { serverId?: string; initialProto?: NodeProto }) {
   // 展示面：编辑基准 + 单例槽判据。读盘的话「改完再打开」看到的是改前的旧值。
   const servers = useEffectiveServers();
   const base = serverId ? servers.find((s) => s.id === serverId) : undefined;
   // R1：key 绑定 serverId —— 切换编辑目标 = 重挂 = 同步重新初始化，杜绝挂载后 reset。
-  return <NodeForm key={serverId ?? 'new'} base={base} isEdit={base != null} servers={servers} />;
+  return (
+    <NodeForm
+      key={`${serverId ?? 'new'}:${initialProto ?? ''}`}
+      base={base}
+      isEdit={base != null}
+      servers={servers}
+      initialProto={initialProto}
+    />
+  );
 }
 
 export default NodeDialog;

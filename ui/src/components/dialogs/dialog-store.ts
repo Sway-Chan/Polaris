@@ -57,9 +57,9 @@ export type DialogDesc =
   | { kind: 'res-url' }
   | { kind: 'confirm'; payload: ConfirmPayload }
   // D2：节点表单 + 手动导入
-  | { kind: 'node'; serverId?: string } // undefined=新增，defined=编辑（按 id 从 app-store 取 ServerConfig 预填）
+  | { kind: 'node'; serverId?: string; initialProto?: 'openconnect' | 'openvpn-client' } // initialProto 仅用于组网选择器预选企业 VPN
   | { kind: 'import' } // 手动导入（粘贴/文件），恒新增
-  // D3：订阅 + 组网三卡
+  // D3：订阅 + 组网接入选择器
   // focus：订阅「更多」菜单的「重命名」/「编辑 URL」两项落到同一弹窗的不同字段（原型 subMenu 是两项，
   // 但 Polaris 只有一个订阅表单）——用 autoFocus 落点区分，而不是摆两个点了完全一样的菜单项。
   | { kind: 'sub'; subId?: string; focus?: 'name' | 'url' }
@@ -67,6 +67,12 @@ export type DialogDesc =
   | { kind: 'ts-login' }
   | { kind: 'ts-settings' }
   | { kind: 'wg'; serverId?: string } // WG 可多实例，携 id
+  | {
+      kind: 'mesh-join';
+      onTsLogout: (node: import('@/contracts/types').ServerConfig) => void;
+      onWarpReregister: (node: import('@/contracts/types').ServerConfig) => void;
+      onWarpDeregister: (node: import('@/contracts/types').ServerConfig) => void;
+    }
   // D4：规则编辑 + 进程选择器
   | { kind: 'rule'; ruleId?: string; presetDomain?: string } // presetDomain：拓扑右键「为其加规则」预填
   | { kind: 'proc-pick'; onPick: (procs: SystemProcessInfo[]) => void } // 批量选中回调（原型是多选+底部「添加 N 项」批量提交，非单击即选；调用方闭包写回自身 useState，同 ConfirmPayload.onConfirm 先例）

@@ -28,6 +28,7 @@ import { RulePickDialog } from './RulePickDialog';
 import { AppAddDialog } from './AppAddDialog';
 import { ResCatalogDialog } from './ResCatalogDialog';
 import { BackupImportDialog } from './BackupImportDialog';
+import { MeshJoinDialog } from './MeshJoinDialog';
 
 function renderDialog(desc: DialogDesc) {
   switch (desc.kind) {
@@ -36,7 +37,7 @@ function renderDialog(desc: DialogDesc) {
     case 'confirm':
       return <ConfirmDialog payload={desc.payload} />;
     case 'node':
-      return <NodeDialog serverId={desc.serverId} />;
+      return <NodeDialog serverId={desc.serverId} initialProto={desc.initialProto} />;
     case 'import':
       return <ImportDialog />;
     case 'sub':
@@ -49,6 +50,14 @@ function renderDialog(desc: DialogDesc) {
       return <TsSettingsDialog />;
     case 'wg':
       return <WgDialog serverId={desc.serverId} />;
+    case 'mesh-join':
+      return (
+        <MeshJoinDialog
+          onTsLogout={desc.onTsLogout}
+          onWarpReregister={desc.onWarpReregister}
+          onWarpDeregister={desc.onWarpDeregister}
+        />
+      );
     case 'rule':
       return <RuleDialog ruleId={desc.ruleId} presetDomain={desc.presetDomain} />;
     case 'proc-pick':
