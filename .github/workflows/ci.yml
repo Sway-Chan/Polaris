@@ -172,11 +172,7 @@ jobs:
         run: |
           rustup target add x86_64-pc-windows-msvc x86_64-apple-darwin
           for t in x86_64-pc-windows-msvc x86_64-apple-darwin; do
-            # `--features polaris-helper/ctrl-break-probe`：G3 探针 bin 被 required-features 挡在
-            # 默认构建之外（见 helper/Cargo.toml），不显式点名就**永远没人编它** —— 那样它会随
-            # helper 的 Windows API 改动悄悄烂掉，等到真要跑实验那天才发现编不过。
             cargo check --target "$t" \
-              --features polaris-helper/ctrl-break-probe \
               -p polaris-system-integration -p polaris-core-supervisor \
               -p polaris-helper-client -p polaris-helper
           done

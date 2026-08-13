@@ -3,9 +3,12 @@
 //! # 为什么是源码级判据
 //!
 //! 这段代码 `#[cfg(windows)]`，本机（Linux）编不了也跑不了；真要跑它得起一个 Windows 服务
-//! 再拉一个子进程 —— 那正是 G3 探针干的事，而探针跑在 CI 的 windows runner 上、手动触发。
-//! 所以这里守的不是「行为对不对」（那由探针 run `31591517111` 实测背书），而是
-//! **「实现有没有偏离那个已被实测背书的形状」**。形状一偏，探针的结论就不再适用于这段代码。
+//! 再拉一个子进程。那件事由 G3 探针在 CI 的 windows runner 上做过一次（run `31591517111`），
+//! 结论确定后探针本身已移除 —— 它是一次性实验装置，不是长期资产。
+//! 所以这里守的不是「行为对不对」（那由那次实测背书），而是
+//! **「实现有没有偏离那个已被实测背书的形状」**。形状一偏，那次实测的结论就不再适用于这段代码。
+//!
+//! ⚠️ 装置已经不在了 ⇒ 这道门是该结论**唯一**的守卫。要重做实验得先把探针写回来。
 //!
 //! # 守的三件事
 //!
@@ -63,7 +66,6 @@ fn assert_ordered(hay: &str, needles: &[&str], what: &str) {
 }
 
 const WIN: &str = "crates/helper/src/platform/windows/winproc/win.rs";
-const PROBE: &str = "crates/helper/probes/ctrl_break_probe.rs";
 
 /// 🔴 第二条路存在，且 `reap_sequence` 真的走它 + 仍有硬杀兜底。
 #[test]
@@ -100,11 +102,11 @@ fn reap_sequence_tries_the_child_console_then_falls_back_to_kill() {
 /// G3 探针首跑（run `31590160361`）3.5 秒静默退出，这是头号嫌疑。
 #[test]
 fn never_uses_the_ctrl_c_only_handler_form() {
-    for f in [WIN, PROBE] {
-        let src = strip_comments(&read(f));
+    {
+        let src = strip_comments(&read(WIN));
         assert!(
             !src.contains("SetConsoleCtrlHandler(None"),
-            "{f} 里出现了 SetConsoleCtrlHandler(None, …) —— 它只忽略 CTRL+C，\
+            "{WIN} 里出现了 SetConsoleCtrlHandler(None, …) —— 它只忽略 CTRL+C，\
              对 CTRL_BREAK 无效，等于让本进程可能被自己发出的事件带走"
         );
     }
@@ -130,18 +132,8 @@ fn implementation_follows_the_probe_verified_order() {
         "借用子进程 console 的调用序列",
     );
 
-    // 探针侧同一串（顺序相同即可，探针多了记账逻辑）。
-    let probe = strip_comments(&read(PROBE));
-    assert_ordered(
-        &probe,
-        &[
-            "FreeConsole()",
-            "AttachConsole(pid)",
-            "SetConsoleCtrlHandler(Some(",
-            "GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid)",
-        ],
-        "探针侧的调用序列（它是本实现的规格来源）",
-    );
+    // 这串顺序此前还与探针源码对拍过一次（探针是本实现的规格来源）。探针已随实验结束移除，
+    // 那条对拍也就没了对象 —— 上面这串**就是**那次实测背书的形状，改它等于让结论失效。
 }
 
 /// 🔴 `send_ctrl_break` 的文档必须把「第二条路」指出来。

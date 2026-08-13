@@ -97,19 +97,3 @@ path = "src/lib.rs"
 name = "polaris-helper"
 path = "src/bin/main.rs"
 
-# G3 探针（真机协议 §组 G）：Windows 服务能否给无 console 的子进程投递 CTRL_BREAK。
-#
-# 三点刻意的安排：
-#   · 放 `probes/` 而不是 `src/bin/` —— 后者会被 autobins 自动发现，那样它就会跟着每一次
-#     helper 构建一起编，包括打包腿。这里要的是「只有显式点名才编」。
-#   · `required-features` 把它挡在默认构建之外：`cargo build -p polaris-helper` 不碰它，
-#     只有 `--features ctrl-break-probe` 才编。默认构建耗时与产物**零变化**。
-#   · 复用 helper 已有的 windows-sys（target-gated），不新起 crate、不加第三方依赖。
-[[bin]]
-name = "ctrl-break-probe"
-path = "probes/ctrl_break_probe.rs"
-required-features = ["ctrl-break-probe"]
-
-[features]
-# 只影响上面那个探针 bin 编不编；lib 与 daemon bin 的代码路径不读这个 feature。
-ctrl-break-probe = []
