@@ -540,7 +540,7 @@ jobs:
       # ── mac dmg 内附首次打开引导（#318）──
       # 本 workflow 不签名（见文件头「不签名纪律」）⇒ 从下载的 dmg 拖出的 app 带
       # `com.apple.quarantine`，首次打开被 Gatekeeper 拦下。此前的止血只有 README 一句
-      # `xattr -dr`，而**用户读不到 README** —— 他看到的是一个双击报错的 app。
+      # `xattr -cr`，而**用户读不到 README** —— 他看到的是一个双击报错的 app。
       #
       # 为什么要转换往返：上游 那边是自己 `hdiutil create` 出 dmg，塞文件就是一次 cp；
       # Polaris 的 dmg 由 Tauri bundler 出，格式是 UDZO（只读压缩），必须
@@ -605,7 +605,7 @@ jobs:
               exit 1
             fi
             # 内容也要对：空文件 / 半截文件同样是「有名无实」。
-            grep -q 'com.apple.quarantine' "$mnt/$guide_name" || {
+            grep -Fq 'xattr -cr /Applications/Polaris.app' "$mnt/$guide_name" || {
               hdiutil detach "$mnt" -quiet || true
               echo "::error::$(basename "$dmg") 里的引导缺少 xattr 命令 —— 内容不完整"
               exit 1

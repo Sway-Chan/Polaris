@@ -499,6 +499,10 @@ function checkMacOpenGuide() {
   if (!guide.includes(CMD)) {
     fail(`引导里的命令与 README 不一致，应含 \`${CMD}\``);
   }
+  // 开箱验也必须核对同一条命令；若仍搜旧命令/旧参数，DMG 明明正确却会在最后一步假红。
+  if (!pkg.includes(`grep -Fq '${CMD}'`)) {
+    fail(`package.yml 的 DMG 开箱验没有按完整新命令核对：应包含 \`grep -Fq '${CMD}'\``);
+  }
   // 中英双语：dmg 是发给所有用户的，只有中文等于对一半用户没写。
   if (!/Applications folder/i.test(guide)) {
     fail('引导缺英文段 —— dmg 面向全部用户，单语等于对另一半人没写');
