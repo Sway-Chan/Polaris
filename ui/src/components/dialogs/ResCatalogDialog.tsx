@@ -179,20 +179,20 @@ export function ResCatalogDialog() {
   // `remote`），故那两条点明失败原因，不让用户以为「刷新了但没变化」；而 `preload` 是本地预载、
   // 一次网都没打，单列一条，绝不借用「远程获取失败」的说法。
   const extStatusText = (): string => {
-    if (extLoading) return t('resCatalog.extFetching', '获取中…');
+    if (extLoading) return t('resCatalog.extFetching');
     // 刷新失败排在 extSource 之前：失败时 extSource 停在上一次成功的值，照它渲染会说
     // 「已从远程获取最新清单」—— 用户刚点了刷新、什么都没变，还被告知拉成功了。
-    if (extErr !== null) return t('resCatalog.loadFailed', '清单加载失败');
-    if (extSource == null) return t('resCatalog.extNotFetched', '尚未获取清单');
+    if (extErr !== null) return t('resCatalog.loadFailed');
+    if (extSource == null) return t('resCatalog.extNotFetched');
     switch (extSource) {
       case 'preload':
-        return t('resCatalog.extPreloaded', '本地缓存清单 · 点「刷新清单」更新');
+        return t('resCatalog.extPreloaded');
       case 'remote':
-        return t('resCatalog.extRemote', '已从远程获取最新清单');
+        return t('resCatalog.extRemote');
       case 'cache':
-        return t('resCatalog.extCache', '远程获取失败 · 使用本地缓存清单');
+        return t('resCatalog.extCache');
       default:
-        return t('resCatalog.extBuiltin', '远程获取失败 · 回落内置精选清单');
+        return t('resCatalog.extBuiltin');
     }
   };
 
@@ -204,20 +204,20 @@ export function ResCatalogDialog() {
         downloadTargets.map((it) => ({ catalogId: it.id, name: it.name, category: it.category })),
       );
       if (results.length === 0) {
-        toast.error(t('resCatalog.errUnavailable', '下载后端尚未接入（需 HTTP 下载能力）'));
+        toast.error(t('resCatalog.errUnavailable'));
         return;
       }
       const failed = results.filter((r) => !r.ok);
       if (failed.length > 0) {
         toast.error(
-          t('resCatalog.downloadAllFailed', '下载失败'),
+          t('resCatalog.downloadAllFailed'),
           failed.map((r) => r.error ?? r.errorCode ?? 'download failed').join('; '),
         );
         return;
       }
       close();
     } catch (e) {
-      toast.error(t('resCatalog.downloadAllFailed', '下载失败'), e instanceof Error ? e.message : String(e));
+      toast.error(t('resCatalog.downloadAllFailed'), e instanceof Error ? e.message : String(e));
     } finally {
       setDownloading(false);
     }
@@ -226,14 +226,14 @@ export function ResCatalogDialog() {
   return (
     <Modal
       titleId="cat-dlg-title"
-      title={t('resCatalog.title', '资源库')}
+      title={t('resCatalog.title')}
       onClose={close}
       icon={<CatalogIcon />}
       style={{ width: 'min(560px, 100%)' }}
       footer={
         <>
           <button type="button" className="btn ghost" onClick={close}>
-            {t('common.cancel', '取消')}
+            {t('common.cancel')}
           </button>
           <button
             type="button"
@@ -249,7 +249,7 @@ export function ResCatalogDialog() {
                 **逐像素相同**（数字等宽，五语实测一致），报上来的那条路径不再有几何变化。
                 本机 WebKitGTK 4.1 未能复现该残留（终态帧与「直接以终态首屏渲染」逐像素全等），
                 故此为防御性修法 —— 真机复验前别当已证实。门见 style-invariants.test.ts。 */}
-            <span>{t('resCatalog.download', '下载')}</span>
+            <span>{t('resCatalog.download')}</span>
             <span>&nbsp;({downloadTargets.length})</span>
           </button>
         </>
@@ -264,7 +264,7 @@ export function ResCatalogDialog() {
             className={cn(tab === 'builtin' && 'on')}
             onClick={() => setTabAndClear('builtin')}
           >
-            {t('resCatalog.builtin', '内置')}
+            {t('resCatalog.builtin')}
           </button>
           <button
             type="button"
@@ -273,7 +273,7 @@ export function ResCatalogDialog() {
             className={cn(tab === 'external' && 'on')}
             onClick={() => setTabAndClear('external')}
           >
-            {t('resCatalog.external', '外置')}
+            {t('resCatalog.external')}
           </button>
         </div>
         <label className="input search-box" style={{ flex: '1 1 150px', minWidth: 150 }}>
@@ -285,7 +285,7 @@ export function ResCatalogDialog() {
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder={t('resCatalog.searchPh', '搜索资源…')}
+            placeholder={t('resCatalog.searchPh')}
           />
         </label>
       </div>
@@ -297,7 +297,7 @@ export function ResCatalogDialog() {
               <path d="M4 4v6h6M20 20v-6h-6" />
               <path d="M4 10a8 8 0 0114-3M20 14a8 8 0 01-14 3" />
             </svg>
-            <span>{t('resCatalog.refreshList', '刷新清单')}</span>
+            <span>{t('resCatalog.refreshList')}</span>
           </button>
           <span className="cat-ext-status">{extStatusText()}</span>
         </div>
@@ -309,7 +309,7 @@ export function ResCatalogDialog() {
             在，2.2s 够用），而清单是开弹窗即拉的，闪一下就没了，用户对着空列表毫无解释。 */}
         {emptyKind === 'error' ? (
           <div className="cat-empty">
-            <div>{t('resCatalog.loadFailed', '清单加载失败')}</div>
+            <div>{t('resCatalog.loadFailed')}</div>
             <div>{tabErr}</div>
             <button
               type="button"
@@ -317,13 +317,13 @@ export function ResCatalogDialog() {
               style={{ marginTop: 8 }}
               onClick={retryEmpty}
             >
-              {t('common.retry', '重试')}
+              {t('common.retry')}
             </button>
           </div>
         ) : emptyKind === 'notFetched' ? (
-          <div className="cat-empty">{t('resCatalog.clickRefresh', '点击「刷新清单」获取资源清单')}</div>
+          <div className="cat-empty">{t('resCatalog.clickRefresh')}</div>
         ) : emptyKind === 'noMatch' ? (
-          <div className="cat-empty">{t('resCatalog.noMatch', '无匹配资源')}</div>
+          <div className="cat-empty">{t('resCatalog.noMatch')}</div>
         ) : (
           filtered.map((it) => {
             const status = catalogItemStatus(it, localIds);
@@ -357,13 +357,13 @@ export function ResCatalogDialog() {
                 {status !== null && (
                   <span className="cat-badge">
                     {status === 'bundled'
-                      ? t('resCatalog.bundled', '已内置')
-                      : t('resCatalog.downloaded', '已下载')}
+                      ? t('resCatalog.bundled')
+                      : t('resCatalog.downloaded')}
                   </span>
                 )}
                 <span className="cat-meta">
                   <span className={cn('pill', it.category.startsWith('geoip') ? 'region' : 'proto')}>
-                    {categoryLabel(it.category)}
+                    {categoryLabel(it.category, t('resources.categoryCustom'))}
                   </span>
                 </span>
               </div>
@@ -375,7 +375,6 @@ export function ResCatalogDialog() {
       {tab === 'external' && external != null && filtered.length > 0 && (
         <div className="cat-count">
           {t('resCatalog.countLine', {
-            defaultValue: '共 {{n}} 项 · {{dl}} 项可下载',
             n: filtered.length,
             // 「可下载」与勾选禁用面同一判据：随包出厂的也不该算进去，否则计数比实际能下的多。
             dl: filtered.filter((it) => catalogItemStatus(it, localIds) === null).length,

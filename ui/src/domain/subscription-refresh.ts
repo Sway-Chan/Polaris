@@ -17,22 +17,22 @@ export async function refreshSubscriptionWithToast(subId: string, t: TFunction):
   try {
     const r = await api.subscription.updateServers(subId);
     if (!r.success) {
-      toast.error(t('nodes.subRefreshFail', '订阅更新失败'), r.error);
+      toast.error(t('nodes.subRefreshFail'), r.error);
       return false;
     }
     if (r.unchanged) {
-      toast.info(t('nodes.subRefreshUnchanged', '订阅未变化'));
+      toast.info(t('nodes.subRefreshUnchanged'));
       return true;
     }
     const changed = r.addedServers + r.updatedServers + r.deletedServers;
     toast.success(
-      t('nodes.subRefreshOk', { count: changed, defaultValue: '已更新 · {{count}} 个节点变化' })
+      t('nodes.subRefreshOk', { count: changed })
     );
     return true;
   } catch (err) {
     console.error('[subscription-refresh]', err);
     toast.error(
-      t('nodes.subRefreshFail', '订阅更新失败'),
+      t('nodes.subRefreshFail'),
       err instanceof Error ? err.message : undefined
     );
     return false;

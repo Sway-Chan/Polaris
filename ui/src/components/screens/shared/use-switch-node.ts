@@ -38,7 +38,7 @@ export function useSwitchNode(): (id: string) => Promise<void> {
         if (willRestart) toast.info(t('home.selectPendingNodeRestartHint'));
         else
           toast.success(
-            t('home.switchedToast', { node: nodeName, defaultValue: '{{node}} · 已切换' })
+            t('home.switchedToast', { node: nodeName })
           );
       } catch (err) {
         console.error('[switch-node] switch server failed:', err);

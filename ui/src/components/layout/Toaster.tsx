@@ -32,16 +32,16 @@
  *  - `sticky`：不自动消失（否则一轮测速十几秒，2.2s 的 toast 只够显示前两个节点）。
  * 两者只在带 `ToastOptions` 调用时生效，**不带就是原型行为逐字不变**（既有 20+ 处调用点零改动）。
  *
- * # 第三样：`action`（行内按钮）
+ * # 第三样：`actions` / `dismiss`（行内动作组 + 关闭）
  *
- * 唯一消费者是测速**中断态**的「继续」（续测差集，见 `lib/speedtest-progress-toast.ts`）。中断这件事
+ * 唯一消费者是测速**中断态**的「继续剩余 / 重新测速 / 关闭」（见 `lib/speedtest-progress-toast.ts`）。中断这件事
  * 用户此刻多半正在做别的（他刚点了断开/切节点），所以既不能自动续（抢后端单飞闸 + 反直觉），也不能
- * 让他去别处找入口 —— 按钮就长在报告这件事的那条 toast 上是最短路径。
+ * 让他去别处找入口 —— 动作就长在报告这件事的那条 toast 上是最短路径。
  *
- * 两条形态约束由 `toast-queue.ts` 钉死，不在本组件复刻：① 带 action 的 toast **一定有出路**
- * （`autoDismissMs` 让 action 压过 sticky，返回有限停留）；② 停留时长明显长于 2.2s（否则按钮点不到）。
- * 本组件只负责渲染按钮 + 把该条的 `pointer-events` 收回来（栈整体是 none，不然按钮点不着）。
- * 样式 `.toast-action` 落在 `styles/index.css`（`prototype.css`/`components.css` 是冻结原型，禁改）。
+ * 两条形态约束由 `toast-queue.ts` 钉死，不在本组件复刻：① 带 actions 的 toast **一定有出路**
+ * （`autoDismissMs` 让 actions 压过 sticky，返回有限停留）；② 停留时长明显长于 2.2s（否则按钮点不到）。
+ * 本组件只负责渲染动作与关闭按钮，并把该条的 `pointer-events` 收回来（栈整体是 none，不然按钮点不着）。
+ * 样式落在 `styles/index.css`（`prototype.css`/`components.css` 是冻结原型，禁改）。
  * 判定全在 `toast-queue.ts`（纯逻辑，可单测——本组件在 node 环境的 vitest 里测不了）；
  * 「持续状态该 sticky」与 `SettingsTun.tsx:164`「一次性通知不该用 toast 承载常驻风险」为何不冲突，
  * 见 `toast-queue.ts` 文件头第三节。
@@ -73,6 +73,16 @@ export function Toaster() {
   // 卸载时清空所有在飞定时器（严格模式双挂载 / 热重载下防泄漏）。
   const timers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
+  /** 显式关闭：先走与自动消失相同的离场动画，再按本次 entry id 精确移除。 */
+  const dismiss = (id: number) => {
+    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, leaving: true } : it)));
+    const timer = setTimeout(() => {
+      timers.current.delete(timer);
+      setItems((prev) => prev.filter((it) => it.id !== id));
+    }, LEAVE_MS);
+    timers.current.add(timer);
+  };
+
   useEffect(() => {
     const later = (fn: () => void, ms: number) => {
       const id = setTimeout(() => {
@@ -92,7 +102,8 @@ export function Toaster() {
         desc: (desc ?? opts?.description)?.trim() || undefined,
         kind,
         sticky: !!opts?.sticky,
-        action: opts?.action,
+        actions: opts?.actions,
+        dismiss: opts?.dismiss,
         shown: false,
         leaving: false,
       };
@@ -153,19 +164,39 @@ export function Toaster() {
           // 不是 `it.id`：同 key 更新会换新 id，用 id 作 React key 等于每次刷新都卸载重挂
           // ⇒ 进场动画重播，进度 toast 每收一个事件闪一次。见 toast-queue.ts `toastListKey`。
           key={toastListKey(it)}
-          className={`toast${it.kind ? ` ${it.kind}` : ''}${it.shown && !it.leaving ? ' show' : ''}`}
+          className={`toast${it.kind ? ` ${it.kind}` : ''}${it.dismiss ? ' dismissible' : ''}${it.shown && !it.leaving ? ' show' : ''}`}
           role="status"
           aria-live="polite"
-          // 栈整体是 `pointer-events:none`（不挡操作，原型语义）。带按钮的这一条必须把它收回来，
-          // 否则按钮点不到 —— 且只收这一条，无按钮的 toast 仍旧完全不挡鼠标。
-          style={it.action ? { pointerEvents: 'auto' } : undefined}
+          // 栈整体是 `pointer-events:none`（不挡操作，原型语义）。有动作/关闭的这一条必须收回来。
+          style={it.actions?.length || it.dismiss ? { pointerEvents: 'auto' } : undefined}
         >
+          {it.dismiss && (
+            <button
+              type="button"
+              className="toast-close"
+              aria-label={it.dismiss.label}
+              onClick={() => dismiss(it.id)}
+            >
+              <svg viewBox="0 0 24 24" width="13" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M6 6l12 12M18 6L6 18" />
+              </svg>
+            </button>
+          )}
           <div className="toast-msg">{it.msg}</div>
           {it.desc && <div className="toast-desc">{it.desc}</div>}
-          {it.action && (
-            <button type="button" className="toast-action" onClick={it.action.onClick}>
-              {it.action.label}
-            </button>
+          {it.actions && it.actions.length > 0 && (
+            <div className="toast-actions">
+              {it.actions.map((action) => (
+                <button
+                  key={action.label}
+                  type="button"
+                  className="toast-action"
+                  onClick={action.onClick}
+                >
+                  {action.label}
+                </button>
+              ))}
+            </div>
           )}
         </div>
       ))}

@@ -261,9 +261,9 @@ export function AppAddDialog() {
     open({
       kind: 'confirm',
       payload: {
-        title: t('appAdd.discardTitle', '放弃添加？'),
-        message: t('appAdd.discardMsg', '已填写的内容将不会保存。'),
-        confirmLabel: t('node.discard', '放弃'),
+        title: t('appAdd.discardTitle'),
+        message: t('appAdd.discardMsg'),
+        confirmLabel: t('node.discard'),
         danger: true,
         onConfirm: () => {
           close();
@@ -323,7 +323,7 @@ export function AppAddDialog() {
         stage({
           id: `appPreset:${preset.id}`,
           kind: 'appPreset',
-          label: `${t('appAdd.title', '添加自定义应用')} ${preset.name}`,
+          label: `${t('appAdd.title')} ${preset.name}`,
           entityPath: ['customAppPresets', preset.id],
           nextValue: preset,
         });
@@ -337,31 +337,31 @@ export function AppAddDialog() {
       useAppStore.setState((s) => (s.config ? { config: { ...s.config, customAppPresets: next } } : {}));
       close();
     } catch (e) {
-      toast.error(t('common.saveFailed', '保存失败'), e instanceof Error ? e.message : String(e));
+      toast.error(t('common.saveFailed'), e instanceof Error ? e.message : String(e));
     } finally {
       setSubmitting(false);
     }
   };
 
   const categoryOptions: CselOption[] = [
-    { value: 'video', label: t('appPolicy.cat.video', '视频') },
-    { value: 'social', label: t('appPolicy.cat.social', '社交') },
+    { value: 'video', label: t('appPolicy.cat.video') },
+    { value: 'social', label: t('appPolicy.cat.social') },
     { value: 'ai', label: 'AI' },
-    { value: 'tools', label: t('appPolicy.cat.tools', '工具') },
-    { value: 'game', label: t('appPolicy.cat.game', '游戏') },
-    { value: 'custom', label: t('appAdd.catCustom', '自定义…') },
+    { value: 'tools', label: t('appPolicy.cat.tools') },
+    { value: 'game', label: t('appPolicy.cat.game') },
+    { value: 'custom', label: t('appAdd.catCustom') },
   ];
 
   return (
     <Modal
       titleId="aad-title"
-      title={t('appAdd.title', '添加自定义应用')}
+      title={t('appAdd.title')}
       onClose={requestClose}
       icon={<AppAddIcon />}
       footer={
         <>
           <button type="button" className="btn ghost" onClick={requestClose}>
-            {t('common.cancel', '取消')}
+            {t('common.cancel')}
           </button>
           <button
             type="button"
@@ -369,14 +369,14 @@ export function AppAddDialog() {
             onClick={() => void handleSubmit()}
             disabled={submitting}
           >
-            {t('appAdd.submit', '添加')}
+            {t('appAdd.submit')}
           </button>
         </>
       }
     >
       {/* 图标 */}
       <div className="fld">
-        <label className="fld-l">{t('appAdd.icon', '应用图标')}</label>
+        <label className="fld-l">{t('appAdd.icon')}</label>
         <div className="aad-icon-row">
           <div className="aad-icon-preview">
             {iconMethod === 'emoji' ? (
@@ -388,11 +388,11 @@ export function AppAddDialog() {
             )}
           </div>
           <div className="aad-icon-methods">
-            <div className="seg2" role="group" aria-label="Icon method" style={{ display: 'flex' }}>
+            <div className="seg2" role="group" aria-label={t('appAdd.iconMethod')} style={{ display: 'flex' }}>
               {(
                 [
-                  ['letter', t('appAdd.icoLetter', '首字母')],
-                  ['online', t('appAdd.icoOnline', '在线图标')],
+                  ['letter', t('appAdd.icoLetter')],
+                  ['online', t('appAdd.icoOnline')],
                   ['url', 'URL'],
                   ['emoji', 'Emoji'],
                 ] as [IconMethod, string][]
@@ -420,7 +420,7 @@ export function AppAddDialog() {
                     <input
                       value={onlineQuery}
                       onChange={(e) => setOnlineQuery(e.target.value)}
-                      placeholder={t('appAdd.icoSearchPh', '搜索图标…（chatgpt / netflix …）')}
+                      placeholder={t('appAdd.icoSearchPh')}
                     />
                   </label>
                   {/* 刷新 = 整份重来：后端倒掉清单缓存 + 图标磁盘浏览缓存，前端 bust 掉 webview 那层。
@@ -437,19 +437,19 @@ export function AppAddDialog() {
                       <path d="M20 12a8 8 0 10-2.3 5.7" />
                       <path d="M20 6v6h-6" />
                     </svg>
-                    <span>{t('common.refresh', '刷新')}</span>
+                    <span>{t('common.refresh')}</span>
                   </button>
                 </div>
                 <div className="aad-ico-grid" onScroll={onGridScroll}>
                   {galleryStatus === 'idle' || galleryStatus === 'loading' ? (
                     // idle 只存在于「面板刚展开、effect 还没跑」的那一帧，对用户就是加载中。
-                    <div className="aad-hint">{t('common.loading', '加载中…')}</div>
+                    <div className="aad-hint">{t('common.loading')}</div>
                   ) : galleryStatus === 'error' ? (
                     // 加载失败态：可重试（真拉取会瞬时失败——网络/CDN 抖动），或降级改用 URL 面板。
                     // 与「真的空」区分：失败不是「没图标」，重试通常能恢复。
                     <div className="aad-hint">
                       <div>
-                        {t('appAdd.galleryError', '图标库加载失败，可重试或改用「URL」手动填写图标地址')}
+                        {t('appAdd.galleryError')}
                       </div>
                       <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                         <button
@@ -457,14 +457,14 @@ export function AppAddDialog() {
                           className="btn ghost sm"
                           onClick={() => void loadGalleries()}
                         >
-                          {t('appAdd.galleryRetry', '重试')}
+                          {t('appAdd.galleryRetry')}
                         </button>
                         <button
                           type="button"
                           className="btn ghost sm"
                           onClick={() => setIconMethod('url')}
                         >
-                          {t('appAdd.galleryUseUrl', '改用 URL 手动填写')}
+                          {t('appAdd.galleryUseUrl')}
                         </button>
                       </div>
                     </div>
@@ -473,7 +473,7 @@ export function AppAddDialog() {
                     // 不新起弹窗/抽象，直接复用 iconMethod 状态机已有的 'url' 分支。
                     <div className="aad-hint">
                       <div>
-                        {t('appAdd.galleryEmpty', '图标库暂不可用，可改用「URL」手动填写图标地址')}
+                        {t('appAdd.galleryEmpty')}
                       </div>
                       <button
                         type="button"
@@ -481,11 +481,11 @@ export function AppAddDialog() {
                         style={{ marginTop: 8 }}
                         onClick={() => setIconMethod('url')}
                       >
-                        {t('appAdd.galleryUseUrl', '改用 URL 手动填写')}
+                        {t('appAdd.galleryUseUrl')}
                       </button>
                     </div>
                   ) : filteredGalleries.length === 0 ? (
-                    <div className="aad-hint">{t('appAdd.noMatchIcon', '无匹配图标')}</div>
+                    <div className="aad-hint">{t('appAdd.noMatchIcon')}</div>
                   ) : (
                     <>
                       {shownGalleries.map((g) => (
@@ -519,7 +519,6 @@ export function AppAddDialog() {
                       {filteredGalleries.length > shownGalleries.length && (
                         <div className="aad-hint" style={{ gridColumn: '1 / -1' }}>
                           {t('appAdd.galleryMore', {
-                            defaultValue: '已显示 {{shown}} / {{total}}，继续滚动加载更多',
                             shown: shownGalleries.length,
                             total: filteredGalleries.length,
                           })}
@@ -558,7 +557,7 @@ export function AppAddDialog() {
 
             {iconMethod === 'letter' && (
               <div className="aad-hint">
-                {t('appAdd.letterHint', '以应用名首字母作图标；可切换「在线图标」浏览图标库')}
+                {t('appAdd.letterHint')}
               </div>
             )}
           </div>
@@ -570,7 +569,7 @@ export function AppAddDialog() {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 160px', gap: 10 }}>
           <div>
             <label className="fld-l" htmlFor="aad-name">
-              <span>{t('appAdd.name', '名称')}</span> <span className="req-star">*</span>
+              <span>{t('appAdd.name')}</span> <span className="req-star">*</span>
             </label>
             <input
               id="aad-name"
@@ -580,30 +579,30 @@ export function AppAddDialog() {
                 setName(e.target.value);
                 setErrName(false);
               }}
-              placeholder={t('appAdd.namePh', '应用名称')}
+              placeholder={t('appAdd.namePh')}
             />
           </div>
           <div>
             <label className="fld-l" htmlFor="aad-cat">
-              {t('appAdd.category', '分类')}
+              {t('appAdd.category')}
             </label>
             <Csel
               id="aad-cat"
-              ariaLabel={t('appAdd.category', '分类')}
+              ariaLabel={t('appAdd.category')}
               value={category}
               onChange={setCategory}
               options={categoryOptions}
             />
           </div>
         </div>
-        {errName && <div className="err-line">{t('appAdd.errName', '请填写应用名称')}</div>}
+        {errName && <div className="err-line">{t('appAdd.errName')}</div>}
         {category === 'custom' && (
           <input
             className="input"
             style={{ marginTop: 8 }}
             value={customCategory}
             onChange={(e) => setCustomCategory(e.target.value)}
-            placeholder={t('appAdd.catCustomPh', '自定义分类名')}
+            placeholder={t('appAdd.catCustomPh')}
           />
         )}
       </div>
@@ -611,12 +610,12 @@ export function AppAddDialog() {
       {/* 资源标签 */}
       <div className="fld">
         <label className="fld-l">
-          <span>{t('appAdd.resTags', '资源标签')}</span> <span className="req-star">*</span>{' '}
-          <span className="fld-opt">{t('appAdd.resTagsHint', 'Geosite 必选 · GeoIP 可选')}</span>
+          <span>{t('appAdd.resTags')}</span> <span className="req-star">*</span>{' '}
+          <span className="fld-opt">{t('appAdd.resTagsHint')}</span>
         </label>
         <div className="aad-res">
           <div className="aad-res-bar">
-            <div className="seg2" role="group" aria-label="Tag kind" style={{ display: 'flex' }}>
+            <div className="seg2" role="group" aria-label={t('appAdd.tagKind')} style={{ display: 'flex' }}>
               <button
                 type="button"
                 style={{ flex: 1 }}
@@ -642,13 +641,13 @@ export function AppAddDialog() {
               <input
                 value={tagQuery}
                 onChange={(e) => setTagQuery(e.target.value)}
-                placeholder={t('appAdd.tagSearchPh', '搜索标签…')}
+                placeholder={t('appAdd.tagSearchPh')}
               />
             </label>
           </div>
           <div className="tag-pick">
             {filteredTags.length === 0 ? (
-              <div className="aad-hint">{t('appAdd.noMatchTag', '无匹配标签')}</div>
+              <div className="aad-hint">{t('appAdd.noMatchTag')}</div>
             ) : (
               filteredTags.map((tg) => (
                 <button
@@ -689,7 +688,6 @@ export function AppAddDialog() {
               </svg>
               <span>
                 {t('appAdd.missingHint', {
-                  defaultValue: '{{n}} 个资源标签尚未下载到本地',
                   n: missingChips.length,
                 })}
               </span>
@@ -701,18 +699,18 @@ export function AppAddDialog() {
                   closeAll();
                 }}
               >
-                {t('appAdd.gotoResources', '前往规则资源')}
+                {t('appAdd.gotoResources')}
               </button>
             </div>
           )}
-          {errGeosite && <div className="err-line">{t('appAdd.errGeosite', '请至少选择一个 Geosite 标签')}</div>}
+          {errGeosite && <div className="err-line">{t('appAdd.errGeosite')}</div>}
         </div>
       </div>
 
       {/* 进程名 */}
       <div className="fld">
         <label className="fld-l" htmlFor="aad-proc">
-          {t('appAdd.procNames', '进程名')}
+          {t('appAdd.procNames')}
         </label>
         <input
           id="aad-proc"
@@ -731,7 +729,7 @@ export function AppAddDialog() {
             <rect x="4" y="4" width="16" height="16" rx="2" />
             <path d="M9 9h6v6" />
           </svg>
-          <span>{t('appAdd.procPick', '从进程选择')}</span>
+          <span>{t('appAdd.procPick')}</span>
         </button>
       </div>
     </Modal>

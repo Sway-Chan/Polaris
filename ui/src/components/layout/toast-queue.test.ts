@@ -128,22 +128,23 @@ describe('autoDismissMs：sticky 不自动消失', () => {
   });
 });
 
-describe('autoDismissMs：带 action 的 toast **必须有出路**（action 压过 sticky）', () => {
+describe('autoDismissMs：带 actions 的 toast **必须有出路**（actions 压过 sticky）', () => {
   const act = { label: '继续', onClick: () => {} };
 
-  it('🔴 sticky + action ⇒ 仍返回**有限**值（不许「带按钮却永不消失」）', () => {
-    // 这是本仓唯一封住「按钮点不到又关不掉」的地方：Toaster 没有 dismiss 通道，收口全靠
-    // 「同 key 顶掉」+「自动淡出」两条，故 sticky+action 在结构上没有出路。
-    // 变异锁：把 `if (entry.action) return ACTION_VISIBLE_MS;` 删掉（让 sticky 说了算）→ 拿到 null → 转红。
-    const ttl = autoDismissMs({ sticky: true, action: act });
+  it('🔴 sticky + actions ⇒ 仍返回**有限**值（不许动作通知永久占位）', () => {
+    // 变异锁：把 actions 判定删掉（让 sticky 说了算）→ 拿到 null → 转红。
+    const ttl = autoDismissMs({ sticky: true, actions: [act] });
     expect(ttl).not.toBeNull();
     expect(Number.isFinite(ttl as number)).toBe(true);
   });
 
-  it('🔴 停留明显长于 2.2s（否则按钮形同虚设，用户视线还没落过去就没了）', () => {
-    // 变异锁：让带 action 的也走 VISIBLE_MS → 转红。
-    expect(autoDismissMs({ sticky: false, action: act })).toBe(ACTION_VISIBLE_MS);
+  it('🔴 停留明显长于 2.2s（否则动作形同虚设，用户视线还没落过去就没了）', () => {
+    expect(autoDismissMs({ sticky: false, actions: [act] })).toBe(ACTION_VISIBLE_MS);
     expect(ACTION_VISIBLE_MS).toBeGreaterThanOrEqual(8_000);
+  });
+
+  it('空动作数组不延长停留（不得把空壳当成可操作通知）', () => {
+    expect(autoDismissMs({ sticky: false, actions: [] })).toBe(VISIBLE_MS);
   });
 
   it('也不许赖在屏上（栈只有 2 个位子，常驻会挤掉后续真正要看的通知）', () => {
@@ -188,16 +189,17 @@ describe('接线还在：Toaster 用的是本模块的判定，没有就地复�
     );
   });
 
-  it('🔴 action 从 ToastOptions 接进 entry，并真的渲染成一个可点的按钮', () => {
-    // 变异锁：删掉 `action: opts?.action` → 第一条转红（按钮永远建不出来，续测入口整段哑火）；
-    // 删掉那个 `<button>` → 第二条转红；删掉 pointerEvents 收回 → 第三条转红
-    // （栈整体 `pointer-events:none`，不收回来按钮点不着 —— 这是「看着有按钮、点不动」的经典假接线）。
-    expect(toaster).toMatch(/action: opts\?\.action/);
+  it('🔴 actions / dismiss 从 ToastOptions 接进 entry，并真的渲染成可点入口', () => {
+    expect(toaster).toMatch(/actions: opts\?\.actions/);
+    expect(toaster).toMatch(/dismiss: opts\?\.dismiss/);
+    expect(toaster).toMatch(/className="toast-actions"/);
     expect(toaster).toMatch(/className="toast-action"/);
+    expect(toaster).toMatch(/className="toast-close"/);
     expect(toaster, '带按钮那条必须把 pointer-events 收回来，否则点不到').toMatch(
       /pointerEvents: 'auto'/,
     );
-    expect(toaster).toMatch(/onClick=\{it\.action\.onClick\}/);
+    expect(toaster).toMatch(/onClick=\{action\.onClick\}/);
+    expect(toaster).toMatch(/onClick=\{\(\) => dismiss\(it\.id\)\}/);
   });
 
   it('四个 level 都把 ToastOptions 透传下去（漏一个，那条通道就用不了 key/sticky）', () => {

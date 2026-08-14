@@ -126,7 +126,7 @@ function scanSource(file: string, text: string): { bare: Hit[]; selfT: Hit[] } {
   const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const bare: Hit[] = [];
   const selfT: Hit[] = [];
-  /** 节点起点 → 豁免理由（`defaultValue` / `console`）。 */
+  /** 节点起点 → 豁免理由（仅开发者日志）。 */
   const exempt = new Map<number, string>();
   const markDeep = (n: ts.Node | undefined, why: string): void => {
     if (!n) return;
@@ -154,58 +154,10 @@ function scanSource(file: string, text: string): { bare: Hit[]; selfT: Hit[] } {
       if (name === 't' && n.arguments.length >= 1) {
         const a0 = n.arguments[0];
         const lit = ts.isStringLiteral(a0) ? a0.text : null;
-        if (lit !== null && DOTTED.test(lit)) {
-          // 白名单 ②：i18next 的 `defaultValue`（`t('k','中文')` 与 `t('k',{defaultValue:'中文'})`）。
-          // 它有键、进得了 locale-parity 的可寻址性扫描，与「压根没有键」是两回事。
-          const a1 = n.arguments[1];
-          if (a1 && !ts.isObjectLiteralExpression(a1)) markDeep(a1, 'defaultValue');
-          for (const a of n.arguments.slice(1)) {
-            if (!ts.isObjectLiteralExpression(a)) continue;
-            for (const p of a.properties)
-              if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === 'defaultValue')
-                markDeep(p.initializer, 'defaultValue');
-          }
-        } else if (lit !== null) {
+        if (lit !== null && !DOTTED.test(lit)) {
           // G2：首参是字符串字面量却不是点分键 ⇒ 自造 t()（`t('中文','English')` 的签名）。
           selfT.push({ file: rel(file), line: at(n), text: lit.slice(0, 40) });
         }
-      }
-    }
-    // 白名单 ③：FieldSpec 表里经 spec 传递的 defaultValue。
-    //
-    // `field-spec.tsx` 的渲染是 `tr(spec.label, spec.zh)` / `tr(hintKey, hintZh)`（`tr` = `t` 的可选缺省包装）
-    // ⇒ `zh` / `hintZh` / `disabledHintZh` 与白名单 ② 的 `t('k','中文')` **是同一语义**，只是分两处写：
-    // 键在 `label`/`hint`/`disabledHint`，缺省值在对应的 `*Zh`。② 只认直接形态，看不见这种经表传递的。
-    //
-    // 为什么不改成「抬基线」：FieldSpec 是本仓弹窗的标准写法（`WgDialog` 12 条、`TsSettingsDialog` 17 条
-    // 都是它），每加一个字段就让棘轮红一次 ⇒ 门变成狼来了 ⇒ 最后谁都直接改数字，等于没门。
-    //
-    // 2026-08-07 `node-spec.ts` 把 151 条 `zh`/`hintZh` 全删了之后，本白名单对**那张表**不再有事可做
-    // （它一条 zh 都没有了）——但对另外四个弹窗仍在生效，故不能撤。「删了缺省之后谁来管键漏没漏」
-    // 由下方 G5 接手，两者是接力不是重叠。
-    //
-    // 为什么要求同对象里有键（不是见 `zh:` 就放行）：只按属性名放行的话，任何人给对象加个 `zh:` 就能
-    // 藏硬编码文案。要求同一个对象字面量里存在一个**点分 i18n 键**的兄弟属性，才认它是 defaultValue。
-    //
-    // `disabledHint` / `disabledHintZh` 是 2026-07-31 随「WARP 的 System 开关改成可见但禁用」加进
-    // FieldSpec 的一对（禁用时取代 `hint` 的说明）。**登记进本表不是放宽棘轮**：债务数一个没动，
-    // 变的是识别器认得这一对属于早已白名单化的「键 + zh 缺省」约定；上面那条「同对象里必须有点分键」
-    // 的防滥用要求对它同样成立。
-    if (ts.isObjectLiteralExpression(n)) {
-      const KEY_PROPS = new Set(['label', 'hint', 'disabledHint']);
-      const ZH_PROPS = new Set(['zh', 'hintZh', 'disabledHintZh']);
-      const props = n.properties.filter(ts.isPropertyAssignment);
-      const hasKey = props.some(
-        (p) =>
-          ts.isIdentifier(p.name) &&
-          KEY_PROPS.has(p.name.text) &&
-          ts.isStringLiteral(p.initializer) &&
-          DOTTED.test(p.initializer.text)
-      );
-      if (hasKey) {
-        for (const p of props)
-          if (ts.isIdentifier(p.name) && ZH_PROPS.has(p.name.text))
-            markDeep(p.initializer, 'defaultValue(spec)');
       }
     }
     ts.forEachChild(n, visit);
@@ -250,59 +202,23 @@ const I18N_EXEMPT_FILES: Record<string, string> = {
   // 且内容本就是「像真数据的样例」，翻译它没有意义。
   'harness-fixture.ts': '开发 harness 的 mock 节点/订阅数据，不进产物（不在 vite 多入口里）',
   'tray-harness-main.tsx': '托盘 harness 的 mock 数据与演示用分组名，不进产物',
+  'src/main.tsx': 'i18n 初始化前的启动失败逃生页与错误上报前缀，必须零依赖',
+  'src/components/ErrorBoundary.tsx': '渲染/i18n 自身失败时仍可操作的双语逃生页，刻意零依赖',
+  'src/components/screens/settings/SettingsDisplay.tsx': '语言选择项使用各语言自称名，不随当前 locale 翻译',
+  'src/lib/staged-config.ts': '导出的治理策略表 why 字段，仅供测试审计，不进入任何用户界面',
 };
 
 /**
  * 裸 CJK 字面量的**存量**债务 —— 逐文件精确相等，**只许降不许升**。
  *
- * 为什么是「逐文件计数」而不是「逐条白名单」：存量 250 条散在 29 个文件里，逐条登记会变成一张
- * 没人维护的清单；而计数表恰好卡住本门要防的那件事 —— 新文件默认 0（新界面写死中文即红），
- * 老文件涨了也红。两个方向都说话，跟 `MISSING_KEY_DEBT` 同一套棘轮语义。
+ * 当前债务已清零；保留空表和逐文件棘轮，避免以后以“先登记、以后再还”为由重新积累。
  *
  * **不在表里 = 必须 0**。托盘（`src/tray/*`）与更新弹窗（`src/update-popup/*`）刻意不在表里：
  * 它们是本次接进 i18n 的两个 webview，任何回潮都必须立刻转红。
  *
- * 表里每条都是**真实的 i18n 缺口**（不是「可以接受」），按文件登记以便逐个还：
+ * 表里若重新出现条目，必须是真实 i18n 缺口（不是“可以接受”）。
  */
-const BARE_CJK_DEBT: Record<string, number> = {
-  // 节点表单的字段标签/占位/提示，按协议成表（`FIELDS` 一族）—— 全部未走 i18n。最大的一笔。
-  'src/components/dialogs/node-spec.ts': 1,
-  // 规则域的枚举显示名（条件类型/动作/逻辑词）。
-  'src/domain/rules.ts': 33,
-  // 暂存层的字段中文名（`FIELD_LABELS` 之类），用于「待应用」条目描述。
-  'src/lib/staged-config.ts': 16,
-  // 悬浮卡里的规则摘要文案。
-  'src/components/hover-cards/RuleHoverCard.tsx': 13,
-  // 应用分流页的分组/状态短语。
-  'src/components/screens/apppolicy/AppPolicyScreen.tsx': 8,
-  // 备份导入的类别名（`CATEGORY_LABELS`）。
-  'src/components/dialogs/BackupImportDialog.tsx': 6,
-  // 地区规则卡的说明文案。
-  'src/components/screens/rules/GeoCard.tsx': 6,
-  // 主窗 bootstrap 的**兜底**白屏页：i18next 尚未初始化时的 innerHTML，中英双语并列写死。
-  // 与 `ErrorBoundary.tsx` 同理 —— 这一条是**刻意的**，见该文件注释（i18n 挂了它也要能显示）。
-  'src/main.tsx': 6,
-  // 资源库页的状态短语。
-  'src/components/screens/resources/ResourcesScreen.tsx': 5,
-  // 错误处理器里的兜底错误描述。
-  'src/lib/error-handler.ts': 5,
-  // 渲染期异常兜底页：i18n 可能正是挂掉的那部分，故中英双语并列写死（**刻意**，同 main.tsx）。
-  'src/components/ErrorBoundary.tsx': 4,
-  // 协议编解码的错误描述。
-  'src/components/dialogs/proto-codec.ts': 3,
-  // 资源引用悬浮卡文案。
-  'src/components/hover-cards/ResourceRefsHoverCard.tsx': 3,
-  // 显示设置里的语言名（自称名，按惯例不翻译，但仍是裸字面量）。
-  'src/components/screens/settings/SettingsDisplay.tsx': 3,
-  'src/components/dialogs/RuleDialog.tsx': 0,
-  'src/components/screens/connections/ConnectionsScreen.tsx': 2,
-  'src/ipc/ipc-client.ts': 2,
-  'src/components/screens/nodes/NodeCard.tsx': 1,
-  'src/components/screens/settings/SettingsPage.tsx': 1,
-  'src/components/screens/settings/useConfig.ts': 1,
-  'src/domain/rule-resource-catalog.ts': 1,
-  'src/store/use-app-presets-store.ts': 1,
-};
+const BARE_CJK_DEBT: Record<string, number> = {};
 
 // ════════════════════════════════════════════════════════════════════════════
 // 自检：解析器真的解析到了东西
@@ -319,8 +235,8 @@ describe('G0 自检：本门不能空转', () => {
     const probe = scanSource(
       'probe.tsx',
       [
-        "const a = t('x.y', '默认值甲');", //            豁免：i18next defaultValue（位置参数）
-        "const b = t('x.z', { defaultValue: '默认值乙' });", // 豁免：defaultValue（选项对象）
+        "const a = t('x.y', '默认值甲');", //            ← 该命中（运行时第二套文案真值）
+        "const b = t('x.z', { defaultValue: '默认值乙' });", // ← 该命中（同上）
         "console.warn('日志丙');", //                    豁免：开发者可见日志
         "const c = 'ASCII only';", //                    非 CJK，不该命中
         "// 注释里的中文丁", //                          注释不是 AST 节点，不该命中
@@ -338,11 +254,13 @@ describe('G0 自检：本门不能空转', () => {
       '模板庚',
       '裸中文己',
       '裸中文戊',
+      '默认值乙',
+      '默认值甲',
     ]);
     expect(probe.selfT.map((h) => h.text), '自造 t() 未被识别').toEqual(['中文辛']);
-    // 真实语料上的量级自检：`t('key','中文')` 有 800+ 处，豁免一旦失效债务会涨到四位数。
+    // 真实语料上的量级自检：债务应保持可审计，不能因解析器失效归零或异常暴涨。
     const total = [...BARE_BY_FILE.values()].reduce((n, v) => n + v.length, 0);
-    expect(total, 'defaultValue 豁免疑似失效（债务暴涨）').toBeLessThan(500);
+    expect(total, '裸 CJK 债务异常暴涨').toBeLessThan(500);
     expect(total, '扫到 0 条裸 CJK —— CJK 正则失效？').toBeGreaterThan(0);
   });
 });
@@ -564,54 +482,9 @@ describe('G4 aux 分区的键只许在对应的消费方里消费', () => {
 // ════════════════════════════════════════════════════════════════════════════
 
 /**
- * # 为什么要有这一条（根因）
- *
- * `FieldSpec` 原本靠 **`zh: string` 必填**兜底：键缺失时 `t(key, zh)` 渲染 zh 缺省，界面不会破。
- * 2026-08-07 把 `node-spec.ts` 的 **151 条**缺省（127 条 `zh` + 24 条 `hintZh`；`disabledHintZh` 本来
- * 就是 0 条）全删了（键已五语齐备，留着就是两份真值源且永远看不出哪份在生效），代价是**兜底没了**：
- *
- *  - 实测 i18next 23.16.8：`t('node.field.sni')` 与 `t('node.field.sni', undefined)` 在键缺失时
- *    都返回 **键本身** `"node.field.sni"` ⇒ 漏一条键 = 表单上直接显示一串点分标识符；
- *  - 而 `t(key, '')` 返回 **空串** —— 更隐蔽（一个空的 `.fld-hint`，谁都看不出少了什么），
- *    故 `field-spec.tsx` 里那两处 `hintZh ?? ''` 同批改成了直接传 `hintZh`。
- *
- * 删 `zh` 之前，这条失效面**在 i18n 这一侧**没有门（下面两条），但**不是全仓无门** —— 昨天
- * `243a76c` 把节点弹窗铺进 `text-fit` 时，那里的「双向对差」已经在做键集对账
- * （`text-fit.test.ts`：`expect(used).toEqual(declared)`，`declared` = en-US 里全部 `node.field.*`），
- * 键改名/漏译它会红。立 G5a/G5b 不是因为「一道门都没有」，而是因为那道门有两个结构性问题：
- * ① 它住在**几何门**里，S11 被收窄或重写时这条对账会跟着一起消失；② 它只认 `node.field.` 前缀、
- * 只覆盖 `ND_SPEC`，对另外四个弹窗的 FieldSpec 表完全不可见。
- *
- * i18n 这一侧原先确实看不见，两条原因：
- *  - `locale-parity` 的可寻址性扫描靠正则抓字面量 `t('a.b.c'`，`node-spec.ts` 里**一处 `t(` 都没有**
- *    （键经 spec 表传给 `FieldRenderer`）⇒ 结构上看不见；
- *  - 上面白名单 ③ 只在「同对象里有点分键」时把 `zh` 当 defaultValue 豁免掉 —— 它管的是
- *    「别把中文硬编码算成债务」，`zh` 删光后它无事可做，不会因为键缺失而说话。
- *
- * # 两条腿，失效模式互补
- *
- *  G5a **真值源**：直接 import `ND_SPEC` 遍历。它是运行期真的会被渲染的那张表，
- *     `...F_TRANSPORT` / `tlsAdvFields()` 这类展开与工厂产物全都算数。
- *  G5b **源码扫描**：AST 找出全仓所有 `FieldSpec` 对象字面量（判据 = 同时有 `k:` 与 `t:` 两个
- *     discriminator 属性），要求 `label`/`hint`/`disabledHint` 的键**要么在 en-US 里存在、
- *     要么同对象里还留着对应的 `zh` 兄弟**。
- *
- *     为什么 G5b 的判据是「或」而不是直接要求键存在：`WgDialog` / `WarpDialog` / `TsSettingsDialog` /
- *     `RuleDialog` 的 spec 表建在**组件函数体里**（拿 `draft`/`base` 做 `disabled` 判据），import
- *     不到；而它们今天有 **36 个键根本不在 en-US 里**，全靠 `zh` 兜底渲染中文 —— 那是与
- *     `node.field.*` 同型的存量债（五个语种都看中文），本轮不在射程内。直接要求键存在会一上来
- *     就 36 条红，门立刻变成噪音。
- *
- *     这条「或」同时**接管了 `zh: string` 从必填改成可选后丢掉的那份类型保证**：那四个弹窗少写一个
- *     `zh` 时，编译器不再拦，但 G5b 会拦（键不在 en-US ⇒ 必须有 zh）。
- *
- * # 射程之外
- *
- *  - 只查 **en-US 主分区**。其余语种的齐备性归 `locale-parity`（zh 严格全等、ru/fa 精确棘轮），
- *    缺一条会在那道门红。aux 分区（`tray.*`/`updatePopup.*`）不参与：那两个 webview 没有 FieldSpec 表，
- *    真在主窗写了 `t('tray.x')` 由 G4 管。
- *  - G5b 只认对象字面量。spec 由函数拼装、键由变量传入的写法它看不见 —— 节点表单那份由 G5a 兜住，
- *    其余弹窗目前都是字面量表（208 个键位点全被扫到，见下方自检）。
+ * FieldSpec 的键经描述表传入渲染器，不会被 `t('literal.key')` 的常规扫描捕获。
+ * G5a 遍历运行时 ND_SPEC，G5b 扫描其余对象字面量；两者都要求键真实存在于 en-US。
+ * 其余四个 locale 的同构性由 locale-parity 负责。FieldSpec 不再允许 `zh*` 缺省，locale 是唯一文案真值源。
  */
 const EN_MAIN_LEAVES: ReadonlySet<string> = (() => {
   const flat = (o: unknown, p = '', out = new Set<string>()): Set<string> => {
@@ -627,12 +500,8 @@ const EN_MAIN_LEAVES: ReadonlySet<string> = (() => {
   return s;
 })();
 
-/** FieldSpec 的「键属性 → 同对象里的 zh 缺省属性」配对（与 `field-spec.tsx` 的 union 一一对应）。 */
-const SPEC_KEY_PROPS: ReadonlyArray<readonly [key: string, zh: string]> = [
-  ['label', 'zh'],
-  ['hint', 'hintZh'],
-  ['disabledHint', 'disabledHintZh'],
-];
+/** FieldSpec 中承载 i18n key 的属性（与 `field-spec.tsx` 一致）。 */
+const SPEC_KEY_PROPS = ['label', 'hint', 'disabledHint'] as const;
 
 describe('G5a 节点表单（ND_SPEC 真值源）的每个 i18n 键都必须在 en-US 里存在', () => {
   /** ND_SPEC 摊平 → `键 → 出处`（同一键跨协议复用时留第一处即可，报错定位够用）。 */
@@ -644,7 +513,7 @@ describe('G5a 节点表单（ND_SPEC 真值源）的每个 i18n 键都必须在 
         for (const f of ND_SPEC[proto][section] as FieldSpec[]) {
           fields++;
           const where = `${proto}.${section}.${f.k}`;
-          for (const [kp] of SPEC_KEY_PROPS) {
+          for (const kp of SPEC_KEY_PROPS) {
             const v = (f as unknown as Record<string, unknown>)[kp];
             if (typeof v === 'string' && !out.has(v)) out.set(v, where);
           }
@@ -673,10 +542,10 @@ describe('G5a 节点表单（ND_SPEC 真值源）的每个 i18n 键都必须在 
   });
 });
 
-describe('G5b 全仓 FieldSpec 字面量：键在 en-US 里，或仍留着 zh 缺省', () => {
+describe('G5b 全仓 FieldSpec 字面量：每个键都存在于 en-US', () => {
   /** 判据 = 同时有 `k:` 与 `t:`（FieldSpec 的两个 discriminator），把 select 选项 / 导航项之类排除掉。 */
   const sites = (() => {
-    const acc: { file: string; line: number; prop: string; key: string; hasZh: boolean }[] = [];
+    const acc: { file: string; line: number; prop: string; key: string }[] = [];
     for (const file of SOURCES) {
       const sf = parse(file);
       const visit = (n: ts.Node): void => {
@@ -685,7 +554,7 @@ describe('G5b 全仓 FieldSpec 字面量：键在 en-US 里，或仍留着 zh �
           for (const p of n.properties)
             if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name)) named.set(p.name.text, p);
           if (named.has('k') && named.has('t'))
-            for (const [kp, zhp] of SPEC_KEY_PROPS) {
+            for (const kp of SPEC_KEY_PROPS) {
               const p = named.get(kp);
               if (!p || !ts.isStringLiteral(p.initializer) || !DOTTED.test(p.initializer.text)) continue;
               acc.push({
@@ -693,7 +562,6 @@ describe('G5b 全仓 FieldSpec 字面量：键在 en-US 里，或仍留着 zh �
                 line: sf.getLineAndCharacterOfPosition(p.getStart(sf)).line + 1,
                 prop: kp,
                 key: p.initializer.text,
-                hasZh: named.has(zhp),
               });
             }
         }
@@ -704,26 +572,21 @@ describe('G5b 全仓 FieldSpec 字面量：键在 en-US 里，或仍留着 zh �
     return acc;
   })();
 
-  it('自检：扫到了足量键位点，且节点表单那份**没有**任何 zh 缺省（第二腿已落地）', () => {
+  it('自检：扫到了足量键位点', () => {
     expect(sites.length, 'FieldSpec 键位点异常偏低 —— 判据（k + t）失效？').toBeGreaterThan(150);
     const nodeSpec = sites.filter((s) => s.file === 'src/components/dialogs/node-spec.ts');
     expect(nodeSpec.length, 'node-spec.ts 一个键位点都没扫到').toBeGreaterThanOrEqual(99);
-    // 这一条是「删 zh」那件事本身的牙：任何人往 node-spec.ts 里补回一个 zh 缺省都会红。
-    expect(
-      nodeSpec.filter((s) => s.hasZh).map((s) => `  ${s.file}:${s.line} ${s.prop}=${s.key}`).sort(),
-      'node-spec.ts 又出现了 zh 缺省 —— 该表的文案真值源只有 locale 一处',
-    ).toEqual([]);
   });
 
-  it('没有「键不在 en-US 且没有 zh 缺省」的字段（那就是渲染裸键名）', () => {
+  it('没有 en-US 缺失键（缺失会渲染为点分键名）', () => {
     const bad = sites
-      .filter((s) => !EN_MAIN_LEAVES.has(s.key) && !s.hasZh)
+      .filter((s) => !EN_MAIN_LEAVES.has(s.key))
       .map((s) => `  ${s.file}:${s.line} ${s.prop}='${s.key}'`)
       .sort();
     expect(
       bad,
-      '这些 FieldSpec 既没有 en-US 译文、也没有 zh 缺省 ⇒ 界面上会出现点分键名。' +
-        '修法：把键补进 `i18n/locales/*.json`（首选，五语同批），或暂时保留 zh 缺省。',
+      '这些 FieldSpec 键没有 en-US 译文 ⇒ 界面上会出现点分键名。' +
+        '请把文案补进 `i18n/locales/*.json`（五语同批）。',
     ).toEqual([]);
   });
 });

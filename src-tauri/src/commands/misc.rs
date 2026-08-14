@@ -5,6 +5,7 @@
 //! 映射 channel：
 //! - `logs:get` / `logs:clear` → [`logs_get`] / [`logs_clear`]
 //! - `logs:runtimeLevel` → [`logs_runtime_level`]（读回核在跑的真实日志级别，不是盘上写的那个）
+//! - `logs:diagnosticState` / `logs:setDiagnostic` → 会话级 DEBUG（只活到本次应用退出）
 //! - `shell:openExternal` → [`shell_open_external`]（tauri-plugin-shell）
 //! - `app:openSingboxDashboard` / `app:refreshSingboxDashboard` /
 //!   `app:getSingboxDashboardConnection` → singbox_dashboard_*（Polaris helper-handlers 的 dashboard 部分）
@@ -373,6 +374,18 @@ pub async fn logs_runtime_level(state: State<'_, AppRuntime>) -> Result<ApiRespo
         Ok(level) => ApiResponse::ok(json!({ "level": level, "reason": Value::Null })),
         Err(reason) => ApiResponse::ok(json!({ "level": Value::Null, "reason": reason })),
     })
+}
+
+/// 查询会话级诊断模式。状态只在 Rust 进程内，渲染屏卸载/重挂不会误关；应用重启后自然回到 false。
+#[tauri::command]
+pub fn logs_diagnostic_state() -> ApiResponse<bool> {
+    ApiResponse::ok(crate::logging::session_diagnostic_enabled())
+}
+
+/// 开关会话级诊断模式：临时把应用 sink + sing-box 实时 relay 抬到至少 DEBUG，不写配置、不重启核。
+#[tauri::command]
+pub fn logs_set_diagnostic(enabled: bool) -> ApiResponse<bool> {
+    ApiResponse::ok(crate::logging::set_session_diagnostic(enabled))
 }
 
 /// [`logs_runtime_level`] 的取值本体。**诊断导出复用同一条腿**。

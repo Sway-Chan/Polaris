@@ -14,7 +14,7 @@
  * sticky toast 不自动消失 ⇒ **必须**保证每一轮测速都有终态。本模块把四条路径收敛到同一个状态机：
  *
  *  1. **终态事件**（`EVENT_SPEED_TEST_DONE`，[`reduceSpeedTestDone`]）—— **主路径**。后端三条腿各在
- *     唯一出口广播 `{outcome, tested, total, pending}`，`interrupted` 当场转中断态并挂上「继续」按钮；
+ *     唯一出口广播 `{outcome, tested, total, serverIds, pending}`，`interrupted` 当场转中断态并给出恢复动作；
  *  2. `tested >= total` —— 正常跑完那一帧就地收口，转 `nodes.speedTestDone`（不必等事件绕一圈）；
  *  3. **静默超时**（[`SPEEDTEST_IDLE_TIMEOUT_MS`]）—— 降级为**纯兜底**，见下一节；
  *  4. `total <= 1` —— 不起 toast（`0` 是防御性忽略，`1` 是单节点 ⚡ 的裁定，见下方 guard 处注释）。
@@ -40,15 +40,17 @@
  *    于是即便 outcome 是 `"completed"`，`tested` 也永远到不了 `total`。此时第 1 条照样收口
  *    （`completed` + `pending` 非空），不再需要第 3 条兜。
  *
- * # 中断后「继续」：一键续测差集，**不自动续**
+ * # 中断后的恢复动作：继续剩余 / 重测原范围 / 关闭，**不自动执行**
  *
- * 中断态 toast 挂一个 action 按钮（`nodes.speedTestResume`），点了才续 —— 三条理由：
+ * 中断态 toast 提供两个数据动作：`继续剩余` 只测 `pending`，`重新测速` 重测后端随终态事件返回的
+ * `serverIds`。二者都在点击后才执行 —— 三条理由：
  *  1. 后端有**进程级单飞闸**（`commands/speedtest.rs::SPEED_TEST_IN_FLIGHT`）。自动重试会和用户的
  *     下一个动作抢闸，表现成「我点了测速却报 in-flight」；
  *  2. 中断的常见来源正是**用户主动切了节点 / 断开**——他此刻多半在做别的事，自动占带宽跑测速反直觉；
  *  3. 无限重试没有天然收敛点（核不稳时会反复触发）。
- * 判定在 [`planSpeedTestResume`]（纯逻辑）：续的是**差集**（已测值仍然有效，节点没变、目标端点没变），
- * 且发出前按**当前节点集**过滤（用户可能在这中间删了节点 / 换了订阅）。过滤后为空 → 不发空请求。
+ * 判定在 [`planSpeedTestRun`]（纯逻辑）：发出前按**当前节点集**过滤（用户可能在这中间删了节点 /
+ * 换了订阅）。过滤后为空 → 不发空请求。若中断时一个节点都没完成，`pending === serverIds`，此时
+ * 「继续剩余」与「重新测速」完全同义，只保留后者，避免两个按钮执行同一件事。
  *
  * ## 为什么终止信号不从调用点（`speedTest()` 的 finally）取
  *
@@ -68,8 +70,8 @@
  *    禁改）里 `.toast` 没有进度条元件，新造要在 `index.css` 补一套并同步浅/深两档主题，
  *    还会让 toast 宽度在测速期间跳动 —— 成本与收益不成比例。
  *  · 直接后果：进度/终态四条文案**零新增 i18n 键**，全部复用 `servers.*` 下**早已五语齐备、却零消费点**的
- *    键（上游 同款字面，1:1 移植时译文先落地、消费点没接上）。续测那两条是真新增（`speedTestResume` /
- *    `speedTestResumeGone`），已五语同批补齐 ⇒ `MISSING_KEY_DEBT`（ru/fa 缺口）不动。
+ *    键（上游 同款字面，1:1 移植时译文先落地、消费点没接上）。恢复动作与关闭入口的新增键
+ *    已在五语同批补齐 ⇒ `MISSING_KEY_DEBT`（ru/fa 缺口）不动。
  *
  * # 为什么外部面全靠注入、本模块零运行时 import
  *
@@ -152,13 +154,15 @@ export interface SpeedTestToastIntent {
   descKey?: string;
   descVars?: Record<string, number>;
   /**
-   * 行内动作按钮的**描述**（不是 handler）：`labelKey` = i18n 键，`resume` = 该续测哪些节点。
+   * 行内动作按钮的**描述**（不是 handler）：`labelKey` = i18n 键，`serverIds` = 该测哪些节点。
    *
    * 刻意不在这里放 `onClick`：这层是纯数据（单测直接比对整个 intent 对象）。真 handler 由
-   * [`subscribeSpeedTestProgressToast`] 的 `dispatch` 用 `resume` + 注入的外部面组装 ——
-   * 「点了之后要按当前节点集再过滤一次」也发生在那里（见 [`planSpeedTestResume`]）。
+   * [`subscribeSpeedTestProgressToast`] 的 `dispatch` 用 `serverIds` + 注入的外部面组装 ——
+   * 「点了之后要按当前节点集再过滤一次」也发生在那里（见 [`planSpeedTestRun`]）。
    */
-  action?: { labelKey: string; resume: string[] };
+  actions?: Array<{ labelKey: string; serverIds: string[] }>;
+  /** 显式关闭入口；值是已纳入五语校验的 i18n 键。 */
+  dismissLabelKey?: string;
 }
 
 /** 收到一个进度事件：更新态并给出该弹的 toast（`null` = 什么都不做）。 */
@@ -208,6 +212,7 @@ export function reduceSpeedTestIdle(state: SpeedTestToastState): {
       sticky: false,
       msgKey: 'nodes.speedTestInterrupted',
       descKey: 'nodes.speedTestInterruptedSummary',
+      dismissLabelKey: 'nodes.speedTestDismiss',
       // 兜底腿没有后端载荷可用（事件根本没到），只能报本地看到的最后一帧进度。
       descVars: { tested: state.tested, total: state.total },
     },
@@ -221,7 +226,7 @@ export function reduceSpeedTestIdle(state: SpeedTestToastState): {
  *   [`reduceSpeedTestProgress`] 收口过（否则连弹两条「测速完成」）；②单节点 ⚡ 整轮静音
  *   （`total<=1` 从没起过 toast，此时弹任何东西都是凭空多一条）。
  * - `interrupted` ⇒ 「测速中断」+ 已完成数**取后端载荷**（`ev.tested/ev.total` 才是权威的
- *   「如实上报已完成数」；本地 state 只是最后一帧进度的回声），并在 `pending` 非空时挂「继续」。
+ *   「如实上报已完成数」；本地 state 只是最后一帧进度的回声），并按原范围与待测差集挂恢复动作。
  * - `completed` ⇒ 「测速完成」。能走到这里说明 `tested` 没到过 `total`（典型：测量任务 JoinError
  *   导致某节点不落账）—— 后端认为这一轮已经裁定完毕，故照 `completed` 收口，而不是硬等一个
  *   永远不会来的进度事件。
@@ -235,19 +240,30 @@ export function reduceSpeedTestDone(
 
   if (ev.outcome === 'interrupted') {
     const pending = ev.pending ?? [];
+    const serverIds = ev.serverIds ?? [];
+    const actions: Array<{ labelKey: string; serverIds: string[] }> = [];
+    // 部分完成时「继续剩余」才与重测原范围不同；全未测时只留「重新测速」，避免重复动作。
+    if (pending.length > 0 && pending.length < serverIds.length) {
+      actions.push({ labelKey: 'nodes.speedTestResume', serverIds: pending });
+    }
+    if (serverIds.length > 0) {
+      actions.push({ labelKey: 'nodes.speedTestRetry', serverIds });
+    } else if (pending.length > 0) {
+      // 防旧后端/异常载荷：拿不到原范围时仍保住已有的续测能力。
+      actions.push({ labelKey: 'nodes.speedTestResume', serverIds: pending });
+    }
     return {
       next,
       intent: {
         level: 'warning',
-        // sticky:false 是**必须**的（不是随手写的默认）：带 action 的 toast 一定要有出路，
+        // sticky:false 是**必须**的（不是随手写的默认）：带动作的 toast 一定要有出路，
         // 判据见 `components/layout/toast-queue.ts::autoDismissMs`。那边还有一道压过 sticky 的兜底。
         sticky: false,
         msgKey: 'nodes.speedTestInterrupted',
         descKey: 'nodes.speedTestInterruptedSummary',
         descVars: { tested: ev.tested, total: ev.total },
-        ...(pending.length > 0
-          ? { action: { labelKey: 'nodes.speedTestResume', resume: pending } }
-          : {}),
+        dismissLabelKey: 'nodes.speedTestDismiss',
+        ...(actions.length > 0 ? { actions } : {}),
       },
     };
   }
@@ -259,22 +275,22 @@ export function reduceSpeedTestDone(
 }
 
 /**
- * 续测集合的裁定（纯逻辑）：`pending ∩ 当前节点集`，**保序、去重**。
+ * 测速动作集合的裁定（纯逻辑）：`动作范围 ∩ 当前节点集`，**保序、去重**。
  *
  * # 为什么必须过滤（C4）
  *
- * 中断到用户点「继续」之间可以隔很久（按钮停留 15s，但用户可能立刻点也可能最后一刻点），这期间他
+ * 中断到用户点恢复动作之间可以隔很久（按钮停留 15s，但用户可能立刻点也可能最后一刻点），这期间他
  * 完全可能删了节点 / 换了订阅 / 节点 id 变了。把一批**已经不存在**的 id 发下去，后端会把它们判成
  * 「请求了但配置里查无此节点」（`missing` → `notInPool`），运气差些整批落空 ⇒ 后端返**失败信封** ⇒
- * 前端 throw，用户点了「继续」看到的是一条报错。过滤是让「继续」这个动作只在**还有得续**时才发生。
+ * 前端 throw。过滤保证恢复动作只在**还有可测节点**时发生。
  *
- * 返回空数组 = 没有可续的了（调用方据此**不发请求**，直接收掉 toast —— 空请求在后端等于「测全部」，
+ * 返回空数组 = 没有可测节点了（调用方据此**不发请求**，直接收掉 toast —— 空请求在后端等于「测全部」，
  * 那是彻底的语义反转）。
  */
-export function planSpeedTestResume(pending: string[], currentIds: string[]): string[] {
+export function planSpeedTestRun(serverIds: string[], currentIds: string[]): string[] {
   const alive = new Set(currentIds);
   const seen = new Set<string>();
-  return pending.filter((id) => {
+  return serverIds.filter((id) => {
     if (!alive.has(id) || seen.has(id)) return false;
     seen.add(id);
     return true;
@@ -289,12 +305,12 @@ export interface SpeedTestToastDeps {
   toast: Pick<ToastImpl, 'info' | 'success' | 'warning'>;
   t: (key: string, vars?: Record<string, number>) => string;
   /**
-   * 点「继续」那一刻的**当前节点 id 全集**（用于过滤已消失的节点，见 [`planSpeedTestResume`]）。
+   * 点恢复动作那一刻的**当前节点 id 全集**（用于过滤已消失的节点，见 [`planSpeedTestRun`]）。
    * 必须是 getter 而不是快照数组：这条订阅活一辈子，捕获的数组在用户改订阅后就是陈旧的。
    */
   currentServerIds: () => string[];
-  /** 发起续测（生产 = `api.server.speedTest(ids)`）。**只在过滤后非空时才会被调用。** */
-  resume: (ids: string[]) => void;
+  /** 发起恢复测速（生产 = `api.server.speedTest(ids)`）。**只在过滤后非空时才会被调用。** */
+  run: (ids: string[]) => void;
 }
 
 /**
@@ -318,19 +334,19 @@ export function subscribeSpeedTestProgressToast(deps: SpeedTestToastDeps): () =>
    * 「继续」被点下：**此刻**再按当前节点集过滤一次（中断到点击之间用户可能改过订阅），
    * 空了就不发请求、只把 toast 换成一句说明（同 key 顶掉，随后 2.2s 自散）。
    *
-   * 🔴 **只有这里会调 `deps.resume`** —— 收到 `interrupted` 不会自动触发任何请求（判据见文件头
-   * 「不自动续」三条）。把 `resume` 挪进 `onDone` 就是自动续，门 `does_not_resume_automatically` 转红。
+   * 🔴 **只有这里会调 `deps.run`** —— 收到 `interrupted` 不会自动触发任何请求（判据见文件头
+   * 「不自动执行」三条）。把 `run` 挪进终态分支就是自动恢复，门会转红。
    */
-  const onResumeClicked = (pending: string[]) => {
-    const ids = planSpeedTestResume(pending, deps.currentServerIds());
+  const onActionClicked = (serverIds: string[]) => {
+    const ids = planSpeedTestRun(serverIds, deps.currentServerIds());
     if (ids.length === 0) {
-      deps.toast.info(deps.t('nodes.speedTestResumeGone'), {
+      deps.toast.info(deps.t('nodes.speedTestTargetsGone'), {
         key: SPEEDTEST_TOAST_KEY,
         sticky: false,
       });
       return;
     }
-    deps.resume(ids);
+    deps.run(ids);
   };
 
   const dispatch = (intent: SpeedTestToastIntent | null) => {
@@ -341,15 +357,17 @@ export function subscribeSpeedTestProgressToast(deps: SpeedTestToastDeps): () =>
       key: SPEEDTEST_TOAST_KEY,
       sticky: intent.sticky,
       ...(intent.descKey ? { description: deps.t(intent.descKey, intent.descVars) } : {}),
-      ...(intent.action
+      ...(intent.actions
         ? {
-            action: {
-              label: deps.t(intent.action.labelKey),
-              // 闭包捕获的是**中断那一刻**的 pending（后端算的差集，前端无从复算）；
-              // 「当前还存不存在」则推迟到点击那一刻现取，两者各取所长。
-              onClick: () => onResumeClicked(intent.action?.resume ?? []),
-            },
+            actions: intent.actions.map((action) => ({
+              label: deps.t(action.labelKey),
+              // 闭包捕获中断终态给出的范围；节点是否仍存在则推迟到点击那一刻现取。
+              onClick: () => onActionClicked(action.serverIds),
+            })),
           }
+        : {}),
+      ...(intent.dismissLabelKey
+        ? { dismiss: { label: deps.t(intent.dismissLabelKey) } }
         : {}),
     };
     if (intent.level === 'success') deps.toast.success(msg, opts);

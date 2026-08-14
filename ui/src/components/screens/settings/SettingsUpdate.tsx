@@ -37,6 +37,7 @@ import {
   CardSub,
   SetBlock,
   SetRow,
+  SetRowSection,
   Switch,
   Select,
   Segmented,
@@ -284,7 +285,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
           payload: {
             title: t(`settings.update.advisory.${adv}.title`),
             message: t(`settings.update.advisory.${adv}.message`),
-            confirmLabel: t('settings.update.advisory.continue', '继续安装'),
+            confirmLabel: t('settings.update.advisory.continue'),
             onConfirm: async () => {
               closeDialog();
               await installUpdate(true);
@@ -299,18 +300,13 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
           setUs('manual');
           setErrMsg(
             t('settings.update.portableManualReplace', {
-              defaultValue:
-                '便携版更新包已下载到：{{path}}。请退出 Polaris 后，把压缩包内容解压覆盖到当前程序所在目录即可完成更新。便携版没有安装程序，请勿双击安装。',
               path: downloadedPath,
             }),
           );
         } else {
           setUs('error');
           setErrMsg(
-            t(
-              'settings.update.formMismatch',
-              '更新包形态与当前安装形态不匹配，已交由系统处理',
-            ),
+            t('settings.update.formMismatch'),
           );
         }
       }
@@ -334,10 +330,8 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
         openDialog({
           kind: 'confirm',
           payload: {
-            title: t('settings.core.replaceConfirmTitle', '确认替换内核？'),
+            title: t('settings.core.replaceConfirmTitle'),
             message: t('settings.core.replaceConfirmMessage', {
-              defaultValue:
-                '所选内核版本（{{upload}}）不高于随应用出厂的版本（{{bundled}}），可能缺少新特性或兼容性修复。仍要替换吗？',
               upload: d.uploadVersion || t('common.unknown'),
               bundled: d.bundledVersion || '-',
             }),
@@ -353,7 +347,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
         });
         return;
       }
-      setCoreMsg(r.ok ? okMsg : r.error || t('settings.core.swapFailedShort', '操作失败'));
+      setCoreMsg(r.ok ? okMsg : r.error || t('settings.core.swapFailedShort'));
     } catch (e) {
       setCoreMsg(e instanceof Error ? e.message : String(e));
     } finally {
@@ -383,7 +377,6 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
         () =>
           new Error(
             t('settings.coreManagement.checkTimeout', {
-              defaultValue: '检查内核更新超时（超过 {{sec}} 秒），请稍后重试',
               sec: CORE_UPDATE_CHECK_TIMEOUT_MS / 1000,
             }),
           ),
@@ -399,7 +392,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
       }
       // hasUpdate:false（含「本机无适配资产」这条后端如实报无更新的腿）→ 已是最新。
       setCus('idle');
-      setCoreUpdMsg(t('settings.coreManagement.upToDate', '内核已是最新版本'));
+      setCoreUpdMsg(t('settings.coreManagement.upToDate'));
     } catch (e) {
       setCus('idle');
       setCoreUpdErr(e instanceof Error ? e.message : String(e));
@@ -424,8 +417,6 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
       if (r.result === 'deferred' && r.crossBand) {
         setCoreUpdErr(
           t('settings.coreManagement.crossBandFound', {
-            defaultValue:
-              '发现跨大版本的新版本 {{version}}，已按「仅兼容 minor 版本自动更新」拦下；如确需升级请关闭该开关或用「手动换核」。',
             version: r.latestVersion || coreLatest.version,
           }),
         );
@@ -433,11 +424,11 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
         return;
       }
       if (r.result === 'noop') {
-        setCoreUpdMsg(t('settings.coreManagement.upToDate', '内核已是最新版本'));
+        setCoreUpdMsg(t('settings.coreManagement.upToDate'));
       } else if (r.ok) {
-        setCoreUpdMsg(t('settings.core.applied', '内核已更新'));
+        setCoreUpdMsg(t('settings.core.applied'));
       } else {
-        setCoreUpdErr(t('settings.core.swapFailedShort', '操作失败'));
+        setCoreUpdErr(t('settings.core.swapFailedShort'));
       }
       setCus('idle');
       setCoreLatest(null);
@@ -498,7 +489,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
               ruleResourceUpdateIntervalHours: Number(e.target.value),
             })
           }
-          aria-label="Background check interval"
+          aria-label={t('settings.update.intervalCard')}
           style={{ marginTop: 12, width: '170px' }}
         >
           <option value="0">{t('settings.update.intervalManualOnly')}</option>
@@ -530,7 +521,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
               void update({ ghProxyPrefix: v });
             }
           }}
-          aria-label="GitHub accelerator"
+          aria-label={t('settings.update.ghAccelSub')}
           style={{ marginTop: 12, maxWidth: '340px' }}
         >
           <option value="none">{t('resources.direct')}</option>
@@ -701,34 +692,32 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
         {/* desc **随开关态变**（原型 `:4204-4207` 直接改写 `#auto-dl-desc` 的文案）：这是「开关自身
             即反馈」不成立时的补偿设计 —— 只看开关位置说不出「关掉之后会怎样」。本仓此前是一句静态
             文案（只描述开态），关掉后那句话就成了假的。 */}
-        <SetRow
-          label={t('settings.update.autoDownloadApp', '自动下载 App 更新')}
-          desc={
-            config.autoDownloadUpdate
-              ? t(
-                  'settings.update.autoDownloadAppDesc',
-                  '开启后：启动时检查到新版本即在后台下载安装包，**不会自动安装**；何时重启安装仍由你决定',
-                )
-              : t('settings.update.autoDownloadAppDescOff', '仅检查提醒，不自动下载')
-          }
-          style={{ borderTop: '1px solid hsl(var(--hair))', marginTop: 12, paddingTop: 12, borderBottom: 0 }}
-        >
-          <Switch
-            id="auto-dl-swt"
-            checked={!!config.autoDownloadUpdate}
-            onChange={(v) => {
-              void update({ autoDownloadUpdate: v });
-              // 原型 `:4208` 的第二条腿：desc 改写之外还发一条 toast。两条都要——desc 在行内、
-              // 用户的视线此刻在开关上，toast 才是「我刚才那一下产生了什么后果」的即时回执。
-              toast.success(
-                v
-                  ? t('settings.update.autoDownloadOnToast', '发现新版本将自动下载')
-                  : t('settings.update.autoDownloadOffToast', '仅检查提醒，不自动下载'),
-              );
-            }}
-            aria-label="Auto-download app update"
-          />
-        </SetRow>
+        <SetRowSection>
+          <SetRow
+            label={t('settings.update.autoDownloadApp')}
+            desc={
+              config.autoDownloadUpdate
+                ? t('settings.update.autoDownloadAppDesc')
+                : t('settings.update.autoDownloadAppDescOff')
+            }
+          >
+            <Switch
+              id="auto-dl-swt"
+              checked={!!config.autoDownloadUpdate}
+              onChange={(v) => {
+                void update({ autoDownloadUpdate: v });
+                // 原型 `:4208` 的第二条腿：desc 改写之外还发一条 toast。两条都要——desc 在行内、
+                // 用户的视线此刻在开关上，toast 才是「我刚才那一下产生了什么后果」的即时回执。
+                toast.success(
+                  v
+                    ? t('settings.update.autoDownloadOnToast')
+                    : t('settings.update.autoDownloadOffToast'),
+                );
+              }}
+              aria-label={t('settings.update.autoDownloadApp')}
+            />
+          </SetRow>
+        </SetRowSection>
       </Card>
 
       {/* 4. sing-box 内核（内核版本变更横幅置于卡片上方——对齐 上游 把它挂在内核相关设置顶部）。
@@ -755,8 +744,8 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
                 {coreVer.build === 'fork'
                   ? t('settings.core.forkBlocked')
                   : coreVer.build === 'unknown'
-                    ? t('settings.coreManagement.srcNoteUnknown', '无法确认，仅提示')
-                    : t('settings.coreManagement.srcNoteOfficial', 'GitHub 在线更新可用')}
+                    ? t('settings.coreManagement.srcNoteUnknown')
+                    : t('settings.coreManagement.srcNoteOfficial')}
               </CardSub>
             </div>
             {/* 来源徽章。此前恒渲染 `<Pill variant="ok">运行中</Pill>` —— 那句既与本卡主题（内核来源/版本）
@@ -768,10 +757,10 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
               }
             >
               {coreVer.build === 'official'
-                ? t('settings.coreManagement.sourceOfficial', '官方')
+                ? t('settings.coreManagement.sourceOfficial')
                 : coreVer.build === 'fork'
-                  ? t('settings.coreManagement.sourceFork', '第三方')
-                  : t('settings.coreManagement.sourceUnknown', '未知')}
+                  ? t('settings.coreManagement.sourceFork')
+                  : t('settings.coreManagement.sourceUnknown')}
             </Pill>
           </div>
         )}
@@ -798,7 +787,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
                     const r = await coreUpdateApi.applyStaged();
                     return { ok: r.result === 'applied', error: r.error ?? r.result };
                   },
-                  t('settings.core.applied', '内核已更新'),
+                  t('settings.core.applied'),
                 )
               }
             >
@@ -816,7 +805,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
           <div className="core-ver" style={{ marginTop: 12 }}>
             <Dot variant="idle" />
             <div style={{ flex: 1 }}>
-              <b>{t('settings.coreManagement.checkCoreUpdate', '检查内核更新')}</b>
+              <b>{t('settings.coreManagement.checkCoreUpdate')}</b>
               <CardSub>
                 {coreChannel === 'prerelease'
                   ? t('settings.coreManagement.channelPrereleaseNote')
@@ -830,7 +819,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
               data-tip={coreForkBlocked ? t('settings.core.forkBlocked') : undefined}
               onClick={() => void checkCoreUpdate()}
             >
-              <span>{t('settings.coreManagement.checkCoreUpdate', '检查内核更新')}</span>
+              <span>{t('settings.coreManagement.checkCoreUpdate')}</span>
             </Button>
           </div>
         )}
@@ -839,7 +828,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
           <div className="core-ver" style={{ marginTop: 12 }}>
             <Spinner />
             <div style={{ flex: 1 }}>
-              <b>{t('settings.coreManagement.checkingCore', '正在检查内核更新…')}</b>
+              <b>{t('settings.coreManagement.checkingCore')}</b>
             </div>
           </div>
         )}
@@ -855,12 +844,12 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
               <span className="cv-tag">{coreLatest.version}</span>
               {coreLatest.crossBand && (
                 <CardSub>
-                  {t('settings.coreManagement.crossBandRisk', '跨大版本，风险更高，建议确认后再更新')}
+                  {t('settings.coreManagement.crossBandRisk')}
                 </CardSub>
               )}
             </div>
             <Button variant="flow" size="sm" disabled={coreBusy} onClick={() => void runCoreUpdate()}>
-              <span>{t('settings.coreManagement.updateNow', '立即更新')}</span>
+              <span>{t('settings.coreManagement.updateNow')}</span>
             </Button>
           </div>
         )}
@@ -869,7 +858,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
           <div className="core-ver" style={{ marginTop: 12 }}>
             <Spinner />
             <div style={{ flex: 1 }}>
-              <b>{t('settings.core.swapping', '正在替换内核…')}</b>
+              <b>{t('settings.core.swapping')}</b>
             </div>
           </div>
         )}
@@ -892,7 +881,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
             onClick={() =>
               void runCoreOp(
                 () => coreUpdateApi.replaceManual(),
-                t('settings.core.replaced', '内核已替换'),
+                t('settings.core.replaced'),
               )
             }
           >
@@ -907,7 +896,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
             data-tip={
               coreVer?.hasBackup
                 ? undefined
-                : t('settings.core.noBackup', '没有可回滚的备份版本')
+                : t('settings.core.noBackup')
             }
             // 原地二次点击（原型 :4075）：回滚换掉正在跑的内核、断连接，此前**零闸门**，
             // 而同排的「恢复出厂内核」却要确认 —— 那是实现自己的双标，不是设计。
@@ -915,7 +904,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
               confirmTwice(CORE_ROLLBACK_KEY, () => {
                 void runCoreOp(
                   () => coreUpdateApi.rollback(),
-                  t('settings.core.rollbackSuccess', '已回滚到备份内核'),
+                  t('settings.core.rollbackSuccess'),
                 );
               })
             }
@@ -934,17 +923,14 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
               openDialog({
                 kind: 'confirm',
                 payload: {
-                  title: t('settings.core.resetFactoryTitle', '恢复出厂内核？'),
-                  message: t(
-                    'settings.core.resetFactoryConfirm',
-                    '将内核恢复为随应用出厂的版本，当前备份会被清除。',
-                  ),
+                  title: t('settings.core.resetFactoryTitle'),
+                  message: t('settings.core.resetFactoryConfirm'),
                   danger: true,
                   onConfirm: async () => {
                     closeDialog();
                     await runCoreOp(
                       () => coreUpdateApi.resetFactory(),
-                      t('settings.core.resetFactoryDone', '已恢复出厂内核'),
+                      t('settings.core.resetFactoryDone'),
                     );
                   },
                 },
@@ -964,27 +950,24 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
             新核**暂存**，仅在代理未运行时落位（绝不主动断流），跨大版本只提示不自动更新。
             故 desc 改写为真实行为，不再写「暂未生效」。
             解释一下与下一行的关系：本行决定「自动更新做不做」，下一行决定「自动更新最远能跨到哪」。 */}
-        <SetRow
-          label={t('settings.coreManagement.autoUpdate', '自动更新内核')}
-          desc={t(
-            'settings.coreManagement.autoUpdateNoSchedulerHint',
-            '开启后：每天后台检查一次内核更新，新版本先暂存，**仅在代理未运行时**才落位生效（不会打断你的连接）；跨大版本只提示、不自动更新',
-          )}
-          style={{ borderTop: '1px solid hsl(var(--hair))', marginTop: 12, paddingTop: 12 }}
-        >
-          <Switch
-            id="auto-core-swt"
-            checked={!!config.autoUpdateCore}
-            disabled={coreForkBlocked}
-            tip={
-              coreForkBlocked
-                ? t('settings.core.forkBlocked')
-                : undefined
-            }
-            onChange={(v) => void update({ autoUpdateCore: v })}
-            aria-label="Auto-update core"
-          />
-        </SetRow>
+        <SetRowSection>
+          <SetRow
+            label={t('settings.coreManagement.autoUpdate')}
+            desc={t('settings.coreManagement.autoUpdateNoSchedulerHint')}
+          >
+            <Switch
+              id="auto-core-swt"
+              checked={!!config.autoUpdateCore}
+              disabled={coreForkBlocked}
+              tip={
+                coreForkBlocked
+                  ? t('settings.core.forkBlocked')
+                  : undefined
+              }
+              onChange={(v) => void update({ autoUpdateCore: v })}
+              aria-label={t('settings.coreManagement.autoUpdate')}
+            />
+          </SetRow>
 
         {/* 更新通道。sing-box 的 alpha/beta/rc 在 GitHub 上是 `prerelease=true`，而候选集此前写死
             `filter(!prerelease)` ⇒ 跑 alpha 的用户不但看不到 beta，连「有没有更新」都恒为否
@@ -992,39 +975,38 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
             **比对逻辑本身没问题**：`compare_semver` 完整实现 semver 预发布优先级
             （alpha.31 < alpha.32 < beta.1 < rc.1 < 1.14.0），缺的只是候选集里有没有它们。
             与下一行**正交**：本行决定看不看预发布，下一行决定跨不跨 minor，开这个不放开那个。 */}
-        <SetRow
-          label={t('settings.coreManagement.channel')}
-          desc={t('settings.coreManagement.channelDesc')}
-        >
-          <select
-            className="input sel"
-            style={{ width: 132 }}
-            value={coreChannel}
-            disabled={coreForkBlocked}
-            onChange={(e) =>
-              void update({ coreUpdateChannel: e.target.value as 'stable' | 'prerelease' })
-            }
-            aria-label={t('settings.coreManagement.channel')}
+          <SetRow
+            label={t('settings.coreManagement.channel')}
+            desc={t('settings.coreManagement.channelDesc')}
           >
-            <option value="stable">{t('settings.coreManagement.channelStable')}</option>
-            <option value="prerelease">
-              {t('settings.coreManagement.channelPrerelease')}
-            </option>
-          </select>
-        </SetRow>
+            <Select
+              style={{ width: 132 }}
+              value={coreChannel}
+              disabled={coreForkBlocked}
+              onChange={(e) =>
+                void update({ coreUpdateChannel: e.target.value as 'stable' | 'prerelease' })
+              }
+              aria-label={t('settings.coreManagement.channel')}
+            >
+              <option value="stable">{t('settings.coreManagement.channelStable')}</option>
+              <option value="prerelease">
+                {t('settings.coreManagement.channelPrerelease')}
+              </option>
+            </Select>
+          </SetRow>
 
         {/* restrictCoreUpdateToCompatibleMinor：已有真实消费者 —— `core_update_run` 的跨带硬闸读它
             （`!== false` 即生效，与后端同口径）。此前「全仓零消费者」的注释与 disabled 均已过时。 */}
-        <SetRow
-          label={t('settings.update.restrictMinor')}
-          desc={t('settings.update.restrictMinorDesc')}
-          style={{ borderBottom: 0 }}
-        >
-          <Switch
-            checked={config.restrictCoreUpdateToCompatibleMinor !== false}
-            onChange={(v) => void update({ restrictCoreUpdateToCompatibleMinor: v })}
-          />
-        </SetRow>
+          <SetRow
+            label={t('settings.update.restrictMinor')}
+            desc={t('settings.update.restrictMinorDesc')}
+          >
+            <Switch
+              checked={config.restrictCoreUpdateToCompatibleMinor !== false}
+              onChange={(v) => void update({ restrictCoreUpdateToCompatibleMinor: v })}
+            />
+          </SetRow>
+        </SetRowSection>
       </Card>
 
       {/* 5. 规则资源自动更新 */}
@@ -1055,7 +1037,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
                 ruleResourceUpdateIntervalHours: config.subscriptionUpdateIntervalHours,
               })
             }
-            aria-label="Rule resource auto-update"
+            aria-label={t('settings.update.ruleResourceAutoCard')}
           />
         </div>
         {/* 调度器已落地 → 恢复原型/上游的 ok 绿点 + 真实状态文案（此前的中性点 + 「暂无调度器读取」
@@ -1068,11 +1050,8 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
             <Dot variant={resAutoStatus === 'active' ? 'ok' : 'idle'} />
             <span>
               {resAutoStatus === 'active'
-                ? t('settings.update.ruleResourceAutoStatusOn', '已开启，按所选间隔在后台刷新')
-                : t(
-                    'settings.update.ruleResourceAutoStatusManual',
-                    '已开启，但「后台检查间隔」为仅手动，不会自动刷新',
-                  )}
+                ? t('settings.update.ruleResourceAutoStatusOn')
+                : t('settings.update.ruleResourceAutoStatusManual')}
             </span>
           </div>
         )}
@@ -1120,7 +1099,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
           desc={t('settings.update.subChannelDesc')}
         >
           <Segmented<SubProxyPolicy>
-            ariaLabel="Subscription proxy policy"
+            ariaLabel={t('settings.update.subChannel')}
             value={subPolicy}
             onChange={(v) => void update({ subscriptionProxyPolicy: v })}
             options={[

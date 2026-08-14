@@ -383,7 +383,7 @@ export default function PendingChangesBar() {
                       // 原型 `:4072` 撤销后 notify「已撤销该项改动」。缺它时唯一反馈是「这一行消失了」——
                       // 与「点歪了、点到别的行」在观感上无从区分，而这条动作不可撤销（撤销没有撤销）。
                       useStagedConfigStore.getState().revert(e.id);
-                      toast.success(t('home.pendingRevertedOne', '已撤销该项改动'));
+                      toast.success(t('home.pendingRevertedOne'));
                     }}
                   >
                     <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">

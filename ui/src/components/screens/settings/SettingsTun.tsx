@@ -20,7 +20,17 @@ import { isValidMacAddress, isValidNeighborDomain } from '@/domain/neighbor';
 import { autoMtuFor, MTU_MAX, MTU_MIN, parseMtuInput } from '@/domain/tun-mtu';
 import { useNavStore } from '@/store/nav-store';
 import { Fold } from '@/components/Fold';
-import { Phead, SetBlock, SetRow, Switch, Select, TextInput, Button, Pill } from './primitives';
+import {
+  Phead,
+  SetBlock,
+  SetRow,
+  SetRowGroup,
+  Switch,
+  Select,
+  TextInput,
+  Button,
+  Pill,
+} from './primitives';
 import { ListEditor } from './ListEditor';
 import { bypassLanState, shellPlatformFromDataOs } from './settings-logic';
 import { revealOnToggle } from '@/components/reveal';
@@ -168,7 +178,7 @@ export default function SettingsTun({ config, update }: SettingsTunProps) {
             id="tun-stack-sel"
             value={tun.stack}
             onChange={(e) => patchTun({ stack: e.target.value as TunStack })}
-            aria-label="TUN stack"
+            aria-label={t('settings.tun.stack')}
             style={{ width: '150px' }}
           >
             {STACK_OPTIONS.map((o) => (
@@ -202,7 +212,7 @@ export default function SettingsTun({ config, update }: SettingsTunProps) {
               onKeyDown={(e) => {
                 if (e.key === 'Enter') e.currentTarget.blur();
               }}
-              aria-label="TUN MTU"
+              aria-label="MTU"
               aria-invalid={mtuInvalid || undefined}
               style={{ width: '150px' }}
             />
@@ -245,91 +255,69 @@ export default function SettingsTun({ config, update }: SettingsTunProps) {
             ))}
           </Select>
         </SetRow>
-        {/* 手写而非 SetRow：sr-tx 下需要 desc 文案 + ipv6-hint 两个平级 div（原型 L2230-2232），
-            SetRow 的 desc 只支持单层包裹，容不下这个三段结构。 */}
-        <div className="set-row" style={{ alignItems: 'flex-start', borderBottom: 0 }}>
-          <div className="sr-tx">
-            <b>{t('settings.general.enableIPv6')}</b>
-            <div>{t('settings.network.enableIPv6Desc')}</div>
-            <div className="ipv6-hint" hidden={!showIpv6Hint}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
-                <circle cx="12" cy="12" r="9" />
-                <path d="M12 8v5M12 16h.01" />
-              </svg>
-              <span>{t('settings.network.ipv6NodeFakeIpHint')}</span>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() =>
-                  void update({
-                    dnsConfig: {
-                      ...(config.dnsConfig ?? { domesticDns: '', foreignDns: '', enableFakeIp: true }),
-                      enableFakeIp: true,
-                    },
-                  })
-                }
-              >
-                <span>{t('settings.network.enableFakeIpAction')}</span>
-              </Button>
-            </div>
-          </div>
-          <div className="sr-ctl">
-            {/* 开关自身即反馈（拨动即翻位，不发 toast）——**这一颗不再是例外**。
-                此前照原型 `:4107` 额外 notify「已启用 IPv6（不建议）」，理由是「开关翻到开说不出
-                风险忠告」。忠告现已由上方**常驻的 desc 文案**承担（写明「出口节点不支持 IPv6 时，
-                走 IPv6 的连接会一直等到超时」），且常驻优于 toast：toast 几秒即散，事后回看这颗开关
-                读不到任何风险信息；desc 一直在，什么时候看都在。故本开关回到通用基线，两个方向都不发 toast。 */}
+        <SetRowGroup>
+          <SetRow
+            label={t('settings.general.enableIPv6')}
+            align="start"
+            desc={
+              <>
+                {t('settings.network.enableIPv6Desc')}
+                <div className="ipv6-hint" hidden={!showIpv6Hint}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
+                    <circle cx="12" cy="12" r="9" />
+                    <path d="M12 8v5M12 16h.01" />
+                  </svg>
+                  <span>{t('settings.network.ipv6NodeFakeIpHint')}</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      void update({
+                        dnsConfig: {
+                          ...(config.dnsConfig ?? { domesticDns: '', foreignDns: '', enableFakeIp: true }),
+                          enableFakeIp: true,
+                        },
+                      })
+                    }
+                  >
+                    <span>{t('settings.network.enableFakeIpAction')}</span>
+                  </Button>
+                </div>
+              </>
+            }
+          >
+            {/* 风险说明常驻在左侧，开关只负责启停，不再另发瞬时 toast。 */}
             <Switch
               id="ipv6-swt"
               checked={!!config.enableIPv6}
               onChange={(v) => {
                 void update({ enableIPv6: v });
               }}
-              aria-label="Enable IPv6"
+              aria-label={t('settings.general.enableIPv6')}
             />
-          </div>
-        </div>
+          </SetRow>
 
-        {/* 三平台机制与建议（原生 <details>，折叠箭头由 CSS [open] 驱动，非自绘按钮态） */}
-        <details className="tun-details" onToggle={revealOnToggle}>
-          <summary>{t('settings.tun.detailsSummary')}</summary>
-          {/* 每条的 `<b>` 里是协议栈名 / 平台名（Mixed·gVisor·System·Auto·macOS·Windows·Linux）——
-              产品名与平台名跨语种同形，不进 locale；破折号之后的说明才是文案，逐条走键。 */}
-          <div className="tun-details-body">
-            <div className="tun-det-h">{t('settings.tun.detStackHead')}</div>
-            <div>
-              <b>Mixed</b> — {t('settings.tun.detStackMixed')}
+          {/* 三平台机制与建议（原生 <details>，折叠箭头由 CSS [open] 驱动，非自绘按钮态） */}
+          <details className="tun-details" onToggle={revealOnToggle}>
+            <summary>{t('settings.tun.detailsSummary')}</summary>
+            {/* 每条的 `<b>` 里是协议栈名 / 平台名（Mixed·gVisor·System·Auto·macOS·Windows·Linux）——
+                产品名与平台名跨语种同形，不进 locale；破折号之后的说明才是文案，逐条走键。 */}
+            <div className="tun-details-body">
+              <div className="tun-det-h">{t('settings.tun.detStackHead')}</div>
+              <div><b>Mixed</b> — {t('settings.tun.detStackMixed')}</div>
+              <div><b>gVisor</b> — {t('settings.tun.detStackGvisor')}</div>
+              <div><b>System</b> — {t('settings.tun.detStackSystem')}</div>
+              <div><b>Auto</b> — {t('settings.tun.detStackAuto')}</div>
+              <div><b>macOS</b> — {t('settings.tun.detStackMac')}</div>
+              <div><b>Windows</b> — {t('settings.tun.detStackWin')}</div>
+              <div><b>Linux</b> — {t('settings.tun.detStackLinux')}</div>
+              <div className="tun-det-h">{t('settings.tun.detRouteHead')}</div>
+              <div><b>Windows</b> — {t('settings.tun.detRouteWin')}</div>
+              <div><b>macOS</b> — {t('settings.tun.detRouteMac')}</div>
+              <div><b>Linux</b> — {t('settings.tun.detRouteLinux')}</div>
             </div>
-            <div>
-              <b>gVisor</b> — {t('settings.tun.detStackGvisor')}
-            </div>
-            <div>
-              <b>System</b> — {t('settings.tun.detStackSystem')}
-            </div>
-            <div>
-              <b>Auto</b> — {t('settings.tun.detStackAuto')}
-            </div>
-            <div>
-              <b>macOS</b> — {t('settings.tun.detStackMac')}
-            </div>
-            <div>
-              <b>Windows</b> — {t('settings.tun.detStackWin')}
-            </div>
-            <div>
-              <b>Linux</b> — {t('settings.tun.detStackLinux')}
-            </div>
-            <div className="tun-det-h">{t('settings.tun.detRouteHead')}</div>
-            <div>
-              <b>Windows</b> — {t('settings.tun.detRouteWin')}
-            </div>
-            <div>
-              <b>macOS</b> — {t('settings.tun.detRouteMac')}
-            </div>
-            <div>
-              <b>Linux</b> — {t('settings.tun.detRouteLinux')}
-            </div>
-          </div>
-        </details>
+          </details>
+        </SetRowGroup>
       </SetBlock>
 
       {/* 2. 排除网段 */}
@@ -378,10 +366,7 @@ export default function SettingsTun({ config, update }: SettingsTunProps) {
               <path d="M12 8v5M12 16h.01" />
             </svg>
             <span>
-              {t(
-                'settings.advanced.bypassLANOffNote',
-                '「绕过局域网」总开关已关闭，排除网段不生效（内核侧排除清单为空）。如需恢复，请到「网络 · 系统代理」开启该开关。',
-              )}
+              {t('settings.advanced.bypassLANOffNote')}
             </span>
           </div>
         )}
@@ -427,47 +412,49 @@ export default function SettingsTun({ config, update }: SettingsTunProps) {
           id="set-lan-gateway"
           header={
             <>
-              {t('settings.advanced.lanGateway', '局域网网关')}{' '}
-              <Pill variant="region">{t('settings.network.onlyTunLinuxMac', '仅 TUN · Linux / macOS')}</Pill>
+              {t('settings.advanced.lanGateway')}{' '}
+              <Pill variant="region">{t('settings.network.onlyTunLinuxMac')}</Pill>
             </>
           }
         >
           {/* neighborDomains → dns-local 的 neighbor_domain（builder/dns.rs:355-378） */}
-          <Fold
-            id="fold-neighbor-domains"
-            title={t('settings.advanced.neighborDomains', '局域网短名解析')}
-            count={neighborDomains.length}
-          >
-            <div className="fld-hint" style={{ marginTop: 0 }}>
-              {t('settings.advanced.neighborDomainsHint')}
-            </div>
-            <ListEditor
-              id="neighbor-domain-list"
-              value={neighborDomains}
-              onChange={(next) => patchTun({ neighborDomains: next })}
-              placeholder=".lan"
-              ariaLabel={t('settings.advanced.neighborDomains', '局域网短名解析')}
-              addLabel={t('settings.tun.addSuffix')}
-              importLabel={t('common.bulkImport')}
-            />
-            {/* 内联校验：生成期 `builder/dns.rs:355-378` 只做 `normalize_neighbor_domain`（补前导点）+ 去重，
-                形状本身不判——脏后缀会一路带到内核 init。此前 UI 也不判，用户对此零反馈。 */}
-            {hasInvalidEntry(neighborDomains, isValidNeighborDomain) && (
-              <div className="err-line">{t('settings.advanced.neighborDomainInvalid')}</div>
-            )}
-          </Fold>
+          <SetRowGroup>
+            <Fold
+              id="fold-neighbor-domains"
+              title={t('settings.advanced.neighborDomains')}
+              count={neighborDomains.length}
+            >
+              <div className="fld-hint" style={{ marginTop: 0 }}>
+                {t('settings.advanced.neighborDomainsHint')}
+              </div>
+              <ListEditor
+                id="neighbor-domain-list"
+                value={neighborDomains}
+                onChange={(next) => patchTun({ neighborDomains: next })}
+                placeholder=".lan"
+                ariaLabel={t('settings.advanced.neighborDomains')}
+                addLabel={t('settings.tun.addSuffix')}
+                importLabel={t('common.bulkImport')}
+              />
+              {/* 内联校验：生成期 `builder/dns.rs:355-378` 只做 `normalize_neighbor_domain`（补前导点）+ 去重，
+                  形状本身不判——脏后缀会一路带到内核 init。此前 UI 也不判，用户对此零反馈。 */}
+              {hasInvalidEntry(neighborDomains, isValidNeighborDomain) && (
+                <div className="err-line">{t('settings.advanced.neighborDomainInvalid')}</div>
+              )}
+            </Fold>
+          </SetRowGroup>
 
           {/* MAC 过滤仅 Linux，且内核要求 auto_route 开启（inbounds.rs:306 `&& auto_route`）。
               autoRoute 关闭时这个下拉是死控件 → 走本仓「假可用」惯例：disabled + tip 说明原因（统一 tooltip 引擎），
               而不是照常可点然后静默不生效。 */}
           {platform === 'lin' && (
-            <>
+            <SetRowGroup>
               <SetRow
                 id="set-mac-filter"
                 label={
                   <>
-                    {t('settings.advanced.macFilter', '按 MAC 过滤设备')}{' '}
-                    <Pill variant="region">{t('settings.network.onlyLinux', '仅 Linux')}</Pill>
+                    {t('settings.advanced.macFilter')}{' '}
+                    <Pill variant="region">{t('settings.network.onlyLinux')}</Pill>
                   </>
                 }
                 desc={t('settings.advanced.macFilterDesc')}
@@ -483,18 +470,18 @@ export default function SettingsTun({ config, update }: SettingsTunProps) {
                         e.target.value === 'off' ? undefined : (e.target.value as 'include' | 'exclude'),
                     })
                   }
-                  aria-label={t('settings.advanced.macFilter', '按 MAC 过滤设备')}
+                  aria-label={t('settings.advanced.macFilter')}
                   style={{ width: '150px' }}
                 >
-                  <option value="off">{t('settings.advanced.macFilterOff', '关闭')}</option>
-                  <option value="include">{t('settings.advanced.macFilterInclude', '仅允许')}</option>
-                  <option value="exclude">{t('settings.advanced.macFilterExclude', '排除')}</option>
+                  <option value="off">{t('settings.advanced.macFilterOff')}</option>
+                  <option value="include">{t('settings.advanced.macFilterInclude')}</option>
+                  <option value="exclude">{t('settings.advanced.macFilterExclude')}</option>
                 </Select>
               </SetRow>
               {/* 清单只在模式已选时渲染：模式 off 时内核完全不消费 macFilterList（inbounds.rs:306
                   以 mac_filter_mode 为入口），留个可编辑清单同样是误导。 */}
               {tun.macFilterMode && (
-                <Fold id="fold-mac-filter" title={t('settings.advanced.macFilter', '按 MAC 过滤设备')} count={macFilterList.length}>
+                <Fold id="fold-mac-filter" title={t('settings.advanced.macFilter')} count={macFilterList.length}>
                   <div className="fld-hint" style={{ marginTop: 0 }}>
                     {t('settings.advanced.macFilterHint')}
                   </div>
@@ -515,7 +502,7 @@ export default function SettingsTun({ config, update }: SettingsTunProps) {
                   )}
                 </Fold>
               )}
-            </>
+            </SetRowGroup>
           )}
         </SetBlock>
       )}

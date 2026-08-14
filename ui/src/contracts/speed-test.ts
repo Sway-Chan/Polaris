@@ -45,7 +45,8 @@ export interface SpeedTestInvokeResult {
  * 独立 JS 堆 ⇒ 托盘发起的那轮测速，主窗的进度 toast 结构上收不到终态，只能靠静默超时去猜「是不是
  * 被打断了」。而后端在让位判据命中那一刻就已经知道并返回了 `interrupted`。改成广播后主窗**当场**收敛。
  *
- * `pending` = 本轮已裁定要测、但**没拿到值**的节点 id（= 中断后「继续」的输入）。差集由后端算：
+ * `serverIds` = 本轮已裁定要测的原始节点范围（= 中断后「重新测速」的输入）。
+ * `pending` = 本轮已裁定要测、但**没拿到值**的节点 id（= 中断后「继续剩余」的输入）。差集由后端算：
  * 前端只在自己发起时才知道请求集。波前预筛掉的 notInPool/dirty/tsNotReady **不在**其中。
  */
 export interface SpeedTestDonePayload {
@@ -54,6 +55,8 @@ export interface SpeedTestDonePayload {
   tested: number;
   /** 本轮已裁定要测的节点数（与进度事件的 `total` 同一口径）。 */
   total: number;
+  /** 本轮原始可测范围；重测必须复用它，不能扩大成当前全部节点。 */
+  serverIds: string[];
   /** 没拿到值的节点 id —— 续测的输入。 */
   pending: string[];
 }

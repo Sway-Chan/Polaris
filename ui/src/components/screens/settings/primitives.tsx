@@ -18,6 +18,7 @@ import type {
   ChangeEvent,
 } from 'react';
 import { Children, isValidElement } from 'react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { Csel, type CselOption } from '../../dialogs/Csel';
 
@@ -82,6 +83,19 @@ export function SetBlock({
       {children}
     </div>
   );
+}
+
+/**
+ * 一个设置项及其从属内容（如「开关 + 可展开清单」）。组内不画分隔线，分隔线只落在完整设置项之间，
+ * 避免把清单误画成与其开关并列的另一项。不要用它包多个彼此独立的 SetRow。
+ */
+export function SetRowGroup({ children }: { children: ReactNode }) {
+  return <div className="set-row-group">{children}</div>;
+}
+
+/** 设置卡片中位于自定义内容之后的一组标准行；统一承担组前分隔与末行收口。 */
+export function SetRowSection({ children }: { children: ReactNode }) {
+  return <div className="set-row-section">{children}</div>;
 }
 
 /* ── card-h / card-sub：卡内标题 + 副说明 ── 原型 .card-h L271 / .card-sub L272 */
@@ -260,11 +274,11 @@ export function Segmented<T extends string>({
   );
 }
 
-/* ── Select：下拉 ── 原型 `.csel` 自定义下拉（渐进增强的隐藏 <select>，L1473）。
+/* ── Select：下拉 ── 统一复用 `.csel` 自定义下拉。
  * 原生 <select> 在 macOS/Windows 的**展开 <option> 弹层无法样式化**，恒为系统默认 UI（真机实测：
  * 与深色玻璃拟态界面割裂）。原型对此提供 `.csel`（div 触发器 + 可样式化 `.csel-menu`），本应用 dialog
  * 层已有 <Csel> 组件（受控、fixed 定位、脱离 Modal 也可用——ctx 已 guard）。此处把 Select 内部实现
- * 从原生 <select> 换成 <Csel>，一处改则全 Settings 子页下拉统一为可样式化菜单，弹层不再露系统默认元素。
+ * Settings 子页全部经本组件复用 <Csel>，弹层不会露出系统默认元素。
  * 消费方 API 不变（仍传 value/onChange(event)/<option> children）：从 <option> children 提取选项，
  * onChange 合成最小事件（e.target.value），既有 `e.target.value` 消费点零改动。 */
 export function Select({
@@ -304,6 +318,7 @@ export function Select({
     >
       <Csel
         value={String(value ?? '')}
+        disabled={disabled}
         onChange={(next) => {
           onChange?.({
             target: { value: next },
@@ -411,7 +426,8 @@ export function ProgressBar({ value, style }: { value: number; style?: CSSProper
 
 /* ── Spinner：加载圈（.spinner） ── 原型 .spinner */
 export function Spinner({ className }: { className?: string }) {
-  return <span className={cn('spinner', className)} role="status" aria-label="Loading" />;
+  const { t } = useTranslation();
+  return <span className={cn('spinner', className)} role="status" aria-label={t('common.loading')} />;
 }
 
 /* ── InfoIcon：圆形信息提示（.info-i） ── 原型 .info-i L1028 */

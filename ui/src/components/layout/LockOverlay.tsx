@@ -71,7 +71,7 @@ export default function LockOverlay() {
   if (!privacyMode) return null;
 
   return (
-    <div className="overlay" id="lock-overlay" role="dialog" aria-modal="true" aria-label="Locked">
+    <div className="overlay" id="lock-overlay" role="dialog" aria-modal="true" aria-label={t('privacy.title')}>
       <div className="lock-box">
         <div className="lock-mk">
           <svg viewBox="-46 -46 92 92">
@@ -97,7 +97,7 @@ export default function LockOverlay() {
           />
           <button className="btn flow" disabled={busy} onClick={() => void submit()}>
             {busy ? (
-              <span className="spinner spin-inline" role="status" aria-label="Loading" />
+              <span className="spinner spin-inline" role="status" aria-label={t('common.loading')} />
             ) : (
               <span>{t('privacy.unlock')}</span>
             )}

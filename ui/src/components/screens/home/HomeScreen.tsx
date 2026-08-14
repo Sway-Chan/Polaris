@@ -304,10 +304,7 @@ export function HomeScreen() {
   const blockDisabledReason = useMemo(
     () =>
       config?.proxyMode === 'direct'
-        ? t(
-            'home.blockExitUnavailableInDirect',
-            '当前为直连模式：全部流量都不经过代理出口，阻断不会生效'
-          )
+        ? t('home.blockExitUnavailableInDirect')
         : null,
     [config?.proxyMode, t]
   );
@@ -326,9 +323,9 @@ export function HomeScreen() {
 
   useEffect(() => {
     exitNameRef.current = directSelected
-      ? t('home.directConnection', '直连 (Direct)')
+      ? t('home.directConnection')
       : blockSelected
-        ? t('home.routingBlock', '阻断')
+        ? t('home.routingBlock')
         : (currentServer?.name ?? '');
   }, [directSelected, blockSelected, currentServer?.name, t]);
 
@@ -379,7 +376,6 @@ export function HomeScreen() {
       toast.success(
         t('home.unlockCheckDone', {
           node: exitNameRef.current,
-          defaultValue: '网络检测完成 · {{node}}',
         })
       );
     });
@@ -494,8 +490,7 @@ export function HomeScreen() {
         // 仅连接分支报（原型断开走 setConnected(false) 不 notify）。
         toast.success(
           t('home.connectedToast', {
-            node: directSelected ? t('home.directConnection', '直连 (Direct)') : (currentServer?.name ?? ''),
-            defaultValue: '已连接 · {{node}}',
+            node: directSelected ? t('home.directConnection') : (currentServer?.name ?? ''),
           })
         );
       }
@@ -505,7 +500,7 @@ export function HomeScreen() {
       // 用户在 TUN 提权引导门里点了「取消」——这是**用户达成的意图**，不是失败。橙色错误态 + 红 toast
       // 会把「我不想装」渲染成「出错了」。中性告知即可，且 `setConnectError` 提前于此判定之后（见下）。
       if (code === ProxyErrorCode.HELPER_GATE_ABORTED) {
-        toast.info(t('errors.helperGateAborted', '已取消安装提权助手，本次未启动'));
+        toast.info(t('errors.helperGateAborted'));
         return;
       }
       setConnectError(true);
@@ -600,12 +595,12 @@ export function HomeScreen() {
   const onSpeedTest = useCallback(async () => {
     if (sentinelSelected) {
       toast.info(
-        t('nodes.speedTestSentinelExit', '当前出口是直连或阻断：没有节点承载，无延迟可测')
+        t('nodes.speedTestSentinelExit')
       );
       return;
     }
     if (!currentServer) {
-      toast.info(t('nodes.speedTestNoActiveExit', '当前出口为直连或未选节点，无可测出站'));
+      toast.info(t('nodes.speedTestNoActiveExit'));
       return;
     }
     const reason = speedTestBlockReason(currentServer, { mainCorePool: connected });
@@ -656,8 +651,7 @@ export function HomeScreen() {
       // 同 onPickNode：选「直连」也是一次出口切换，原型 setNode :4439 一视同仁 notify。
       toast.success(
         t('home.switchedToast', {
-          node: t('home.directConnection', '直连 (Direct)'),
-          defaultValue: '{{node}} · 已切换',
+          node: t('home.directConnection'),
         })
       );
       // 原型 `pickDirectExit:3514` 同样冒浮标，同 `onPickNode` 一并不移植（见那处理由）。
@@ -677,8 +671,7 @@ export function HomeScreen() {
       await saveConfig({ ...diskConfig, selectedServerId: BLOCK_SERVER_ID });
       toast.success(
         t('home.switchedToast', {
-          node: t('home.routingBlock', '阻断'),
-          defaultValue: '{{node}} · 已切换',
+          node: t('home.routingBlock'),
         })
       );
     } catch (err) {
@@ -705,7 +698,7 @@ export function HomeScreen() {
       const testable = new Set(speedTestableIds(servers, { mainCorePool: connected }));
       const target = ids.filter((id) => testable.has(id));
       if (target.length === 0) {
-        toast.info(t('nodes.noTestableNodes', '没有可测速的节点'));
+        toast.info(t('nodes.noTestableNodes'));
         return;
       }
       setTesting(true);
@@ -748,7 +741,7 @@ export function HomeScreen() {
       unlockUserRequested.current = false; // 没跑成 → 不许后续任何快照冒领这次的完成 toast
       setUnlock({ running: false });
       toast.error(
-        t('home.unlockCheckFail', '网络检测失败'),
+        t('home.unlockCheckFail'),
         err instanceof Error ? err.message : undefined
       );
     }
@@ -787,8 +780,8 @@ export function HomeScreen() {
         if (corrected) {
           toast.info(t('settings.proxyMode.fakeIpAutoEnabled'));
           void notifyDesktop(
-            t('notify.fakeIpTun.title', 'TUN 模式'),
-            t('notify.fakeIpTun.body', '已为 TUN 模式自动启用 FakeIP（推荐）。可在「设置 → 网络」中关闭。')
+            t('notify.fakeIpTun.title'),
+            t('notify.fakeIpTun.body')
           );
         }
       } catch (err) {
@@ -839,7 +832,7 @@ export function HomeScreen() {
         // 分流策略切换成功不报（seg2 高亮位移即反馈，原型同样只在「切回智能」那条快捷路径上 notify）。
         console.error('[home] set routing failed:', err);
         toast.error(
-          t('rules.saveFailed', '保存失败'),
+          t('rules.saveFailed'),
           err instanceof Error ? err.message : undefined
         );
       } finally {
@@ -1048,7 +1041,7 @@ export function HomeScreen() {
                           {directSelected
                             ? t('home.routingDirect')
                             : blockSelected
-                              ? t('home.routingBlock', '阻断')
+                              ? t('home.routingBlock')
                               : currentServer?.name ?? t('home.plsConfigServer')}
                         </span>
                         {!sentinelSelected && currentServer?.protocol && (
@@ -1061,7 +1054,7 @@ export function HomeScreen() {
                         {directSelected
                           ? t('home.directExitAddr')
                           : blockSelected
-                            ? t('home.blockExitAddr', '代理流量已丢弃 · 直连规则仍生效')
+                            ? t('home.blockExitAddr')
                             : (exitAddrText(currentServer) ?? '—')}
                       </div>
                     </div>

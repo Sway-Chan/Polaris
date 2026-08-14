@@ -33,7 +33,7 @@ import { useAppStore, useEffectiveRules } from '@/store/app-store';
 import { useNavStore } from '@/store/nav-store';
 import { useStagedConfigStore } from '@/store/staged-config-store';
 import { useStagingActive } from '@/store/use-staging-active';
-import { RULE_TYPES, ruleTypeNameKey } from '@/domain/rules';
+import { ruleTypeNameKey } from '@/domain/rules';
 import { useDialogStore } from '@/components/dialogs/dialog-store';
 import {
   analyzeDomainCoverage,
@@ -73,7 +73,7 @@ export function HostRuleMenuItems({ host, onDone }: { host: string; onDone: () =
     [rules, coverage.firstId]
   );
   const coveringName = covering
-    ? covering.remarks?.trim() || t(ruleTypeNameKey(covering.type), RULE_TYPES[covering.type].nameZh)
+    ? covering.remarks?.trim() || t(ruleTypeNameKey(covering.type))
     : '';
 
   /** 追加到已有规则 —— 全仓唯一的 `api.rules.update` 追加调用点。 */
@@ -85,10 +85,10 @@ export function HostRuleMenuItems({ host, onDone }: { host: string; onDone: () =
         // `null` 有两种由来：**已包含**（成功的无事可做）与**目标漂移**（选中后规则被别处改了）。
         // 前者不该报错吓人，后者不该假装成功。
         if (target.block === 'contains') toast.success(t('home.domainAlreadyInRule', { domain: host }));
-        else toast.error(t('rules.appendFail', '加入已有规则失败'));
+        else toast.error(t('rules.appendFail'));
         return;
       }
-      const label = next.remarks?.trim() || t(ruleTypeNameKey(next.type), RULE_TYPES[next.type].nameZh);
+      const label = next.remarks?.trim() || t(ruleTypeNameKey(next.type));
       try {
         // 配置暂存闸门（与 NodeDialog 同形）：`customRules` Class B，写的是**整条** Rule
         // ⇒ 天然满足重放要求的「幂等整体替换」。
@@ -96,7 +96,7 @@ export function HostRuleMenuItems({ host, onDone }: { host: string; onDone: () =
           stage({
             id: `rule:${next.id}`,
             kind: 'rule',
-            label: `${t('rules.editTitle', '编辑规则')} ${label}`,
+            label: `${t('rules.editTitle')} ${label}`,
             entityPath: ['customRules', next.id],
             nextValue: next,
           });
@@ -106,13 +106,12 @@ export function HostRuleMenuItems({ host, onDone }: { host: string; onDone: () =
         }
         toast.success(
           t('rules.appendDone', {
-            defaultValue: '已把 {{domain}} 加入规则「{{rule}}」',
             domain: host,
             rule: label,
           })
         );
       } catch {
-        toast.error(t('rules.appendFail', '加入已有规则失败'));
+        toast.error(t('rules.appendFail'));
       }
     },
     [rules, host, t, stagingEnabled, stage, loadConfig]
@@ -130,7 +129,7 @@ export function HostRuleMenuItems({ host, onDone }: { host: string; onDone: () =
       data-tip={covering ? t('home.domainAlreadyInRule', { domain: host }) : undefined}
     >
       <MergeIcon />
-      {t('home.addToExistingRule', '加入已有规则…')}
+      {t('home.addToExistingRule')}
       {covering && <span className="ctx-note">{coveringName}</span>}
     </button>
   );

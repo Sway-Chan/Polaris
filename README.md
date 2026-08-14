@@ -37,11 +37,26 @@
 | Windows | `*-win-setup.exe`；离线环境用 `*-offline-setup.exe`；免安装用 `polaris-portable-*.zip` |
 | Linux | `*.deb` / `*.AppImage` |
 
-不签名，首次打开需放行：
+安装包当前不做付费代码签名，首次启动需按平台放行。
 
-- **macOS** 被 Gatekeeper 拦下时，DMG 内附中英文引导；或执行
-  `xattr -dr com.apple.quarantine /Applications/Polaris.app`
-- **Windows** SmartScreen 提示 → 更多信息 → 仍要运行
+### macOS 首次安装
+
+1. 打开 DMG，把 `Polaris.app` 拖到「应用程序（Applications）」；不要直接在 DMG 中运行。
+2. 打开「终端」，执行：
+
+   ```bash
+   xattr -cr /Applications/Polaris.app
+   ```
+
+3. 从「应用程序」启动 Polaris。上述命令只需在首次手动安装时执行一次；应用内更新会自行清理隔离属性。
+
+如果 Polaris 安装在其他目录，请把命令中的路径换成实际 `.app` 路径。`xattr -cr` 会递归清除该应用包的
+扩展属性，请仅对从本仓库 Releases 下载并确认可信的 Polaris 安装包执行。DMG 根目录也附有同内容的
+中英文首次打开引导；若只是提示「无法验证开发者」，也可在 Finder 中右键 Polaris →「打开」→ 再次确认。
+
+### Windows 首次安装
+
+SmartScreen 提示时选择「更多信息」→「仍要运行」。
 
 ## 构建
 

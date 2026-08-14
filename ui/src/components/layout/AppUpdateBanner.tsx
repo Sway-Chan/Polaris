@@ -89,16 +89,16 @@ export default function AppUpdateBanner() {
         </svg>
       </span>
       <div className="aub-tx">
-        <b>{t('settings.update.bannerTitle', { version, defaultValue: '发现新版本 {{version}}' })}</b>
+        <b>{t('settings.update.bannerTitle', { version })}</b>
         <span>
-          {t('settings.update.bannerDesc', '前往「设置 → 更新」查看更新说明并下载安装')}
+          {t('settings.update.bannerDesc')}
         </span>
       </div>
       {/* 主动作只做**导航**，不在横幅里直接起下载：下载/安装是有进度、有 advisory 二次确认、
           有便携版手动替换分支的一整套状态机（`SettingsUpdate` 的 7 态），横幅这么窄的条塞不下，
           塞一半会让用户在没有进度与失败反馈的地方触发长耗时下载。 */}
       <Button variant="flow" size="sm" onClick={() => enterSettings('update')}>
-        <span>{t('settings.update.bannerAction', '去更新')}</span>
+        <span>{t('settings.update.bannerAction')}</span>
       </Button>
       <Button
         variant="ghost"
@@ -112,15 +112,15 @@ export default function AppUpdateBanner() {
           markAppVersionSkipped(version);
         }}
       >
-        <span>{t('settings.update.bannerSkip', '跳过此版本')}</span>
+        <span>{t('settings.update.bannerSkip')}</span>
       </Button>
       <Button
         variant="ghost"
         size="sm"
         className="aub-dismiss"
         onClick={() => markAppVersionDismissed(version)}
-        data-tip={t('settings.coreVersion.dismiss', '忽略')}
-        aria-label={t('settings.coreVersion.dismiss', '忽略')}
+        data-tip={t('settings.coreVersion.dismiss')}
+        aria-label={t('settings.coreVersion.dismiss')}
       >
         <svg viewBox="0 0 24 24" width={14} fill="none" stroke="currentColor" strokeWidth={1.8}>
           <path d="M18 6 6 18M6 6l12 12" />

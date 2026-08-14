@@ -24,7 +24,7 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useEffectiveRules } from '@/store/app-store';
-import { RULE_TYPES, ruleTypeNameKey } from '@/domain/rules';
+import { ruleTypeNameKey } from '@/domain/rules';
 import { Modal } from './Modal';
 import { useDialogStore } from './dialog-store';
 import {
@@ -71,13 +71,9 @@ export function RulePickDialog({
   const whyText = (target: RuleAppendTarget): string | null => {
     switch (target.block) {
       case 'andMode':
-        return t('rules.pickWhyAnd', {
-          defaultValue:
-            '该规则要求「全部条件都命中」，为它新增域名条件会变成求交而不是扩宽 —— 请在规则弹窗里显式编辑',
-        });
+        return t('rules.pickWhyAnd');
       case 'valueUnfit':
         return t('rules.pickWhyUnfit', {
-          defaultValue: '{{domain}} 不是合法的域名形状（例如 IPv6 地址），进不了域名条件',
           domain,
         });
       default:
@@ -88,18 +84,17 @@ export function RulePickDialog({
   return (
     <Modal
       titleId="rule-pick-title"
-      title={t('rules.pickTitle', '加入已有规则')}
+      title={t('rules.pickTitle')}
       onClose={close}
       icon={<RuleIcon />}
       footer={
         <button type="button" className="btn ghost" onClick={close}>
-          {t('common.cancel', '取消')}
+          {t('common.cancel')}
         </button>
       }
     >
       <div className="card-sub" style={{ marginTop: -4 }}>
         {t('rules.pickHint', {
-          defaultValue: '选一条规则，把 {{domain}} 加进它的域名条件；没有域名条件的会为它新增一条',
           domain,
         })}
       </div>
@@ -123,8 +118,8 @@ export function RulePickDialog({
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={t('rules.pickSearchPh', '搜索规则名 / 条件值…')}
-            aria-label={t('rules.pickSearchPh', '搜索规则名 / 条件值…')}
+            placeholder={t('rules.pickSearchPh')}
+            aria-label={t('rules.pickSearchPh')}
             style={{
               border: 0,
               background: 'none',
@@ -140,14 +135,14 @@ export function RulePickDialog({
 
       <div className="proc-pick-list">
         {targets.length === 0 && (
-          <div className="proc-pick-empty">{t('rules.pickEmpty', '还没有任何自定义规则')}</div>
+          <div className="proc-pick-empty">{t('rules.pickEmpty')}</div>
         )}
         {targets.length > 0 && shown.length === 0 && (
-          <div className="proc-pick-empty">{t('rules.pickNoMatch', '没有匹配的规则')}</div>
+          <div className="proc-pick-empty">{t('rules.pickNoMatch')}</div>
         )}
         {shown.map((target) => {
-          const ruleName = t(ruleTypeNameKey(target.ruleType), RULE_TYPES[target.ruleType].nameZh);
-          const typeName = t(ruleTypeNameKey(target.type), RULE_TYPES[target.type].nameZh);
+          const ruleName = t(ruleTypeNameKey(target.ruleType));
+          const typeName = t(ruleTypeNameKey(target.type));
           /* 无备注时的行名：有目标条件的行靠第二行「类型: 值」认规则，第一行给类型名就够（同
              `RuleItem.tsx::ruleTitle`）；没有目标条件的行（新开腿 / 置灰行）第二行放的是动作或
              原因，规则身份必须挪到第一行来，否则一屏几条无备注的 geosite 规则长得一模一样。 */
@@ -172,7 +167,6 @@ export function RulePickDialog({
                   {why ??
                     (target.condIndex < 0
                       ? t('rules.pickNewCond', {
-                          defaultValue: '将为它新增一个「{{type}}」条件',
                           type: typeName,
                         })
                       : target.values.length > 0
@@ -184,7 +178,7 @@ export function RulePickDialog({
                 <span className="pill region">{t('home.domainAlreadyInRule', { domain })}</span>
               )}
               {!target.enabled && (
-                <span className="pill region">{t('rules.pickDisabledTag', '已禁用')}</span>
+                <span className="pill region">{t('rules.pickDisabledTag')}</span>
               )}
               {/* 优先级提示：**只是提示**。判据是客户端启发式（权威匹配在内核），故文案说「可能」，
                   且不据此禁用本项 —— 用户完全可以就是想把值加进后面那条。 */}
@@ -192,12 +186,10 @@ export function RulePickDialog({
                 <span
                   className="pill warn"
                   data-tip={t('rules.pickShadowTip', {
-                    defaultValue:
-                      '更靠前的规则看起来也能命中 {{domain}}（客户端启发式判断，以内核实际匹配为准）',
                     domain,
                   })}
                 >
-                  {t('rules.pickShadowTag', '前面可能先命中')}
+                  {t('rules.pickShadowTag')}
                 </span>
               )}
             </button>

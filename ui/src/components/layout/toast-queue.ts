@@ -51,12 +51,12 @@ export interface ToastEntry {
   /** 第二段（错误详情/原因），渲染成 `.toast-desc`。 */
   desc?: string;
   kind: ToastKind;
-  /** 持续状态：不自动消失。见文件头第三节。**有 `action` 时本位被压过**，见 `autoDismissMs`。 */
+  /** 持续状态：不自动消失。见文件头第三节。**有动作时本位被压过**，见 `autoDismissMs`。 */
   sticky: boolean;
-  /**
-   * 行内动作按钮（`label` 已翻译；`onClick` 由调用方给）。见 `autoDismissMs` 的「必须有出路」一节。
-   */
-  action?: { label: string; onClick: () => void };
+  /** 行内动作组（文案已翻译）。 */
+  actions?: Array<{ label: string; onClick: () => void }>;
+  /** 显式关闭入口（文案已翻译，供 aria-label 使用）。 */
+  dismiss?: { label: string };
   /** 进场后置 true → 加 `.show`（原型的 requestAnimationFrame 两帧语义）。 */
   shown: boolean;
   /** 离场中 → 去 `.show`，`LEAVE_MS` 后移除。 */
@@ -69,7 +69,7 @@ export const VISIBLE_MS = 2200;
 export const LEAVE_MS = 200;
 
 /**
- * 带 `action` 的 toast 的停留时长。**必须有限**（见 `autoDismissMs` 的判据），15s 的取法：
+ * 带动作的 toast 的停留时长。**必须有限**（见 `autoDismissMs` 的判据），15s 的取法：
  *
  *  · 下界由「按钮要点得到」定：2.2s 的默认停留下，用户的视线还没落到右下角 toast 就没了 ⇒ 按钮形同虚设。
  *    唯一的真实消费场景（测速被中断 → 「继续」）恰恰发生在用户刚点完断开/切节点的那一刻，注意力在别处。
@@ -86,17 +86,17 @@ export const ACTION_VISIBLE_MS = 15_000;
  * **策略的唯一所在地**：`Toaster` 拿 `null` 就不起定时器。把判定留在这里而不是写成组件里的
  * `if (!sticky)`，是为了让「sticky 失效」这个变异能被纯逻辑单测直接抓到（组件在 node 环境不可测）。
  *
- * # 🔴 有 `action` ⇒ 一定有出路（action **压过** sticky）
+ * # 🔴 有动作 ⇒ 一定有出路（actions **压过** sticky）
  *
- * 一条「带按钮、又永不消失」的 toast 会永久占住右下角栈位且用户无从关掉 —— 本仓不提供 dismiss 通道
- * （`Toaster` 的收口全靠「同 key 顶掉」+ 自动淡出两条），故 sticky + action 的组合在**结构上**就没有
- * 出路。与其寄望调用方不写出这个组合，不如让本函数把它变成写不出来：只要有 action 就返回有限值。
+ * 一条「带按钮、又永不消失」的 toast 会永久占住右下角栈位。测速中断现在虽有显式关闭入口，
+ * `ToastOptions` 的其它动作通知仍不保证都带 dismiss，故 actions 依旧必须压过 sticky，统一返回有限值。
  *
- * 于是带 action 的 toast 恒有三条出路：① 点按钮（调用方随后会用同 key 顶掉它）；② `ACTION_VISIBLE_MS`
- * 后自散；③ 下一轮同 key 的 toast 顶掉。**门**：`autoDismissMs({sticky:true, action})` 必须返回有限值。
+ * 于是带动作的 toast 恒有三条出路：① 点按钮（调用方随后会用同 key 顶掉它）；② `ACTION_VISIBLE_MS`
+ * 后自散；③ 下一轮同 key 的 toast 顶掉；④ 调用方提供的关闭入口。**门**：
+ * `autoDismissMs({sticky:true, actions:[...]})` 必须返回有限值。
  */
-export function autoDismissMs(entry: Pick<ToastEntry, 'sticky' | 'action'>): number | null {
-  if (entry.action) return ACTION_VISIBLE_MS;
+export function autoDismissMs(entry: Pick<ToastEntry, 'sticky' | 'actions'>): number | null {
+  if (entry.actions && entry.actions.length > 0) return ACTION_VISIBLE_MS;
   return entry.sticky ? null : VISIBLE_MS;
 }
 

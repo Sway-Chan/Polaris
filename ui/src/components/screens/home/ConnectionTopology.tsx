@@ -180,7 +180,6 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
           action,
           enabled: true,
           remarks: t('home.domainRuleRemarks', {
-            defaultValue: '{{action}} {{domain}}',
             action: actionLabel,
             domain,
           }),
@@ -192,7 +191,7 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
           stage({
             id: `rule:${entityId}`,
             kind: 'rule',
-            label: `${t('rules.newTitle', '新建规则')} ${domain}`,
+            label: `${t('rules.newTitle')} ${domain}`,
             entityPath: ['customRules', entityId],
             nextValue: { ...rule, id: entityId },
           });
@@ -395,8 +394,8 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
             <svg className="stub-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
               <path d="M3 12h4l3 7 4-14 3 7h4" />
             </svg>
-            <h4>{t('home.stubProxyStopped', '代理未运行')}</h4>
-            <p>{t('home.stubProxyStoppedDesc', '连接后这里会显示实时流量走向')}</p>
+            <h4>{t('home.stubProxyStopped')}</h4>
+            <p>{t('home.stubProxyStoppedDesc')}</p>
           </div>
         )}
 

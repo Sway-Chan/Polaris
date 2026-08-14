@@ -1,10 +1,10 @@
 /**
- * <Csel> —— dialog 内自定义下拉（§1.3 本层最重要的移植坑）。
+ * <Csel> —— 全应用统一的自定义下拉。
  *
  * 原型坑：csel 是全局单例菜单 `#csel-menu` 挂 winEl（`cselMenuEl` :5422）。在原生 `<dialog>` 下
  * **被 top-layer 遮盖 + inert 冻结**（菜单在 dialog 子树外）→ 不可见不可点。**从原型照搬会踩的第一个坑。**
  *
- * React 版根治：
+ * React 版实现：
  *  - 触发器 + listbox 渲染在**自身组件内**（dialog 子树内）→ 仍在 top-layer，不被 inert；无 portal、无单例；
  *  - listbox 用 `position:fixed` 按触发器 getBoundingClientRect() 定位 + 近边翻转（computeCselPosition）
  *    → fixed 逃出 `.dlg-body` 的 `overflow-y:auto` 裁切（R8 下拉遮挡根治），坐标视口相对；
@@ -62,6 +62,7 @@ export type { CselGroup } from './csel-logic';
 export interface CselProps {
   value: string;
   onChange: (value: string) => void;
+  disabled?: boolean;
   /**
    * 选项：扁平 `CselOption[]`（向后兼容，绝大多数消费方）**或** 分组 `CselGroup[]`（D4 规则类型 5 分组）。
    * 二选一由 isCselGrouped 判别，扁平路径行为与分组前逐字一致。
@@ -105,6 +106,7 @@ interface OpenState {
 export function Csel({
   value,
   onChange,
+  disabled,
   options,
   id,
   ariaLabel,
@@ -345,6 +347,7 @@ export function Csel({
       <button
         ref={triggerRef}
         type="button"
+        disabled={disabled}
         id={id}
         className={`csel-trigger${currentDanger ? ' danger' : ''}`}
         aria-haspopup="listbox"

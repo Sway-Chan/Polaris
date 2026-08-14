@@ -162,7 +162,7 @@ export function RulesScreen() {
         stage({
           id: 'order:customRules',
           kind: 'rule',
-          label: t('home.stagedRuleOrder', '调整规则顺序'),
+          label: t('home.stagedRuleOrder'),
           entityPath: ['customRules'],
           nextValue: ordered.map((r) => r.id),
         });
@@ -174,14 +174,14 @@ export function RulesScreen() {
         // 「已重排 · 净零，未重启内核」1.6s ——「净零」这半句是专门的安抚语：拖排序会改命中优先级，
         // 用户会担心它像别的结构性改动那样重启内核。本仓没有 `#reorder-hint` 这个宿主，
         // 落到 toast（同 §3 的整体口径：瞬时结果走 toast）。
-        toast.success(t('rules.reorderOk', '已重排 · 净零，未重启内核'));
+        toast.success(t('rules.reorderOk'));
       } catch (err) {
         // 乐观更新的回滚是**静默**的：行拖过去又弹回原位，与「拖拽功能坏了」完全同形。
         // 排序决定命中优先级（首个命中生效），用户以为改了实际没改 = 分流按旧优先级跑。必须报，并透出后端原因。
         console.error('[RulesScreen] reorder failed:', err);
         useAppStore.setState({ rules: prev });
         toast.error(
-          t('rules.reorderFail', '规则排序保存失败'),
+          t('rules.reorderFail'),
           err instanceof Error ? err.message : undefined,
         );
       }
@@ -240,7 +240,7 @@ export function RulesScreen() {
         stage({
           id: `rule:${next.id}`,
           kind: 'rule',
-          label: `${t('rules.editTitle', '编辑规则')} ${next.remarks || next.type}`,
+          label: `${t('rules.editTitle')} ${next.remarks || next.type}`,
           entityPath: ['customRules', next.id],
           nextValue: next,
         });
@@ -253,7 +253,7 @@ export function RulesScreen() {
         console.error('[RulesScreen] toggle failed:', err);
         useAppStore.setState({ rules: prev });
         toast.error(
-          t('rules.saveFailed', '保存失败'),
+          t('rules.saveFailed'),
           err instanceof Error ? err.message : undefined
         );
       }
@@ -273,7 +273,7 @@ export function RulesScreen() {
   const handleDuplicate = useCallback(
     async (rule: Rule) => {
       try {
-        const payload = duplicateRulePayload(rule, t('rules.copySuffix', '副本'));
+        const payload = duplicateRulePayload(rule, t('rules.copySuffix'));
         // 配置暂存闸门（与 NodeDialog 同形）：`customRules` Class B、复制无副作用 ⇒ 默认腿。
         // 前端自铸 id（后端只在落盘那一刻发 id，而条目现在就要一个稳定的实体寻址键）。
         if (editRoute('customRules', stagingEnabled) === 'staged') {
@@ -281,21 +281,21 @@ export function RulesScreen() {
           stage({
             id: `rule:${entityId}`,
             kind: 'rule',
-            label: `${t('rules.newTitle', '新建规则')} ${payload.remarks ?? payload.type}`,
+            label: `${t('rules.newTitle')} ${payload.remarks ?? payload.type}`,
             entityPath: ['customRules', entityId],
             nextValue: { ...payload, id: entityId },
           });
-          toast.success(t('rules.duplicated', '已复制规则'));
+          toast.success(t('rules.duplicated'));
           return; // 零 IPC 写、零磁盘写（FR-1）
         }
         await api.rules.add(payload);
         // 与 RuleDialog 同款：不刷则列表看不到新增结果（store.rules 来自 config.customRules）。
         void loadConfig(true);
-        toast.success(t('rules.duplicated', '已复制规则'));
+        toast.success(t('rules.duplicated'));
       } catch (err) {
         console.error('[RulesScreen] duplicate failed:', err);
         toast.error(
-          t('rules.saveFailed', '保存失败'),
+          t('rules.saveFailed'),
           err instanceof Error ? err.message : undefined,
         );
       }
@@ -322,7 +322,7 @@ export function RulesScreen() {
           } catch (err) {
             console.error('[RulesScreen] delete failed:', err);
             toast.error(
-              t('rules.deleteFail', '删除规则失败'),
+              t('rules.deleteFail'),
               err instanceof Error ? err.message : undefined,
             );
           }
@@ -354,7 +354,7 @@ export function RulesScreen() {
         stage({
           id: 'setting:regionRouting',
           kind: 'setting',
-          label: t('home.stagedSetting', { key: 'regionRouting', defaultValue: '修改设置 · {{key}}' }),
+          label: t('home.stagedSetting', { key: 'regionRouting' }),
           entityPath: ['regionRouting'],
           nextValue: next,
         });
@@ -367,7 +367,7 @@ export function RulesScreen() {
           // 表现为「点了没反应」，必须报出真实原因。
           console.error('[RulesScreen] regionRouting save failed:', err);
           toast.error(
-            t('rules.saveFailed', '保存失败'),
+            t('rules.saveFailed'),
             err instanceof Error ? err.message : undefined
           );
           return;
@@ -378,12 +378,12 @@ export function RulesScreen() {
       if (regionChanged) {
         const regionName =
           next.region === 'cn'
-            ? t('rules.region.cn', '中国大陆')
+            ? t('rules.region.cn')
             : next.region === 'ir'
-              ? t('rules.region.ir', '伊朗')
-              : t('rules.region.ru', '俄罗斯');
+              ? t('rules.region.ir')
+              : t('rules.region.ru');
         toast.info(
-          t('rules.regionPicked', { region: regionName, defaultValue: '{{region}} · 该地区流量直连' })
+          t('rules.regionPicked', { region: regionName })
         );
       }
       // 原型 :4105 geo-rev → 开=ok 且带语义说明，关=中性（kind 差异照抄：`on?'ok':undefined`）。
@@ -395,9 +395,9 @@ export function RulesScreen() {
       // 与上方 regionPicked「· 该地区流量直连」的「状态 · 语义」句式一致。
       if (reverseChanged) {
         if (next.reverse) {
-          toast.success(t('rules.reverseOn', '回国/反向已开 · 本地走代理、海外直连'));
+          toast.success(t('rules.reverseOn'));
         } else {
-          toast.info(t('rules.reverseOff', '回国/反向已关 · 本地直连、海外走代理'));
+          toast.info(t('rules.reverseOff'));
         }
       }
     },
@@ -409,12 +409,12 @@ export function RulesScreen() {
     try {
       await useAppStore.getState().updateProxyMode('smart');
       // 原型 setStrategySmart :4347 → notify('已切回智能分流','ok')。
-      toast.success(t('rules.backToSmartOk', '已切回智能分流'));
+      toast.success(t('rules.backToSmartOk'));
     } catch (err) {
       // 失败时 mode-warn 条与 rules-dim 都留在原地，与「按钮失灵」同形 → 报出真实原因。
       console.error('[RulesScreen] backToSmart failed:', err);
       toast.error(
-        t('rules.backToSmartFail', '切回智能分流失败'),
+        t('rules.backToSmartFail'),
         err instanceof Error ? err.message : undefined
       );
     }
@@ -427,14 +427,14 @@ export function RulesScreen() {
     <section id="s-rules" className="screen">
       <div className="phead">
         <div>
-          <h1>{t('sidebar.rules', '自定义规则')}</h1>
+          <h1>{t('sidebar.rules')}</h1>
         </div>
         <div className="acts">
           <button type="button" className="btn flow" onClick={() => openDialog({ kind: 'rule' })}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
               <path d="M12 5v14M5 12h14" />
             </svg>
-            <span>{t('rules.add', '添加规则')}</span>
+            <span>{t('rules.add')}</span>
           </button>
         </div>
       </div>
@@ -447,15 +447,10 @@ export function RulesScreen() {
             <path d="M12 8v5M12 16h.01" />
           </svg>
           <span id="rules-mode-warn-tx">
-            {t(
-              'rules.modeWarn',
-              proxyMode === 'global'
-                ? '当前为全局模式，下列规则未生效'
-                : '当前为直连模式，下列规则未生效',
-            )}
+            {t('rules.modeWarn')}
           </span>
           <button type="button" className="btn ghost sm" onClick={handleBackToSmart}>
-            {t('rules.backToSmart', '切回智能')}
+            {t('rules.backToSmart')}
           </button>
         </div>
       )}
@@ -483,10 +478,7 @@ export function RulesScreen() {
             <path d="M12 8v5M12 16h.01" />
           </svg>
           <span>
-            {t(
-              'rules.modeNote',
-              '全局 / 直连模式下，自定义规则、地区分流与应用分流均不生效：全局全部走选中节点，直连全部直连',
-            )}
+            {t('rules.modeNote')}
           </span>
         </div>
       )}
@@ -499,10 +491,7 @@ export function RulesScreen() {
             <path d="M12 8v5M12 16h.01" />
           </svg>
           <span>
-            {t(
-              'rules.manualNote',
-              '手动接管：需在系统或应用中把代理指向本地端口，仅指向该端口的流量才会经这些规则匹配',
-            )}
+            {t('rules.manualNote')}
           </span>
         </div>
       )}
@@ -519,21 +508,15 @@ export function RulesScreen() {
           }}
         >
           <div className="card-h" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span>{t('rules.priority', '规则优先级')}</span>
+            <span>{t('rules.priority')}</span>
             <span
               className="info-i"
               tabIndex={0}
               /* key 走扁平命名：`rules.priority` 已是字符串，i18next 无法再向下取 `.tip`，
                  旧的 `rules.priority.tip` 恒落 defaultValue（en/fa/ru 下也显中文）——
                  与 GeoCard 里 `rules.regionRouting.sub` 同一类坑，一并收口。 */
-              aria-label={t(
-                'rules.priorityTip',
-                '拖拽或用行内按钮排序：越靠上优先级越高，首个命中生效',
-              )}
-              data-tip={t(
-                'rules.priorityTip',
-                '拖拽或用行内按钮排序：越靠上优先级越高，首个命中生效',
-              )}
+              aria-label={t('rules.priorityTip')}
+              data-tip={t('rules.priorityTip')}
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
                 <circle cx="12" cy="12" r="9" />
@@ -547,7 +530,7 @@ export function RulesScreen() {
         <div className="rule-list" id="rule-list">
           {rules.length === 0 ? (
             <div className="stub">
-              <p>{t('rules.empty', '暂无自定义规则，点右上「添加规则」')}</p>
+              <p>{t('rules.empty')}</p>
             </div>
           ) : (
             rules.map((rule, i) => (

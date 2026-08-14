@@ -19,7 +19,7 @@ macOS 可能提示以下两种之一：
 
   2. 打开「终端 (Terminal)」，粘贴下面这一行并回车：
 
-         xattr -dr com.apple.quarantine /Applications/Polaris.app
+         xattr -cr /Applications/Polaris.app
 
   3. 之后正常双击打开即可。这一步只需做一次，以后更新不必再做
      （应用内更新流程会自己清理隔离属性）。
@@ -51,7 +51,7 @@ anything downloaded from the internet.
 
   2. Open Terminal and run this single line:
 
-         xattr -dr com.apple.quarantine /Applications/Polaris.app
+         xattr -cr /Applications/Polaris.app
 
   3. Double-click to open as usual. You only need to do this once —
      in-app updates clear the quarantine attribute themselves.

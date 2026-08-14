@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { fmtBytes, fmtRate, latDotClass } from './format';
+import { fmtBytes, fmtRate, latDotClass, latLevel } from './format';
 
 describe('latDotClass', () => {
   it('未测（undefined）→ lat-none', () => {
@@ -29,6 +29,23 @@ describe('latDotClass', () => {
     expect(latDotClass(299)).toBe('lat-slow2');
     expect(latDotClass(300)).toBe('lat-dead2');
     expect(latDotClass(9999)).toBe('lat-dead2');
+  });
+});
+
+describe('latLevel', () => {
+  it('区分未测与测速失败：undefined 无状态，null/负数是失败态', () => {
+    expect(latLevel(undefined)).toBe('none');
+    expect(latLevel(null)).toBe('dead');
+    expect(latLevel(-1)).toBe('dead');
+    expect(latLevel(Number.NaN)).toBe('dead');
+  });
+
+  it('有效延迟继续使用既有四档阈值', () => {
+    expect(latLevel(0)).toBe('fast');
+    expect(latLevel(79)).toBe('fast');
+    expect(latLevel(80)).toBe('mid');
+    expect(latLevel(150)).toBe('slow');
+    expect(latLevel(300)).toBe('dead');
   });
 });
 

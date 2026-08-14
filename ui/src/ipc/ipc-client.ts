@@ -21,6 +21,7 @@ import { invoke as tauriInvoke } from '@tauri-apps/api/core';
 import { listen as tauriListen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import type { ApiResponse } from '../contracts/types';
+import i18n from '../i18n';
 
 /** 是否运行在真 Tauri webview（有 __TAURI_INTERNALS__）。 */
 function isTauri(): boolean {
@@ -35,9 +36,7 @@ function isTauri(): boolean {
  * 后端 `ApiResponse` 信封的失败态（`success:false`）→ 抛出本错误。
  *
  * 刻意**保留结构化 `code`**（后端 `ApiResponse.code`，如 ProxyErrorCode 串）而不压进 message：
- * `proxyErrorCategory((err as any).code)`（`lib/error-handler.ts`）按码分类，压成字符串就只能回落
- * 到中文串匹配。message 取信封 `error`，故 `ErrorHandler.handleApiError` 的 `error instanceof Error`
- * 分支能直接拿到后端原文。
+ * 上层可按 `code` 做语言无关的分类；message 保留后端原文供日志与错误详情使用。
  */
 export class IpcError extends Error {
   /** 后端结构化错误码（`ApiResponse.code`）；后端未给则 undefined。 */
@@ -77,7 +76,7 @@ function isEnvelope(v: unknown): v is ApiResponse<unknown> {
 function unwrap<T>(cmd: string, raw: unknown): T {
   if (!isEnvelope(raw)) return raw as T;
   if (raw.success) return raw.data as T;
-  const message = raw.error ?? `命令 "${cmd}" 失败（后端未提供 error 文案）`;
+  const message = raw.error ?? i18n.t('errors.ipcMissingMessage', { command: cmd });
   // 与 transport 失败同等可见：调用方大量 `.catch(() => {})`，不记日志就会静默吞掉后端业务失败。
   console.error(`[ipc] invoke("${cmd}") returned failure envelope:`, message, raw.code ?? '');
   throw new IpcError(cmd, message, raw.code);

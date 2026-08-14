@@ -199,21 +199,26 @@ export function NodeCard({
   const testable = speedTestable !== false;
   const level = testable ? latLevel(latencyMs) : 'none';
   const latText = !testable
-    ? t('nodes.speedTestNotApplicable', '不支持测速')
+    ? t('nodes.speedTestNotApplicable')
     : latencyMs === null
-      ? t('nodes.timeout', '超时')
+      ? t('nodes.timeout')
       : latencyMs === undefined
         ? ''
         : `${latencyMs} ms`;
+  const latencyTip = !testable
+    ? speedTestBlockedHint
+    : latencyMs === null
+      ? t('nodes.timeoutHint')
+      : undefined;
   /* 「设为出口」那颗的文案：当前出口 / 已武装（两档） / 常态。三处（tip、aria、无障碍）同一份，
      不各写一遍——此前 data-tip 与 aria-label 逐字重复了整段三元式，改一处漏一处只是时间问题。 */
   const useTip = isCurrent
-    ? t('nodes.useCurrent', '当前出口')
+    ? t('nodes.useCurrent')
     : useConfirming
       ? useWillRestart
-        ? t('nodes.useConfirmRestart', '将重启内核并断开现有连接，再点一次确认')
-        : t('nodes.useConfirmAgain', '再点一次确认切换')
-      : t('nodes.use', '设为出口');
+        ? t('nodes.useConfirmRestart')
+        : t('nodes.useConfirmAgain')
+      : t('nodes.use');
   const xfer = transferSummary(server);
   // 「被覆盖」角标：cidr 全列（用户要据此去重/调序），抢占者去重后列出（同一节点可能抢多段）。
   const shadowText = shadowedCidrs?.map((s) => s.cidr).join(', ') ?? '';
@@ -255,7 +260,7 @@ export function NodeCard({
         {/* 不可测时把原因也挂在延迟位上（而非只挂在按钮上）：延迟位不是 `disabled`，鼠标与键盘
             都碰得到，是这条解释最可靠的落点。按钮那处见下方注释。 */}
         {latText && (
-          <span className={cn('nd-lat', level)} data-tip={!testable ? speedTestBlockedHint : undefined}>
+          <span className={cn('nd-lat', level)} data-tip={latencyTip}>
             {latText}
           </span>
         )}
@@ -270,18 +275,18 @@ export function NodeCard({
         {stagedOnly && (
           <span
             className="nd-cap"
-            data-tip={t('home.stagedOnlyHint', '尚未保存到配置文件：内核还看不到它，节点也暂时不能被选为出口。点条上的「保存」后生效。')}
+            data-tip={t('home.stagedOnlyHint')}
           >
-            {t('home.stagedOnlyBadge', '待保存')}
+            {t('home.stagedOnlyBadge')}
           </span>
         )}
-        {isCurrent && <span className="nd-cur">{t('nodes.currentExit', '当前出口')}</span>}
+        {isCurrent && <span className="nd-cur">{t('nodes.currentExit')}</span>}
         {isExit && !isCurrent && (
           <span className="nd-cap exit">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9}>
               <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9" />
             </svg>
-            {t('nodes.exitCapableBadge', '出口')}
+            {t('nodes.exitCapableBadge')}
           </span>
         )}
         {/* 角标带上解释：「仅局域网」= 该组网节点没有公网出口（WG/WARP 关了「允许访问外网」/
@@ -290,17 +295,15 @@ export function NodeCard({
         {lanOnly && (
           <span
             className="nd-cap lan"
-            data-tip={t('nodes.lanOnlyHint', '该组网节点没有公网出口，只承载内网网段，不作外网出口')}
+            data-tip={t('nodes.lanOnlyHint')}
           >
-            {t('nodes.lanOnly', '仅局域网')}
+            {t('nodes.lanOnly')}
           </span>
         )}
         {shadowedCidrs && shadowedCidrs.length > 0 && (
           <span
             className="nd-cap shadow"
             data-tip={t('nodes.shadowedHint', {
-              defaultValue:
-                '{{cidrs}} 已被「{{by}}」先声明——同一网段只能指向一个出站，本节点上的这些段不会生效。请去重、调整节点顺序，或用自定义规则显式覆盖。',
               cidrs: shadowText,
               by: shadowBy,
             })}
@@ -308,7 +311,7 @@ export function NodeCard({
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9}>
               <path d="M3 3l18 18M10.6 5.1A9.9 9.9 0 0112 5c5 0 9 4.5 10 7-.5 1.3-1.6 2.9-3.2 4.2M6.2 6.3C4.3 7.7 2.9 9.6 2 12c1 2.5 5 7 10 7 1.6 0 3.1-.5 4.4-1.2" />
             </svg>
-            {t('nodes.shadowed', '网段被覆盖')}
+            {t('nodes.shadowed')}
           </span>
         )}
         {xfer && <span className="nd-xfer">{xfer}</span>}
@@ -331,7 +334,7 @@ export function NodeCard({
               onFocus={meshInfo.triggerHandlers.onMouseEnter}
               onBlur={meshInfo.triggerHandlers.onMouseLeave}
               onClick={(e) => e.stopPropagation()}
-              aria-label={t('nodes.meshInfoAria', '组网信息')}
+              aria-label={t('nodes.meshInfoAria')}
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9}>
                 <circle cx="12" cy="12" r="9" />
@@ -366,7 +369,7 @@ export function NodeCard({
               e.stopPropagation();
               onSpeedTest?.(server);
             }}
-            data-tip={testable ? t('nodes.speedTest', '测速') : speedTestBlockedHint}
+            data-tip={testable ? t('nodes.speedTest') : speedTestBlockedHint}
             /* 不可测时把**原因并进 aria-label**。这条**不是**原生 title 的遗留绕行，迁到引擎后依然必要：
                `disabled` 的按钮不可聚焦，引擎的键盘腿（focusin + :focus-visible）到不了它，
                `aria-describedby` 也就挂不上 ⇒ 「为什么这个不能测」对键盘/读屏用户仍然不可达
@@ -379,8 +382,8 @@ export function NodeCard({
                拆了就是无障碍净倒退。 */
             aria-label={
               testable || !speedTestBlockedHint
-                ? t('nodes.speedTest', '测速')
-                : `${t('nodes.speedTest', '测速')}：${speedTestBlockedHint}`
+                ? t('nodes.speedTest')
+                : `${t('nodes.speedTest')}${t('common.colon')}${speedTestBlockedHint}`
             }
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
@@ -394,8 +397,8 @@ export function NodeCard({
               e.stopPropagation();
               onCopy?.(server);
             }}
-            data-tip={t('nodes.copyLink', '复制链接')}
-            aria-label={t('nodes.copyLink', '复制链接')}
+            data-tip={t('nodes.copyLink')}
+            aria-label={t('nodes.copyLink')}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
               <path d="M9 15l6-6M8 8a3 3 0 10-3 3M16 16a3 3 0 103 3" />
@@ -408,8 +411,8 @@ export function NodeCard({
               e.stopPropagation();
               onClone?.(server);
             }}
-            data-tip={t('nodes.clone', '克隆')}
-            aria-label={t('nodes.clone', '克隆')}
+            data-tip={t('nodes.clone')}
+            aria-label={t('nodes.clone')}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
               <rect x="9" y="9" width="11" height="11" rx="2" />
@@ -423,8 +426,8 @@ export function NodeCard({
               e.stopPropagation();
               onEdit?.(server);
             }}
-            data-tip={t('common.edit', '编辑')}
-            aria-label={t('common.edit', '编辑')}
+            data-tip={t('common.edit')}
+            aria-label={t('common.edit')}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
               <path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" />
@@ -466,9 +469,9 @@ export function NodeCard({
                 e.stopPropagation();
                 onDelete?.(server);
               }}
-              data-tip={deleteConfirming ? t('common.confirmAgain', '再点一次确认') : t('common.delete', '删除')}
+              data-tip={deleteConfirming ? t('common.confirmAgain') : t('common.delete')}
               aria-label={
-                deleteConfirming ? t('common.confirmAgain', '再点一次确认') : t('common.delete', '删除')
+                deleteConfirming ? t('common.confirmAgain') : t('common.delete')
               }
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>

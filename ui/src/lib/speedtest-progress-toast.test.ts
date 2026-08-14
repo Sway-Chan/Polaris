@@ -19,7 +19,7 @@ import {
   SPEEDTEST_IDLE_TIMEOUT_MS,
   SPEEDTEST_TOAST_KEY,
   initialSpeedTestToastState,
-  planSpeedTestResume,
+  planSpeedTestRun,
   reduceSpeedTestDone,
   reduceSpeedTestIdle,
   reduceSpeedTestProgress,
@@ -36,19 +36,20 @@ interface Call {
     key?: string;
     sticky?: boolean;
     description?: string;
-    action?: { label: string; onClick: () => void };
+    actions?: Array<{ label: string; onClick: () => void }>;
+    dismiss?: { label: string };
   };
 }
 
 /**
  * 假外部面：捕获两条事件流的监听器 + 记录每一次 toast 调用（含 options）。
  *
- * `servers` / `resumed` 让续测那一档可测：前者是「点击那一刻的当前节点集」（测试可随时改），
- * 后者记录**实际发出去的续测请求**（一次都没发 = 空数组，正是「不自动续」那条门的判据）。
+ * `servers` / `runs` 让恢复动作可测：前者是「点击那一刻的当前节点集」（测试可随时改），
+ * 后者记录**实际发出去的测速请求**（一次都没发 = 空数组，正是「不自动执行」那条门的判据）。
  */
 function harness(servers: string[] = []) {
   const calls: Call[] = [];
-  const resumed: string[][] = [];
+  const runs: string[][] = [];
   let alive = [...servers];
   let listener: ((p: SpeedTestProgress) => void) | null = null;
   let doneListener: ((p: SpeedTestDonePayload) => void) | null = null;
@@ -74,22 +75,23 @@ function harness(servers: string[] = []) {
     // 假 t：把键与插值原样拼出来，断言里既看得到用了哪个键，也看得到数字有没有接对。
     t: (key, vars) => (vars ? `${key}(${JSON.stringify(vars)})` : key),
     currentServerIds: () => alive,
-    resume: (ids) => resumed.push(ids),
+    run: (ids) => runs.push(ids),
   };
   const stop = subscribeSpeedTestProgressToast(deps);
   return {
     calls,
-    resumed,
+    runs,
     stop,
     emit: (tested: number, ok: number, total: number) => listener?.({ tested, ok, total }),
     emitDone: (p: SpeedTestDonePayload) => doneListener?.(p),
     setServers: (ids: string[]) => {
       alive = [...ids];
     },
-    clickAction: () => {
+    clickAction: (label: string) => {
       const last = calls[calls.length - 1];
-      if (!last?.opts?.action) throw new Error('最后一条 toast 没有 action 按钮');
-      last.opts.action.onClick();
+      const action = last?.opts?.actions?.find((it) => it.label === label);
+      if (!action) throw new Error(`最后一条 toast 没有动作：${label}`);
+      action.onClick();
     },
     unsubCount: () => unsubscribed,
   };
@@ -99,6 +101,7 @@ const done = (p: Partial<SpeedTestDonePayload> = {}): SpeedTestDonePayload => ({
   outcome: 'interrupted',
   tested: 12,
   total: 50,
+  serverIds: [],
   pending: [],
   ...p,
 });
@@ -146,6 +149,7 @@ describe('reduce：纯状态机', () => {
       msgKey: 'nodes.speedTestInterrupted',
       descKey: 'nodes.speedTestInterruptedSummary',
       descVars: { tested: 12, total: 50 },
+      dismissLabelKey: 'nodes.speedTestDismiss',
     });
     expect(reduceSpeedTestIdle({ live: false, tested: 12, total: 50 }).intent).toBeNull();
   });
@@ -207,6 +211,7 @@ describe('订阅接线：一整轮测速的真实调用序列', () => {
         key: SPEEDTEST_TOAST_KEY,
         sticky: false,
         description: 'nodes.speedTestInterruptedSummary({"tested":12,"total":50})',
+        dismiss: { label: 'nodes.speedTestDismiss' },
       },
     });
     h.stop();
@@ -335,7 +340,7 @@ describe('终态事件（主路径）：中断当场收口，不再靠猜', () =
     const h = harness();
     h.emit(1, 1, 2);
     h.emit(2, 2, 2); // 这一帧就是终态
-    h.emitDone({ outcome: 'completed', tested: 2, total: 2, pending: [] });
+    h.emitDone({ outcome: 'completed', tested: 2, total: 2, serverIds: ['n1', 'n2'], pending: [] });
     expect(h.calls).toHaveLength(2);
     expect(h.calls[1].msg).toBe('nodes.speedTestDone');
     h.stop();
@@ -344,7 +349,7 @@ describe('终态事件（主路径）：中断当场收口，不再靠猜', () =
   it('单节点 ⚡（total<=1 整轮静音）⇒ done 也必须静音', () => {
     const h = harness();
     h.emit(1, 1, 1);
-    h.emitDone({ outcome: 'completed', tested: 1, total: 1, pending: [] });
+    h.emitDone({ outcome: 'completed', tested: 1, total: 1, serverIds: ['n1'], pending: [] });
     expect(h.calls).toHaveLength(0);
     h.stop();
   });
@@ -352,30 +357,36 @@ describe('终态事件（主路径）：中断当场收口，不再靠猜', () =
   it('completed 但 tested 到不了 total（JoinError 漏账）⇒ done 照样收口成「完成」', () => {
     const h = harness();
     h.emit(4, 4, 5); // 第 5 个节点的测量任务 panic 了，永远不会有 5/5
-    h.emitDone({ outcome: 'completed', tested: 4, total: 5, pending: ['n5'] });
+    h.emitDone({
+      outcome: 'completed',
+      tested: 4,
+      total: 5,
+      serverIds: ['n1', 'n2', 'n3', 'n4', 'n5'],
+      pending: ['n5'],
+    });
     expect(h.calls[1].level).toBe('success');
     expect(h.calls[1].msg).toBe('nodes.speedTestDone');
     // completed 不给「继续」：后端已裁定本轮结束，pending 只是漏账的账面残留。
-    expect(h.calls[1].opts?.action).toBeUndefined();
+    expect(h.calls[1].opts?.actions).toBeUndefined();
     h.stop();
   });
 });
 
-describe('中断后「继续」：一键续差集，绝不自动续', () => {
+describe('中断后的恢复动作：继续剩余 / 重测原范围 / 关闭', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
   it('🔴 收到 interrupted **不会**自动发续测请求（要点才发）', () => {
-    // 变异锁：把 `deps.resume(...)` 从 onClick 挪进 done 分支（= 自动续）→ 第一条断言转红。
+    // 变异锁：把 `deps.run(...)` 从 onClick 挪进 done 分支（= 自动恢复）→ 第一条断言转红。
     // 判据见协调器文件头「不自动续」三条：抢后端单飞闸 / 用户此刻在做别的事 / 无收敛点。
     const h = harness(['n1', 'n2']);
     h.emit(1, 1, 3);
-    h.emitDone(done({ tested: 1, total: 3, pending: ['n1', 'n2'] }));
+    h.emitDone(done({ tested: 1, total: 3, serverIds: ['n0', 'n1', 'n2'], pending: ['n1', 'n2'] }));
     vi.advanceTimersByTime(SPEEDTEST_IDLE_TIMEOUT_MS * 3);
-    expect(h.resumed, '中断本身绝不触发任何请求').toEqual([]);
+    expect(h.runs, '中断本身绝不触发任何请求').toEqual([]);
 
-    h.clickAction();
-    expect(h.resumed, '点了才发').toEqual([['n1', 'n2']]);
+    h.clickAction('nodes.speedTestResume');
+    expect(h.runs, '点了才发').toEqual([['n1', 'n2']]);
     h.stop();
   });
 
@@ -383,20 +394,20 @@ describe('中断后「继续」：一键续差集，绝不自动续', () => {
     // 变异锁：把 pending 换成整轮请求集（后端「返回全集」）或前端自己拿全量节点重测 → 转红。
     const h = harness(['n1', 'n2', 'n3', 'n4']);
     h.emit(2, 2, 4);
-    h.emitDone(done({ tested: 2, total: 4, pending: ['n3', 'n4'] }));
-    h.clickAction();
-    expect(h.resumed).toEqual([['n3', 'n4']]);
+    h.emitDone(done({ tested: 2, total: 4, serverIds: ['n1', 'n2', 'n3', 'n4'], pending: ['n3', 'n4'] }));
+    h.clickAction('nodes.speedTestResume');
+    expect(h.runs).toEqual([['n3', 'n4']]);
     h.stop();
   });
 
   it('🔴 发出前按**当前**节点集过滤（中断到点击之间用户删了节点）', () => {
-    // 变异锁：`onResumeClicked` 里去掉 planSpeedTestResume 直接 `deps.resume(pending)` → 转红。
+    // 变异锁：点击处理里去掉 planSpeedTestRun 直接 `deps.run(pending)` → 转红。
     const h = harness(['n1', 'n2', 'n3']);
     h.emit(1, 1, 3);
-    h.emitDone(done({ tested: 1, total: 3, pending: ['n2', 'n3'] }));
+    h.emitDone(done({ tested: 1, total: 3, serverIds: ['n1', 'n2', 'n3'], pending: ['n2', 'n3'] }));
     h.setServers(['n1', 'n3']); // n2 被删了 / 订阅换了
-    h.clickAction();
-    expect(h.resumed).toEqual([['n3']]);
+    h.clickAction('nodes.speedTestResume');
+    expect(h.runs).toEqual([['n3']]);
     h.stop();
   });
 
@@ -404,40 +415,55 @@ describe('中断后「继续」：一键续差集，绝不自动续', () => {
     // 空 serverIds 传到后端等于「测全部」——语义彻底反转，会把一次「继续」变成一整轮全量测速。
     const h = harness(['n1']);
     h.emit(1, 1, 3);
-    h.emitDone(done({ tested: 1, total: 3, pending: ['n2', 'n3'] }));
+    h.emitDone(done({ tested: 1, total: 3, serverIds: ['n1', 'n2', 'n3'], pending: ['n2', 'n3'] }));
     h.setServers([]); // 全没了
-    h.clickAction();
-    expect(h.resumed).toEqual([]);
+    h.clickAction('nodes.speedTestResume');
+    expect(h.runs).toEqual([]);
     const last = h.calls[h.calls.length - 1];
-    expect(last.msg).toBe('nodes.speedTestResumeGone');
+    expect(last.msg).toBe('nodes.speedTestTargetsGone');
     expect(last.opts?.key).toBe(SPEEDTEST_TOAST_KEY); // 同 key ⇒ 顶掉那条中断 toast
     expect(last.opts?.sticky).toBe(false);
     h.stop();
   });
 
-  it('🔴 pending 为空的中断（一个都没轮到 vs 全测完）⇒ 不给按钮，别给一个点了白跑的入口', () => {
-    const h = harness(['n1']);
+  it('🔴 一个节点都没完成时两个范围相同 ⇒ 只给「重新测速」，不放两个同义按钮', () => {
+    const h = harness(['n1', 'n2', 'n3']);
+    h.emit(0, 0, 3);
+    h.emitDone(done({ tested: 0, total: 3, serverIds: ['n1', 'n2', 'n3'], pending: ['n1', 'n2', 'n3'] }));
+    expect(h.calls[1].opts?.actions?.map((action) => action.label)).toEqual([
+      'nodes.speedTestRetry',
+    ]);
+    h.stop();
+  });
+
+  it('🔴 重新测速严格复用原请求范围，不扩成当前全部节点', () => {
+    const h = harness(['n1', 'n2', 'n3', 'outside']);
     h.emit(1, 1, 3);
-    h.emitDone(done({ tested: 3, total: 3, pending: [] }));
-    expect(h.calls[1].opts?.action).toBeUndefined();
+    h.emitDone(done({ tested: 1, total: 3, serverIds: ['n1', 'n2', 'n3'], pending: ['n2', 'n3'] }));
+    h.clickAction('nodes.speedTestRetry');
+    expect(h.runs).toEqual([['n1', 'n2', 'n3']]);
     h.stop();
   });
 
   it('🔴 中断态 toast **不是 sticky**（带按钮却永不消失 = 赖在屏上关不掉）', () => {
     // 形态判据的另一半在 `components/layout/toast-queue.test.ts`：那边钉死 autoDismissMs 对
-    // 带 action 的条目必须返回有限值（即便调用方写了 sticky:true 也压过去）。两条一起才封死这个面。
+    // 带 actions 的条目必须返回有限值（即便调用方写了 sticky:true 也压过去）。两条一起才封死这个面。
     const h = harness(['n1']);
     h.emit(1, 1, 3);
-    h.emitDone(done({ tested: 1, total: 3, pending: ['n2'] }));
+    h.emitDone(done({ tested: 1, total: 3, serverIds: ['n1', 'n2', 'n3'], pending: ['n2'] }));
     expect(h.calls[1].opts?.sticky).toBe(false);
-    expect(h.calls[1].opts?.action?.label).toBe('nodes.speedTestResume');
+    expect(h.calls[1].opts?.actions?.map((action) => action.label)).toEqual([
+      'nodes.speedTestResume',
+      'nodes.speedTestRetry',
+    ]);
+    expect(h.calls[1].opts?.dismiss?.label).toBe('nodes.speedTestDismiss');
     h.stop();
   });
 
-  it('planSpeedTestResume：保序 + 去重 + 只留还在的', () => {
-    expect(planSpeedTestResume(['c', 'a', 'c', 'zz'], ['a', 'b', 'c'])).toEqual(['c', 'a']);
-    expect(planSpeedTestResume([], ['a'])).toEqual([]);
-    expect(planSpeedTestResume(['a'], [])).toEqual([]);
+  it('planSpeedTestRun：保序 + 去重 + 只留还在的', () => {
+    expect(planSpeedTestRun(['c', 'a', 'c', 'zz'], ['a', 'b', 'c'])).toEqual(['c', 'a']);
+    expect(planSpeedTestRun([], ['a'])).toEqual([]);
+    expect(planSpeedTestRun(['a'], [])).toEqual([]);
   });
 
   it('reduceSpeedTestDone：不在跑就什么都不做（纯状态机层）', () => {
@@ -445,7 +471,7 @@ describe('中断后「继续」：一键续差集，绝不自动续', () => {
   });
 });
 
-describe('四条文案在五语种都存在（本模块的键绕过了可寻址性门）', () => {
+describe('测速 Toast 文案在五语种都存在（本模块的键绕过了可寻址性门）', () => {
   /*
    * `locale-parity.test.ts` 的可寻址性门只扫 `t('字面量')` 形态；本模块把键存成 `intent.msgKey`
    * 再交给注入的 `t`，那道门看不见它们 ⇒ 这里自带一份，否则「键写错一个字母」只会在运行期
@@ -456,9 +482,11 @@ describe('四条文案在五语种都存在（本模块的键绕过了可寻址�
     'nodes.speedTestDone',
     'nodes.speedTestInterrupted',
     'nodes.speedTestInterruptedSummary',
-    // 2026-07-31 C 批新增（续测）——五语同批补齐，故 ru/fa 的 MISSING_KEY_DEBT 不动。
+    // 恢复动作与关闭入口——五语同批补齐，故 ru/fa 的 MISSING_KEY_DEBT 不动。
     'nodes.speedTestResume',
-    'nodes.speedTestResumeGone',
+    'nodes.speedTestRetry',
+    'nodes.speedTestDismiss',
+    'nodes.speedTestTargetsGone',
   ];
   const dir = fileURLToPath(new URL('../i18n/locales', import.meta.url));
   const files = readdirSync(dir).filter((f) => f.endsWith('.json'));
@@ -468,7 +496,7 @@ describe('四条文案在五语种都存在（本模块的键绕过了可寻址�
   });
 
   for (const f of files) {
-    it(`${f} 四键齐全`, () => {
+    it(`${f} 键齐全`, () => {
       const data = JSON.parse(readFileSync(join(dir, f), 'utf8')) as Record<
         string,
         Record<string, unknown>
@@ -484,12 +512,18 @@ describe('四条文案在五语种都存在（本模块的键绕过了可寻址�
   it('reduce 产出的键确实落在这张表里（防改了 reduce 忘了改本表）', () => {
     const used = new Set<string>();
     const collect = (
-      i: { msgKey: string; descKey?: string; action?: { labelKey: string } } | null
+      i: {
+        msgKey: string;
+        descKey?: string;
+        actions?: Array<{ labelKey: string }>;
+        dismissLabelKey?: string;
+      } | null
     ) => {
       if (!i) return;
       used.add(i.msgKey);
       if (i.descKey) used.add(i.descKey);
-      if (i.action) used.add(i.action.labelKey);
+      for (const action of i.actions ?? []) used.add(action.labelKey);
+      if (i.dismissLabelKey) used.add(i.dismissLabelKey);
     };
     collect(reduceSpeedTestProgress(initialSpeedTestToastState, { tested: 1, ok: 1, total: 5 }).intent);
     collect(reduceSpeedTestProgress(initialSpeedTestToastState, { tested: 5, ok: 5, total: 5 }).intent);
@@ -497,12 +531,18 @@ describe('四条文案在五语种都存在（本模块的键绕过了可寻址�
     collect(
       reduceSpeedTestDone(
         { live: true, tested: 1, total: 5 },
-        { outcome: 'interrupted', tested: 1, total: 5, pending: ['n2'] }
+        {
+          outcome: 'interrupted',
+          tested: 1,
+          total: 5,
+          serverIds: ['n1', 'n2'],
+          pending: ['n2'],
+        }
       ).intent
     );
-    // `speedTestResumeGone` 不经 reduce（它是「点了继续但没得续」时由订阅层直接弹的），
+    // `speedTestTargetsGone` 不经 reduce（它是「点击恢复动作但目标已不存在」时由订阅层直接弹的），
     // 故这里手工补上——否则上面那张表会因为「集合不等」转红，而缺席的恰恰是没被 reduce 覆盖的那条。
-    used.add('nodes.speedTestResumeGone');
+    used.add('nodes.speedTestTargetsGone');
     expect([...used].sort()).toEqual([...KEYS].sort());
   });
 });

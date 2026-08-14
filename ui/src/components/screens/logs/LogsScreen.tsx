@@ -4,9 +4,9 @@
  * DOM 结构 1:1：
  *  - .phead（h1 + .sub）
  *  - #log-privacy-note.mode-warn（隐私锁提示条，原型内联覆盖 flow 色而非默认 warn 色）
- *  - .card.log-toolbar（**布局已按 2026-07-29 真机反馈重排，不再是原型的三行**）：
- *      .log-tb-lvl（级别 seg + 分隔竖线 + 来源 seg —— 两个都是「筛什么」，同排）
- *      .log-tb-main（级别说明文案 + 搜索 + .log-tb-actions）
+ *  - .card.log-toolbar：
+ *      .log-tb-lvl（两个不可拆分的筛选组：日志级别 / 来源；来源标签与「全部」永不跨行）
+ *      .log-tb-main（搜索 + 常用开关 + 紧凑图标工具组）
  *    动作区的脱敏 / 自动滚动 / 清空三颗**只用底色表达状态、文案恒定**；状态的读屏通路改由
  *    `aria-pressed`（前两颗）与 `aria-label`（清空的武装态）承担，暂停期的缓冲行数改由 `.cnt` 徽标带。
  *  - #log-view.log-view（动态行 = 原型 renderLogs() 的 .log-line 模板逐行 .map）
@@ -20,7 +20,9 @@
  *    后端经 config.rs::broadcast_config_changed → logging::set_level 即刻改 max_level，而**内核日志
  *    也由同一个 max_level 在客户端筛**（proxy.rs 的核日志 relay 订阅管理 API `SubscribeLog`，该流恒
  *    全级别）⇒ 本页两侧日志改完即刻跟上。仍需重启内核的只有内核写进自己那份日志文件的级别。
- *    （因此曾经的「诊断采集」——临时把内核提级到 debug 再还原——已整体删除，不再有采集条与按钮。）
+ *  - 会话诊断：后端进程态 `logs:setDiagnostic` 临时把 app sink + sing-box 实时 relay 抬到 DEBUG，
+ *    不写 config、不重启核；页面卸载不误关，应用退出后状态自然消失。内核自己写 `singbox.log` 的级别
+ *    仍由「内核实跑」徽标如实显示（管理 API 没有 setter，不能伪装成已改变）。
  *  - 核在跑的真实级别：api.logs.runtimeLevel（管理 API `GetDefaultLogLevel`）→ `.log-core-lvl` 徽标。
  *    分段控件显示的是**我写下的值**，这颗徽标显示的是**核此刻实际在用的值**。
  *    **它管的是核写自己那份日志文件（`singbox.log`）时用的级别**，也就是「导出日志」「导出诊断包」
@@ -103,6 +105,9 @@ export function LogsScreen() {
   const [logs, setLogs] = useState<LogRow[]>([]);
   /** 核在跑的真实日志级别（`null` = 还没取回；轮询见下方 effect）。 */
   const [runtimeLevel, setRuntimeLevel] = useState<RuntimeLogLevel | null>(null);
+  /** `null` = 尚未从后端进程态水合；boolean = 本次应用运行是否临时抬到 DEBUG。 */
+  const [diagnosticMode, setDiagnosticMode] = useState<boolean | null>(null);
+  const [diagnosticBusy, setDiagnosticBusy] = useState(false);
   const [source, setSource] = useState<LogSource>('all');
   const [search, setSearch] = useState('');
   const [follow, setFollow] = useState(true);
@@ -122,6 +127,8 @@ export function LogsScreen() {
   const viewRef = useRef<HTMLDivElement>(null);
 
   const level: LogLevel = config?.logLevel ?? 'info';
+  /** 诊断模式不改持久级别控件，只临时把本页实际显示门槛抬到 DEBUG。 */
+  const displayLevel: LogLevel = diagnosticMode ? 'debug' : level;
   /**
    * 核在跑的真实级别徽标（纯投影）。第三参取**盘上**那份 logLevel（非 staged 合并值），
    * 用来区分「改动还在暂存区」与「已落盘但核没重启」—— 两者补救动作不同。
@@ -179,6 +186,22 @@ export function LogsScreen() {
       .catch(() => {
         /* 非 Tauri 忽略 */
       });
+  }, []);
+
+  /* 会话诊断态由后端进程持有：换屏会卸载本组件，但不能因此误关诊断；重挂时读回即可。 */
+  useEffect(() => {
+    let alive = true;
+    api.logs
+      .diagnosticState()
+      .then((enabled) => {
+        if (alive) setDiagnosticMode(enabled);
+      })
+      .catch(() => {
+        if (alive) setDiagnosticMode(false);
+      });
+    return () => {
+      alive = false;
+    };
   }, []);
 
   /* ── 核在跑的真实级别：轮询 logs:runtimeLevel（仅本屏挂载期间）──
@@ -278,7 +301,7 @@ export function LogsScreen() {
         stage({
           id: 'setting:logLevel',
           kind: 'setting',
-          label: `${t('logs.currentLevel', '日志级别')} ${v}`,
+          label: `${t('logs.currentLevel')} ${v}`,
           entityPath: ['logLevel'],
           nextValue: v,
         });
@@ -293,6 +316,24 @@ export function LogsScreen() {
     [diskConfig, saveConfig, stagingEnabled, stage, t]
   );
 
+  /** 会话级诊断：只改本次 Rust 进程的有效门槛，绝不走 saveConfig / staged config。 */
+  const onToggleDiagnostic = useCallback(async () => {
+    if (diagnosticBusy) return;
+    setDiagnosticBusy(true);
+    try {
+      const enabled = await api.logs.setDiagnostic(!(diagnosticMode ?? false));
+      setDiagnosticMode(enabled);
+    } catch (err) {
+      console.error('[logs] toggle diagnostic failed:', err);
+      toast.error(
+        t('logs.diagnosticFailed'),
+        err instanceof Error ? err.message : undefined,
+      );
+    } finally {
+      setDiagnosticBusy(false);
+    }
+  }, [diagnosticBusy, diagnosticMode, t]);
+
   /* ── 清空：confirmTwice 原地二次确认（对齐原型 :4130 log-clear，2.6s 未二次点击自动回退）──
    * 原型 log-clear → confirmTwice 后 notify('日志已清空')（中性 kind）。 */
   const onClearClick = useCallback(() => {
@@ -303,11 +344,11 @@ export function LogsScreen() {
           setLogs([]);
           pendingRef.current = [];
           setPendingCount(0);
-          toast.info(t('logs.clearDone', '日志已清空'));
+          toast.info(t('logs.clearDone'));
         } catch (err) {
           console.error('[logs] clear failed:', err);
           toast.error(
-            t('logs.clearFailed', '清空日志失败'),
+            t('logs.clearFailed'),
             err instanceof Error ? err.message : undefined,
           );
         }
@@ -321,13 +362,13 @@ export function LogsScreen() {
     try {
       const res = await api.diagnostic.export();
       if (res.success) {
-        toast.success(t('logs.exportDiagDone', '已导出诊断包'));
+        toast.success(t('logs.exportDiagDone'));
       } else if (res.error !== 'cancelled') {
-        toast.error(t('logs.exportDiagFailed', '导出诊断包失败'), res.error);
+        toast.error(t('logs.exportDiagFailed'), res.error);
       }
     } catch (err) {
       console.error('[logs] export diag failed:', err);
-      toast.error(t('logs.exportDiagFailed', '导出诊断包失败'), err instanceof Error ? err.message : undefined);
+      toast.error(t('logs.exportDiagFailed'), err instanceof Error ? err.message : undefined);
     }
   }, [t]);
 
@@ -337,13 +378,13 @@ export function LogsScreen() {
     try {
       const res = await api.logs.export();
       if (res.success) {
-        toast.success(t('logs.exportDone', '已导出日志'));
+        toast.success(t('logs.exportDone'));
       } else if (res.error !== 'cancelled') {
-        toast.error(t('logs.exportFailed', '导出日志失败'), res.error);
+        toast.error(t('logs.exportFailed'), res.error);
       }
     } catch (err) {
       console.error('[logs] export failed:', err);
-      toast.error(t('logs.exportFailed', '导出日志失败'), err instanceof Error ? err.message : undefined);
+      toast.error(t('logs.exportFailed'), err instanceof Error ? err.message : undefined);
     }
   }, [t]);
 
@@ -352,22 +393,18 @@ export function LogsScreen() {
   const onOpenLogDir = useCallback(async () => {
     try {
       await api.logs.openDir();
-      toast.success(t('logs.openDirDone', '已在文件管理器中打开日志目录'));
+      toast.success(t('logs.openDirDone'));
     } catch (err) {
       console.error('[logs] open dir failed:', err);
       toast.error(
-        t('logs.openDirFailed', '打开日志目录失败'),
+        t('logs.openDirFailed'),
         err instanceof Error ? err.message : undefined,
       );
     }
   }, [t]);
 
-  /* 此处曾有 onStartCapture / onStopCapture（「诊断采集」：临时把内核提级到 debug 再还原）。
-     整条机制已删除 —— 内核日志改由管理 API 的 SubscribeLog 全级别送来、级别筛在客户端，
-     上面那颗级别分段控件拨到 DEBUG 就立刻能看到内核的 debug 行（不落盘、不重启内核）。 */
-
   /* ── 过滤：级别阈值 + 来源 + 搜索（对齐原型 renderLogs 的 filter 条件）── */
-  const thr = LVL[level];
+  const thr = LVL[displayLevel];
   const q = search.trim().toLowerCase();
   const visible = useMemo(
     () =>
@@ -401,10 +438,10 @@ export function LogsScreen() {
     try {
       await navigator.clipboard.writeText(text);
       // 原型 :log-copy notify('已复制日志','ok')。
-      toast.success(t('logs.copyDone', '已复制日志'));
+      toast.success(t('logs.copyDone'));
     } catch (err) {
       console.error('[logs] copy failed:', err);
-      toast.error(t('common.copyFail', '复制失败'));
+      toast.error(t('common.copyFail'));
     }
   }, [visible, renderMessage, t]);
 
@@ -479,73 +516,81 @@ export function LogsScreen() {
       )}
 
       <div className="card log-toolbar">
-        {/* 日志级别（统一：核记录 + 视图显示同一级别及以上） */}
+        {/* 筛选行按语义组成不可拆单元：容器可换行，单元内部不换。来源标签因此不会孤零零留在上一行。 */}
         <div className="log-tb-lvl">
-          <span className="log-flow-tag">{t('logs.currentLevel')}</span>
-          <div className="log-levels" role="group" aria-label="Log level">
-            {LEVEL_OPTS.map((lv) => (
-              <button
-                key={lv}
-                type="button"
-                className={level === lv ? 'on' : ''}
-                onClick={() => onLevelChange(lv)}
+          <div className="log-filter-group log-level-filter">
+            <span className="log-flow-tag">{t('logs.currentLevel')}</span>
+            <div className="log-levels" role="group" aria-label={t('logs.levelAria')}>
+              {LEVEL_OPTS.map((lv) => (
+                <button
+                  key={lv}
+                  type="button"
+                  className={displayLevel === lv ? 'on' : ''}
+                  disabled={diagnosticMode === true || diagnosticBusy}
+                  onClick={() => onLevelChange(lv)}
+                >
+                  {lv.toUpperCase()}
+                </button>
+              ))}
+            </div>
+            {/* 级别说明收进浮窗，避免长文案占掉独立一行。 */}
+            <button
+              type="button"
+              className="log-lvl-info"
+              data-tip={`${t('logs.levelCaption')}${t('logs.levelCoreRestartHint')}`}
+              aria-label={t('logs.levelCaption')}
+            >
+              <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 11v5M12 7.6v.6" />
+              </svg>
+            </button>
+            {/* 只描述内核自己的 singbox.log 级别；诊断模式不会伪装这格已经热切。 */}
+            {runtimeView.kind !== 'pending' && (
+              <span
+                className={`log-core-lvl${runtimeView.kind === 'known' && runtimeView.drift ? ' diverged' : ''}`}
+                data-tip={coreLevelTip}
               >
-                {lv.toUpperCase()}
-              </button>
-            ))}
+                {runtimeView.kind === 'known'
+                  ? t('logs.coreLevelValue', { level: runtimeView.level.toUpperCase() })
+                  : runtimeView.kind === 'notRunning'
+                    ? t('logs.coreLevelNotRunning')
+                    : t('logs.coreLevelUnavailable')}
+              </span>
+            )}
           </div>
-          {/* 级别说明不再占一行正文 —— 收进这颗 `i` 的浮窗（陈先生 2026-07-29 裁定：长文案挤占空间）。
-              `data-tip` 走本仓的 tooltip 引擎；`aria-label` 让读屏也拿得到同一段。
-              **生效范围那句已按本批改写**：内核日志现在经管理 API 的 SubscribeLog 全级别送来、级别筛在
-              客户端，故本页显示的内核行**改完即刻**跟上；只有内核写进它自己那份日志文件的级别仍是起核时
-              注入的，要重启内核才变。 */}
+
+          <div className="log-filter-group log-source-filter">
+            <span className="log-flow-tag">{t('logs.sourceLabel')}</span>
+            <div className="seg2" role="group" aria-label={t('logs.sourceAria')}>
+              {(['all', 'sing-box', 'app'] as LogSource[]).map((src) => (
+                <button
+                  key={src}
+                  type="button"
+                  className={source === src ? 'on' : ''}
+                  onClick={() => setSource(src)}
+                >
+                  {src === 'all' ? t('common.all') : src === 'app' ? t('logs.sourceApp') : 'sing-box'}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <button
             type="button"
-            className="log-lvl-info"
-            data-tip={`${t('logs.levelCaption')}${t('logs.levelCoreRestartHint')}`}
-            aria-label={t('logs.levelCaption')}
+            className={`btn ghost sm log-diagnostic-toggle${diagnosticMode ? ' on' : ''}`}
+            disabled={diagnosticMode === null || diagnosticBusy}
+            onClick={() => void onToggleDiagnostic()}
+            data-tip={diagnosticMode ? t('logs.diagnosticTipOn') : t('logs.diagnosticTipOff')}
+            aria-pressed={diagnosticMode === true}
           >
             <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <circle cx="12" cy="12" r="9" />
-              <path d="M12 11v5M12 7.6v.6" />
+              <path d="M9 3h6M10 3v6l-5 8a2 2 0 001.7 3h10.6a2 2 0 001.7-3l-5-8V3" />
+              <path d="M8 14h8" />
             </svg>
+            <span>{t('logs.diagnosticMode')}</span>
+            <span className="log-diagnostic-level">{t('logs.diagnosticLevel')}</span>
           </button>
-          {/* 「核在跑的真实级别」徽标 —— 左边那排分段控件显示的是**我写下的值**，这里显示的是
-              **核此刻实际在用的值**（管理 API `GetDefaultLogLevel` 读回）。核日志改吃 `SubscribeLog`
-              之后它管的只剩一格：核写进 `singbox.log` 时用的级别，即两个导出产物里的核那一半 ——
-              屏幕上那份已经不会骗人了，盘上那份才是唯一还会与设置不一致的东西。
-              只在**核记得比你要的少**时才报（反向 = 盘上多几行，无后果；照报的话调低级别后徽标常年亮着）；
-              成因二分（暂存未应用 / 核没重启）补救动作不同，故浮窗按因分文案。
-              读不到时明说「未运行 / 读不到」，**绝不回落成某个具体级别**（见 runtime-level.ts）。 */}
-          {runtimeView.kind !== 'pending' && (
-            <span
-              className={`log-core-lvl${runtimeView.kind === 'known' && runtimeView.drift ? ' diverged' : ''}`}
-              data-tip={coreLevelTip}
-            >
-              {runtimeView.kind === 'known'
-                ? t('logs.coreLevelValue', { level: runtimeView.level.toUpperCase() })
-                : runtimeView.kind === 'notRunning'
-                  ? t('logs.coreLevelNotRunning')
-                  : t('logs.coreLevelUnavailable')}
-            </span>
-          )}
-          {/* 来源分段自第二行上移至此，与「日志级别」同排（陈先生 2026-07-29 真机裁定）：两者都是
-              「筛什么」的选择器，原来一个在首行、一个混在搜索/动作那排里，是按控件类型分行而非按语义分行。
-              中间用既有 `.log-tb-sep` 竖线分隔，不新造分隔件。 */}
-          <span className="log-tb-sep" />
-          <span className="log-flow-tag">{t('logs.sourceLabel', '来源')}</span>
-          <div className="seg2" role="group" aria-label="Source">
-            {(['all', 'sing-box', 'app'] as LogSource[]).map((src) => (
-              <button
-                key={src}
-                type="button"
-                className={source === src ? 'on' : ''}
-                onClick={() => setSource(src)}
-              >
-                {src === 'all' ? t('common.all') : src === 'app' ? t('logs.sourceApp') : 'sing-box'}
-              </button>
-            ))}
-          </div>
         </div>
         {/* 级别说明 + 生效范围如实标注：本页显示的两侧日志（应用 + 内核）都在改完那一刻就跟上 ——
             应用侧是 logging.rs::set_level 跟随 config.logLevel，内核侧是 SubscribeLog 恒送全级别、
@@ -610,65 +655,69 @@ export function LogsScreen() {
               {/* 文案恒定「自动滚动」，开关态只由底色表达（陈先生 2026-07-29 裁定：切文字会让按钮
                   宽度跳动，且「跟随中/已暂停」两个词还要用户读完才知道当前是哪态）。
                   **`aria-pressed` 是补偿**：文字不再变 ⇒ 读屏失去唯一状态线索，必须由它承担。 */}
-              <span id="log-follow-state">{t('logs.follow', '自动滚动')}</span>
+              <span id="log-follow-state">{t('logs.follow')}</span>
               {pendingBadge !== null && <span className="cnt">{pendingBadge}</span>}
             </button>
-            <button
-              type="button"
-              className={`btn ghost sm${confirmClear ? ' confirming' : ''}`}
-              onClick={onClearClick}
-              /* 武装态同样只走底色（`.confirming` 已有红底皮肤，components.css:964）。
-                 视觉文案不变，但 `aria-label` 仍随态切换 —— 二次确认对读屏用户必须可感知，
-                 否则第二下点下去之前他们不知道自己已经武装了。 */
-              aria-label={confirmClear ? t('logs.clearConfirm') : t('home.clear')}
-            >
-              <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" />
-              </svg>
-              {/* 文案随武装态切换（陈先生 2026-07-29 复议：只有底色变，用户不知道还要再点一次）。
-                  底色 `.confirming` 保留 —— 两个通道一起给，比只给其中一个都强。 */}
-              <span>{confirmClear ? t('logs.clearConfirm') : t('home.clear')}</span>
-            </button>
-            <span className="log-tb-sep" />
-            <button type="button" className="btn ghost sm" onClick={onExportLogs}>
-              <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <path d="M12 3v11M8 10l4 4 4-4M4 19h16" />
-              </svg>
-              <span>{t('logs.exportLogs')}</span>
-            </button>
-            {/* G3「目录」：文件夹图标 + 原型同款短文案 */}
-            <button
-              type="button"
-              className="btn ghost sm"
-              onClick={onOpenLogDir}
-              data-tip={t('logs.openDirTip', '在文件管理器中打开日志所在目录')}
-            >
-              <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <path d="M3 7a1 1 0 011-1h5l2 3h9a1 1 0 011 1v9a1 1 0 01-1 1H4a1 1 0 01-1-1z" />
-              </svg>
-              <span>{t('logs.openDir', '目录')}</span>
-            </button>
-            <button
-              type="button"
-              className="btn ghost sm"
-              onClick={onExportDiag}
-              data-tip={t('logs.exportDiagTip')}
-            >
-              <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <path d="M3 7l2-3h5l2 3h7a1 1 0 011 1v11a1 1 0 01-1 1H3a1 1 0 01-1-1V8a1 1 0 011-1z" />
-                <path d="M12 11v6M9 14l3 3 3-3" />
-              </svg>
-              <span>{t('logs.exportDiag')}</span>
-            </button>
-            {/* 此处曾有「开始诊断采集 / 结束采集」两颗按钮。整条机制已删除 —— 想看更详细的内核日志，
-                直接把上面的级别分段控件拨到 DEBUG 即可（即刻生效，不落盘、不重启内核）。 */}
-            <button type="button" className="btn ghost sm" onClick={onCopy}>
-              <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <rect x="9" y="9" width="11" height="11" rx="2" />
-                <path d="M5 15V5a2 2 0 012-2h10" />
-              </svg>
-              <span>{t('common.copy')}</span>
-            </button>
+            {/* 低频工具收成紧凑图标组，完整语义由 tooltip + aria-label 承担；不再用竖线切割。 */}
+            <div className="log-tb-utilities">
+              <button
+                type="button"
+                className={`btn ghost sm log-icon-action${confirmClear ? ' confirming' : ''}`}
+                onClick={onClearClick}
+                data-tip={confirmClear ? t('logs.clearConfirm') : t('home.clear')}
+                aria-label={confirmClear ? t('logs.clearConfirm') : t('home.clear')}
+              >
+                <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="btn ghost sm log-icon-action"
+                onClick={onCopy}
+                data-tip={t('common.copy')}
+                aria-label={t('common.copy')}
+              >
+                <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <rect x="9" y="9" width="11" height="11" rx="2" />
+                  <path d="M5 15V5a2 2 0 012-2h10" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="btn ghost sm log-icon-action"
+                onClick={onExportLogs}
+                data-tip={t('logs.exportLogs')}
+                aria-label={t('logs.exportLogs')}
+              >
+                <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M12 3v11M8 10l4 4 4-4M4 19h16" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="btn ghost sm log-icon-action"
+                onClick={onOpenLogDir}
+                data-tip={t('logs.openDirTip')}
+                aria-label={t('logs.openDir')}
+              >
+                <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M3 7a1 1 0 011-1h5l2 3h9a1 1 0 011 1v9a1 1 0 01-1 1H4a1 1 0 01-1-1z" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="btn ghost sm log-icon-action"
+                onClick={onExportDiag}
+                data-tip={t('logs.exportDiagTip')}
+                aria-label={t('logs.exportDiag')}
+              >
+                <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M3 7l2-3h5l2 3h7a1 1 0 011 1v11a1 1 0 01-1 1H3a1 1 0 01-1-1V8a1 1 0 011-1z" />
+                  <path d="M12 11v6M9 14l3 3 3-3" />
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
       </div>

@@ -37,11 +37,11 @@ export function ResUrlDialog() {
   const [submitting, setSubmitting] = useState(false);
 
   const catOptions: CselOption[] = [
-    { value: 'geosite', label: t('resources.urlDlgCatGeosite', 'Geosite（域名规则集）') },
-    { value: 'geoip', label: t('resources.urlDlgCatGeoip', 'GeoIP（IP 规则集）') },
+    { value: 'geosite', label: t('resources.urlDlgCatGeosite') },
+    { value: 'geoip', label: t('resources.urlDlgCatGeoip') },
     { value: 'geosite-lite', label: 'Geosite Lite' },
     { value: 'geoip-lite', label: 'GeoIP Lite' },
-    { value: 'custom', label: t('resources.urlDlgCatCustom', '自定义') },
+    { value: 'custom', label: t('resources.urlDlgCatCustom') },
   ];
 
   const onUrlChange = (v: string) => {
@@ -54,15 +54,15 @@ export function ResUrlDialog() {
   const errText = (code: ResUrlError | string): string => {
     switch (code) {
       case 'urlEmpty':
-        return t('resources.urlDlgErrUrlEmpty', '请输入资源 URL');
+        return t('resources.urlDlgErrUrlEmpty');
       case 'urlInvalid':
-        return t('resources.urlDlgErrUrlInvalid', 'URL 格式不合法（需 http/https）');
+        return t('resources.urlDlgErrUrlInvalid');
       case 'nameEmpty':
-        return t('resources.urlDlgErrNameEmpty', '请输入名称');
+        return t('resources.urlDlgErrNameEmpty');
       case 'downloadUnavailable':
-        return t('resources.urlDlgErrUnavailable', '下载后端尚未接入（需 HTTP 下载能力）');
+        return t('resources.urlDlgErrUnavailable');
       case 'downloadFailed':
-        return t('resources.urlDlgErrFailed', '下载失败');
+        return t('resources.urlDlgErrFailed');
       default:
         return code;
     }
@@ -74,9 +74,9 @@ export function ResUrlDialog() {
       open({
         kind: 'confirm',
         payload: {
-          title: t('resources.urlDlgDiscardTitle', '放弃下载？'),
-          message: t('resources.urlDlgDiscardMsg', '已填写的内容将不会保存。'),
-          confirmLabel: t('resources.urlDlgDiscard', '放弃'),
+          title: t('resources.urlDlgDiscardTitle'),
+          message: t('resources.urlDlgDiscardMsg'),
+          confirmLabel: t('resources.urlDlgDiscard'),
           danger: true,
           onConfirm: () => {
             close(); // pop confirm
@@ -126,7 +126,7 @@ export function ResUrlDialog() {
   return (
     <Modal
       titleId="res-dlg-title"
-      title={t('resources.urlDlgTitle', '下载规则资源')}
+      title={t('resources.urlDlgTitle')}
       onClose={requestClose}
       icon={
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
@@ -136,17 +136,17 @@ export function ResUrlDialog() {
       footer={
         <>
           <button type="button" className="btn ghost" onClick={requestClose}>
-            {t('common.cancel', '取消')}
+            {t('common.cancel')}
           </button>
           <button type="button" className="btn flow" onClick={() => void handleSubmit()} disabled={submitting}>
-            {t('resources.download', '下载')}
+            {t('resources.download')}
           </button>
         </>
       }
     >
       <div className="fld">
         <label className="fld-l" htmlFor="res-url">
-          {t('resources.urlDlgUrlLabel', '资源 URL（.srs / .txt / .json）')}
+          {t('resources.urlDlgUrlLabel')}
         </label>
         <input
           id="res-url"
@@ -159,7 +159,7 @@ export function ResUrlDialog() {
 
       <div className="fld">
         <label className="fld-l" htmlFor="res-name">
-          {t('resources.urlDlgNameLabel', '名称（自动推断）')}
+          {t('resources.urlDlgNameLabel')}
         </label>
         <input
           id="res-name"
@@ -175,11 +175,11 @@ export function ResUrlDialog() {
 
       <div className="fld">
         <label className="fld-l" htmlFor="res-cat">
-          {t('resources.urlDlgCatLabel', '分类')}
+          {t('resources.urlDlgCatLabel')}
         </label>
         <Csel
           id="res-cat"
-          ariaLabel={t('resources.urlDlgCatLabel', '分类')}
+          ariaLabel={t('resources.urlDlgCatLabel')}
           value={category}
           onChange={(v) => {
             setCategory(v as RuleResourceCategory);
@@ -191,7 +191,7 @@ export function ResUrlDialog() {
 
 
       <div className="card-sub">
-        {t('resources.urlDlgHint', '类型由扩展名/名称推断，可手动调整；下载遵循 GitHub 加速设置。')}
+        {t('resources.urlDlgHint')}
       </div>
     </Modal>
   );

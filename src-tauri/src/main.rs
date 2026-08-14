@@ -195,6 +195,17 @@ fn refresh_stats_visibility(app: &tauri::AppHandle) {
     }
 }
 
+/// macOS 只驻托盘时隐藏 Dock 图标；主窗重新呈现前恢复。其它平台保持 no-op，调用点无需散落 cfg。
+#[cfg(target_os = "macos")]
+pub(crate) fn set_macos_dock_visible(app: &tauri::AppHandle, visible: bool) {
+    if let Err(e) = app.set_dock_visibility(visible) {
+        log::warn!("macOS Dock 图标显隐切换失败（visible={visible}，非致命）：{e}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn set_macos_dock_visible(_app: &tauri::AppHandle, _visible: bool) {}
+
 /// 把**已存在**的主窗真正推上屏：unminimize + show + focus。
 ///
 /// 失败静默——窗可能已析构，非致命。unminimize 先行：窗若被最小化后再 hide 到托盘，只 show 不够，
@@ -207,6 +218,8 @@ fn present_main_window(app: &tauri::AppHandle) {
     let Some(w) = app.get_webview_window("main") else {
         return;
     };
+    // macOS 收托盘时会隐藏 Dock 图标；先恢复再上屏，避免窗口已出现而 Dock 仍缺席的一帧错位。
+    set_macos_dock_visible(app, true);
     let _ = w.unminimize();
     let _ = w.show();
     let _ = w.set_focus();
@@ -1127,10 +1140,15 @@ fn create_main_window(
                 CloseAction::HideToTray => {
                     api.prevent_close();
                     if let Some(w) = app_handle.get_webview_window("main") {
-                        let _ = w.hide();
-                        // 显隐写入点：收托盘不发 `Focused`（窗本就可能已失焦）→ 这里主动刷一次门，
-                        // 三条 poller 立刻停手，不必等各自的 1s 兜底拍。
-                        refresh_stats_visibility(&app_handle);
+                        match w.hide() {
+                            Ok(()) => {
+                                set_macos_dock_visible(&app_handle, false);
+                                // 显隐写入点：收托盘不发 `Focused`（窗本就可能已失焦）→ 这里主动刷一次门，
+                                // 三条 poller 立刻停手，不必等各自的 1s 兜底拍。
+                                refresh_stats_visibility(&app_handle);
+                            }
+                            Err(e) => log::warn!("主窗收进托盘失败（保持 Dock 可见，非致命）：{e}"),
+                        }
                     }
                 }
                 CloseAction::QuitApp => {
@@ -1614,6 +1632,9 @@ fn main() {
                 // 走 `show_main_window` 而非直接 show：与托盘/dock 唤出同一条上屏时机判定（内容没就绪
                 // 就等 `renderer:ready`），别在这条兜底腿上把空窗漏出去。窗此刻必存在，不会触发重建腿。
                 show_main_window(app.handle());
+            } else if start_hidden {
+                // 有托盘唤出锚点时才进入真正的「只驻托盘」形态；否则上方兜底必须保留 Dock。
+                set_macos_dock_visible(app.handle(), false);
             }
             Ok(())
         })
@@ -1748,6 +1769,8 @@ fn main() {
             logs_get,
             logs_clear,
             logs_runtime_level,
+            logs_diagnostic_state,
+            logs_set_diagnostic,
             logs_export,
             logs_open_dir,
             shell_open_external,

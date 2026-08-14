@@ -48,6 +48,16 @@ import {
   type NodeProto,
 } from './node-spec';
 
+export type ProtoCodecErrorCode = 'customJsonInvalid' | 'customJsonObject' | 'customJsonTypeRequired';
+
+/** 编解码层只抛稳定错误码；面向用户的文案由 NodeDialog 按当前 locale 渲染。 */
+export class ProtoCodecError extends Error {
+  constructor(readonly code: ProtoCodecErrorCode, readonly detail?: string) {
+    super(code);
+    this.name = 'ProtoCodecError';
+  }
+}
+
 // ── 归一/取值小工具 ──
 
 /** 小写归一（R3/R4）：非空字符串 → 小写；否则 undefined。 */
@@ -1129,17 +1139,17 @@ export const protoCodec: Record<NodeProto, ProtoCodec> = {
       } catch (e) {
         // 硬约束：JSON 非法须显式报错阻断提交，绝不吞掉静默存半成品 outbound。
         // handleSubmit 的 try/catch 会把此 throw 转成 submitErr 展示（同其它协议的异常路径）。
-        throw new Error(`自定义协议 JSON 格式错误：${e instanceof Error ? e.message : String(e)}`);
+        throw new ProtoCodecError('customJsonInvalid', e instanceof Error ? e.message : String(e));
       }
       if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-        throw new Error('自定义协议 JSON 必须是对象');
+        throw new ProtoCodecError('customJsonObject');
       }
       const outbound = parsed as Record<string, unknown>;
       const typeVal = outbound.type;
       // 镜像后端 store/validate.rs#protocol_requirement_ok("custom")：outbound.type 非空才算齐备，
       // 提前拦在前端避免往返一次 IPC 才发现缺字段。
       if (typeof typeVal !== 'string' || typeVal.trim() === '') {
-        throw new Error('自定义协议 JSON 缺少必填的 "type" 字段');
+        throw new ProtoCodecError('customJsonTypeRequired');
       }
       const secretKeys = str(draft.secretKeys);
       return {

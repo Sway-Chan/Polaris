@@ -51,6 +51,10 @@
     "copyFail": "複製失敗",
     "retry": "重試",
     "loading": "載入中...",
+    "close": "關閉",
+    "windowMinimize": "最小化",
+    "windowMaximize": "最大化",
+    "windowRestore": "還原視窗",
     "saveFailed": "儲存失敗",
     "configLoadFail": "設定載入失敗",
     "search": "搜尋",
@@ -73,7 +77,10 @@
     "relHoursAgo": "{{count}} 小時前",
     "relYesterday": "昨天",
     "relDaysAgo": "{{count}} 天前",
-    "itemCount": "{{n}} 條"
+    "itemCount": "{{n}} 條",
+    "default": "預設",
+    "colon": "：",
+    "listSeparator": "、"
   },
   "sidebar": {
     "home": "主頁",
@@ -85,6 +92,7 @@
     "rules": "規則",
     "settings": "設定",
     "collapse": "收合側欄",
+    "primaryNav": "主要導覽",
     "expand": "展開側欄",
     "group": {
       "routing": "分流",
@@ -129,7 +137,14 @@
     "coreLevelHint": "從核心讀回的、它此刻實際在用的層級。它只決定核心寫進自己那份記錄檔時有多詳細 —— 也就是「匯出日誌」「匯出診斷包」裡核心的那一半；本頁顯示的核心日誌不受其影響。",
     "coreLevelDriftUnsaved": "層級變更尚未套用。核心仍依舊層級寫自己那份記錄檔，匯出的核心日誌會缺少你要的行。套用並重新啟動核心後跟上。",
     "coreLevelDriftRestart": "核心是依舊層級啟動的，它寫自己那份記錄檔時仍用舊層級，匯出的核心日誌會缺少你要的行。重新啟動核心後跟上。本頁顯示的核心日誌不受影響。",
-    "sourceLabel": "來源"
+    "sourceLabel": "來源",
+    "levelAria": "記錄顯示層級",
+    "sourceAria": "記錄來源",
+    "diagnosticMode": "診斷模式",
+    "diagnosticLevel": "DEBUG",
+    "diagnosticTipOff": "僅在本次執行期間暫時顯示並記錄 DEBUG，不修改設定；重新啟動應用程式後恢復已設定層級。核心自身記錄檔的層級不變。",
+    "diagnosticTipOn": "診斷模式已開啟：應用程式與核心即時記錄流暫時提升至 DEBUG。按一下可關閉並恢復已設定層級；重新啟動應用程式也會自動恢復。",
+    "diagnosticFailed": "切換診斷模式失敗"
   },
   "notify": {
     "proxyError": {
@@ -199,6 +214,7 @@
     "closeFiltered": "關閉目前 {{n}} 條",
     "closeFilteredDone": "已關閉 {{n}} 條連線",
     "topHostsTitle": "流量 TOP 網域",
+    "topCount": "顯示數量",
     "topBadge": "前 {{n}}",
     "topOutboundsTitle": "出站分佈",
     "copied": "已複製",
@@ -283,6 +299,7 @@
     "ruleResourcesMissing": "規則資源缺失，分流規則本次已跳過 · 請到「規則資源」頁下載後重新連線",
     "runningPrefix": "已運行",
     "searchNodesPlaceholder": "搜尋節點…",
+    "nodesMenu": "節點清單",
     "searchTopology": "搜尋網域 / IP / 出口節點",
     "searchTopologyNoMatch": "無相符結果（不含「其他」內已彙整的連線）",
     "selectPendingNodeRestartHint": "所選節點有待套用變更，正在自動重啟核心以生效，稍候即可使用",
@@ -500,13 +517,15 @@
       "mgmtEnableDesc": "預設關閉。在 127.0.0.1 開放 sing-box 控制 API，供內嵌面板使用",
       "mgmtPort": "監聽連接埠",
       "mgmtPortDesc": "預設自動分配，可固定",
+      "mgmtSecret": "API 金鑰",
       "mgmtSecretDesc": "自動產生，載入面板時驗證",
+      "copySecret": "複製 API 金鑰",
       "secretToggleTip": "顯示／隱藏",
       "secretRegenerateTip": "重新產生",
       "officialDashboard": "官方面板",
-      "officialDashboardDesc": "在應用程式內視窗開啟 sing-box 官方面板並自動填好連線（需核心執行中）；也可複製連線資訊給外部面板，或清除面板資源快取讓核心下次啟動重新下載",
-      "resolveBeforeDial": "撥號前解析網域",
-      "resolveBeforeDialDesc": "把目的網域解析成真實 IP 再交給節點。預設關閉：解析失敗會直接終止連線，且節點端依網域/SNI 的分流與解鎖將失效。FakeIP 關閉時本項仍影響經本機代理連接埠的流量。"
+      "officialDashboardDesc": "在應用程式內開啟 sing-box 面板；核心執行時自動連線",
+      "resolveBeforeDial": "連線前解析網域",
+      "resolveBeforeDialDesc": "由本機先將目標網域解析為 IP，再交給節點；解析失敗會導致連線失敗，並可能影響節點端依網域/SNI 分流。"
     },
     "proxyMode": {
       "confirmTitle": "確認切換代理模式",
@@ -562,7 +581,7 @@
       },
       "autoSwitchNode": "節點故障自動切換",
       "autoSwitchNodeDesc": "目前節點偵測到故障時自動切到可用節點",
-      "disableLogFileDescFull": "完全停用 sing-box 記錄（隱私 / 省盤）。應用程式內即時記錄與基於記錄的診斷將不可用，處理程序當機偵測仍有效。儲存後自動重新啟動代理生效（代理執行中時）。",
+      "disableLogFileDescFull": "停止記錄 sing-box 日誌；即時日誌與日誌診斷將不可用，當機偵測不受影響。儲存後生效，代理執行中時會自動重新啟動。",
       "lanGateway": "區域網閘道",
       "neighborDomains": "區域網短名解析",
       "neighborDomainsHint": "每行一個後綴（自動補前導點）；對該後綴下無點的短名（如 nas.lan）走區域網裝置解析。",
@@ -789,9 +808,9 @@
       "remoteDnsDesc": "解析海外網域的上游",
       "domesticDns": "國內 DNS",
       "domesticDnsDesc": "解析國內網域的上游",
-      "bootstrap": "DNS 引導",
-      "bootstrapDesc": "網域形式 DoH 先由這些 IP 直連 DoH 端點解析（免疫 UDP 53 劫持投毒）",
-      "bootstrapNone": "兩欄均為 IP DoH · 無需引導層",
+      "bootstrap": "解析 DNS 伺服器網域",
+      "bootstrapDesc": "遠端或國內 DNS 使用網域位址時，先透過這些 IP DoH 解析，避免依賴本機 DNS。",
+      "bootstrapNone": "目前 DNS 伺服器皆使用 IP 位址，無需預先解析",
       "takeoverSystemDnsDesc": "當機或斷電後自動還原原系統 DNS",
       "nodeResolverBlock": "節點網域解析",
       "raceStrategy": "解析策略",
@@ -816,7 +835,8 @@
       "browserDohTitle": "攔截瀏覽器內建 DoH",
       "browserDohDesc": "瀏覽器自帶的「安全 DNS」會繞開本應用的 DNS 接管，網域分流與 FakeIP 對它不生效。開啟後對清單內端點的 443/853 與 QUIC 發 reject，逼瀏覽器回退到系統 DNS。預設關閉。",
       "browserDohFold": "DoH 端點清單",
-      "browserDohHint": "依網域後綴比對（填 cloudflare-dns.com 即涵蓋其全部子網域）。內建的是常用起點，不是全集——DoH 端點可以是任意自建網域，遇到漏網的請自行新增。"
+      "browserDohHint": "依網域後綴比對（填 cloudflare-dns.com 即涵蓋其全部子網域）。內建的是常用起點，不是全集——DoH 端點可以是任意自建網域，遇到漏網的請自行新增。",
+      "domain": "網域"
     }
   },
   "rules": {
@@ -981,6 +1001,8 @@
     "candidateNotRunning": "未在執行 —— 手動輸入的值",
     "manualInput": "手動輸入",
     "ruleSetMissingHint": "{{n}} 個已引用的規則集在本機不可用",
+    "bypassFakeIP": "繞過 FakeIP",
+    "bypassFakeIPHint": "僅限網域類規則；命中直連時使用真實 IP 而非 FakeIP 出站",
     "discard": "放棄",
     "discardMsg": "已填寫的內容將不會儲存。",
     "discardTitle": "放棄變更？",
@@ -1094,12 +1116,9 @@
     "updated": "訂閱設定已更新"
   },
   "errors": {
-    "configError": "設定錯誤",
-    "connectionError": "連線錯誤",
-    "systemError": "系統錯誤",
-    "processError": "處理程序錯誤",
-    "unknownError": "未知錯誤",
     "operationFailed": "操作失敗，請稍後重試",
+    "ipcMissingMessage": "命令 \"{{command}}\" 失敗（後端未提供錯誤資訊）",
+    "configNotLoaded": "設定尚未載入，無法啟動代理",
     "startupFailed": "sing-box 啟動失敗，請檢查伺服器設定",
     "helperNotInstalledTitle": "helper 未安裝",
     "helperNotInstalledDesc": "TUN 模式需要提權 helper，但尚未安裝。前往「設定 › Helper」安裝後重試。",
@@ -1134,6 +1153,8 @@
     "icoOnline": "線上圖示",
     "icoSearchPh": "搜尋圖示…（chatgpt / netflix …）",
     "icon": "應用程式圖示",
+    "iconMethod": "圖示方式",
+    "tagKind": "資源類型",
     "letterHint": "以應用程式名稱首字母作為圖示；可切換「線上圖示」瀏覽圖示庫",
     "missingHint": "{{n}} 個資源標籤尚未下載到本機",
     "name": "名稱",
@@ -1169,6 +1190,8 @@
     "policy": "策略",
     "presetsLoadFailed": "內建應用程式預設載入失敗，僅顯示自訂應用程式",
     "search": "搜尋應用程式 / 處理程序…",
+    "viewAria": "檢視方式",
+    "categoryFilter": "應用程式分類篩選",
     "summary": {
       "block": "阻斷",
       "direct": "直連",
@@ -1289,6 +1312,11 @@
     },
     "meshTunnelRequired": "請補齊目前接入方式的必要驗證欄位",
     "meshTunnelJsonInvalid": "擴充設定必須是有效的 JSON 物件",
+    "codecError": {
+      "customJsonInvalid": "自訂協議 JSON 格式錯誤：{{detail}}",
+      "customJsonObject": "自訂協議 JSON 必須是物件",
+      "customJsonTypeRequired": "自訂協議 JSON 缺少必填的 \"type\" 欄位"
+    },
     "field": {
       "aid": "AlterID",
       "alpn": "ALPN",
@@ -1579,8 +1607,10 @@
     "speedTestInterrupted": "測速中斷",
     "speedTestNotApplicable": "不支援測速",
     "speedTestInterruptedSummary": "已完成 {{tested}}/{{total}} 節點，其餘保留原值",
-    "speedTestResume": "繼續",
-    "speedTestResumeGone": "待測節點已不存在",
+    "speedTestResume": "繼續剩餘",
+    "speedTestRetry": "重新測速",
+    "speedTestDismiss": "關閉提示",
+    "speedTestTargetsGone": "本輪節點已不存在",
     "speedTestingNodes": "測速中 · {{tested}}/{{total}} 節點",
     "noTestableNodes": "無可測節點",
     "cloneSuccess": "已複製到自建節點",
@@ -1588,6 +1618,7 @@
     "deleteSuccess": "伺服器已刪除",
     "deleteFail": "刪除失敗",
     "timeout": "逾時",
+    "timeoutHint": "已發起探測，但未在時限內取得有效回應。這不代表節點一定無法存取：實際連線與測速端點的路徑可能不同。可在記錄頁開啟診斷模式後重新測速以查看細節。",
     "nodeInvalid": "節點設定無效，已在啟動時略過",
     "nodeInvalidSep": "：",
     "invalidDetourCascade": "它依賴的前置代理節點無效，已一併略過",
@@ -1639,6 +1670,7 @@
     "cancelFailed": "取消失敗",
     "cancelled": "已取消",
     "catalog": "資源庫",
+    "categoryCustom": "自訂",
     "col": {
       "name": "名稱",
       "size": "大小",
@@ -1712,6 +1744,8 @@
     "alwaysRoute": "始終路由子網",
     "alwaysRouteHint": "即使此節點不是目前出口，也維持對端廣告的子網可達",
     "authkeyHint": "預授權金鑰，免互動直接登入（適合無頭裝置）。",
+    "authKey": "Auth Key",
+    "authKeyLabel": "Auth Key（tskey-auth-…）",
     "authUrlCopied": "已複製登入網址",
     "authUrlHint": "在瀏覽器中完成帳號授權後關閉本視窗即可，無需等待。",
     "authUrlLabel": "登入頁網址",

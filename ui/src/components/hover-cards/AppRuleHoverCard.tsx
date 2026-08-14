@@ -63,15 +63,15 @@ export function AppRuleHoverCardContent({
       )}
       <div className="tc-sep" />
       <div className="tc-row">
-        <span className="tc-lbl">{t('appPolicy.target', '出口')}</span>
+        <span className="tc-lbl">{t('appPolicy.target')}</span>
         {action === 'direct' ? (
-          <span className="pill act-direct">{t('rules.targetDirect', '直连')}</span>
+          <span className="pill act-direct">{t('rules.targetDirect')}</span>
         ) : action === 'block' ? (
-          <span className="pill act-block">{t('rules.targetBlock', '阻断')}</span>
+          <span className="pill act-block">{t('rules.targetBlock')}</span>
         ) : (
           <>
-            <span className="pill act-proxy">{t('appPolicy.action.proxy', '代理')}</span>
-            <span>→ {targetNodeName ?? t('appPolicy.followGlobal', '跟随全局')}</span>
+            <span className="pill act-proxy">{t('appPolicy.action.proxy')}</span>
+            <span>→ {targetNodeName ?? t('appPolicy.followGlobal')}</span>
           </>
         )}
       </div>

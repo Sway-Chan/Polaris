@@ -25,7 +25,7 @@ vi.mock('./Csel', async () => {
       h('div', { 'data-opts': props.options.map((o) => o.value).join('|') }),
   };
 });
-import { protoCodec } from './proto-codec';
+import { protoCodec, ProtoCodecError } from './proto-codec';
 import {
   PROTO_OPTIONS,
   ND_SPEC,
@@ -1860,19 +1860,25 @@ describe('custom：JSON 校验（镜像后端 store/validate.rs#protocol_require
   it('非法 JSON → 抛错（不静默存半成品）', () => {
     const draft = protoCodec.custom.fromConfig(base);
     draft.outbound = '{not json';
-    expect(() => protoCodec.custom.toConfig(draft, base)).toThrow(/JSON 格式错误/);
+    expect(() => protoCodec.custom.toConfig(draft, base)).toThrow(
+      expect.objectContaining<Partial<ProtoCodecError>>({ code: 'customJsonInvalid' }),
+    );
   });
 
   it('JSON 是数组/非对象 → 抛错', () => {
     const draft = protoCodec.custom.fromConfig(base);
     draft.outbound = '[1,2,3]';
-    expect(() => protoCodec.custom.toConfig(draft, base)).toThrow(/必须是对象/);
+    expect(() => protoCodec.custom.toConfig(draft, base)).toThrow(
+      expect.objectContaining<Partial<ProtoCodecError>>({ code: 'customJsonObject' }),
+    );
   });
 
   it('缺少 type 字段 → 抛错', () => {
     const draft = protoCodec.custom.fromConfig(base);
     draft.outbound = '{"server":"a.com"}';
-    expect(() => protoCodec.custom.toConfig(draft, base)).toThrow(/type/);
+    expect(() => protoCodec.custom.toConfig(draft, base)).toThrow(
+      expect.objectContaining<Partial<ProtoCodecError>>({ code: 'customJsonTypeRequired' }),
+    );
   });
 
   it('合法 JSON → 正常提交', () => {
@@ -1901,6 +1907,14 @@ describe('parseNumberField（R2：清空归 undefined 非 0）', () => {
 });
 
 describe('toCselOptions（FieldSpec select → Csel 选项）', () => {
+  it('点分选项标签经翻译器解析，技术字面量保持原样', () => {
+    const t = (key: string) => ({ 'common.default': 'Default' })[key] ?? key;
+    expect(toCselOptions([['', 'common.default'], ['tcp', 'TCP']], undefined, t)).toEqual([
+      { value: '', label: 'Default', disabled: undefined },
+      { value: 'tcp', label: 'TCP', disabled: undefined },
+    ]);
+  });
+
   /**
    * 牙：把映射改回 `([v, l]) => ({ value: v, label: l })` → 第三位被丢掉 → 本条转红。
    * `Csel` 早就支持 `disabled`（点击拦截 / 键盘跳过 / aria-disabled 全在），断点只在这一层，

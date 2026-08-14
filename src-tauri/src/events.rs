@@ -154,7 +154,7 @@ pub mod channel {
     // 零行为变化。两端皆零 emit / 零订阅，保留只会诱导后人为「对齐 上游」重造假接线。
     pub const EVENT_SPEED_TEST_RESULT: &str = "event:speedTestResult";
     pub const EVENT_SPEED_TEST_PROGRESS: &str = "event:speedTestProgress";
-    /// **一轮测速的终态**（`{outcome:'completed'|'interrupted', tested, total, pending:[serverId]}`）。
+    /// **一轮测速的终态**（`{outcome,tested,total,serverIds:[serverId],pending:[serverId]}`）。
     ///
     /// # 为什么必须是事件，而不是继续用 command 的返回值
     ///

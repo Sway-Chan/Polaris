@@ -678,6 +678,11 @@ fn record_measured(
     total: usize,
 ) {
     let latency_val = latency.map_or(-1_i64, i64::from);
+    if latency.is_none() {
+        log::debug!(
+            "临时核测速未取得有效延迟：nodeId={node_id}（可能为冷建链/复用请求超时、传输错误或测速端点非 2xx）"
+        );
+    }
     results.insert(node_id.to_string(), json!(latency_val));
     emit(
         EVENT_SPEED_TEST_RESULT,
@@ -790,7 +795,8 @@ fn log_speed_test_summary(
 ///  - `total` = `intended.len()`（与该腿进度事件里的 `total` 同一口径，两者失配会让前端的
 ///    `tested/total` 与终态对不上）；
 ///  - `tested` = `results.len()`（已出值的，含真实 `-1`）；
-///  - `pending` = `intended − results`（**没拿到值**的，= 中断后「继续」的输入）。
+///  - `serverIds` = `intended`（本轮原始可测范围，= 中断后「重新测速」的输入）；
+///  - `pending` = `intended − results`（**没拿到值**的，= 中断后「继续剩余」的输入）。
 ///
 /// 判据与「差集为什么必须由后端算 / 波前缺席的三类为什么不算 pending」见
 /// [`EVENT_SPEED_TEST_DONE`] 的常量文档。
@@ -812,6 +818,7 @@ pub fn emit_speed_test_done(
             "outcome": outcome,
             "tested": results.len(),
             "total": intended.len(),
+            "serverIds": intended,
             "pending": pending,
         }),
     );
@@ -1714,6 +1721,11 @@ mod tests {
         assert_eq!(done.len(), 1, "中断也必须**恰好**发一条终态事件");
         assert_eq!(done[0]["outcome"], json!("interrupted"));
         assert_eq!(done[0]["tested"], json!(0));
+        assert_eq!(
+            done[0]["serverIds"],
+            json!(["a1111111", "b1111111", "c1111111"]),
+            "重新测速必须拿到本轮原始范围"
+        );
         assert_eq!(
             done[0]["pending"],
             json!(["a1111111", "b1111111", "c1111111"]),

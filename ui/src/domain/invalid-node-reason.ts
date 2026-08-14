@@ -42,12 +42,12 @@ export function invalidNodeReasonText(
   t: (key: string, fallback?: string) => string
 ): string | null {
   if (reason === undefined) return null;
-  const generic = t('nodes.nodeInvalid', '节点配置无效，已在启动时跳过');
+  const generic = t('nodes.nodeInvalid');
   // 原型链上的属性（'toString' / 'constructor'）不得被当成键 —— reason 是从 IPC 收来的任意串，
   // 直接下标会取到 Object.prototype 上的函数，落进 t() 就是一串 [native code]。
   if (!Object.prototype.hasOwnProperty.call(INVALID_NODE_REASON_KEY, reason)) return generic;
   // 分隔符也必须走 locale：全角「：」只在中文里对，英/俄/波斯语用它是错的
   // （俄语用户会看到 `Node config invalid：reason`）。走 `t(key, 默认值)` 这条既有 idiom，
   // 与仓里 800+ 处同形，也让 i18n 裸 CJK 门自然放行。
-  return `${generic}${t('nodes.nodeInvalidSep', '：')}${t(INVALID_NODE_REASON_KEY[reason])}`;
+  return `${generic}${t('nodes.nodeInvalidSep')}${t(INVALID_NODE_REASON_KEY[reason])}`;
 }

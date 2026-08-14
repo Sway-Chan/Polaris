@@ -51,6 +51,10 @@
     "copyFail": "复制失败",
     "retry": "重试",
     "loading": "加载中...",
+    "close": "关闭",
+    "windowMinimize": "最小化",
+    "windowMaximize": "最大化",
+    "windowRestore": "还原窗口",
     "saveFailed": "保存失败",
     "configLoadFail": "配置加载失败",
     "search": "搜索",
@@ -73,7 +77,10 @@
     "relHoursAgo": "{{count}} 小时前",
     "relYesterday": "昨天",
     "relDaysAgo": "{{count}} 天前",
-    "itemCount": "{{n}} 条"
+    "itemCount": "{{n}} 条",
+    "default": "默认",
+    "colon": "：",
+    "listSeparator": "、"
   },
   "sidebar": {
     "home": "主页",
@@ -85,6 +92,7 @@
     "rules": "规则",
     "settings": "设置",
     "collapse": "收起侧栏",
+    "primaryNav": "主要导航",
     "expand": "展开侧栏",
     "group": {
       "routing": "分流",
@@ -129,7 +137,14 @@
     "coreLevelHint": "从内核读回的、它此刻实际在用的级别。它只决定内核写进自己那份日志文件时有多详细 —— 也就是「导出日志」「导出诊断包」里内核的那一半；本页显示的内核日志不受它影响。",
     "coreLevelDriftUnsaved": "级别改动还没应用。内核仍按旧级别写自己那份日志文件，导出的内核日志会缺少你要的行。应用并重启内核后跟上。",
     "coreLevelDriftRestart": "内核是按旧级别起的，它写自己那份日志文件时仍用旧级别，导出的内核日志会缺少你要的行。重启内核后跟上。本页显示的内核日志不受影响。",
-    "sourceLabel": "来源"
+    "sourceLabel": "来源",
+    "levelAria": "日志显示级别",
+    "sourceAria": "日志来源",
+    "diagnosticMode": "诊断模式",
+    "diagnosticLevel": "DEBUG",
+    "diagnosticTipOff": "仅本次运行临时显示并记录 DEBUG，不修改配置；重启应用后恢复已配置级别。内核自身日志文件的级别不变。",
+    "diagnosticTipOn": "诊断模式已开启：应用与内核实时流临时提升到 DEBUG。点击关闭并恢复已配置级别；重启应用也会自动恢复。",
+    "diagnosticFailed": "切换诊断模式失败"
   },
   "notify": {
     "proxyError": {
@@ -199,6 +214,7 @@
     "closeFiltered": "关闭当前 {{n}} 条",
     "closeFilteredDone": "已关闭 {{n}} 条连接",
     "topHostsTitle": "流量 TOP 域名",
+    "topCount": "显示数量",
     "topBadge": "前 {{n}}",
     "topOutboundsTitle": "出站分布",
     "copied": "已复制",
@@ -283,6 +299,7 @@
     "ruleResourcesMissing": "规则资源缺失，分流规则本次已跳过 · 请到「规则资源」页下载后重连",
     "runningPrefix": "已运行",
     "searchNodesPlaceholder": "搜索节点…",
+    "nodesMenu": "节点列表",
     "searchTopology": "搜索域名 / IP / 出口节点",
     "searchTopologyNoMatch": "无匹配结果（不含「其他」内已聚合的连接）",
     "selectPendingNodeRestartHint": "所选节点有待应用变更，正在自动重启内核以生效，稍候即可使用",
@@ -500,13 +517,15 @@
       "mgmtEnableDesc": "默认关闭。在 127.0.0.1 暴露 sing-box 控制 API，供内嵌面板使用",
       "mgmtPort": "监听端口",
       "mgmtPortDesc": "默认自动分配，可固定",
+      "mgmtSecret": "API 密钥",
       "mgmtSecretDesc": "自动生成，加载面板时校验",
+      "copySecret": "复制 API 密钥",
       "secretToggleTip": "显示/隐藏",
       "secretRegenerateTip": "重新生成",
       "officialDashboard": "官方面板",
-      "officialDashboardDesc": "在应用内窗口打开 sing-box 官方面板并自动填好连接（需内核运行）；也可复制连接信息给外部面板，或清除面板资源缓存让内核下次启动重新下载",
-      "resolveBeforeDial": "拨号前解析域名",
-      "resolveBeforeDialDesc": "把目的域名解析成真实 IP 再交给节点。默认关：解析失败会直接终止连接，且节点侧按域名/SNI 的分流与解锁将失效。FakeIP 关闭时本项仍影响经本机代理端口的流量。"
+      "officialDashboardDesc": "在应用内打开 sing-box 面板；内核运行时自动连接",
+      "resolveBeforeDial": "连接前解析域名",
+      "resolveBeforeDialDesc": "由本机先将目标域名解析为 IP，再交给节点；解析失败会导致连接失败，并可能影响节点侧按域名/SNI 分流。"
     },
     "proxyMode": {
       "confirmTitle": "确认切换代理模式",
@@ -562,7 +581,7 @@
       },
       "autoSwitchNode": "节点故障自动切换",
       "autoSwitchNodeDesc": "当前节点检测到故障时自动切到可用节点",
-      "disableLogFileDescFull": "完全禁用 sing-box 日志（隐私 / 省盘）。应用内实时日志与基于日志的诊断将不可用，进程崩溃检测仍有效。保存后自动重启代理生效（代理运行中时）。",
+      "disableLogFileDescFull": "停止记录 sing-box 日志；实时日志与日志诊断将不可用，崩溃检测不受影响。保存后生效，代理运行中时会自动重启。",
       "lanGateway": "局域网网关",
       "neighborDomains": "局域网短名解析",
       "neighborDomainsHint": "每行一个后缀（自动补前导点）；对该后缀下无点的短名（如 nas.lan）走局域网设备解析。",
@@ -789,9 +808,9 @@
       "remoteDnsDesc": "解析海外域名的上游",
       "domesticDns": "国内 DNS",
       "domesticDnsDesc": "解析国内域名的上游",
-      "bootstrap": "DNS 引导",
-      "bootstrapDesc": "域名形式 DoH 先由这些 IP 直连 DoH 端点解析（免疫 UDP 53 劫持投毒）",
-      "bootstrapNone": "两栏均为 IP DoH · 无需引导层",
+      "bootstrap": "解析 DNS 服务器域名",
+      "bootstrapDesc": "远程或国内 DNS 使用域名地址时，先通过这些 IP DoH 解析，避免依赖本机 DNS。",
+      "bootstrapNone": "当前 DNS 服务器均使用 IP 地址，无需预先解析",
       "takeoverSystemDnsDesc": "崩溃或断电后自动恢复原系统 DNS",
       "nodeResolverBlock": "节点域名解析",
       "raceStrategy": "解析策略",
@@ -816,7 +835,8 @@
       "browserDohTitle": "拦截浏览器内置 DoH",
       "browserDohDesc": "浏览器自带的「安全 DNS」会绕开本应用的 DNS 接管，域名分流与 FakeIP 对它不生效。开启后对清单内端点的 443/853 与 QUIC 发 reject，逼浏览器回退到系统 DNS。默认关。",
       "browserDohFold": "DoH 端点清单",
-      "browserDohHint": "按域名后缀匹配（填 cloudflare-dns.com 即覆盖其全部子域）。内置的是常用起点，不是全集——DoH 端点可以是任意自建域名，遇到漏网的自行添加。"
+      "browserDohHint": "按域名后缀匹配（填 cloudflare-dns.com 即覆盖其全部子域）。内置的是常用起点，不是全集——DoH 端点可以是任意自建域名，遇到漏网的自行添加。",
+      "domain": "域名"
     }
   },
   "rules": {
@@ -981,6 +1001,8 @@
     "candidateNotRunning": "未在运行 —— 手动输入的值",
     "manualInput": "手动输入",
     "ruleSetMissingHint": "{{n}} 个已引用的规则集在本地不可用",
+    "bypassFakeIP": "绕过 FakeIP",
+    "bypassFakeIPHint": "仅限域名类规则；命中直连时使用真实 IP 而非 FakeIP 出站",
     "discard": "放弃",
     "discardMsg": "已填写的内容将不会保存。",
     "discardTitle": "放弃更改？",
@@ -1094,12 +1116,9 @@
     "updated": "订阅配置已更新"
   },
   "errors": {
-    "configError": "配置错误",
-    "connectionError": "连接错误",
-    "systemError": "系统错误",
-    "processError": "进程错误",
-    "unknownError": "未知错误",
     "operationFailed": "操作失败，请稍后重试",
+    "ipcMissingMessage": "命令 \"{{command}}\" 失败（后端未提供错误信息）",
+    "configNotLoaded": "配置尚未加载，无法启动代理",
     "startupFailed": "sing-box 启动失败，请检查服务器配置",
     "helperNotInstalledTitle": "helper 未安装",
     "helperNotInstalledDesc": "TUN 模式需要提权 helper，但尚未安装。前往「设置 › Helper」安装后重试。",
@@ -1134,6 +1153,8 @@
     "icoOnline": "在线图标",
     "icoSearchPh": "搜索图标…（chatgpt / netflix …）",
     "icon": "应用图标",
+    "iconMethod": "图标方式",
+    "tagKind": "资源类型",
     "letterHint": "以应用名首字母作图标；可切换「在线图标」浏览图标库",
     "missingHint": "{{n}} 个资源标签尚未下载到本地",
     "name": "名称",
@@ -1169,6 +1190,8 @@
     "policy": "策略",
     "presetsLoadFailed": "内置应用预设加载失败，仅显示自定义应用",
     "search": "搜索应用 / 进程…",
+    "viewAria": "查看方式",
+    "categoryFilter": "应用分类筛选",
     "summary": {
       "block": "阻断",
       "direct": "直连",
@@ -1289,6 +1312,11 @@
     },
     "meshTunnelRequired": "请补全当前接入方式的必填认证字段",
     "meshTunnelJsonInvalid": "扩展配置必须是合法的 JSON 对象",
+    "codecError": {
+      "customJsonInvalid": "自定义协议 JSON 格式错误：{{detail}}",
+      "customJsonObject": "自定义协议 JSON 必须是对象",
+      "customJsonTypeRequired": "自定义协议 JSON 缺少必填的 \"type\" 字段"
+    },
     "field": {
       "aid": "AlterID",
       "alpn": "ALPN",
@@ -1579,8 +1607,10 @@
     "speedTestInterrupted": "测速中断",
     "speedTestNotApplicable": "不支持测速",
     "speedTestInterruptedSummary": "已完成 {{tested}}/{{total}} 节点，其余保留原值",
-    "speedTestResume": "继续",
-    "speedTestResumeGone": "待测节点已不存在",
+    "speedTestResume": "继续剩余",
+    "speedTestRetry": "重新测速",
+    "speedTestDismiss": "关闭提示",
+    "speedTestTargetsGone": "本轮节点已不存在",
     "speedTestingNodes": "测速中 · {{tested}}/{{total}} 节点",
     "noTestableNodes": "无可测节点",
     "cloneSuccess": "已克隆到自建节点",
@@ -1588,6 +1618,7 @@
     "deleteSuccess": "服务器已删除",
     "deleteFail": "删除失败",
     "timeout": "超时",
+    "timeoutHint": "已发起探测，但未在时限内得到有效响应。这不等于节点一定无法访问：实际连接与测速端点的路径可能不同。可在日志页开启诊断模式后重测查看细节。",
     "nodeInvalid": "节点配置无效，已在启动时跳过",
     "nodeInvalidSep": "：",
     "invalidDetourCascade": "它依赖的前置代理节点无效，已一并跳过",
@@ -1639,6 +1670,7 @@
     "cancelFailed": "取消失败",
     "cancelled": "已取消",
     "catalog": "资源库",
+    "categoryCustom": "自定义",
     "col": {
       "name": "名称",
       "size": "大小",
@@ -1712,6 +1744,8 @@
     "alwaysRoute": "始终路由子网",
     "alwaysRouteHint": "即使该节点不是当前出口，也保持对端广播的子网可达",
     "authkeyHint": "预授权密钥，免交互直接登录（适合无头设备）。",
+    "authKey": "Auth Key",
+    "authKeyLabel": "Auth Key（tskey-auth-…）",
     "authUrlCopied": "已复制登录地址",
     "authUrlHint": "在浏览器中完成账号授权后关闭本窗口即可，无需等待。",
     "authUrlLabel": "登录页地址",

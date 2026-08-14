@@ -54,7 +54,7 @@ export const useAppPresetsStore = create<AppPresetsState>((set, get) => ({
         // 防御：后端契约是数组；非数组说明信封/契约出问题，宁可报错也不要把 undefined 灌进渲染层
         // （§N3 的病根正是「坏值当好值用」→ 渲染期崩）。
         if (!Array.isArray(presets)) {
-          throw new Error(`app_presets_list 返回非数组: ${typeof presets}`);
+          throw new Error(`APP_PRESETS_INVALID_RESPONSE:${typeof presets}`);
         }
         set({ presets, loaded: true, loading: false, error: null });
       } catch (err) {

@@ -80,7 +80,7 @@ export default function CoreVersionBanner() {
         </svg>
       </span>
       <div className="cvb-tx">
-        <b>{t('settings.coreVersion.changedTitle', 'sing-box 内核已更新')}</b>
+        <b>{t('settings.coreVersion.changedTitle')}</b>
         <span>
           {t(`settings.coreVersion.${state.descKey}`, { previousVersion, currentVersion })}
         </span>
@@ -88,10 +88,7 @@ export default function CoreVersionBanner() {
             「有回滚功能但找不到入口」。这行只在确实无备份时出现（如首次播种后尚未换过核）。 */}
         {!state.showRollback && (
           <span className="cvb-note">
-            {t(
-              'settings.coreVersion.noRollbackEntryNote',
-              '当前没有可回滚的备份：备份在每次换核时生成。',
-            )}
+            {t('settings.coreVersion.noRollbackEntryNote')}
           </span>
         )}
         {replaceErr && <span className="cvb-note">{replaceErr}</span>}
@@ -112,7 +109,7 @@ export default function CoreVersionBanner() {
               if (!r.ok && !('cancelled' in r && r.cancelled)) {
                 setReplaceErr(
                   ('error' in r && r.error) ||
-                    t('settings.core.swapFailedShort', '操作失败'),
+                    t('settings.core.swapFailedShort'),
                 );
               }
             })
@@ -136,8 +133,8 @@ export default function CoreVersionBanner() {
         size="sm"
         className="cvb-dismiss"
         onClick={() => setDismissed(true)}
-        data-tip={t('settings.coreVersion.dismiss', '忽略')}
-        aria-label={t('settings.coreVersion.dismiss', '忽略')}
+        data-tip={t('settings.coreVersion.dismiss')}
+        aria-label={t('settings.coreVersion.dismiss')}
       >
         <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth={1.8}>
           <path d="M18 6 6 18M6 6l12 12" />

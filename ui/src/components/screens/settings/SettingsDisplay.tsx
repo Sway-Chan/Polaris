@@ -49,7 +49,7 @@ export default function SettingsDisplay({ config, update }: SettingsDisplayProps
           <Select
             value={lang}
             onChange={(e) => void update({ language: e.target.value === 'system' ? 'auto' : e.target.value })}
-            aria-label="Language"
+            aria-label={t('settings.appearance.language')}
             style={{ width: '180px' }}
           >
             {/* 语言名一律用**该语言自己的写法**（endonym），不随界面语言翻译 —— 界面正显示着一门
@@ -74,7 +74,7 @@ export default function SettingsDisplay({ config, update }: SettingsDisplayProps
               // 根本没接 uiTheme——已修）。
               useAppStore.setState((s) => (s.config ? { config: { ...s.config, uiTheme: next } } : {}));
             }}
-            aria-label="Theme"
+            aria-label={t('settings.appearance.theme')}
             style={{ width: '180px' }}
           >
             <option value="system">{t('settings.appearance.system')}</option>
@@ -100,7 +100,7 @@ export default function SettingsDisplay({ config, update }: SettingsDisplayProps
           desc={t('settings.display.closeBehaviorDesc')}
         >
           <Segmented<CloseBehavior>
-            ariaLabel="Close behavior"
+            ariaLabel={t('settings.display.closeBehavior')}
             value={closeBehavior}
             onChange={(v) => void update({ minimizeToTray: minimizeToTrayFor(v) })}
             options={[
@@ -145,15 +145,12 @@ export default function SettingsDisplay({ config, update }: SettingsDisplayProps
           Linux（`#set-window-effects`，见 components.css），本批不动。
           i18n key 在 `settings.general.*` 命名空间：文案自 上游 承袭、5 语种齐全；Polaris 把图形块归到
           显示页（原型 §B3 显示页自通用页拆出），故键名与页归属不同源，属历史遗留。 */}
-      <SetBlock id="set-graphics" header={t('settings.general.groupGraphics', '图形兼容')}>
+      <SetBlock id="set-graphics" header={t('settings.general.groupGraphics')}>
         {showsHardwareAccelRow(os) && (
           <SetRow
             id="set-hwaccel"
-            label={t('settings.general.hardwareAcceleration', '硬件加速')}
-            desc={t(
-              'settings.general.hardwareAccelerationDesc',
-              '关闭后使用软件渲染，可解决部分设备的白屏、花屏、GPU 进程反复崩溃。需重启 Polaris 生效。'
-            )}
+            label={t('settings.general.hardwareAcceleration')}
+            desc={t('settings.general.hardwareAccelerationDesc')}
           >
             {/* 正向语义：默认 true（开），仅显式 false 才判禁 —— 与后端 graphics_compat 的 `!== false` 同口径，
                 存量配置（缺该键）行为逐字节不变。 */}
@@ -170,11 +167,8 @@ export default function SettingsDisplay({ config, update }: SettingsDisplayProps
             文案已如实标注需重启（transparent 是 builder-only、运行期不可改，做不了热切）。 */}
         <SetRow
           id="set-window-effects"
-          label={t('settings.general.windowEffects', '窗口特效')}
-          desc={t(
-            windowEffectsDescKey(os),
-            'macOS 毛玻璃。关闭后使用纯色背景，可解决窗口空白、合成异常。需重启 Polaris 生效。'
-          )}
+          label={t('settings.general.windowEffects')}
+          desc={t(windowEffectsDescKey(os))}
         >
           <Switch
             checked={config.windowEffects !== false}

@@ -81,12 +81,6 @@ export function resourceRefs(
   return out;
 }
 
-const REF_KIND_DEFAULT: Record<ResourceRef['kind'], string> = {
-  route: '路由',
-  app: '应用',
-  system: '系统',
-};
-
 /** 内容渲染：`refs` 由调用方保证非空（未引用态走既有 `.ref-badge.none` 的纯文本 `data-tip`，不挂本卡）。 */
 export function ResourceRefsHoverCardContent({ refs }: { refs: ResourceRef[] }) {
   const { t } = useTranslation();
@@ -95,7 +89,7 @@ export function ResourceRefsHoverCardContent({ refs }: { refs: ResourceRef[] }) 
       {refs.map((r, i) => (
         <div className="ref-line" key={i}>
           <span className={`pill ${REF_KIND_CLS[r.kind]}`}>
-            {t(`resources.refKind.${r.kind}`, REF_KIND_DEFAULT[r.kind])}
+            {t(`resources.refKind.${r.kind}`)}
           </span>
           <span>
             {r.kind === 'app' ? appPresetLabel(t, r.label, r.label, r.isCustom ?? false) : r.label}

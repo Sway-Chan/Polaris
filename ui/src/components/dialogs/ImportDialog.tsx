@@ -123,7 +123,7 @@ export function ImportDialog() {
       setSource('share');
       setFileHint(null);
     };
-    reader.onerror = () => setFileHint(t('import.fileReadFail', '文件读取失败'));
+    reader.onerror = () => setFileHint(t('import.fileReadFail'));
     reader.readAsText(file);
   };
 
@@ -133,11 +133,11 @@ export function ImportDialog() {
       const r = await api.localImport.pickFile();
       if (r.canceled) return; // 用户取消 → 静默（对齐 上游）
       if (r.error === 'too_large') {
-        setFileHint(t('import.fileTooLarge', '文件过大（最大 10 MB）'));
+        setFileHint(t('import.fileTooLarge'));
         return;
       }
       if (r.error || r.content == null) {
-        setFileHint(t('import.fileReadFail', '文件读取失败'));
+        setFileHint(t('import.fileReadFail'));
         return;
       }
       setContent(r.content);
@@ -152,9 +152,9 @@ export function ImportDialog() {
       open({
         kind: 'confirm',
         payload: {
-          title: t('import.discardTitle', '放弃导入？'),
-          message: t('import.discardMsg', '已粘贴的内容将不会保存。'),
-          confirmLabel: t('node.discard', '放弃'),
+          title: t('import.discardTitle'),
+          message: t('import.discardMsg'),
+          confirmLabel: t('node.discard'),
           danger: true,
           onConfirm: () => {
             close();
@@ -182,19 +182,19 @@ export function ImportDialog() {
   const handleParse = async () => {
     const text = content.trim();
     if (!text) {
-      toast.error(t('import.errEmpty', '请粘贴分享链接 / Base64 / 配置内容'));
+      toast.error(t('import.errEmpty'));
       return;
     }
     setSubmitting(true);
     try {
       const result = await api.localImport.parse(text); // 0 节点 / 不可识别 → throw
       if (!result.nodes.length) {
-        toast.error(t('import.errNoNodes', '未识别到任何可用节点'));
+        toast.error(t('import.errNoNodes'));
         return;
       }
       setPreview(result);
     } catch (e) {
-      toast.error(t('import.failed', '导入失败'), e instanceof Error ? e.message : String(e));
+      toast.error(t('import.failed'), e instanceof Error ? e.message : String(e));
     } finally {
       setSubmitting(false);
     }
@@ -214,7 +214,7 @@ export function ImportDialog() {
       const { admitted, rejected } = admitMeshSingletons(result.nodes, servers);
       if (!admitted.length) {
         toast.error(
-          t('nodes.importSingletonAllSkipped', '识别到的节点都撞上了已占用的 WARP / Tailscale 单例槽，未导入任何节点')
+          t('nodes.importSingletonAllSkipped')
         );
         return;
       }
@@ -229,7 +229,7 @@ export function ImportDialog() {
           stage({
             id: `server:${entityId}`,
             kind: 'server',
-            label: `${t('import.title', '导入节点')} ${node.name}`,
+            label: `${t('import.title')} ${node.name}`,
             entityPath: ['servers', entityId],
             nextValue: { ...node, id: entityId },
           });
@@ -251,7 +251,6 @@ export function ImportDialog() {
       if (rejected.length > 0) {
         toast.info(
           t('nodes.importSingletonSkipped', {
-            defaultValue: '已导入 {{count}} 个；{{skipped}} 个因 WARP / Tailscale 单例槽已占用被跳过',
             count: admitted.length,
             skipped: rejected.length,
           })
@@ -260,15 +259,14 @@ export function ImportDialog() {
         toast.success(
           staged
             ? t('nodes.importStagedOk', {
-                defaultValue: '{{count}} 个节点已加入待保存',
                 count: admitted.length,
               })
-            : t('nodes.importOk', { defaultValue: '已导入 {{count}} 个节点', count: admitted.length })
+            : t('nodes.importOk', { count: admitted.length })
         );
       }
       close();
     } catch (e) {
-      toast.error(t('import.failed', '导入失败'), e instanceof Error ? e.message : String(e));
+      toast.error(t('import.failed'), e instanceof Error ? e.message : String(e));
     } finally {
       setSubmitting(false);
     }
@@ -277,15 +275,15 @@ export function ImportDialog() {
   const previewText = (): string => {
     switch (det.kind) {
       case 'links':
-        return t('import.detLinks', { defaultValue: '识别到 {{n}} 条分享链接', n: det.linkCount });
+        return t('import.detLinks', { n: det.linkCount });
       case 'base64':
-        return t('import.detBase64', '识别到 Base64 内容（提交后端解码）');
+        return t('import.detBase64');
       case 'clash':
-        return t('import.detClash', '识别到 Clash 配置');
+        return t('import.detClash');
       case 'subscription':
-        return t('import.detSub', '这看起来是订阅链接');
+        return t('import.detSub');
       case 'unknown':
-        return t('import.detUnknown', '格式待后端解析');
+        return t('import.detUnknown');
       default:
         return '';
     }
@@ -294,7 +292,7 @@ export function ImportDialog() {
   return (
     <Modal
       titleId="add-dlg-title"
-      title={t('import.title', '导入节点')}
+      title={t('import.title')}
       onClose={requestClose}
       className="entry-form-dlg"
       icon={
@@ -305,7 +303,7 @@ export function ImportDialog() {
       footer={
         <>
           <button type="button" className="btn ghost" onClick={requestClose}>
-            {t('common.cancel', '取消')}
+            {t('common.cancel')}
           </button>
           <button
             type="button"
@@ -314,13 +312,12 @@ export function ImportDialog() {
             disabled={submitting}
           >
             {submitting && preview
-              ? t('import.importing', '导入中…')
+              ? t('import.importing')
               : preview
                 ? t('import.submitN', {
-                    defaultValue: '导入 {{count}} 项',
                     count: preview.nodes.length,
                   })
-                : t('import.parse', '解析')}
+                : t('import.parse')}
           </button>
         </>
       }
@@ -331,7 +328,7 @@ export function ImportDialog() {
             <rect x="9" y="9" width="11" height="11" rx="2" />
             <path d="M5 15V5a2 2 0 012-2h10" />
           </svg>
-          <span>{t('import.clipDetected', '检测到剪贴板里有分享链接')}</span>
+          <span>{t('import.clipDetected')}</span>
           <button
             type="button"
             className="btn flow sm"
@@ -341,14 +338,14 @@ export function ImportDialog() {
               setClip(null);
             }}
           >
-            {t('import.submit', '导入')}
+            {t('import.submit')}
           </button>
         </div>
       )}
 
       {/* 来源切换 */}
       <div className="fld">
-        <label className="fld-l">{t('import.source', '来源')}</label>
+        <label className="fld-l">{t('import.source')}</label>
         <div className="seg2" style={{ display: 'flex' }}>
           <button
             type="button"
@@ -356,7 +353,7 @@ export function ImportDialog() {
             className={source === 'share' ? 'on' : ''}
             onClick={() => setSource('share')}
           >
-            {t('import.pasteText', '粘贴文本')}
+            {t('import.pasteText')}
           </button>
           <button
             type="button"
@@ -364,7 +361,7 @@ export function ImportDialog() {
             className={source === 'file' ? 'on' : ''}
             onClick={() => setSource('file')}
           >
-            {t('import.localFile', '本地文件')}
+            {t('import.localFile')}
           </button>
         </div>
       </div>
@@ -373,7 +370,7 @@ export function ImportDialog() {
         <>
           <div className="fld">
             <label className="fld-l" htmlFor="share-input">
-              {t('import.pasteLabel', '粘贴分享链接 / 订阅 URL / Base64')}
+              {t('import.pasteLabel')}
             </label>
             <textarea
               id="share-input"
@@ -398,19 +395,19 @@ export function ImportDialog() {
 
           {det.kind === 'subscription' && (
             <div className="card-sub">
-              {t('import.subHint', '订阅链接建议用「添加订阅」以支持自动更新。')}{' '}
+              {t('import.subHint')}{' '}
               <button
                 type="button"
                 className="btn ghost sm"
                 onClick={() => open({ kind: 'sub' })}
               >
-                {t('import.gotoSub', '添加订阅')}
+                {t('import.gotoSub')}
               </button>
             </div>
           )}
 
           <div className="card-sub">
-            {t('import.landHint', '导入的节点归入「自建节点」。若需可自动更新的列表，请用「添加订阅」。')}
+            {t('import.landHint')}
           </div>
         </>
       ) : (
@@ -441,7 +438,7 @@ export function ImportDialog() {
               <path d="M12 15V4M8 8l4-4 4 4" />
               <path d="M4 15v3a2 2 0 002 2h12a2 2 0 002-2v-3" />
             </svg>
-            <div>{t('import.dropHere', '拖拽配置文件到此，或点击选择')}</div>
+            <div>{t('import.dropHere')}</div>
             <div style={{ fontSize: 10.5, marginTop: 4 }}>.conf · .yaml · .json · .txt</div>
           </div>
           {fileHint && <div className="card-sub">{fileHint}</div>}
@@ -459,7 +456,6 @@ export function ImportDialog() {
           <div className="imp-stats">
             <span className="imp-stat ok">
               {t('import.parsed', {
-                defaultValue: '已解析 {{nodes}} 个节点、{{subs}} 个订阅',
                 nodes: preview.nodes.length,
                 subs: preview.subscriptions.length,
               })}
@@ -467,9 +463,8 @@ export function ImportDialog() {
             {/* 三个「不是全都顺利」的计数**只在非零时出现** —— 恒显示会让「一切正常」和
                 「丢了 4 个」在视觉上长得一样，用户扫一眼分不出来。 */}
             {preview.stats.unsupported > 0 && (
-              <span className="imp-stat warn" data-tip={t('import.unsupportedTip', '')}>
+              <span className="imp-stat warn" data-tip={t('import.unsupportedTip')}>
                 {t('import.resultUnsupported', {
-                  defaultValue: '{{count}} 个节点的协议当前内核不支持，导入后置灰',
                   count: preview.stats.unsupported,
                 })}
               </span>
@@ -477,9 +472,6 @@ export function ImportDialog() {
             {preview.stats.skipped + preview.stats.failed > 0 && (
               <span className="imp-stat bad">
                 {t('import.skippedTitle', {
-                  defaultValue: '跳过 {{count}} 项（协议不支持或解析失败）',
-                  // `skipped`（协议不支持）与 `failed`（缺字段/解析异常）在用户眼里是同一件事
-                  //「这条没进来」；既有文案本就把两者合并表述，故合并计数而不是另造一个键。
                   count: preview.stats.skipped + preview.stats.failed,
                 })}
               </span>
@@ -495,7 +487,7 @@ export function ImportDialog() {
           )}
 
           <div className="card-sub" style={{ marginBottom: 5 }}>
-            {t('import.nodesTitle', '待导入节点')}
+            {t('import.nodesTitle')}
           </div>
           <ul className="imp-list">
             {preview.nodes.map((n, i) => (
@@ -506,8 +498,8 @@ export function ImportDialog() {
                 {/* `unsupported` 的后端判据就是 `protocol === 'custom'`
                     （commands/subscription.rs 按此派生计数），故此处同判据、不另立一份。 */}
                 {n.protocol === 'custom' ? (
-                  <span className="imp-badge" data-tip={t('import.unsupportedTip', '')}>
-                    {t('import.unsupportedBadge', '不支持')}
+                  <span className="imp-badge" data-tip={t('import.unsupportedTip')}>
+                    {t('import.unsupportedBadge')}
                   </span>
                 ) : (
                   <span className="imp-proto">{n.protocol}</span>

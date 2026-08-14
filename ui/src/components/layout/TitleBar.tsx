@@ -15,12 +15,14 @@
  */
 
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { WinMinIcon, WinMaxIcon, WinRestoreIcon, WinCloseIcon } from '@/components/icons';
 import { api } from '@/ipc';
 
 /** Win/Linux 浮动窗口控制（min/max/close）。原型 .winctl L118-126。 */
 export function WinCtl({ className }: { className?: string }) {
+  const { t } = useTranslation();
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
@@ -36,14 +38,14 @@ export function WinCtl({ className }: { className?: string }) {
       <button
         type="button"
         onClick={() => void api.window.minimize().catch((err) => console.error('[WinCtl] minimize failed:', err))}
-        aria-label="Minimize"
+        aria-label={t('common.windowMinimize')}
       >
         <WinMinIcon />
       </button>
       <button
         type="button"
         onClick={() => void api.window.maximizeToggle().catch((err) => console.error('[WinCtl] maximizeToggle failed:', err))}
-        aria-label={maximized ? 'Restore' : 'Maximize'}
+        aria-label={maximized ? t('common.windowRestore') : t('common.windowMaximize')}
       >
         {maximized ? <WinRestoreIcon /> : <WinMaxIcon />}
       </button>
@@ -51,7 +53,7 @@ export function WinCtl({ className }: { className?: string }) {
         type="button"
         className="cls"
         onClick={() => void api.window.close().catch((err) => console.error('[WinCtl] close failed:', err))}
-        aria-label="Close"
+        aria-label={t('common.close')}
       >
         <WinCloseIcon />
       </button>

@@ -98,7 +98,7 @@ export default function Sidebar() {
   if (scope === 'settings') return null;
 
   return (
-    <nav aria-label="Primary" className={cn('side', collapsed && 'collapsed')}>
+    <nav aria-label={t('sidebar.primaryNav')} className={cn('side', collapsed && 'collapsed')}>
       {/* chrome 头：顶部净空 + 窗口拖动槽（空槽，不自绘灯）。拖动靠 `data-tauri-drag-region`，
           不是 `-webkit-app-region`（Electron 约定，Tauri 不认 → 此前一直拖不动）。见 AppShell 同规注释。 */}
       <div className="side-chrome" data-tauri-drag-region />

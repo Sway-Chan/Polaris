@@ -54,7 +54,7 @@ import {
   type NodeFieldGroupId,
   type ProbeDisplay,
 } from './node-spec';
-import { protoCodec } from './proto-codec';
+import { protoCodec, ProtoCodecError } from './proto-codec';
 import { blockedByMeshSingleton } from '@/domain/mesh-singleton-guard';
 import { revealOnToggle } from '@/components/reveal';
 import { meshTunnelDraftError } from './mesh-form-layout';
@@ -286,7 +286,12 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
       void loadConfig(true);
       close();
     } catch (e) {
-      toast.error(t('common.saveFailed'), e instanceof Error ? e.message : String(e));
+      const detail = e instanceof ProtoCodecError
+        ? t(`node.codecError.${e.code}`, { detail: e.detail ?? '' })
+        : e instanceof Error
+          ? e.message
+          : String(e);
+      toast.error(t('common.saveFailed'), detail);
     } finally {
       setSubmitting(false);
     }

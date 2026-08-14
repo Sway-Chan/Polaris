@@ -28,6 +28,7 @@ import { api } from '../ipc';
 import { withConfigWriteLock } from '../lib/config-write-lock';
 import { replay, type StagedEntry } from '../lib/staged-config';
 import { hydrateStagedConfig, useStagedConfigStore } from './staged-config-store';
+import i18n from '../i18n';
 import {
   loadTailscaleLoginStatesFromCache,
   useTailscaleLoginCacheStore,
@@ -309,7 +310,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // **不再作为起核载荷下发**：起核用哪份配置由后端读盘决定（见 Rust `proxy_start` 头注）——
     // 这份内存副本靠 configChanged 异步刷新，「写盘 → 立刻点启动」会用写之前的那份。
     if (!get().config) {
-      throw new Error('Cannot start proxy: config not loaded');
+      throw new Error(i18n.t('errors.configNotLoaded'));
     }
     set({ proxyStarting: true });
     try {

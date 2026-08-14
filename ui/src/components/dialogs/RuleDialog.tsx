@@ -42,7 +42,6 @@ import {
   DEFAULT_RULE_TYPE,
   PRESET_HOST_RULE_TYPE,
   RULE_CATEGORY_ORDER,
-  RULE_CATEGORY_LABEL_ZH,
   ruleCategoryLabelKey,
   ruleTypeNameKey,
   ruleTypeHintKey,
@@ -322,10 +321,10 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
   const typeGroups = (currentType: RuleType): CselGroup[] => {
     const used = new Set(conds.map((c) => c.t));
     return RULE_CATEGORY_ORDER.map((cat) => ({
-      label: t(ruleCategoryLabelKey(cat), RULE_CATEGORY_LABEL_ZH[cat]),
+      label: t(ruleCategoryLabelKey(cat)),
       options: RULE_TYPE_IDS.filter((id) => RULE_TYPES[id].category === cat).map((id) => ({
         value: id,
-        label: t(ruleTypeNameKey(id), RULE_TYPES[id].nameZh),
+        label: t(ruleTypeNameKey(id)),
         disabled:
           id !== currentType && (used.has(id) || !isRuleTypePlatformSupported(id, nodePlatform)),
       })),
@@ -419,11 +418,11 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
    */
   const poolEmptyText = (loading: boolean, failed: boolean, matched: number): string =>
     loading
-      ? t('common.loading', '加载中…')
+      ? t('common.loading')
       : failed
-        ? t('rules.candidatesFailed', '候选清单加载失败')
+        ? t('rules.candidatesFailed')
         : matched === 0
-          ? t('common.noResults', '无匹配')
+          ? t('common.noResults')
           : '';
 
   /** 类型切换 —— 判据与「为什么一律清空」在 `rule-cond.ts` 的 `setCondTypeAt` 头注。 */
@@ -462,9 +461,7 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
     t: 'switch',
     k: 'bypassFakeIP',
     label: 'rules.bypassFakeIP',
-    zh: '绕过 FakeIP',
     hint: 'rules.bypassFakeIPHint',
-    hintZh: '仅域名类规则；命中直连时按真实 IP 而非 FakeIP 出站',
     when: (vals) => vals._bypassEligible === true,
   };
   const bypassValues: FormValues = { bypassFakeIP, _bypassEligible: bypassEligible };
@@ -492,17 +489,17 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
       {
         // 复用应用分流菜单那句「策略」而不是新起一个 i18n 键：两处是同一概念，且新增键会动
         // locale-parity 门的债务基线（5 个语言文件都得补），不在本次改动的范围里。
-        label: t('appPolicy.policy', '策略'),
+        label: t('appPolicy.policy'),
         options: [
           {
             value: 'proxy',
-            label: t('rules.targetDefaultProxy', '代理（默认代理）'),
+            label: t('rules.targetDefaultProxy'),
             icon: <TargetIcon kind="proxy" />,
           },
-          { value: 'direct', label: t('rules.targetDirect', '直连'), icon: <TargetIcon kind="direct" /> },
+          { value: 'direct', label: t('rules.targetDirect'), icon: <TargetIcon kind="direct" /> },
           {
             value: 'block',
-            label: t('rules.targetBlock', '阻断'),
+            label: t('rules.targetBlock'),
             icon: <TargetIcon kind="block" />,
             // 动作标签轴：与 `.act-block` pill / `.mi.danger` / `.tray-i.danger` 同色同轴。
             // 走 `Csel` 的 `danger` 通道而不是在本页刷一层红 —— 根因是这个字段此前不存在。
@@ -514,13 +511,13 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
         id: g.id,
         // 自建/组网组的 `name` 是占位符，按 isManual/isMesh 本地化（ServerGroup 契约的明文要求）。
         label: g.isManual
-          ? t('nodes.tab.manual', '自建节点')
+          ? t('nodes.tab.manual')
           : g.isMesh
-            ? t('nodes.tab.mesh', '组网')
+            ? t('nodes.tab.mesh')
             : g.name,
         options: g.servers.map((s) => ({
           value: `node:${s.id}`,
-          label: `${t('rules.targetProxyTo', '代理 →')} ${s.name}`,
+          label: `${t('rules.targetProxyTo')} ${s.name}`,
           // 国旗：与首页出口选单 / 托盘节点行**同一渲染器 + 同一数据源**（名称派生 `flagCodeForName`，
           // 语义 =「这个节点自称在哪」）。识别不到 → FlagImg 返回 null，什么都不画（不回退地球）。
           // 延迟色点刻意**不加**：本弹窗不订阅测速 store，也不该订阅 —— 「目标出站」回答的是
@@ -546,9 +543,9 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
     open({
       kind: 'confirm',
       payload: {
-        title: t('rules.discardTitle', '放弃更改？'),
-        message: t('rules.discardMsg', '已填写的内容将不会保存。'),
-        confirmLabel: t('rules.discard', '放弃'),
+        title: t('rules.discardTitle'),
+        message: t('rules.discardMsg'),
+        confirmLabel: t('rules.discard'),
         danger: true,
         onConfirm: () => {
           close(); // pop confirm
@@ -572,7 +569,7 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
           await deleteRule(base);
           close();
         } catch (e) {
-          toast.error(t('common.saveFailed', '保存失败'), e instanceof Error ? e.message : String(e));
+          toast.error(t('common.saveFailed'), e instanceof Error ? e.message : String(e));
         }
       })();
     });
@@ -587,7 +584,7 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
     setErrName(nameEmpty);
     const filled = conds.filter((c) => splitVals(c.v).length);
     if (!filled.length) {
-      toast.error(t('rules.invalidHead', '规则校验未通过'), t('rules.errNoCond', '请至少填写一个匹配条件'));
+      toast.error(t('rules.invalidHead'), t('rules.errNoCond'));
       // 名称也空时两条错误一起显示（不让用户改完一个再发现另一个）。
       return;
     }
@@ -612,16 +609,15 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
     if (!validateRule(draft)) {
       const bad = invalidCondValues(filled);
       toast.error(
-        t('rules.invalidHead', '规则校验未通过'),
+        t('rules.invalidHead'),
         bad.length > 0
           ? t('rules.errInvalidValues', {
-              defaultValue: '以下值格式不正确 —— {{detail}}',
               detail: bad
                 .slice(0, 4)
-                .map((b) => `${t(ruleTypeNameKey(b.type), RULE_TYPES[b.type].nameZh)}: ${b.value}`)
+                .map((b) => `${t(ruleTypeNameKey(b.type))}: ${b.value}`)
                 .join('; ') + (bad.length > 4 ? '…' : ''),
             })
-          : t('rules.errInvalidRule', '规则结构不合法，请检查条件与组合方式'),
+          : t('rules.errInvalidRule'),
       );
       return;
     }
@@ -653,7 +649,7 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
           stage({
             id: `rule:${full.id}`,
             kind: 'rule',
-            label: `${t('rules.editTitle', '编辑规则')} ${remarks}`,
+            label: `${t('rules.editTitle')} ${remarks}`,
             entityPath: ['customRules', full.id],
             nextValue: full,
           });
@@ -680,7 +676,7 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
           stage({
             id: `rule:${entityId}`,
             kind: 'rule',
-            label: `${t('rules.newTitle', '新建规则')} ${remarks}`,
+            label: `${t('rules.newTitle')} ${remarks}`,
             entityPath: ['customRules', entityId],
             nextValue: { ...rest, id: entityId },
           });
@@ -694,9 +690,9 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
     } catch (e) {
       // 写时校验（Rust 权威）：RULE_INVALID → 展示校验消息、弹窗不关；其它 → 通用可重试失败。
       if (e instanceof IpcError && e.code === 'RULE_INVALID') {
-        toast.error(t('rules.invalidHead', '规则校验未通过'), e.message);
+        toast.error(t('rules.invalidHead'), e.message);
       } else {
-        toast.error(t('common.saveFailed', '保存失败'), e instanceof Error ? e.message : String(e));
+        toast.error(t('common.saveFailed'), e instanceof Error ? e.message : String(e));
       }
     } finally {
       setSubmitting(false);
@@ -706,7 +702,7 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
   return (
     <Modal
       titleId="rule-dlg-title"
-      title={isEdit ? t('rules.editTitle', '编辑规则') : t('rules.newTitle', '新建规则')}
+      title={isEdit ? t('rules.editTitle') : t('rules.newTitle')}
       onClose={requestClose}
       icon={<RuleIcon />}
       footer={
@@ -719,12 +715,12 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
               onClick={requestDelete}
             >
               {armed === RULE_DEL_KEY
-                ? t('rules.deleteConfirmAgain', '确认删除？')
-                : t('rules.delete', '删除此规则')}
+                ? t('rules.deleteConfirmAgain')
+                : t('rules.delete')}
             </button>
           )}
           <button type="button" className="btn ghost" onClick={requestClose}>
-            {t('common.cancel', '取消')}
+            {t('common.cancel')}
           </button>
           <button
             type="button"
@@ -732,7 +728,7 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
             onClick={() => void handleSubmit()}
             disabled={submitting}
           >
-            {isEdit ? t('common.save', '保存') : t('rules.add', '添加')}
+            {isEdit ? t('common.save') : t('rules.add')}
           </button>
         </>
       }
@@ -740,7 +736,7 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
       {/* 规则名称（remarks，必填） */}
       <div className="fld">
         <label className="fld-l" htmlFor="rule-name">
-          <span>{t('rules.name', '规则名称')}</span> <span className="req-star">*</span>
+          <span>{t('rules.name')}</span> <span className="req-star">*</span>
         </label>
         <input
           id="rule-name"
@@ -751,19 +747,19 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
             setErrName(false);
             touch();
           }}
-          placeholder={t('rules.namePh', '流媒体解锁')}
+          placeholder={t('rules.namePh')}
         />
-        {errName && <div className="err-line">{t('rules.errName', '请填写规则名称')}</div>}
+        {errName && <div className="err-line">{t('rules.errName')}</div>}
       </div>
 
       {/* 匹配条件（多条件 AND/OR） */}
       <div className="fld">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
           <label className="fld-l" style={{ margin: 0 }}>
-            {t('rules.conditions', '匹配条件')}
+            {t('rules.conditions')}
           </label>
           {conds.length >= 2 && (
-            <div className="logic-toggle" role="group" aria-label={t('rules.combineMode', '组合方式')}>
+            <div className="logic-toggle" role="group" aria-label={t('rules.combineMode')}>
               {/* 裸 AND/OR 对非技术用户无信息量（且与 hover 卡上的中文「全部满足 / 满足任一」是
                   两套说法）。改用与 hover 卡**同一组 i18n key**（rules.combineAnd / combineOr），
                   弹窗与卡片再不会各说各话。 */}
@@ -775,7 +771,7 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
                   touch();
                 }}
               >
-                {t('rules.combineAnd', '全部满足')}
+                {t('rules.combineAnd')}
               </button>
               <button
                 type="button"
@@ -785,7 +781,7 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
                   touch();
                 }}
               >
-                {t('rules.combineOr', '满足任一')}
+                {t('rules.combineOr')}
               </button>
             </div>
           )}
@@ -825,10 +821,10 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
              正常态的提示词按**池**分（描述符字段，不点名类型）：geo 池 = 本地暂无；
              进程池 = 那个进程当前没在跑。 */
           const offHint = poolFailed
-            ? t('rules.candidatesFailed', '候选清单加载失败')
+            ? t('rules.candidatesFailed')
             : src.kind === 'pool' && src.pool === 'process'
-              ? t('rules.candidateNotRunning', '未在运行 —— 手动输入的值')
-              : t('rules.candidateNotLocal', '本地暂无 —— 可在规则资源中下载');
+              ? t('rules.candidateNotRunning')
+              : t('rules.candidateNotLocal');
           const offPool = all && !poolLoading ? offPoolSelectedOptions(c.v, all, offHint) : null;
           const grouped =
             matched && groupsPresent.length > 1 && group !== 'all'
@@ -855,8 +851,8 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
               rows={all ? 2 : 4}
               value={c.v}
               onChange={(e) => setCondVal(i, e.target.value)}
-              placeholder={t(ruleTypePlaceholderKey(c.t), desc.placeholderZh)}
-              aria-label={t('rules.condValues', '值')}
+              placeholder={t(ruleTypePlaceholderKey(c.t))}
+              aria-label={t('rules.condValues')}
             />
           );
           return (
@@ -869,7 +865,7 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
                     `.cond-row` 的 grid 不动，右列仍是 `.cond-del`。 */}
                 <div className="cond-head">
                   <Csel
-                    ariaLabel={t('rules.matchType', '匹配类型')}
+                    ariaLabel={t('rules.matchType')}
                     value={c.t}
                     onChange={(v) => setCondType(i, v as RuleType)}
                     options={typeGroups(c.t)}
@@ -884,8 +880,8 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
                         type="search"
                         value={query}
                         onChange={(e) => setPoolQuery((prev) => ({ ...prev, [c.t]: e.target.value }))}
-                        placeholder={t('common.search', '搜索')}
-                        aria-label={t('common.search', '搜索')}
+                        placeholder={t('common.search')}
+                        aria-label={t('common.search')}
                       />
                     </label>
                   )}
@@ -902,7 +898,7 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
                   {all && (
                     <div className="cond-grp-row">
                       {groupsPresent.length > 1 && (
-                        <div className="seg2 cond-grp" role="group" aria-label={t('rules.candidateGroup', '候选范围')}>
+                        <div className="seg2 cond-grp" role="group" aria-label={t('rules.candidateGroup')}>
                           {(['all', ...groupsPresent] as GroupFilter[]).map((g) => (
                             <button
                               key={g}
@@ -911,10 +907,10 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
                               onClick={() => setPoolGroup((prev) => ({ ...prev, [c.t]: g }))}
                             >
                               {g === 'all'
-                                ? t('common.all', '全部')
+                                ? t('common.all')
                                 : g === 'builtin'
-                                  ? t('resCatalog.builtin', '内置')
-                                  : t('resCatalog.external', '外置')}
+                                  ? t('resCatalog.builtin')
+                                  : t('resCatalog.external')}
                             </button>
                           ))}
                         </div>
@@ -925,7 +921,7 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
                         aria-pressed={onlySel}
                         onClick={() => setPoolOnlySel((prev) => ({ ...prev, [c.t]: !onlySel }))}
                       >
-                        {t('rules.candidateSelected', { defaultValue: '已选 {{n}}', n: selected.size })}
+                        {t('rules.candidateSelected', { n: selected.size })}
                       </button>
                     </div>
                   )}
@@ -934,7 +930,7 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
                     15 条提示一条都没显示过。放在勾选区之上：geosite/geoip 那两句写着「或从下方候选中
                     勾选」，指的就是紧接其下的那块勾选区（旧词是 上游 遗留的「常用标签」，引用了一个
                     当时不存在的控件，本批随控件落地一并改词，五语同改）。 */}
-                <div className="card-sub">{t(ruleTypeHintKey(c.t), desc.hintZh)}</div>
+                <div className="card-sub">{t(ruleTypeHintKey(c.t))}</div>
                 {/* 勾选区。**与下面的文本区并存**，不是二选一（`allowFreeInput`：候选面只列本地已有
                     / 当前在跑的，三条不同的理由见描述符注释）。两者共用同一份 `c.v` ⇒ 勾选态与
                     文本在结构上不可能失同步。自带 max-height + 滚动：不给的话 2000 条规则集会把
@@ -952,12 +948,11 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
                     emptyText={emptyText}
                     moreText={(shown, total) =>
                       t('appAdd.galleryMore', {
-                        defaultValue: '已显示 {{shown}} / {{total}}，继续滚动加载更多',
                         shown,
                         total,
                       })
                     }
-                    ariaLabel={t(ruleTypeNameKey(c.t), desc.nameZh)}
+                    ariaLabel={t(ruleTypeNameKey(c.t))}
                   />
                 )}
                 {/* 原型 .cond-fields > textarea.input.mono.cond-val-input（无 .fld 包裹/无可见标签，:3921）。
@@ -969,7 +964,7 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
                     **无候选区（`kind==='free'`）时不折叠**：那时 textarea 是这个类型唯一的入口，
                     折起来等于把整个条件行变成一片空白。 */}
                 {all ? (
-                  <Fold className="cond-manual" title={t('rules.manualInput', '手动输入')}>
+                  <Fold className="cond-manual" title={t('rules.manualInput')}>
                     {valInput}
                   </Fold>
                 ) : (
@@ -1002,7 +997,6 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
                         <span>
                           {rsMissing.length > 0
                             ? t('rules.ruleSetMissingHint', {
-                                defaultValue: '{{n}} 个已引用的规则集在本地不可用',
                                 n: rsMissing.length,
                               })
                             : emptyText}
@@ -1015,7 +1009,7 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
                             closeAll();
                           }}
                         >
-                          {t('appAdd.gotoResources', '前往规则资源')}
+                          {t('appAdd.gotoResources')}
                         </button>
                       </div>
                     )}
@@ -1026,7 +1020,7 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
                 <button
                   type="button"
                   className="cond-del"
-                  aria-label={t('rules.removeCondition', '移除条件')}
+                  aria-label={t('rules.removeCondition')}
                   onClick={() => removeCond(i)}
                 >
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
@@ -1047,11 +1041,11 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
             <svg viewBox="0 0 24 24" width={14} fill="none" stroke="currentColor" strokeWidth={1.8}>
               <path d="M12 5v14M5 12h14" />
             </svg>
-            <span>{t('rules.addCondition', '添加条件')}</span>
+            <span>{t('rules.addCondition')}</span>
           </button>
         )}
         <div className="card-sub" style={{ marginTop: 8 }}>
-          {t('rules.conditionsHint', '每个条件一种匹配类型；≥2 个条件按「全部满足 / 满足任一」组合')}
+          {t('rules.conditionsHint')}
         </div>
       </div>
 
@@ -1073,11 +1067,11 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
       {/* 目标出站 */}
       <div className="fld">
         <label className="fld-l" htmlFor="rule-target">
-          {t('rules.target', '目标出站')}
+          {t('rules.target')}
         </label>
         <Csel
           id="rule-target"
-          ariaLabel={t('rules.target', '目标出站')}
+          ariaLabel={t('rules.target')}
           value={target}
           onChange={(v) => {
             setTarget(v);
@@ -1092,7 +1086,7 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
       <div className="fld">
         <details className="rule-test-det" onToggle={revealOnToggle}>
           <summary className="fld-l" style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-            <span>{t('rules.testMatch', '测试匹配（可选）')}</span>
+            <span>{t('rules.testMatch')}</span>
             <Chevron />
           </summary>
           <label className="input" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 11px', marginTop: 8 }}>
@@ -1103,21 +1097,21 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
             <input
               value={test}
               onChange={(e) => setTest(e.target.value)}
-              placeholder={t('rules.testPh', '输入域名或 IP 试命中…')}
-              aria-label={t('rules.testMatch', '测试匹配')}
+              placeholder={t('rules.testPh')}
+              aria-label={t('rules.testMatch')}
               style={{ border: 0, background: 'none', outline: 'none', flex: 1, padding: '8px 0', font: 'inherit', color: 'inherit' }}
             />
           </label>
           <div className="card-sub" style={{ marginTop: 6 }}>
             {testResult === 'hit' && (
-              <span style={{ color: 'hsl(var(--ok))' }}>✓ {t('rules.testHit', '命中')}</span>
+              <span style={{ color: 'hsl(var(--ok))' }}>✓ {t('rules.testHit')}</span>
             )}
             {testResult === 'miss' && (
-              <span style={{ color: 'hsl(var(--fg-faint))' }}>{t('rules.testMiss', '未命中')}</span>
+              <span style={{ color: 'hsl(var(--fg-faint))' }}>{t('rules.testMiss')}</span>
             )}
             {testResult === 'untestable' && (
               <span style={{ color: 'hsl(var(--fg-faint))' }}>
-                {t('rules.testUntestable', '该规则无法用域名 / IP 测试')}
+                {t('rules.testUntestable')}
               </span>
             )}
           </div>

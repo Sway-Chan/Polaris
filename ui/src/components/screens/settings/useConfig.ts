@@ -71,44 +71,37 @@ const RESTART_KEY_LABEL: Record<AppRestartRequiredKey, string> = {
  * 只在 `configApi.save` **成功之后**调用：保存失败时用户看到的是 toast + 回滚，此时说「已落盘」是撒谎。
  */
 function promptAppRestart(keys: AppRestartRequiredKey[], t: TFunction): void {
-  const items = keys.map((k) => t(RESTART_KEY_LABEL[k])).join('、');
+  const items = keys.map((k) => t(RESTART_KEY_LABEL[k])).join(t('common.listSeparator'));
   // 读 app-store 而非本 hook 的 config：代理运行态不在 UserConfig 里。用 getState() 取瞬时值即可
   //（弹窗是一次性快照，不需要订阅）。
   const proxyRunning = useAppStore.getState().proxyStatus?.running === true;
   const paragraphs = [
     t(
       'settings.restartApp.message',
-      '以下设置已保存，但要重启 Polaris 之后才会生效：{{items}}。',
       { items },
     ),
-    t(
-      'settings.restartApp.persistNote',
-      '选「稍后」不会丢失改动——它已经写进配置文件，只是这次运行仍按旧值工作，下次启动 Polaris 时自动生效。',
-    ),
+    t('settings.restartApp.persistNote'),
   ];
   if (proxyRunning) {
     paragraphs.push(
-      t(
-        'settings.restartApp.proxyNote',
-        '「立即重启」会先停止代理内核，当前连接会断开；重启后按「启动时自动连接」的设置恢复。',
-      ),
+      t('settings.restartApp.proxyNote'),
     );
   }
   useDialogStore.getState().open({
     kind: 'confirm',
     payload: {
-      title: t('settings.restartApp.title', '需重启 Polaris 才能生效'),
+      title: t('settings.restartApp.title'),
       // 段间空行由 ConfirmDialog 的 `white-space: pre-line` 渲染。
       message: paragraphs.join('\n\n'),
-      confirmLabel: t('settings.restartApp.confirm', '立即重启'),
-      cancelLabel: t('settings.restartApp.later', '稍后'),
+      confirmLabel: t('settings.restartApp.confirm'),
+      cancelLabel: t('settings.restartApp.later'),
       onConfirm: () => {
         // ConfirmPayload 契约：onConfirm 自负关闭。先关再发重启——重启腿若失败（IPC 不通），
         // 留一个关不掉的模态比失败本身更糟。
         useDialogStore.getState().close();
         void windowApi.restartApp().catch((e) => {
           toast.error(
-            t('settings.restartApp.failed', '重启失败'),
+            t('settings.restartApp.failed'),
             e instanceof Error ? e.message : String(e),
           );
         });
@@ -285,7 +278,6 @@ export function useConfig(): UseConfigResult {
           kind: 'setting',
           label: t('home.stagedSetting', {
             key: sectionKey ? t(sectionKey) : key,
-            defaultValue: '修改设置 · {{key}}',
           }),
           entityPath: [key],
           nextValue: value,
@@ -309,7 +301,7 @@ export function useConfig(): UseConfigResult {
         latestConfig.current = prev;
         setConfig(prev);
         toast.error(
-          t('common.saveFailed', '保存失败'),
+          t('common.saveFailed'),
           e instanceof Error ? e.message : String(e),
         );
         return;

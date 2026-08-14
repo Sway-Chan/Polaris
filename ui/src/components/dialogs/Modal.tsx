@@ -28,6 +28,7 @@ import {
   type ReactNode,
   type MutableRefObject,
 } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useDialogTopLayerStore } from './dialog-top-layer';
 
 /** Modal 向子树（Csel）暴露的协作上下文。 */
@@ -95,6 +96,7 @@ export function Modal({
   className,
   style,
 }: ModalProps) {
+  const { t } = useTranslation();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const cselCloseRef = useRef<(() => void) | null>(null);
   // pointerdown 是否落在 backdrop（dialog 元素本身）—— 防拖选出界误关。
@@ -158,7 +160,7 @@ export function Modal({
           <button
             type="button"
             className="dlg-x"
-            aria-label="Close"
+            aria-label={t('common.close')}
             onClick={() => onCloseRef.current()}
           >
             <svg viewBox="0 0 24 24" width="16" fill="none" stroke="currentColor" strokeWidth={1.8}>

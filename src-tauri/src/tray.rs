@@ -1007,8 +1007,9 @@ pub fn tray_enter_lightweight(app: AppHandle) -> ApiResponse<()> {
     }
     hide_overlay(&app);
     if let Some(win) = app.get_webview_window("main") {
-        if let Err(e) = win.destroy() {
-            log::warn!("轻量模式销毁主窗失败（内存未释放；托盘/核不受影响）：{e}");
+        match win.destroy() {
+            Ok(()) => crate::set_macos_dock_visible(&app, false),
+            Err(e) => log::warn!("轻量模式销毁主窗失败（内存未释放；托盘/核不受影响）：{e}"),
         }
     }
     ok_void()

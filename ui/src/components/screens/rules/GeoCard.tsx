@@ -14,14 +14,7 @@ import { useTranslation } from 'react-i18next';
 import type { RegionId, RegionRoutingConfig } from '@/contracts/types';
 import { cn } from '@/lib/utils';
 
-const ROUTING_CHAIN = [
-  { key: 'custom', zh: '自定义规则' },
-  { key: 'app', zh: '应用分流' },
-  { key: 'mesh', zh: '组网' },
-  { key: 'lan', zh: '绕过局域网' },
-  { key: 'smart', zh: '智能分流' },
-  { key: 'default', zh: '默认出口' },
-];
+const ROUTING_CHAIN = ['custom', 'app', 'mesh', 'lan', 'smart', 'default'] as const;
 
 export interface GeoCardProps {
   regionRouting: RegionRoutingConfig;
@@ -51,28 +44,22 @@ export function GeoCard({ regionRouting, onChange, isSmartMode }: GeoCardProps) 
     <div className="card geo-card">
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <div style={{ flex: 1 }}>
-          <div className="card-h">{t('rules.regionRouting', '地区分流')}</div>
+          <div className="card-h">{t('rules.regionRouting')}</div>
           {/* 说明必须跟随 reverse 反转：回国模式下语义相反（所在地区走代理、其余直连），
               旧实现恒显正向文案 → 误导（真机 2026-07-20 §1.4）。
               key 走扁平命名而非 `rules.regionRouting.sub`：`rules.regionRouting` 已是字符串，
               i18next 无法再向下取 `.sub`，旧 key 恒落 defaultValue（en/fa/ru 下也显中文）。 */}
           <div className="card-sub">
             {reverse
-              ? t(
-                  'rules.regionRoutingSubReverse',
-                  '你所在地区的流量走代理，其余全部直连',
-                )
-              : t(
-                  'rules.regionRoutingSub',
-                  '你所在地区的流量直连，其余全部走代理',
-                )}
+              ? t('rules.regionRoutingSubReverse')
+              : t('rules.regionRoutingSub')}
           </div>
           {/* 「仅智能分流模式生效」原先硬编码在上面那句的尾巴上、常显：智能模式（绝大多数时间）下
               它恒真、纯噪音；真正需要它的非智能模式反而被淹在同一行灰字里。拆成独立条件提示，
               只在真不生效时出现（上游 region-routing-card.tsx:97 同做法）。 */}
           {!isSmartMode && (
             <div className="card-sub" style={{ color: 'hsl(var(--warn))' }}>
-              {t('rules.regionRoutingSmartOnly', '当前模式下不生效 —— 仅智能分流模式生效')}
+              {t('rules.regionRoutingSmartOnly')}
             </div>
           )}
         </div>
@@ -96,17 +83,14 @@ export function GeoCard({ regionRouting, onChange, isSmartMode }: GeoCardProps) 
       <div className="geo-flow">
         <div className="field-lbl">
           <span>
-            {t(
-              'rules.routingPriority',
-              '分流优先级 · 从左到右，先命中先生效',
-            )}
+            {t('rules.routingPriority')}
           </span>
         </div>
         <div className="rl-chain-flow">
           {ROUTING_CHAIN.map((step, i) => (
-            <span key={step.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <span className={cn('rl-step', step.key === 'custom' && 'on')}>
-                {t(`rules.chain.${step.key}`, step.zh)}
+            <span key={step} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span className={cn('rl-step', step === 'custom' && 'on')}>
+                {t(`rules.chain.${step}`)}
               </span>
               {i < ROUTING_CHAIN.length - 1 && <span className="rl-arrow">›</span>}
             </span>
@@ -120,7 +104,7 @@ export function GeoCard({ regionRouting, onChange, isSmartMode }: GeoCardProps) 
       {enabled && (
         <>
           <div className="field-lbl" style={{ marginTop: 14 }}>
-            <span>{t('rules.yourRegion', '你所在的地区')}</span>
+            <span>{t('rules.yourRegion')}</span>
           </div>
           <div
             style={{
@@ -134,7 +118,7 @@ export function GeoCard({ regionRouting, onChange, isSmartMode }: GeoCardProps) 
             <div
               className="geo-region"
               role="group"
-              aria-label={t('rules.yourRegion', '你所在的地区')}
+              aria-label={t('rules.yourRegion')}
               style={{ marginTop: 0 }}
             >
               {(['cn', 'ir', 'ru'] as RegionId[]).map((r) => (
@@ -145,10 +129,10 @@ export function GeoCard({ regionRouting, onChange, isSmartMode }: GeoCardProps) 
                   onClick={() => onChange({ ...regionRouting, region: r })}
                 >
                   {r === 'cn'
-                    ? t('rules.region.cn', '中国大陆')
+                    ? t('rules.region.cn')
                     : r === 'ir'
-                      ? t('rules.region.ir', '伊朗')
-                      : t('rules.region.ru', '俄罗斯')}
+                      ? t('rules.region.ir')
+                      : t('rules.region.ru')}
                 </button>
               ))}
             </div>
@@ -161,16 +145,13 @@ export function GeoCard({ regionRouting, onChange, isSmartMode }: GeoCardProps) 
                 onClick={() => onChange({ ...regionRouting, reverse: !reverse })}
               >
                 <span className="geo-rev-dot" />
-                <b>{t('rules.backHome', '回国')}</b>
+                <b>{t('rules.backHome')}</b>
               </button>
               <span
                 className="info-i"
                 tabIndex={0}
-                aria-label={t('rules.backHomeTip', '关于回国')}
-                data-tip={t(
-                  'rules.backHomeTip',
-                  '本地走代理、海外直连——从海外访问中国大陆内容',
-                )}
+                aria-label={t('rules.backHomeTip')}
+                data-tip={t('rules.backHomeTip')}
               >
                 <InfoIcon />
               </span>

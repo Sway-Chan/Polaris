@@ -291,7 +291,7 @@ const REGISTRY: readonly PromiseRow[] = [
     },
   },
   {
-    snippet: '保存后自动重启代理生效',
+    snippet: '停止记录 sing-box 日志',
     evidence: { kind: 'config-key', key: 'disableLogFile' },
   },
   {
@@ -327,7 +327,7 @@ const REGISTRY: readonly PromiseRow[] = [
     },
   },
   {
-    snippet: '并自动填好连接',
+    snippet: '内核运行时自动连接',
     evidence: {
       kind: 'anchor',
       file: 'ui/src/components/screens/settings/SettingsNetwork.tsx',

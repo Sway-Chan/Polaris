@@ -19,14 +19,8 @@ import {
 /** 单例槽被占的拒绝文案（两个槽各一句，说明「为什么不能有第二个」+「怎么办」）。 */
 export function meshSingletonMessage(slot: MeshSingletonSlot, t: TFunction): string {
   return slot === 'warp'
-    ? t(
-        'nodes.warpSlotTaken',
-        'WARP 为单例：已存在 WARP 节点。第二个会与主 TUN 抢内核接口导致连接失败——请先在「组网」卡片里注销或重新注册现有 WARP。'
-      )
-    : t(
-        'nodes.tsSlotTaken',
-        'Tailscale 为单例：同一设备只允许一个 Tailscale 节点（多个会互相顶掉 tailnet 地址）——请改为编辑现有节点或切换账号。'
-      );
+    ? t('nodes.warpSlotTaken')
+    : t('nodes.tsSlotTaken');
 }
 
 /**

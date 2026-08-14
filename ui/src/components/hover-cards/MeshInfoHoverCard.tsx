@@ -194,8 +194,8 @@ export function MeshInfoRows({
         <>
           <div className="mi-hd">
             <span className={cn('mi-dot', stale ? 'stale' : 'live')} />
-            {t('nodes.meshInfoRuntime', '运行期')}
-            {stale && <span className="mi-stale">{t('nodes.meshInfoStale', '上次已知')}</span>}
+            {t('nodes.meshInfoRuntime')}
+            {stale && <span className="mi-stale">{t('nodes.meshInfoStale')}</span>}
           </div>
           {runtime.map((row) => (
             <InfoRow key={row.id} row={row} tone={stale ? 'stale' : 'live'} />
@@ -203,7 +203,7 @@ export function MeshInfoRows({
           <div className="tc-sep" />
         </>
       )}
-      <div className="mi-hd">{t('nodes.meshInfoConfig', '配置')}</div>
+      <div className="mi-hd">{t('nodes.meshInfoConfig')}</div>
       {config.map((row) => (
         <InfoRow key={row.id} row={row} tone="cfg" />
       ))}

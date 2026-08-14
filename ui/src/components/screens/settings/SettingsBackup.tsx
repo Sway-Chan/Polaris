@@ -96,16 +96,13 @@ export default function SettingsBackup({ config: _config }: SettingsBackupProps)
       <Phead title={t('settings.nav.backup')} sub={t('settings.backup.pageSub')} />
 
       <SetBlock id="backup-block">
-        <SetRow
-          label={t('settings.advanced.backup.selectAll')}
-          style={{ borderBottom: '1px solid hsl(var(--line))' }}
-        >
+        <SetRow label={t('settings.advanced.backup.selectAll')}>
           <Switch
             id="backup-master"
             checked={allOn}
             indeterminate={someOn}
             onChange={toggleAll}
-            aria-label="Select all"
+            aria-label={t('settings.advanced.backup.selectAll')}
           />
         </SetRow>
 

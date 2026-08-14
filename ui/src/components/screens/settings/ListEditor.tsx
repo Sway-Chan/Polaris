@@ -175,7 +175,7 @@ export function ListEditor({
               className={mono ? 'mono' : undefined}
             />
             {renderRowEnd?.(entry, idx)}
-            <button type="button" onClick={() => remove(idx)} aria-label="Remove" className="cidr-del">
+            <button type="button" onClick={() => remove(idx)} aria-label={t('common.delete')} className="cidr-del">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
                 <path d="M5 5l14 14M19 5L5 19" />
               </svg>
@@ -218,7 +218,7 @@ export function ListEditor({
           />
           <div className="le-imp-acts">
             <Button variant="flow" size="sm" onClick={applyImport} disabled={!importDraft.trim()}>
-              <span>{t('common.confirm', '确认')}</span>
+              <span>{t('common.confirm')}</span>
             </Button>
             <Button
               variant="ghost"
@@ -228,10 +228,10 @@ export function ListEditor({
                 setImportOpen(false);
               }}
             >
-              <span>{t('common.cancel', '取消')}</span>
+              <span>{t('common.cancel')}</span>
             </Button>
             <span className="le-imp-hint">
-              {t('settings.listImportHint', '每行或逗号分隔一个条目，重复项自动跳过')}
+              {t('settings.listImportHint')}
             </span>
           </div>
         </div>

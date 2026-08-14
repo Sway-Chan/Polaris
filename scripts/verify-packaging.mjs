@@ -492,7 +492,7 @@ function checkMacOpenGuide() {
 
   // 唯一真值取 README（它是既有的、用户可见的那一份），引导必须照抄同一条命令。
   // 两处给不同命令 = 用户照着 dmg 里那份做完发现还是打不开，而 README 里写着另一条。
-  const CMD = 'xattr -dr com.apple.quarantine /Applications/Polaris.app';
+  const CMD = 'xattr -cr /Applications/Polaris.app';
   if (!readme.includes(CMD)) {
     fail(`README.md 里的 quarantine 命令不再是 \`${CMD}\` —— 真值变了，引导要跟着改（本门也要跟着改）`);
   }

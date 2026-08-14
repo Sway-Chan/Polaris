@@ -103,6 +103,9 @@ export const IPC_CHANNELS = {
   // 核**此刻实际**在用的日志级别（管理 API gRPC `GetDefaultLogLevel`）。与 `config.logLevel`
   // 不是同一件事：后者是「我写下的意图」，隐私锁抬级 / 暂存未落盘时两者会分叉，且渲染端无从补偿。
   LOGS_RUNTIME_LEVEL: 'logs_runtime_level',
+  // 当前进程临时诊断态：只抬实时日志门槛，不写 config；应用重启后自动恢复常规级别。
+  LOGS_DIAGNOSTIC_STATE: 'logs_diagnostic_state',
+  LOGS_SET_DIAGNOSTIC: 'logs_set_diagnostic',
 
   // 渲染端就绪信号（renderer -> Rust 主进程，单向 fire-and-forget）：App 成功 render+commit（或根级 ErrorBoundary
   // fallback 挂上）后发一次，供主进程 mount 健康门确认「webview 活着且 DOM 真的挂上了」。C 类白屏（进程活着但

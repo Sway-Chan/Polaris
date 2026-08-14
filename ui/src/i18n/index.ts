@@ -73,6 +73,7 @@ export { isRtlLanguage } from '../domain/language';
 
 /** 按当前语言同步 <html dir> + <html lang>（RTL 基建唯一接线点）。 */
 function applyDocumentDirection(lng: string): void {
+  if (typeof document === 'undefined') return;
   document.documentElement.dir = isRtlLanguage(lng) ? 'rtl' : 'ltr';
   document.documentElement.lang = lng;
 }

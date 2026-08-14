@@ -75,7 +75,7 @@ export function useRuleDelete(): DeleteRuleFn {
         stage({
           id: `rule:${rule.id}`,
           kind: 'rule',
-          label: `${t('rules.deleteRule', '删除规则')} ${rule.remarks || rule.type}`,
+          label: `${t('rules.deleteRule')} ${rule.remarks || rule.type}`,
           entityPath: ['customRules', rule.id],
           nextValue: null,
         });

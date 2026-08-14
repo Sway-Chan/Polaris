@@ -46,7 +46,7 @@ export function isLatencyStale(testedAt: number | undefined, now: number = Date.
 }
 
 interface LatencyState {
-  /** `serverId → 延迟 ms`。`-1`=后端判定的真实不可测/超时；键缺席=本会话未测过（UI 显「—」）。 */
+  /** `serverId → 延迟 ms`。`null`=后端真实探测失败/超时；键缺席=本会话未测过（UI 显「—」）。 */
   latencyMap: Record<string, number | null>;
   /**
    * `serverId → 该延迟的落库时刻（epoch ms）`。与 `latencyMap` **同写同键**：两个写入口
@@ -60,12 +60,22 @@ interface LatencyState {
   applyLatencyResults: (results: Record<string, number | null>) => void;
 }
 
+/**
+ * IPC 用 `-1` 表示「真测了但失败」，渲染域统一用 `null` 表示同一语义。
+ *
+ * 归一化必须收在 store 的两个写入口，而不是让四个消费方各自记得处理：漏掉 NodeCard 的旧形态会把
+ * `-1` 同时渲染成绿色（`latLevel(-1) < 80`）和文字 “-1 ms”，正是用户看到的矛盾状态。
+ */
+export function normalizeLatencyResult(latency: number | null): number | null {
+  return latency === null || !Number.isFinite(latency) || latency < 0 ? null : latency;
+}
+
 export const useLatencyStore = create<LatencyState>((set) => ({
   latencyMap: {},
   testedAt: {},
   applyLatencyResult: (serverId, latency) =>
     set((s) => ({
-      latencyMap: { ...s.latencyMap, [serverId]: latency },
+      latencyMap: { ...s.latencyMap, [serverId]: normalizeLatencyResult(latency) },
       testedAt: { ...s.testedAt, [serverId]: Date.now() },
     })),
   applyLatencyResults: (results) =>
@@ -74,8 +84,12 @@ export const useLatencyStore = create<LatencyState>((set) => ({
       // 无意义的毫秒级抖动。
       const now = Date.now();
       const stamps: Record<string, number> = { ...s.testedAt };
-      for (const id of Object.keys(results)) stamps[id] = now;
-      return { latencyMap: { ...s.latencyMap, ...results }, testedAt: stamps };
+      const normalized: Record<string, number | null> = {};
+      for (const [id, latency] of Object.entries(results)) {
+        stamps[id] = now;
+        normalized[id] = normalizeLatencyResult(latency);
+      }
+      return { latencyMap: { ...s.latencyMap, ...normalized }, testedAt: stamps };
     }),
 }));
 

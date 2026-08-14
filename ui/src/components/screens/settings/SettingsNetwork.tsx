@@ -19,7 +19,16 @@ import type { UserConfig } from '@/contracts/types';
 import { appApi, proxyApi } from '@/ipc/api-client';
 import { toast } from '@/lib/error-handler';
 import { Fold } from '@/components/Fold';
-import { Phead, SetBlock, SetRow, Switch, TextInput, Segmented, Button } from './primitives';
+import {
+  Phead,
+  SetBlock,
+  SetRow,
+  SetRowGroup,
+  Switch,
+  TextInput,
+  Segmented,
+  Button,
+} from './primitives';
 import { ListEditor } from './ListEditor';
 import {
   bypassLanState,
@@ -75,10 +84,12 @@ function CopyIcon({ width }: { width?: number }) {
 function TerminalEnvBlock({
   group,
   onCopy,
+  copyLabel,
   copyAllLabel,
 }: {
   group: TerminalEnvGroup;
   onCopy: (text: string) => void;
+  copyLabel: string;
   copyAllLabel: string;
 }) {
   return (
@@ -94,7 +105,7 @@ function TerminalEnvBlock({
         {group.lines.map((line) => (
           <div key={line} className="term-row">
             <code className="mono">{line}</code>
-            <button type="button" onClick={() => onCopy(line)} aria-label="Copy" className="term-copy">
+            <button type="button" onClick={() => onCopy(line)} aria-label={copyLabel} className="term-copy">
               <CopyIcon />
             </button>
           </div>
@@ -201,9 +212,9 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
   async function copyText(text: string) {
     try {
       await navigator.clipboard.writeText(text);
-      toast.success(t('settings.network.copied', '已复制到剪贴板'));
+      toast.success(t('settings.network.copied'));
     } catch {
-      toast.error(t('common.copyFail', '复制失败'));
+      toast.error(t('common.copyFail'));
     }
   }
 
@@ -221,11 +232,11 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
       const r = await appApi.openSingboxDashboard(i18n.language);
       if (!r?.ok) {
         toast.error(
-          t('settings.network.dashboardNotRunning', '面板不可用：请先启用管理面板并连接代理'),
+          t('settings.network.dashboardNotRunning'),
         );
       }
     } catch {
-      toast.error(t('settings.network.openDashboardFail', '打开面板失败'));
+      toast.error(t('settings.network.openDashboardFail'));
     }
   }
 
@@ -235,13 +246,13 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
       const r = await appApi.getSingboxDashboardConnection();
       if (!r?.ok || !r.apiUrl) {
         toast.error(
-          t('settings.network.dashboardNotRunning', '面板不可用：请先启用管理面板并连接代理'),
+          t('settings.network.dashboardNotRunning'),
         );
         return;
       }
       await copyText(`API: ${r.apiUrl}\nSecret: ${r.secret}`);
     } catch {
-      toast.error(t('common.copyFail', '复制失败'));
+      toast.error(t('common.copyFail'));
     }
   }
 
@@ -251,16 +262,13 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
       const r = await appApi.refreshSingboxDashboard();
       if (r?.ok) {
         toast.success(
-          t(
-            'settings.network.refreshDashboardDone',
-            '已清除面板资源缓存，内核下次启动时重新下载',
-          ),
+          t('settings.network.refreshDashboardDone'),
         );
       } else {
-        toast.error(t('settings.network.refreshDashboardFail', '刷新面板资源失败'));
+        toast.error(t('settings.network.refreshDashboardFail'));
       }
     } catch {
-      toast.error(t('settings.network.refreshDashboardFail', '刷新面板资源失败'));
+      toast.error(t('settings.network.refreshDashboardFail'));
     }
   }
 
@@ -305,7 +313,7 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
             aria-invalid={portErr.mixed || undefined}
             style={portErr.mixed ? { borderColor: 'hsl(var(--err))' } : undefined}
             className="mono"
-            aria-label="Mixed port"
+            aria-label={t('settings.network.mixedPort')}
           />
           {portErr.mixed && <div className="err-line">{t('settings.advanced.localPortRange')}</div>}
         </SetRow>
@@ -316,50 +324,51 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
 
       {/* 2. 系统代理旁路 */}
       <SetBlock header={t('settings.network.systemProxyBlock')}>
-        {/* 绕过局域网总开关。后端 `system_proxy_bypass.rs::effective_bypass_lan` 早已消费 bypassLAN
-            （`bypass_lan() == Some(false)` → 返回空清单，TUN route_exclude 与系统代理旁路两处都走它），
-            此前只缺 UI 入口。正向语义、缺省为开，与后端 `Some(false)` 判定同口径。 */}
-        <SetRow
-          label={t('settings.advanced.bypassLAN')}
-          desc={t('settings.advanced.bypassLANDesc')}
-        >
-          <Switch
-            id="bypass-lan-swt"
-            checked={bypassLan.checked}
-            onChange={(v) => void update({ bypassLAN: v })}
-            aria-label="Bypass LAN"
-          />
-        </SetRow>
-        {/* 关掉总开关时隐藏清单：后端此时返回空清单，清单一条都不生效，
-            继续展示可编辑清单会让用户以为编辑有效（误导）。 */}
-        {/* 折叠体**必须**留在 showList 门控内侧：放外面会出现「总开关已关、清单不生效，折叠标题却还杵在那」
-            的怪相（用户点开是空壳）。门控与折叠是两层独立状态，顺序固定为「先门控、后折叠」。 */}
-        {bypassLan.showList && (
-          <Fold id="fold-bypass" title={t('settings.network.bypassFold')} count={bypassList.length}>
-            <div className="fld-hint" style={{ marginTop: 0 }}>
-              {t('settings.network.bypassHint')}
-              {/* #1 与 #3 同源：route_exclude 无独立字段，由本清单的 CIDR 子集派生（SettingsTun.tsx:180-191）。
-                  两处各自独立折叠（互不联动），但必须让用户知道编辑的是同一份数据 —— 否则会以为
-                  「TUN 页那份没设，得再填一遍」。加粗半句与其余半句分成两个键，只为保住 `<b>` 的排版。 */}
-              <b>{t('settings.network.sharedListBold')}</b>
-              {t('settings.network.sharedListRest')}
-            </div>
-            <ListEditor
-              id="le-bypass"
-              value={bypassList}
-              onChange={(next) => void update({ bypassLANList: next })}
-              placeholder="localhost · 10.0.0.0/8 · *.example.cn"
-              ariaLabel="Bypass entry"
-              addLabel={t('common.add')}
-              importLabel={t('common.bulkImport')}
+        <SetRowGroup>
+          {/* 绕过局域网总开关。后端 `system_proxy_bypass.rs::effective_bypass_lan` 早已消费 bypassLAN
+              （`bypass_lan() == Some(false)` → 返回空清单，TUN route_exclude 与系统代理旁路两处都走它），
+              此前只缺 UI 入口。正向语义、缺省为开，与后端 `Some(false)` 判定同口径。 */}
+          <SetRow
+            label={t('settings.advanced.bypassLAN')}
+            desc={t('settings.advanced.bypassLANDesc')}
+          >
+            <Switch
+              id="bypass-lan-swt"
+              checked={bypassLan.checked}
+              onChange={(v) => void update({ bypassLAN: v })}
+              aria-label={t('settings.advanced.bypassLAN')}
             />
-          </Fold>
-        )}
+          </SetRow>
+          {/* 关掉总开关时隐藏清单：后端此时返回空清单，清单一条都不生效，
+              继续展示可编辑清单会让用户以为编辑有效（误导）。 */}
+          {/* 折叠体**必须**留在 showList 门控内侧：放外面会出现「总开关已关、清单不生效，折叠标题却还杵在那」
+              的怪相（用户点开是空壳）。门控与折叠是两层独立状态，顺序固定为「先门控、后折叠」。 */}
+          {bypassLan.showList && (
+            <Fold id="fold-bypass" title={t('settings.network.bypassFold')} count={bypassList.length}>
+              <div className="fld-hint" style={{ marginTop: 0 }}>
+                {t('settings.network.bypassHint')}
+                {/* #1 与 #3 同源：route_exclude 无独立字段，由本清单的 CIDR 子集派生（SettingsTun.tsx:180-191）。
+                    两处各自独立折叠（互不联动），但必须让用户知道编辑的是同一份数据 —— 否则会以为
+                    「TUN 页那份没设，得再填一遍」。加粗半句与其余半句分成两个键，只为保住 `<b>` 的排版。 */}
+                <b>{t('settings.network.sharedListBold')}</b>
+                {t('settings.network.sharedListRest')}
+              </div>
+              <ListEditor
+                id="le-bypass"
+                value={bypassList}
+                onChange={(next) => void update({ bypassLANList: next })}
+                placeholder="localhost · 10.0.0.0/8 · *.example.cn"
+                ariaLabel={t('settings.network.bypassFold')}
+                addLabel={t('common.add')}
+                importLabel={t('common.bulkImport')}
+              />
+            </Fold>
+          )}
+        </SetRowGroup>
         {/* B2 一键关闭系统代理入口（对齐 上游 语义：残留检测提示后由用户显式关闭）。 */}
         <SetRow
           label={t('proxy.disableSystemProxy')}
           desc={t('settings.network.disableSystemProxyDesc')}
-          style={{ borderBottom: 0 }}
         >
           <Button variant="ghost" size="sm" onClick={() => void handleDisableSystemProxy()}>
             <span>{t('proxy.disableSystemProxy')}</span>
@@ -392,7 +401,7 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
           <div className="sr-ctl">
             <Segmented<WebRTC>
               id="webrtc-seg"
-              ariaLabel="WebRTC leak protection"
+              ariaLabel={t('settings.network.webrtcLeakProtection')}
               value={config.webrtcLeakProtection ?? 'off'}
               onChange={(v) => void update({ webrtcLeakProtection: v })}
               options={[
@@ -454,7 +463,7 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
       </SetBlock>
 
       {/* 4. 更新与测速（契约指定归属本页；上一批因本页被占临时寄放在通用页，此处归位） */}
-      <SetBlock header={t('settings.network.updateAndSpeedTest', '更新与测速')}>
+      <SetBlock header={t('settings.network.updateAndSpeedTest')}>
         {/* mainSessionViaProxy → runtime/http.rs:286（更新/规则下载会话）+ icon_cache.rs:379（图标抓取）。
             缺省 true（更新源多在 GitHub，墙内借道更可靠），故 `!== false`。 */}
         <SetRow
@@ -465,13 +474,13 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
             id="main-session-via-proxy-swt"
             checked={config.mainSessionViaProxy !== false}
             onChange={(v) => void update({ mainSessionViaProxy: v })}
-            aria-label={t('settings.advanced.mainSessionViaProxy', '更新检查走代理')}
+            aria-label={t('settings.advanced.mainSessionViaProxy')}
           />
         </SetRow>
         {/* speedTestUrl → commands/speedtest.rs:539-541 resolve_speed_test_url（非法值后端静默回落
             默认，故前端必须先标红，否则「填了个错 URL，测速照跑但量的是别的端点」无从察觉）。 */}
         <SetRow
-          label={t('settings.network.speedTestUrl', '测速端点')}
+          label={t('settings.network.speedTestUrl')}
           desc={t('settings.network.speedTestUrlDesc')}
           align="start"
           ctrlStyle={{ minWidth: 260, display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'stretch' }}
@@ -491,7 +500,7 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
             aria-invalid={speedUrlErr || undefined}
             style={speedUrlErr ? { borderColor: 'hsl(var(--err))' } : undefined}
             className="mono"
-            aria-label={t('settings.network.speedTestUrl', '测速端点')}
+            aria-label={t('settings.network.speedTestUrl')}
           />
           {speedUrlErr && <div className="err-line">{t('settings.network.speedTestUrlInvalid')}</div>}
         </SetRow>
@@ -499,14 +508,15 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
 
       {/* 5. 管理面板（management 子能力） */}
       <SetBlock header={t('settings.network.mgmtBlock')} id="mgmt-block">
-        <SetRow
-          label={t('settings.network.mgmtEnable')}
-          desc={t('settings.network.mgmtEnableDesc')}
-        >
-          <Switch checked={mgmtEnabled} onChange={(v) => void update({ singboxDashboard: v })} />
-        </SetRow>
-        {mgmtEnabled && (
-          <div className="mgmt-detail">
+        <SetRowGroup>
+          <SetRow
+            label={t('settings.network.mgmtEnable')}
+            desc={t('settings.network.mgmtEnableDesc')}
+          >
+            <Switch checked={mgmtEnabled} onChange={(v) => void update({ singboxDashboard: v })} />
+          </SetRow>
+          {mgmtEnabled && (
+            <div className="mgmt-detail">
             {/* 同混合端口：草稿 + onBlur 提交。与 mixedPort 撞口时后端自动避让（validate.rs:229-250），
                 此处只做范围校验，不复刻避让逻辑。 */}
             <SetRow
@@ -530,14 +540,14 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
                 aria-invalid={portErr.control || undefined}
                 style={portErr.control ? { borderColor: 'hsl(var(--err))' } : undefined}
                 className="mono"
-                aria-label="Management port"
+                aria-label={t('settings.network.mgmtPort')}
               />
               {portErr.control && (
                 <div className="err-line">{t('settings.advanced.localPortRange')}</div>
               )}
             </SetRow>
             <SetRow
-              label="API secret"
+              label={t('settings.network.mgmtSecret')}
               desc={t('settings.network.mgmtSecretDesc')}
               ctrlStyle={{ display: 'flex', gap: 6, alignItems: 'center', width: 288 }}
             >
@@ -547,12 +557,12 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
                 readOnly
                 className="mono"
                 style={{ flex: 1, minWidth: 0 }}
-                aria-label="API secret"
+                aria-label={t('settings.network.mgmtSecret')}
               />
               <button
                 type="button"
                 onClick={() => setShowSecret((s) => !s)}
-                aria-label="Show secret"
+                aria-label={showSecret ? t('common.hideSecret') : t('common.showSecret')}
                 className="icon-btn"
                 data-tip={t('settings.network.secretToggleTip')}
               >
@@ -564,7 +574,7 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
               <button
                 type="button"
                 onClick={() => void copyText(secret)}
-                aria-label="Copy secret"
+                aria-label={t('settings.network.copySecret')}
                 className="icon-btn"
                 data-tip={t('common.copy')}
               >
@@ -576,7 +586,7 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
               <button
                 type="button"
                 onClick={() => void update({ clashApiSecret: generateSecret() })}
-                aria-label="Regenerate secret"
+                aria-label={t('settings.network.secretRegenerateTip')}
                 className="icon-btn"
                 data-tip={t('settings.network.secretRegenerateTip')}
               >
@@ -599,7 +609,6 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
             <SetRow
               label={t('settings.network.officialDashboard')}
               desc={t('settings.network.officialDashboardDesc')}
-              style={{ borderBottom: 0 }}
             >
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                 <Button
@@ -618,7 +627,7 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
                     翻译过去反而对不上（同 settings-logic.ts 里终端命令分组标签不翻译的理由）。 */}
                 <Button variant="ghost" size="sm" onClick={() => void copyDashboardConnection()}>
                   <CopyIcon width={14} />
-                  <span>{t('settings.network.copyDashboardConnection', '复制连接')}</span>
+                  <span>{t('settings.network.copyDashboardConnection')}</span>
                 </Button>
                 {/* 刷新面板资源（`refresh_singbox_dashboard`，misc.rs:384-397）：真删
                     `<config_dir>/singbox-dashboard` 目录（幂等、不存在不报错）。语义**不是**立刻回落到
@@ -626,49 +635,63 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
                     也**不在此重启内核**（保「不打断连接」语义），故文案必须说清「下次启动生效」，
                     否则用户点完看不到任何变化会以为按钮坏了。 */}
                 <Button variant="ghost" size="sm" onClick={() => void refreshDashboardAssets()}>
-                  <span>{t('settings.network.refreshDashboard', '刷新面板资源')}</span>
+                  <span>{t('settings.network.refreshDashboard')}</span>
                 </Button>
               </div>
             </SetRow>
-          </div>
-        )}
+            </div>
+          )}
+        </SetRowGroup>
       </SetBlock>
 
       {/* 6. 终端代理 —— 当前平台优先 + 其余平台可展开（用户拍板形态）。
           此前这里是模块级字面量常量：无平台分支（Windows 用户拿到的 4 条 `export` 在 cmd/PowerShell
           里都不成立）、端口硬编码 7890（同一块内的说明文字却用真实端口插值，自相矛盾）。 */}
       <SetBlock header={t('settings.advanced.terminalProxy')}>
-        <SetRow
-          label={t('settings.advanced.envVarsLabel')}
-          desc={t('settings.advanced.tipHttpPort', { port: mixedPort })}
-          style={{ border: 0, paddingBottom: 2 }}
-        />
-        <div id="term-env">
-          {envSplit.current.map((g) => (
-            <TerminalEnvBlock key={g.id} group={g} onCopy={copyText} copyAllLabel={t('settings.advanced.copyAllEnv')} />
-          ))}
-        </div>
-        {/* 其余平台：折叠标题直接列出组名（Windows (CMD) · Windows (PowerShell)），比一句「其他平台」
-            信息量更大，且全是产品/shell 名 —— 跨语种同形，不需要也不该翻译。
-            平台判定失败时 others 为空数组（全部归 current），此处整段不渲染。 */}
-        {envSplit.others.length > 0 && (
-          <Fold id="fold-env-others" title={envSplit.others.map((g) => g.label).join(' · ')}>
-            {envSplit.others.map((g) => (
-              <TerminalEnvBlock key={g.id} group={g} onCopy={copyText} copyAllLabel={t('settings.advanced.copyAllEnv')} />
+        <SetRowGroup>
+          <SetRow
+            label={t('settings.advanced.envVarsLabel')}
+            desc={t('settings.advanced.tipHttpPort', { port: mixedPort })}
+          />
+          <div id="term-env">
+            {envSplit.current.map((g) => (
+              <TerminalEnvBlock
+                key={g.id}
+                group={g}
+                onCopy={copyText}
+                copyLabel={t('common.copy')}
+                copyAllLabel={t('settings.advanced.copyAllEnv')}
+              />
             ))}
-          </Fold>
-        )}
-        {/* 提示段：全部复用既有五语种 i18n 键（`tipDisable` 此前已随迁移搬进 locale 但零消费者，此处接上）。 */}
-        <div className="term-tips">
-          <div>
-            <b>{t('settings.advanced.tip')}</b>
-            {t('settings.advanced.tipSessionOnly')}
           </div>
-          {/* `tipPermanent` 讲的是写进 ~/.bashrc / ~/.zshrc —— Windows 下不成立（CMD 要 setx、
-              PowerShell 要 profile），给 Windows 用户看它就是本次要修的缺陷换个地方复发。 */}
-          {showsUnixPersistenceTip(platform) && <div>{t('settings.advanced.tipPermanent')}</div>}
-          <div>{t('settings.advanced.tipDisable')}</div>
-        </div>
+          {/* 其余平台：折叠标题直接列出组名（Windows (CMD) · Windows (PowerShell)），比一句「其他平台」
+              信息量更大，且全是产品/shell 名 —— 跨语种同形，不需要也不该翻译。
+              平台判定失败时 others 为空数组（全部归 current），此处整段不渲染。 */}
+          {envSplit.others.length > 0 && (
+            <Fold id="fold-env-others" title={envSplit.others.map((g) => g.label).join(' · ')}>
+              {envSplit.others.map((g) => (
+                <TerminalEnvBlock
+                  key={g.id}
+                  group={g}
+                  onCopy={copyText}
+                  copyLabel={t('common.copy')}
+                  copyAllLabel={t('settings.advanced.copyAllEnv')}
+                />
+              ))}
+            </Fold>
+          )}
+          {/* 提示段：全部复用既有五语种 i18n 键（`tipDisable` 此前已随迁移搬进 locale 但零消费者，此处接上）。 */}
+          <div className="term-tips">
+            <div>
+              <b>{t('settings.advanced.tip')}</b>
+              {t('settings.advanced.tipSessionOnly')}
+            </div>
+            {/* `tipPermanent` 讲的是写进 ~/.bashrc / ~/.zshrc —— Windows 下不成立（CMD 要 setx、
+                PowerShell 要 profile），给 Windows 用户看它就是本次要修的缺陷换个地方复发。 */}
+            {showsUnixPersistenceTip(platform) && <div>{t('settings.advanced.tipPermanent')}</div>}
+            <div>{t('settings.advanced.tipDisable')}</div>
+          </div>
+        </SetRowGroup>
       </SetBlock>
     </section>
   );

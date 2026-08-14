@@ -33,6 +33,7 @@ import type {
   RuleResourceCategory,
 } from '@/contracts/types';
 import { fmtBytes } from '@/components/screens/shared/format';
+import { relativeTimeTextIso } from '@/lib/relative-time';
 import { categoryLabel } from '@/domain/rule-resource-catalog';
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/error-handler';
@@ -45,18 +46,6 @@ import { resourceRefs, ResourceRefsHoverCardContent, type ResourceRef } from '@/
 
 /** 资源来源过滤档（原型 .seg2「全部 / 内置 / 外置」）。 */
 type SourceFilter = 'all' | 'builtin' | 'external';
-
-/** 相对时间（"2 小时前" / "1 天前"）。 */
-function relativeTime(iso: string | undefined): string {
-  if (!iso) return '—';
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return '—';
-  const diffH = (Date.now() - then) / 3_600_000;
-  if (diffH < 1) return '刚刚';
-  if (diffH < 24) return `${Math.floor(diffH)} 小时前`;
-  if (diffH < 48) return '昨天';
-  return `${Math.floor(diffH / 24)} 天前`;
-}
 
 /** 「重置内置资源」的原地二次确认 key（原型 :4198 `geo-reset`）。 */
 const GEO_RESET_KEY = 'geo-reset';
@@ -155,12 +144,12 @@ export function ResourcesScreen() {
   // 原型 :4200 res-update-all → notify('开始更新全部资源…')（进行中态）；逐项结果已由每行的
   // progress/errorState 就地反映，故这里只报「命令本身没能启动」的整体失败（catch），不重复逐项报。
   const handleUpdateAll = useCallback(async () => {
-    toast.info(t('resources.updateAllStarted', '开始更新全部资源…'));
+    toast.info(t('resources.updateAllStarted'));
     try {
       await api.ruleResources.updateAll();
     } catch (err) {
       console.error('[ResourcesScreen] updateAll failed:', err);
-      toast.error(t('resources.updateAllFailed', '更新失败'), err instanceof Error ? err.message : undefined);
+      toast.error(t('resources.updateAllFailed'), err instanceof Error ? err.message : undefined);
     } finally {
       void reload();
     }
@@ -204,10 +193,10 @@ export function ResourcesScreen() {
           try {
             await api.ruleResources.delete(item.id, true);
             // 原型 :4217 res-del → notify('资源已删除')（中性 kind，非 'ok'）。
-            toast.info(t('resources.deleteDone', '资源已删除'));
+            toast.info(t('resources.deleteDone'));
           } catch (err) {
             console.error('[ResourcesScreen] delete failed:', err);
-            toast.error(t('resources.deleteFail', '删除失败'));
+            toast.error(t('resources.deleteFail'));
           } finally {
             void reload();
           }
@@ -229,12 +218,12 @@ export function ResourcesScreen() {
       try {
         const r = await api.ruleResources.cancel(item.id);
         if (!r || r.cancelled === 0) {
-          toast.info(t('resources.cancelAlreadyDone', '下载已结束，无需取消'));
+          toast.info(t('resources.cancelAlreadyDone'));
           void reload();
         }
       } catch (err) {
         console.error('[ResourcesScreen] cancel failed:', err);
-        toast.error(t('resources.cancelFailed', '取消失败'), err instanceof Error ? err.message : undefined);
+        toast.error(t('resources.cancelFailed'), err instanceof Error ? err.message : undefined);
       }
     },
     [reload, t],
@@ -251,10 +240,10 @@ export function ResourcesScreen() {
         try {
           await api.ruleResources.resetBuiltin('all');
           // 原型 :4198 geo-reset → notify('内置资源已重置','ok')。
-          toast.success(t('resources.resetBuiltinDone', '内置资源已重置'));
+          toast.success(t('resources.resetBuiltinDone'));
         } catch (err) {
           console.error('[ResourcesScreen] resetBuiltin failed:', err);
-          toast.error(t('resources.resetBuiltinFailed', '重置失败'), err instanceof Error ? err.message : undefined);
+          toast.error(t('resources.resetBuiltinFailed'), err instanceof Error ? err.message : undefined);
         } finally {
           void reload();
         }
@@ -266,12 +255,9 @@ export function ResourcesScreen() {
     <section id="s-resources" className="screen">
       <div className="phead">
         <div>
-          <h1>{t('sidebar.ruleResources', '规则资源')}</h1>
+          <h1>{t('sidebar.ruleResources')}</h1>
           <div className="sub">
-            {t(
-              'resources.sub',
-              '供路由规则引用的 .srs 规则集',
-            )}
+            {t('resources.sub')}
           </div>
         </div>
         <div className="acts">
@@ -286,8 +272,8 @@ export function ResourcesScreen() {
             </svg>
             <span>
               {armed === GEO_RESET_KEY
-                ? t('resources.resetBuiltinConfirm', '重置内置资源？')
-                : t('resources.resetBuiltin', '重置内置资源')}
+                ? t('resources.resetBuiltinConfirm')
+                : t('resources.resetBuiltin')}
             </span>
           </button>
           <button
@@ -298,7 +284,7 @@ export function ResourcesScreen() {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
               <path d="M4 6h16M4 12h16M4 18h10" />
             </svg>
-            <span>{t('resources.catalog', '资源库')}</span>
+            <span>{t('resources.catalog')}</span>
           </button>
           <button
             type="button"
@@ -308,13 +294,13 @@ export function ResourcesScreen() {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
               <path d="M9 15l6-6M8 8a3 3 0 10-3 3" />
             </svg>
-            <span>{t('resources.urlDownload', 'URL 下载')}</span>
+            <span>{t('resources.urlDownload')}</span>
           </button>
         </div>
       </div>
 
       <div className="card-h" style={{ marginBottom: 12 }}>
-        {t('resources.downloaded', '已下载资源')}
+        {t('resources.downloaded')}
       </div>
 
       {/* 源过滤 + 全部更新（原型同排） */}
@@ -330,7 +316,7 @@ export function ResourcesScreen() {
         <div
           className="seg2"
           role="group"
-          aria-label={t('resources.srcFilter', '资源来源')}
+          aria-label={t('resources.srcFilter')}
           style={{ display: 'flex', maxWidth: 340, flex: '0 1 auto' }}
         >
           {(['all', 'builtin', 'external'] as SourceFilter[]).map((s) => (
@@ -342,10 +328,10 @@ export function ResourcesScreen() {
               onClick={() => setSource(s)}
             >
               {s === 'all'
-                ? t('resources.src.all', '全部')
+                ? t('resources.src.all')
                 : s === 'builtin'
-                  ? t('resources.src.builtin', '内置')
-                  : t('resources.src.external', '外置')}
+                  ? t('resources.src.builtin')
+                  : t('resources.src.external')}
             </button>
           ))}
         </div>
@@ -354,16 +340,16 @@ export function ResourcesScreen() {
             <path d="M4 4v6h6M20 20v-6h-6" />
             <path d="M4 10a8 8 0 0114-3M20 14a8 8 0 01-14 3" />
           </svg>
-          <span>{t('resources.updateAll', '全部更新')}</span>
+          <span>{t('resources.updateAll')}</span>
         </button>
       </div>
 
       {/* 资源表 */}
       <div className="res-table">
         <div className="res-row head">
-          <span>{t('resources.col.name', '名称')}</span>
-          <span>{t('resources.col.size', '大小')}</span>
-          <span className="rc-hide">{t('resources.col.updated', '更新于')}</span>
+          <span>{t('resources.col.name')}</span>
+          <span>{t('resources.col.size')}</span>
+          <span className="rc-hide">{t('resources.col.updated')}</span>
           <span />
         </div>
 
@@ -371,7 +357,7 @@ export function ResourcesScreen() {
           <div className="res-row">
             <span className="res-name">
               <span className="spinner" />
-              {t('resources.loading', '加载中…')}
+              {t('resources.loading')}
             </span>
             <span />
             <span className="rc-hide" />
@@ -380,7 +366,7 @@ export function ResourcesScreen() {
         ) : error ? (
           <div className="res-row">
             <span className="res-name" style={{ color: 'hsl(var(--err))' }}>
-              {t('resources.loadError', '加载失败')}：{error}
+              {t('resources.loadError')}: {error}
             </span>
             <span />
             <span className="rc-hide" />
@@ -389,7 +375,7 @@ export function ResourcesScreen() {
         ) : grouped.length === 0 ? (
           <div className="res-row">
             <span className="res-name">
-              {t('resources.empty', '暂无已下载资源')}
+              {t('resources.empty')}
             </span>
             <span />
             <span className="rc-hide" />
@@ -405,7 +391,7 @@ export function ResourcesScreen() {
           grouped.map(([cat, catItems]) => (
             <Fragment key={cat}>
               <div className="res-grp">
-                <span>{categoryLabel(cat)}</span>
+                <span>{categoryLabel(cat, t('resources.categoryCustom'))}</span>
                 <span className="grp-count mono">{catItems.length}</span>
               </div>
               {catItems.map((item) => (
@@ -459,20 +445,19 @@ function ResRow({
   const cancelledState = progress?.status === 'cancelled';
   /** 武装态的删除提示语 —— 被引用时用原型 :4217 那句带条数的警告，未引用时用「删除该资源？」。 */
   const deleteLabel = !deleteConfirming
-    ? t('common.delete', '删除')
+    ? t('common.delete')
     : item.referencedBy > 0
       ? t('resources.deleteConfirmRefd', {
-          defaultValue: '正被 {{count}} 项规则引用，删除后将暂时失效（重新下载后自动恢复）',
           count: item.referencedBy,
         })
-      : t('resources.deleteConfirmPlain', '删除该资源？');
+      : t('resources.deleteConfirmPlain');
   const updatedText = errorState
-    ? t('resources.updateFailed', '更新失败')
+    ? t('resources.updateFailed')
     : cancelledState
-      ? t('resources.cancelled', '已取消')
+      ? t('resources.cancelled')
       : downloading && progress?.percent != null
         ? `${Math.floor(progress.percent)}%`
-        : relativeTime(item.downloadedAt);
+        : relativeTimeTextIso(item.downloadedAt, t) || '—';
 
   return (
     <div className="res-row">
@@ -481,7 +466,7 @@ function ResRow({
       <span className="res-name">
         {item.name}
         <span className="pill region">
-          {item.builtin ? t('resources.src.builtin', '内置') : t('resources.src.external', '外置')}
+          {item.builtin ? t('resources.src.builtin') : t('resources.src.external')}
         </span>
         <RefBadge item={item} refs={refs} />
       </span>
@@ -515,8 +500,8 @@ function ResRow({
               className="nd-a res-cancel"
               style={{ marginLeft: 6 }}
               onClick={onCancel}
-              data-tip={t('resources.cancel', '取消')}
-              aria-label={t('resources.cancel', '取消')}
+              data-tip={t('resources.cancel')}
+              aria-label={t('resources.cancel')}
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
                 <path d="M5 5l14 14M19 5L5 19" />
@@ -530,8 +515,8 @@ function ResRow({
               className="nd-a"
               style={errorState ? { color: 'hsl(var(--warn))' } : undefined}
               onClick={onUpdate}
-              data-tip={errorState ? t('resources.retryNow', '立即重试') : t('resources.update', '更新')}
-              aria-label={errorState ? t('resources.retryNow', '立即重试') : t('resources.update', '更新')}
+              data-tip={errorState ? t('resources.retryNow') : t('resources.update')}
+              aria-label={errorState ? t('resources.retryNow') : t('resources.update')}
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
                 <path d="M4 4v6h6" />
@@ -579,7 +564,7 @@ function RefBadge({ item, refs }: { item: RuleResourceListItem; refs: ResourceRe
         className="ref-badge"
         ref={hc.triggerRef}
         {...hc.triggerHandlers}
-        aria-label={t('resources.refCountAria', '{{count}} 条规则引用', { count: item.referencedBy })}
+        aria-label={t('resources.refCountAria', { count: item.referencedBy })}
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
           <path d="M10 13a5 5 0 007 0l2-2a5 5 0 00-7-7l-1 1" />
@@ -606,7 +591,7 @@ function RefBadge({ item, refs }: { item: RuleResourceListItem; refs: ResourceRe
         className="ref-badge sys"
         ref={hc.triggerRef}
         {...hc.triggerHandlers}
-        aria-label={t('resources.smartRouting', '智能分流')}
+        aria-label={t('resources.smartRouting')}
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
           <circle cx="12" cy="12" r="9" />
@@ -620,7 +605,7 @@ function RefBadge({ item, refs }: { item: RuleResourceListItem; refs: ResourceRe
           onMouseLeave={hc.cardHandlers.onMouseLeave}
         >
           <ResourceRefsHoverCardContent
-            refs={[{ kind: 'system', label: t('resources.refSystemBaseline', '智能分流基线') }]}
+            refs={[{ kind: 'system', label: t('resources.refSystemBaseline') }]}
           />
         </HoverCardPanel>
       </span>
@@ -633,7 +618,7 @@ function RefBadge({ item, refs }: { item: RuleResourceListItem; refs: ResourceRe
   // HoverCard —— 两档都不是原生 title。
   // 补 aria-label 对齐原型 aria-label="Unreferenced" 的存在性）
   return (
-    <span className="ref-badge none" data-tip={t('resources.unreferenced', '未引用')} aria-label={t('resources.unreferenced', '未引用')}>
+    <span className="ref-badge none" data-tip={t('resources.unreferenced')} aria-label={t('resources.unreferenced')}>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
         <path d="M6 12h12" />
       </svg>

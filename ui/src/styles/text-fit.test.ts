@@ -885,43 +885,15 @@ const FLD_LABEL_SELS = ['.fld-l', '.swt-row .swt-tx b'];
 const FLD_HINT_SELS = ['.fld-hint'];
 
 /**
- * `.fld-opt`「可选」徽标 —— 它**贴在标签行尾**，同一个 `.fld-l` 块内、10px 的 inline span
- * （`field-spec.tsx` 的 `{spec.opt && <span className="fld-opt"> {t('common.optional','可选')}</span>}`，
- * span 内前置一个空格即两者之间的间隙）。52 个字段带 `opt:true`，不建模就是把标签行**系统性少算一截**。
- *
- * 取值走**真实回落链**，而 i18next 的真实回落链是 `loc → fallbackLng('en-US') → defaultValue`
- * —— `defaultValue` 排在**最后**，只有键在整条语言链上都缺席才轮得到它。实测（i18next 23.16.8，
- * `lng:'ru'` + `fallbackLng:'en-US'`，en-US 有该键、ru 无）：
- * ```
- * t('common.optional', '可选') === 'Optional'   // ← fallback 赢过 defaultValue
- * t('nope.key',        '可选') === '可选'        // ← 整条链都没有才用 defaultValue
- * ```
- * 所以 2026-08-07 补译前，`fa`/`ru` 用户在 52 个 `opt` 字段上看到的是**英文 `Optional`**，
- * 不是中文「可选」——`en-US` 一直有这个键。（这一点先前写反过：#80 的原标题「显示中文」是错的，
- * 而错的模型一旦写进 `optTailPx`，本门就会按中文「可选」那个**窄一半**的宽度放行。）
- *
- * 补齐后 ru 是「Необязательно」（≈110px，比英文 `Optional` 还宽一截），本门当场按新宽度
- * 重量了全部 52 个 `opt` 字段的标签行。
- *
- * ⇒ 下面 `optTailPx` 的三级回落**必须与 i18next 同序**。哪天有人把它简化成
- * 「locale 没有就用 zh 默认」，本门就会在「某语种漏了这个键」时按窄宽度静默放行，
- * 而用户实际看到的是更宽的英文。`OPT_ZH_DEFAULT` 只是链尾兜底，不是 fallback 的替身。
+ * `.fld-opt`「可选」徽标贴在标签行尾；52 个字段带 `opt:true`，不建模会把标签行
+ * 系统性少算一截。运行时已禁止源码中文/defaultValue，取值链只有当前语种 → en-US。
+ * locale 完整性由 i18n coverage 门负责；这里仍显式建模 en-US 回落，和 i18next 保持一致。
  */
-const OPT_ZH_DEFAULT = (() => {
-  const s = src('../components/dialogs/field-spec.tsx');
-  const m = s.match(/t\(\s*'common\.optional'\s*,\s*'([^']+)'\s*\)/);
-  if (!m)
-    throw new Error(
-      "field-spec.tsx 里读不到 `t('common.optional', …)` 的 zh 默认 —— 「可选」徽标的渲染方式变了？",
-    );
-  return m[1];
-})();
-/**
- * i18next 的解析顺序：当前语种 → `fallbackLng` → `defaultValue`。三级缺一不可，见上方注释。
- * 拆成显式取值函数是为了让「缺 locale」这条支路**可被单独喂进去测**——五份 locale 现在都有
- * 这个键，直接测 `optTail('ru')` 永远走不到后两级，那样的断言没有信息量。
- */
-const optTailOf = (own: string | undefined, en: string | undefined) => own ?? en ?? OPT_ZH_DEFAULT;
+const optTailOf = (own: string | undefined, en: string | undefined): string => {
+  const value = own ?? en;
+  if (!value) throw new Error('common.optional 在当前语种与 en-US 中均缺失');
+  return value;
+};
 const optTail = (loc: Locale) =>
   optTailOf(DICT[loc]['common.optional'], DICT['en-US']['common.optional']);
 const optTailPx = (loc: Locale) => textPx(` ${optTail(loc)}`, { fontSize: fldOptFont });
@@ -1631,18 +1603,15 @@ describe('⑧ 节点弹窗表单字段（统一 540px 录入宽度，五语种�
     ).toBe(false);
   });
 
-  it('「可选」徽标按 i18next 的三级回落取值，缺 locale 时用 en-US 而不是代码里的 zh 缺省', () => {
-    // 为什么不直接断言 `optTail('ru')`：五份 locale 现在都有这个键，那条断言永远停在第一级，
-    // 对「后两级排序对不对」零信息量。故把两级缺席态显式喂进去。
+  it('「可选」徽标只按 locale → en-US 回落，不在源码保留文案兜底', () => {
     const en = DICT['en-US']['common.optional'];
     expect(en, 'en-US 丢了 common.optional ⇒ 下面整条回落链的前提没了').toBeTruthy();
-    expect(optTailOf(undefined, en), '缺 locale 时必须回落到 en-US —— i18next 里 fallbackLng 排在 defaultValue 之前').toBe(
+    expect(optTailOf(undefined, en), '缺 locale 时必须回落到 en-US').toBe(
       en,
     );
-    expect(optTailOf(undefined, undefined), '整条语言链都没有该键时才轮到代码里的 zh 缺省').toBe(
-      OPT_ZH_DEFAULT,
+    expect(() => optTailOf(undefined, undefined), '整条语言链缺键时必须显式失败，不能退回源码硬编码').toThrow(
+      'common.optional',
     );
-    expect(OPT_ZH_DEFAULT, '兜底值与 en-US 撞了 ⇒ 上面两条断言退化成同一条，失去区分力').not.toBe(en);
   });
 
   it('每个 node.field.* 键都被 ND_SPEC 消费、也都被本门量过（双向对差，防死键与漏测）', () => {

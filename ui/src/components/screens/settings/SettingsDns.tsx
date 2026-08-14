@@ -2,7 +2,7 @@
  * SettingsDns —— DNS 子页（原型 [data-sec="dns"] L2172-2218）。
  *
  * 三块：
- *  1. 解析器：FakeIP / 远程 DNS / 国内 DNS / DNS 引导 / 接管系统 DNS / 乐观缓存 / 查询超时
+ *  1. 解析器：FakeIP / 远程 DNS / 国内 DNS / DNS 服务器域名解析 / 接管系统 DNS / 乐观缓存 / 查询超时
  *  2. 节点域名解析：竞速（多选池）/ 单上游（nodeResolverSingle） + 上游清单（race-ups）
  *  3. FakeIP 例外域名：fakeIpFilter 总开关 + fakeIpFilterList
  *
@@ -15,7 +15,16 @@ import type { UserConfig, DnsConfig, CustomDnsUpstream } from '@/contracts/types
 import { useDialogStore } from '../../dialogs/dialog-store';
 import { Fold } from '@/components/Fold';
 import { DEFAULT_BROWSER_DOH_SUFFIXES } from '@/contracts/browser-doh';
-import { Phead, SetBlock, SetRow, Switch, Select, TextInput, Segmented } from './primitives';
+import {
+  Phead,
+  SetBlock,
+  SetRow,
+  SetRowGroup,
+  Switch,
+  Select,
+  TextInput,
+  Segmented,
+} from './primitives';
 import { ListEditor } from './ListEditor';
 
 export interface SettingsDnsProps {
@@ -377,9 +386,9 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
       openDialog({
         kind: 'confirm',
         payload: {
-          title: t('settings.advanced.fakeIpTunOffConfirmTitle', '关闭 FakeIP？'),
+          title: t('settings.advanced.fakeIpTunOffConfirmTitle'),
           message: t('settings.advanced.fakeIpTunOffConfirmDesc'),
-          confirmLabel: t('settings.advanced.fakeIpTunOffConfirmOk', '仍然关闭'),
+          confirmLabel: t('settings.advanced.fakeIpTunOffConfirmOk'),
           danger: true,
           onConfirm: () => {
             closeDialog(); // 回调自行 pop（dialog-store 不自动关）
@@ -492,7 +501,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
               const v = e.target.value;
               if (v !== '__custom__') pickPreset('foreignDns', v);
             }}
-            aria-label="Remote DNS preset"
+            aria-label={t('settings.dns.remoteDns')}
           >
             {REMOTE_PRESETS.map((p) => (
               <option key={p.value} value={p.value}>
@@ -516,7 +525,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
             aria-invalid={dnsErr.foreignDns || undefined}
             style={dnsErr.foreignDns ? { borderColor: 'hsl(var(--err))' } : undefined}
             className="mono"
-            aria-label="Remote DNS URL"
+            aria-label={t('settings.dns.remoteDns')}
           />
           {dnsErr.foreignDns && (
             <div className="err-line">{t('settings.advanced.dnsInvalid')}</div>
@@ -536,7 +545,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
               const v = e.target.value;
               if (v !== '__custom__') pickPreset('domesticDns', v);
             }}
-            aria-label="Domestic DNS preset"
+            aria-label={t('settings.dns.domesticDns')}
           >
             {DOMESTIC_PRESETS.map((p) => (
               <option key={p.value} value={p.value}>
@@ -559,7 +568,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
             aria-invalid={dnsErr.domesticDns || undefined}
             style={dnsErr.domesticDns ? { borderColor: 'hsl(var(--err))' } : undefined}
             className="mono"
-            aria-label="Domestic DNS URL"
+            aria-label={t('settings.dns.domesticDns')}
           />
           {dnsErr.domesticDns && (
             <div className="err-line">{t('settings.advanced.dnsInvalid')}</div>
@@ -598,14 +607,14 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
             id="dns-optimistic-swt"
             checked={dns.optimisticCache === true}
             onChange={(v) => patchDns({ optimisticCache: v })}
-            aria-label={t('settings.advanced.optimisticCache', '乐观 DNS 缓存')}
+            aria-label={t('settings.advanced.optimisticCache')}
           />
         </SetRow>
 
         {/* DNS 查询超时 → dns.timeout "<n>ms"（builder/dns.rs:472）。空=不下发用核默认；
             范围 1-60000 与 store/sanitize.rs:498-517 同口径（见 normalizeDnsTimeoutInput）。 */}
         <SetRow
-          label={t('settings.advanced.dnsTimeout', 'DNS 查询超时')}
+          label={t('settings.advanced.dnsTimeout')}
           desc={t('settings.advanced.dnsTimeoutDesc')}
           align="start"
           ctrlStyle={{ minWidth: 160, display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'stretch' }}
@@ -614,7 +623,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
             id="dns-timeout-input"
             inputMode="numeric"
             value={timeoutDraft}
-            placeholder={t('settings.advanced.dnsTimeoutPlaceholder', '默认')}
+            placeholder={t('settings.advanced.dnsTimeoutPlaceholder')}
             onChange={(e) => {
               setTimeoutDraft(e.target.value);
               if (timeoutErr) setTimeoutErr(false);
@@ -626,7 +635,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
             aria-invalid={timeoutErr || undefined}
             style={timeoutErr ? { borderColor: 'hsl(var(--err))' } : undefined}
             className="mono"
-            aria-label={t('settings.advanced.dnsTimeout', 'DNS 查询超时')}
+            aria-label={t('settings.advanced.dnsTimeout')}
           />
           {timeoutErr && (
             <div className="err-line">{t('settings.advanced.dnsTimeoutRange')}</div>
@@ -638,7 +647,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
       <SetBlock header={t('settings.dns.nodeResolverBlock')}>
         <SetRow label={t('settings.dns.raceStrategy')} desc={t('settings.dns.raceStrategyDesc')}>
           <Segmented<RaceStrategy>
-            ariaLabel="DNS race strategy"
+            ariaLabel={t('settings.dns.raceStrategy')}
             value={raceStrategy}
             onChange={(v) => patchDns({ resolveNodeDomainsAhead: v === 'race' })}
             options={[
@@ -671,12 +680,11 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
             </Select>
           </SetRow>
         ) : (
-          <>
+          <SetRowGroup>
             <SetRow
               label={t('settings.dns.raceUpstreams')}
               desc={t('settings.dns.raceUpstreamsDesc')}
               align="start"
-              style={{ alignItems: 'flex-start', borderBottom: 0, paddingBottom: 2 }}
             />
 
             <div className="race-ups" id="race-ups">
@@ -764,85 +772,89 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
                 <div className="card-sub">{t('settings.dns.raceEmptyFallback')}</div>
               )}
             </div>
-          </>
+          </SetRowGroup>
         )}
       </SetBlock>
 
       {/* 3. FakeIP 例外域名：总开关 + 清单（默认折叠，summary 右侧给条目数） */}
       <SetBlock header={t('settings.advanced.fakeIpFilter')}>
-        {/* 总开关 → config.fakeIpFilter（builder/dns.rs:658 `fake_ip_filter != Some(false)`）。
-            此前 UI 只在编辑清单时隐式写 true，没有任何关闭路径 —— 用户想整体关掉 filter 够不着。 */}
-        <SetRow
-          label={t('settings.advanced.fakeIpFilter')}
-          desc={t('settings.advanced.fakeIpFilterDesc')}
-        >
-          <Switch
-            id="fakeip-filter-swt"
-            checked={fakeIpFilterOn}
-            onChange={(v) => void update({ fakeIpFilter: v })}
-            aria-label={t('settings.advanced.fakeIpFilter')}
-          />
-        </SetRow>
-        {/* 关闭时不渲染清单：不生效的可编辑清单是误导（同 SettingsTun 排除网段在总开关关闭时的处理）。
-            清单编辑因此不再隐式写 fakeIpFilter:true —— 开关是这个字段的唯一控制点。 */}
-        {fakeIpFilterOn && (
-          <Fold
-            id="fold-fakeip-filter"
-            title={t('settings.dns.fakeIpFilterFold')}
-            count={fakeIpFilterList.length}
+        <SetRowGroup>
+          {/* 总开关 → config.fakeIpFilter（builder/dns.rs:658 `fake_ip_filter != Some(false)`）。
+              此前 UI 只在编辑清单时隐式写 true，没有任何关闭路径 —— 用户想整体关掉 filter 够不着。 */}
+          <SetRow
+            label={t('settings.advanced.fakeIpFilter')}
+            desc={t('settings.advanced.fakeIpFilterDesc')}
           >
-            <div className="fld-hint" style={{ marginTop: 0 }}>
-              {t('settings.dns.fakeIpFilterHint')}
-            </div>
-            <ListEditor
-              id="fakeip-filter-list"
-              value={fakeIpFilterList}
-              onChange={(next) => void update({ fakeIpFilterList: next })}
-              placeholder="example.com"
-              ariaLabel="Domain"
-              addLabel={t('settings.dns.addDomain')}
-              importLabel={t('common.bulkImport')}
+            <Switch
+              id="fakeip-filter-swt"
+              checked={fakeIpFilterOn}
+              onChange={(v) => void update({ fakeIpFilter: v })}
+              aria-label={t('settings.advanced.fakeIpFilter')}
             />
-          </Fold>
-        )}
+          </SetRow>
+          {/* 关闭时不渲染清单：不生效的可编辑清单是误导（同 SettingsTun 排除网段在总开关关闭时的处理）。
+              清单编辑因此不再隐式写 fakeIpFilter:true —— 开关是这个字段的唯一控制点。 */}
+          {fakeIpFilterOn && (
+            <Fold
+              id="fold-fakeip-filter"
+              title={t('settings.dns.fakeIpFilterFold')}
+              count={fakeIpFilterList.length}
+            >
+              <div className="fld-hint" style={{ marginTop: 0 }}>
+                {t('settings.dns.fakeIpFilterHint')}
+              </div>
+              <ListEditor
+                id="fakeip-filter-list"
+                value={fakeIpFilterList}
+                onChange={(next) => void update({ fakeIpFilterList: next })}
+                placeholder="example.com"
+                ariaLabel={t('settings.dns.domain')}
+                addLabel={t('settings.dns.addDomain')}
+                importLabel={t('common.bulkImport')}
+              />
+            </Fold>
+          )}
+        </SetRowGroup>
       </SetBlock>
 
       {/* 4. 浏览器内置 DoH 拦截：总开关 + 可编辑清单（形态与上方 FakeIP 例外同构） */}
       <SetBlock header={t('settings.dns.browserDohTitle')}>
-        {/* 2026-08-13 之前这里是一张**用户关不掉**的硬编码黑名单（还顺带拦了 14 个 Google 域名），
-            已整块移除；现在它是一个默认关的开关。删除依据见 builder/route.rs 的说明块。 */}
-        <SetRow
-          label={t('settings.dns.browserDohTitle')}
-          desc={t('settings.dns.browserDohDesc')}
-        >
-          <Switch
-            id="browser-doh-swt"
-            checked={browserDohOn}
-            onChange={(v) => void update({ blockBrowserDoh: v })}
-            aria-label={t('settings.dns.browserDohTitle')}
-          />
-        </SetRow>
-        {/* 同 FakeIP 例外：关闭时不渲染清单 —— 不生效的可编辑清单是误导。 */}
-        {browserDohOn && (
-          <Fold
-            id="fold-browser-doh"
-            title={t('settings.dns.browserDohFold')}
-            count={browserDohList.length}
+        <SetRowGroup>
+          {/* 2026-08-13 之前这里是一张**用户关不掉**的硬编码黑名单（还顺带拦了 14 个 Google 域名），
+              已整块移除；现在它是一个默认关的开关。删除依据见 builder/route.rs 的说明块。 */}
+          <SetRow
+            label={t('settings.dns.browserDohTitle')}
+            desc={t('settings.dns.browserDohDesc')}
           >
-            <div className="fld-hint" style={{ marginTop: 0 }}>
-              {t('settings.dns.browserDohHint')}
-            </div>
-            <ListEditor
-              id="browser-doh-list"
-              value={browserDohList}
-              onChange={(next) => void update({ browserDohList: next })}
-              placeholder="dns.example.com"
-              ariaLabel="Domain"
-              addLabel={t('settings.dns.addDomain')}
-              importLabel={t('common.bulkImport')}
+            <Switch
+              id="browser-doh-swt"
+              checked={browserDohOn}
+              onChange={(v) => void update({ blockBrowserDoh: v })}
+              aria-label={t('settings.dns.browserDohTitle')}
             />
-          </Fold>
-        )}
+          </SetRow>
+          {/* 同 FakeIP 例外：关闭时不渲染清单 —— 不生效的可编辑清单是误导。 */}
+          {browserDohOn && (
+            <Fold
+              id="fold-browser-doh"
+              title={t('settings.dns.browserDohFold')}
+              count={browserDohList.length}
+            >
+              <div className="fld-hint" style={{ marginTop: 0 }}>
+                {t('settings.dns.browserDohHint')}
+              </div>
+              <ListEditor
+                id="browser-doh-list"
+                value={browserDohList}
+                onChange={(next) => void update({ browserDohList: next })}
+                placeholder="dns.example.com"
+                ariaLabel={t('settings.dns.domain')}
+                addLabel={t('settings.dns.addDomain')}
+                importLabel={t('common.bulkImport')}
+              />
+            </Fold>
+          )}
+        </SetRowGroup>
       </SetBlock>
     </section>
   );

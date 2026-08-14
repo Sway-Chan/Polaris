@@ -265,6 +265,62 @@ fn parse_level(s: &str) -> Option<LevelFilter> {
 /// [`set_level`] 据此让位：见该函数文档。
 static ENV_LEVEL_OVERRIDE: AtomicBool = AtomicBool::new(false);
 
+/// 当前进程的「诊断模式」基线级别。`Some(level)` 表示诊断已开启，值是开启前（或诊断期间由配置
+/// 更新得到）的常规级别；实际 `log::max_level()` 至少抬到 Debug。关闭时把该值原样恢复。
+///
+/// 这份状态只在进程内，**绝不落配置**：应用重启后 static 重新回到 `None`，启动级别仍走
+/// [`startup_level`] 的 config / `POLARIS_LOG` 判据。用 `Mutex<Option<_>>` 而不是单独一个 bool + level，
+/// 是为了让「是否开启」与「该恢复到哪里」原子成对，避免并发点击留下开着却无基线的半态。
+static SESSION_DIAGNOSTIC_BASE: Mutex<Option<LevelFilter>> = Mutex::new(None);
+
+fn diagnostic_base() -> std::sync::MutexGuard<'static, Option<LevelFilter>> {
+    SESSION_DIAGNOSTIC_BASE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// 诊断模式下的有效级别：常规级别比 Debug 更安静时抬到 Debug；本来就是 Trace 时不反向降级。
+fn diagnostic_level(base: LevelFilter) -> LevelFilter {
+    if base < LevelFilter::Debug {
+        LevelFilter::Debug
+    } else {
+        base
+    }
+}
+
+/// 当前进程是否处于会话级诊断模式。
+#[must_use]
+pub fn session_diagnostic_enabled() -> bool {
+    diagnostic_base().is_some()
+}
+
+/// 开关会话级诊断模式。只改变本进程日志门槛，不写 `config.logLevel`、不重启内核。
+///
+/// sing-box 的 `SubscribeLog` 恒送全级别，relay 又逐帧读取 `log::max_level()`，所以抬到 Debug 后应用日志
+/// 与本页内核实时流都立即变详细；内核自己写 `singbox.log` 的级别仍由起核配置决定，UI 的「内核实跑」
+/// 徽标继续如实显示那一格，不能假装管理 API 有 setter。
+pub fn set_session_diagnostic(enabled: bool) -> bool {
+    let mut base = diagnostic_base();
+    match (enabled, *base) {
+        (true, None) => {
+            let previous = log::max_level();
+            *base = Some(previous);
+            log::set_max_level(diagnostic_level(previous));
+            log::info!(
+                "会话诊断模式已开启：日志临时提升到 {}（重启应用自动恢复）",
+                log::max_level()
+            );
+        }
+        (false, Some(previous)) => {
+            *base = None;
+            log::set_max_level(previous);
+            log::info!("会话诊断模式已关闭：日志恢复到 {previous}");
+        }
+        _ => {} // 幂等：重复开 / 关不刷日志，也不改恢复基线。
+    }
+    base.is_some()
+}
+
 /// 启动级别：`POLARIS_LOG` 环境变量 > `config.logLevel` > Info。
 ///
 /// 环境变量优先是因为它是**排障者的临时超驰**——已经在用它抓日志时，不该被用户配置里存的级别顶掉。
@@ -327,11 +383,22 @@ pub fn set_level(level: &str) {
         log::warn!("未知日志级别 `{level}`，级别未变更");
         return;
     };
-    if log::max_level() == filter {
+    // 诊断期间配置仍允许修改，但只能更新「关闭诊断后恢复到哪里」；实际门槛保持至少 Debug。
+    // 否则任意一次全量配置保存（即使只改主题）都会把诊断会话静默打回 Info。
+    let effective = {
+        let mut base = diagnostic_base();
+        if base.is_some() {
+            *base = Some(filter);
+            diagnostic_level(filter)
+        } else {
+            filter
+        }
+    };
+    if log::max_level() == effective {
         return; // 幂等：config 保存常带全量字段，级别没变时不刷屏。
     }
-    log::set_max_level(filter);
-    log::info!("应用日志级别已切到 {filter}（sing-box 侧需重启内核生效）");
+    log::set_max_level(effective);
+    log::info!("应用日志级别已切到 {effective}（sing-box 侧需重启内核生效）");
 }
 
 /// 打开日志文件（append）；超限先轮转一次。任何 IO 失败 → None（退化成只写 stderr，绝不 panic）。
@@ -593,6 +660,7 @@ mod tests {
         let _g = LEVEL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let saved_flag = ENV_LEVEL_OVERRIDE.load(Ordering::Relaxed);
         let saved_level = log::max_level();
+        let saved_diagnostic = diagnostic_base().take();
 
         ENV_LEVEL_OVERRIDE.store(false, Ordering::Relaxed);
         log::set_max_level(LevelFilter::Info);
@@ -612,7 +680,44 @@ mod tests {
         );
 
         ENV_LEVEL_OVERRIDE.store(saved_flag, Ordering::Relaxed);
+        *diagnostic_base() = saved_diagnostic;
         log::set_max_level(saved_level);
+    }
+
+    /// 会话诊断只临时抬实际门槛；期间配置变更更新恢复基线，关闭后回到新配置，不会被一次全量保存打断。
+    #[test]
+    fn session_diagnostic_is_temporary_and_tracks_configured_baseline() {
+        let _g = LEVEL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved_flag = ENV_LEVEL_OVERRIDE.load(Ordering::Relaxed);
+        let saved_level = log::max_level();
+        let saved_diagnostic = diagnostic_base().take();
+
+        ENV_LEVEL_OVERRIDE.store(false, Ordering::Relaxed);
+        log::set_max_level(LevelFilter::Info);
+
+        assert!(set_session_diagnostic(true));
+        assert!(session_diagnostic_enabled());
+        assert_eq!(log::max_level(), LevelFilter::Debug);
+
+        // 诊断开着时保存 warn：实时门槛仍是 debug，但退出诊断应恢复到刚保存的 warn。
+        set_level("warn");
+        assert_eq!(log::max_level(), LevelFilter::Debug);
+        assert!(!set_session_diagnostic(false));
+        assert_eq!(log::max_level(), LevelFilter::Warn);
+
+        // 重复关闭幂等，不会继续改变级别。
+        assert!(!set_session_diagnostic(false));
+        assert_eq!(log::max_level(), LevelFilter::Warn);
+
+        ENV_LEVEL_OVERRIDE.store(saved_flag, Ordering::Relaxed);
+        *diagnostic_base() = saved_diagnostic;
+        log::set_max_level(saved_level);
+    }
+
+    #[test]
+    fn session_diagnostic_never_downgrades_trace() {
+        assert_eq!(diagnostic_level(LevelFilter::Trace), LevelFilter::Trace);
+        assert_eq!(diagnostic_level(LevelFilter::Error), LevelFilter::Debug);
     }
 
     // ── BUG-P3-7：环内 seq 单调 + 水合/流式衔接不重不漏 ──

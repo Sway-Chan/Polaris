@@ -122,12 +122,12 @@ export default function SettingsAbout() {
             setTimeout(() => {
               void invoke(IPC_CHANNELS.TRAY_QUIT).catch(() => {});
             }, UNINSTALL_EXIT_DELAY_MS);
-          } else toast.error(title, t('settings.about.uninstallResultTitle', '卸载结果'));
+          } else toast.error(title, t('settings.about.uninstallResultTitle'));
         } catch (err) {
           // 调用处是 `onClick={uninstall}`，返回值被丢弃 ⇒ 不在这里 catch 就是没人能接的
           // promise rejection，用户零反馈。
           toast.error(
-            t('settings.about.uninstallFail', '卸载失败'),
+            t('settings.about.uninstallFail'),
             err instanceof Error ? err.message : String(err),
           );
         } finally {
@@ -197,7 +197,7 @@ export default function SettingsAbout() {
               <path d="M6 3h9l4 4v14H6z" />
               <path d="M9 12h6M9 16h4" />
             </svg>
-            <span>{t('settings.about.license', '开源许可 · MIT')}</span>
+            <span>{t('settings.about.license')}</span>
           </a>
           <a
             className="about-link"
@@ -210,7 +210,7 @@ export default function SettingsAbout() {
               <circle cx="12" cy="12" r="9" />
               <path d="M12 11v5M12 8h.01" />
             </svg>
-            <span>{t('settings.about.notice', '第三方组件声明')}</span>
+            <span>{t('settings.about.notice')}</span>
           </a>
         </div>
 
@@ -235,13 +235,10 @@ export default function SettingsAbout() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1 }}>
             <b style={{ fontSize: 13, color: 'hsl(var(--err))' }}>
-              {t('settings.about.uninstallTitle', '卸载 Polaris')}
+              {t('settings.about.uninstallTitle')}
             </b>
             <CardSub>
-              {t(
-                'settings.about.uninstallDesc',
-                '移除开机自启、提权助手、受保护目录中的内核、全部用户配置、更新缓存与应用本体。需双重确认，且不可恢复。',
-              )}
+              {t('settings.about.uninstallDesc')}
             </CardSub>
           </div>
           {/* 复用 primitives.tsx 的 Button（而非原生 <button className="btn">）——Button 内部已处理
@@ -258,10 +255,10 @@ export default function SettingsAbout() {
                 `.confirming` 类负责翻红实心（components.css `.btn.confirming`）。 */}
             <span>
               {uninstalling
-                ? t('settings.about.uninstallInProgress', '卸载中…')
+                ? t('settings.about.uninstallInProgress')
                 : confirmingUninstall
-                  ? t('settings.about.uninstallConfirmAgain', '再次点击确认卸载（不可逆）')
-                  : t('settings.about.uninstallAction', '卸载…')}
+                  ? t('settings.about.uninstallConfirmAgain')
+                  : t('settings.about.uninstallAction')}
             </span>
           </Button>
         </div>
@@ -289,7 +286,7 @@ export default function SettingsAbout() {
             </ul>
             {report.requiresExit && (
               <CardSub style={{ marginTop: 10, color: 'hsl(var(--warn))' }}>
-                {t('settings.about.uninstallExitHint', '用户配置或应用本体已删除，请退出 Polaris。')}
+                {t('settings.about.uninstallExitHint')}
               </CardSub>
             )}
           </div>

@@ -13,17 +13,10 @@
  *  - **R1 无 radix/RHF**：select 走 D1 `<Csel>`（受控、无懒挂 Portal、无伪 onValueChange），
  *    reset-race 根因整类不存在（配合 NodeDialog 的 `key` 重挂 + 同步初始化）。
  *
- * i18n：label/hint 存 i18n key，`zh`/`hintZh` 是**可选**的 zh 缺省，渲染走 `t(key, zhDefault)`
- * （对齐既有屏 `t('nodes.add','添加')` 的「键 + zh 默认」惯例）。
+ * i18n：label/hint 只存 i18n key，五语键完整性由 `i18n/i18n-coverage.test.ts` 与 locale parity 门守住；
+ * 描述符不再保留中文默认值，避免 locale 与组件各有一份文案真值。
  *
- * **缺省是过渡态、不是终态**：给了 zh 缺省，「locale 里译错一条」与「locale 里漏一条」在界面上
- * 长得一模一样（都显示中文），5 个语种会被一起压回中文而没有任何门会红 —— `node.field.*` 那 95 条
- * 就是这么在 locale 铺齐前一直被 zh 挡住的。故键落地后应删掉缺省：`ND_SPEC` 已于 2026-08-07 删光
- * （`node-spec.ts` 文件头），`WgDialog`/`WarpDialog`/`TsSettingsDialog`/`RuleDialog` 尚有 36 个键
- * 没进 locale、仍靠缺省渲染中文，是同型存量债。守这两侧的是 `i18n/i18n-coverage.test.ts` 的 G5：
- * 「键在 en-US 里 **或** 同对象仍留着 zh 缺省」，两者皆无 ⇒ 红。
- *
- * select 选项文案多为专有名词（TCP/xtls-rprx-vision/…）直接字面量，不入 i18n。
+ * select 选项文案多为专有名词（TCP/xtls-rprx-vision/…）直接字面量；通用自然语言可传点分 i18n key。
  */
 
 import { useState } from 'react';
@@ -54,15 +47,6 @@ interface FieldBase {
   k: string;
   /** 标签 i18n key。 */
   label: string;
-  /**
-   * 标签 zh 缺省（key 缺失时的渲染文案）—— **可选**。
-   *
-   * 曾是必填。改成可选是为了让「键已五语齐备」的表把它删干净（`ND_SPEC`），因为留着就是第二个
-   * 真值源且看不出谁在生效（见文件头）。**类型放宽丢掉的那份保证由门接管**：
-   * `i18n/i18n-coverage.test.ts` 的 G5b 要求每个 FieldSpec 的键要么在 en-US 里、要么仍有 zh 缺省，
-   * 两者皆无 ⇒ 红（i18next 对缺失键返回**键本身**，界面上会出现一串点分标识符）。
-   */
-  zh?: string;
   /** 显隐谓词（返回 false = 该字段在当前草稿下隐藏）。缺省恒显。 */
   when?: (values: FormValues) => boolean;
   /** 「可选」徽标。 */
@@ -83,8 +67,6 @@ interface FieldBase {
    * 把它顶出来之后不再成立。
    */
   hint?: string;
-  /** 说明行的 zh 缺省 —— 同 `zh`，可选且是过渡态，见文件头。 */
-  hintZh?: string;
 }
 
 /**
@@ -115,7 +97,6 @@ export type FieldSpec =
        * 照显等于对着一个拨不动的开关解释它拨动后会怎样。
        */
       disabledHint?: string;
-      disabledHintZh?: string;
     });
 
 /**
@@ -146,8 +127,16 @@ export function parseNumberField(raw: string): number | undefined {
  * `fp` / `sec` / `enc` / `cc` / `obfs` … 每个 select 都是同一类风险，逐个补必然漏。
  * 空串不并入 —— 它是「未设置」而非未知取值，且多张表里 `''` 本身就是合法首项（flow=none / bbr=默认）。
  */
-export function toCselOptions(options: readonly SelectOption[], current?: FormValue): CselOption[] {
-  const opts = options.map(([value, label, disabled]) => ({ value, label, disabled }));
+export function toCselOptions(
+  options: readonly SelectOption[],
+  current?: FormValue,
+  translate: (key: string) => string = (key) => key,
+): CselOption[] {
+  const opts = options.map(([value, label, disabled]) => ({
+    value,
+    label: /^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+$/.test(label) ? translate(label) : label,
+    disabled,
+  }));
   if (typeof current === 'string' && current !== '' && !opts.some((o) => o.value === current)) {
     opts.unshift({ value: current, label: current, disabled: undefined });
   }
@@ -167,29 +156,18 @@ export interface FieldRendererProps {
 export function FieldRenderer({ spec, value, onChange }: FieldRendererProps) {
   const { t } = useTranslation();
   const [secretVisible, setSecretVisible] = useState(false);
-  /**
-   * `t(key, zh?)` —— zh 缺省可选之后必须分两条调用路径，**不能写成 `t(key, zh)` 直接把 undefined 递进去**：
-   * i18next 的 `t` 是重载并集，第二参为 `undefined` 时会选中 `options?: TOptions` 那一支，`tsc` 直接报
-   * TS2345（`string` 不可赋给 `$Dictionary`）。两条路径的运行期语义相同（键缺失都返回**键本身**，
-   * 实测 23.16.8），差别只在类型层。
-   */
-  const tr = (key: string, zh?: string) => (zh === undefined ? t(key) : t(key, zh));
-  const label = tr(spec.label, spec.zh);
+  const label = t(spec.label);
   const fid = `nd-f-${spec.k}`;
 
   if (spec.t === 'switch') {
     const on = value === true;
     const off = spec.disabled === true;
     const hintKey = off && spec.disabledHint ? spec.disabledHint : spec.hint;
-    const hintZh = off && spec.disabledHint ? spec.disabledHintZh : spec.hintZh;
     return (
       <div className="fld swt-row">
         <div className="swt-tx">
           <b>{label}</b>
-          {/* 传 `hintZh` 原样（可能是 undefined），**不写 `?? ''`**：实测 i18next 23.16.8 对
-              `t(key, '')` 返回**空串** —— 键漏了会渲染出一个空的 `.fld-hint`，谁都看不出少了什么；
-              而 `t(key, undefined)` 返回**键本身**，一眼可见。缺省删光之后这两者的差别才浮出来。 */}
-          {hintKey && <div className="fld-hint">{tr(hintKey, hintZh)}</div>}
+          {hintKey && <div className="fld-hint">{t(hintKey)}</div>}
         </div>
         {/* 原生 `disabled`（而非 `aria-disabled` + 自行拦截）：它连点击事件都不派发 ⇒ `onChange`
             结构上不可达，而不是「拦得住就好」。禁用的开关是「结构上永远不能开」的语义载体，
@@ -210,7 +188,7 @@ export function FieldRenderer({ spec, value, onChange }: FieldRendererProps) {
   const labelEl = (
     <label className="fld-l" htmlFor={fid}>
       <span>{label}</span>
-      {spec.opt && <span className="fld-opt"> {t('common.optional', '可选')}</span>}
+      {spec.opt && <span className="fld-opt"> {t('common.optional')}</span>}
     </label>
   );
   /**
@@ -219,11 +197,11 @@ export function FieldRenderer({ spec, value, onChange }: FieldRendererProps) {
    * `hint` 提到 `FieldBase` 之后每支都得渲染，漏一支的下场是**填了 hint 却不显示**——
    * 类型不红、build 不红、本仓 vitest 无 jsdom 渲染不了，没有任何门抓得到（同 `toCselOptions` 那条理由）。
    */
-  const hintEl = spec.hint ? <div className="fld-hint">{tr(spec.hint, spec.hintZh)}</div> : null;
+  const hintEl = spec.hint ? <div className="fld-hint">{t(spec.hint)}</div> : null;
 
   if (spec.t === 'select') {
     // 传 value：当前值落在选项集外时并入选项，避免「一碰下拉就被迫改值」（见 toCselOptions 注释）。
-    const opts = toCselOptions(spec.options, value);
+    const opts = toCselOptions(spec.options, value, t);
     return (
       <div className="fld">
         {labelEl}
@@ -276,7 +254,7 @@ export function FieldRenderer({ spec, value, onChange }: FieldRendererProps) {
             <button
               type="button"
               className="secret-toggle"
-              aria-label={secretVisible ? t('common.hideSecret', '隐藏敏感内容') : t('common.showSecret', '显示敏感内容')}
+              aria-label={secretVisible ? t('common.hideSecret') : t('common.showSecret')}
               aria-pressed={secretVisible}
               onClick={() => setSecretVisible((visible) => !visible)}
             >
@@ -309,7 +287,7 @@ export function FieldRenderer({ spec, value, onChange }: FieldRendererProps) {
           <button
             type="button"
             className="secret-toggle"
-            aria-label={secretVisible ? t('common.hideSecret', '隐藏敏感内容') : t('common.showSecret', '显示敏感内容')}
+            aria-label={secretVisible ? t('common.hideSecret') : t('common.showSecret')}
             aria-pressed={secretVisible}
             onClick={() => setSecretVisible((visible) => !visible)}
           >

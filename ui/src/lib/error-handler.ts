@@ -1,13 +1,10 @@
 /**
  * 错误处理（Polaris 底座移植自 Polaris lib/error-handler.ts）。
  *
- * Polaris 原用 sonner（toast）做用户可见反馈。Polaris 底座阶段未引入 toast 库（待组件阶段随设计系统接入），
- * 故此处 showError/showSuccess/showInfo/showWarning 暂走 console，待 Aurora 设计系统接入后替换为真实 toast。
- * 错误分类（ErrorCategory）、proxyErrorCategory 映射与 Polaris 完全一致——这是跨进程错误分类的唯一依据，
- * 底座即需就位（后端 Rust 错误码 → 前端分类）。
+ * toast 门面由 App 注入真实实现，启动早期回落 console；错误分类只认后端结构化 ProxyErrorCode，
+ * 不再按某一种语言的错误句子猜测类别。
  */
 
-import i18n from '../i18n';
 import {
   ProxyErrorCode,
   isProxyErrorCode,
@@ -19,12 +16,6 @@ export enum ErrorCategory {
   System = 'System',
   Process = 'Process',
   Unknown = 'Unknown',
-}
-
-export interface AppError {
-  category: ErrorCategory;
-  userMessage: string;
-  technicalMessage?: string;
 }
 
 /**
@@ -49,17 +40,12 @@ export interface ToastOptions {
   /** 第二段小字（`.toast-desc`）。`error` 的第二位参数是它的同义简写，两者择一即可。 */
   description?: string;
   /**
-   * 行内动作按钮（当前唯一消费者：测速中断态的「继续」）。
-   *
-   * ⚠️ **带 action 的 toast 一定不是 sticky**：`toast-queue.ts::autoDismissMs` 让 action **压过**
-   * `sticky`，返回一个更长但**有限**的停留（`ACTION_VISIBLE_MS`）。判据：一条按钮点不到又关不掉的
-   * toast 会永久占着屏幕右下角，比没有按钮更糟；而 2.2s 的默认停留又短到按钮形同虚设。
-   * 两难只有一个出口 —— 停留加长但必须**收敛**。这条不变式由 toast-queue 的门钉死。
-   *
-   * `label` 必须是**已翻译**的字面（本层不碰 i18n）。`onClick` 触发后由调用方自行决定后续
-   * （典型：发起续测，随后新一轮进度事件会以同 key 顶掉这条）。
+   * 行内动作组。`label` 必须是已翻译的字面；有动作时 toast 会获得较长但有限的停留时间。
+   * 当前消费者是测速中断态的「继续剩余 / 重新测速」。
    */
-  action?: { label: string; onClick: () => void };
+  actions?: Array<{ label: string; onClick: () => void }>;
+  /** 可关闭入口；存在即渲染关闭按钮，`label` 作为已翻译的无障碍名称。 */
+  dismiss?: { label: string };
 }
 
 /**
@@ -95,106 +81,9 @@ export const toast: ToastImpl = {
   error: (m, d, o) => toastImpl.error(m, d, o),
 };
 
-export class ErrorHandler {
-  static handle(error: AppError): void {
-    console.error(`[${error.category}] ${error.userMessage}`, error.technicalMessage);
-
-    switch (error.category) {
-      case ErrorCategory.Config:
-        this.handleConfigError(error);
-        break;
-      case ErrorCategory.Connection:
-        this.handleConnectionError(error);
-        break;
-      case ErrorCategory.System:
-        this.handleSystemError(error);
-        break;
-      case ErrorCategory.Process:
-        this.handleProcessError(error);
-        break;
-      default:
-        this.handleUnknownError(error);
-    }
-  }
-
-  static handleApiError(error: unknown, context: string): void {
-    console.error(`API Error in ${context}:`, error);
-
-    let userMessage = i18n.t('errors.operationFailed');
-    let category = ErrorCategory.System;
-
-    if (error instanceof Error) {
-      userMessage = error.message || userMessage;
-    } else if (typeof error === 'string') {
-      userMessage = error;
-    }
-
-    if (this.isTrojanError(userMessage)) {
-      category = ErrorCategory.Connection;
-    } else if (this.isProtocolError(userMessage)) {
-      category = ErrorCategory.Config;
-    }
-
-    this.handle({
-      category,
-      userMessage: `${context}: ${userMessage}`,
-      technicalMessage: error instanceof Error ? error.stack : String(error),
-    });
-  }
-
-  private static isTrojanError(message: string): boolean {
-    const trojanKeywords = ['trojan', 'Trojan', '认证失败', '密码错误', 'TLS 握手失败'];
-    return trojanKeywords.some((keyword) => message.includes(keyword));
-  }
-
-  private static isProtocolError(message: string): boolean {
-    return (
-      message.includes('不支持的协议') ||
-      message.includes('Protocol') ||
-      message.includes('暂不支持')
-    );
-  }
-
-  static showSuccess(message: string): void {
-    toastImpl.success(message);
-  }
-
-  static showInfo(message: string): void {
-    toastImpl.info(message);
-  }
-
-  static showWarning(message: string): void {
-    toastImpl.warning(message);
-  }
-
-  static showError(message: string, description?: string): void {
-    toastImpl.error(message, description);
-  }
-
-  private static handleConfigError(error: AppError): void {
-    this.showError(i18n.t('errors.configError'), error.userMessage);
-  }
-
-  private static handleConnectionError(error: AppError): void {
-    this.showError(i18n.t('errors.connectionError'), error.userMessage);
-  }
-
-  private static handleSystemError(error: AppError): void {
-    this.showError(i18n.t('errors.systemError'), error.userMessage);
-  }
-
-  private static handleProcessError(error: AppError): void {
-    this.showError(i18n.t('errors.processError'), error.userMessage);
-  }
-
-  private static handleUnknownError(error: AppError): void {
-    this.showError(i18n.t('errors.unknownError'), error.userMessage);
-  }
-}
-
 /**
  * F15：代理错误码 → ErrorCategory 映射（跨进程错误分类的唯一依据）。
- * 非法/未知码返回 null，调用方回落到旧的中文字符串匹配 fallback。
+ * 非法/未知码返回 null；调用方应按未知错误处理，不按本地化文案反推类别。
  */
 export function proxyErrorCategory(code: unknown): ErrorCategory | null {
   if (!isProxyErrorCode(code)) return null;

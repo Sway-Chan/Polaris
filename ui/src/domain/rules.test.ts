@@ -11,8 +11,7 @@
  *
  *  ① 覆盖：`RULE_TYPES` 与 `RULE_TYPE_IDS` 严格同集 —— 表漏一份 = 弹窗读到 undefined 直接崩。
  *  ② 无字面量：`RuleDialog.tsx` 去注释后不得出现任何 `RuleType` id（引号字面量 / 对象字面量键）。
- *  ③ 中文防御默认值与 `zh-CN.json` 逐字一致 —— 两份中文一漂，`t(key, '旧中文')` 就成了
- *    「locale 改了但界面在某些路径下还显示旧话」的静默来源。
+ *  ③ 描述符生成的动态 i18n 键在五种语言中均存在且非空。
  *
  * # 射程（如实记账）
  *
@@ -27,7 +26,6 @@ import {
   RULE_TYPE_IDS,
   RULE_TYPES,
   RULE_CATEGORY_ORDER,
-  RULE_CATEGORY_LABEL_ZH,
   ruleCategoryLabelKey,
   ruleTypeHintKey,
   ruleTypeNameKey,
@@ -48,18 +46,14 @@ describe('规则类型描述符表：15 份全覆盖', () => {
     expect(Object.keys(RULE_TYPES).sort()).toEqual([...RULE_TYPE_IDS].sort());
     for (const id of RULE_TYPE_IDS) {
       expect(RULE_TYPES[id].id, `${id} 的描述符 id 与表键不一致`).toBe(id);
-      expect(RULE_TYPES[id].nameZh, `${id} 缺显示名`).toBeTruthy();
-      expect(RULE_TYPES[id].placeholderZh, `${id} 缺 placeholder`).toBeTruthy();
-      expect(RULE_TYPES[id].hintZh, `${id} 缺填写提示`).toBeTruthy();
     }
   });
 
-  it('② 分类顺序覆盖全部出现过的分类，且每个分类都有名字', () => {
+  it('② 分类顺序覆盖全部出现过的分类', () => {
     const used = new Set<RuleCategory>(RULE_TYPE_IDS.map((id) => RULE_TYPES[id].category));
     expect([...used].sort(), '有类型的分类不在 RULE_CATEGORY_ORDER 里 ⇒ 它的选项在下拉里整组消失').toEqual(
       [...RULE_CATEGORY_ORDER].filter((c) => used.has(c)).sort()
     );
-    for (const c of RULE_CATEGORY_ORDER) expect(RULE_CATEGORY_LABEL_ZH[c], `${c} 缺分类名`).toBeTruthy();
   });
 
   it('③ 候选源自洽：free 无池字段；pool 的 addressing 与 pool 相配', () => {
@@ -164,50 +158,6 @@ describe('描述符的 i18n 键：五语种齐全且非空', () => {
       ).toEqual([]);
     });
   }
-});
-
-describe('中文防御默认值与 zh-CN.json 逐字一致（两份中文不许漂）', () => {
-  const zh = localeData.get('zh-CN') as {
-    rules: {
-      types: Record<string, { name: string; placeholder: string }>;
-      typeHints: Record<string, string>;
-      cat: Record<string, string>;
-    };
-  };
-
-  it('自检：zh-CN.json 的三张表都在（缺任一张下面就是空跑）', () => {
-    expect(Object.keys(zh.rules.types ?? {}).length, 'rules.types 表不见了').toBe(15);
-    expect(Object.keys(zh.rules.typeHints ?? {}).length, 'rules.typeHints 表不见了').toBe(15);
-    expect(Object.keys(zh.rules.cat ?? {}).length, 'rules.cat 表不见了').toBe(
-      RULE_CATEGORY_ORDER.length
-    );
-  });
-
-  it('15 个类型的 name / placeholder / hint 三项逐字相等', () => {
-    const diff: string[] = [];
-    for (const id of RULE_TYPE_IDS) {
-      const d = RULE_TYPES[id];
-      if (zh.rules.types[id]?.name !== d.nameZh)
-        diff.push(`${id}.name: locale=${zh.rules.types[id]?.name} / 描述符=${d.nameZh}`);
-      if (zh.rules.types[id]?.placeholder !== d.placeholderZh)
-        diff.push(
-          `${id}.placeholder: locale=${zh.rules.types[id]?.placeholder} / 描述符=${d.placeholderZh}`
-        );
-      if (zh.rules.typeHints[id] !== d.hintZh)
-        diff.push(`${id}.hint: locale=${zh.rules.typeHints[id]} / 描述符=${d.hintZh}`);
-    }
-    expect(
-      diff.sort(),
-      '描述符的中文防御默认值与 zh-CN.json 漂开了 —— 两处一起改，否则「防御默认值」会比 locale 还旧'
-    ).toEqual([]);
-  });
-
-  it('5 个分类名逐字相等', () => {
-    const diff = RULE_CATEGORY_ORDER.filter((c) => zh.rules.cat[c] !== RULE_CATEGORY_LABEL_ZH[c]).map(
-      (c) => `${c}: locale=${zh.rules.cat[c]} / 描述符=${RULE_CATEGORY_LABEL_ZH[c]}`
-    );
-    expect(diff, '分类名的中文防御默认值与 zh-CN.json 漂开了').toEqual([]);
-  });
 });
 
 /**

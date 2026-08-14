@@ -475,12 +475,12 @@ export function NodesScreen() {
   const testOne = useCallback(
     async (server: ServerConfig) => {
       try {
-        await api.server.speedTest([server.id]);
+        absorbRunResult(await api.server.speedTest([server.id]));
       } catch (err) {
         speedTestError(err, 'speedTest one');
       }
     },
-    [speedTestError]
+    [absorbRunResult, speedTestError]
   );
 
   /**
@@ -1209,9 +1209,7 @@ export function NodesScreen() {
               id="batch-move"
               className="btn ghost sm"
               disabled={!canMoveToGroup()}
-              data-tip={t(
-                'nodes.batchMoveUnavailable',
-              )}
+              data-tip={t('nodes.batchMoveUnavailable')}
             >
               {t('nodes.batchMove')}
             </button>

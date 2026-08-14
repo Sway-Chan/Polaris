@@ -144,7 +144,7 @@ export function NodeMenu({
   }, [open, defaultOpen]);
 
   const groupLabel = (g: { isManual: boolean; isMesh?: boolean; name: string }) =>
-    g.isManual ? t('nodes.tab.manual', '自建节点') : g.isMesh ? t('nodes.tab.mesh', '组网') : g.name;
+    g.isManual ? t('nodes.tab.manual') : g.isMesh ? t('nodes.tab.mesh') : g.name;
 
   const scheduleReveal = useRevealAfterCommit();
   const toggleGroup = (id: string) => {
@@ -170,11 +170,11 @@ export function NodeMenu({
   };
 
   if (!open) {
-    return <div className="node-menu" id="node-menu" role="listbox" aria-label="Nodes" hidden />;
+    return <div className="node-menu" id="node-menu" role="listbox" aria-label={t('home.nodesMenu')} hidden />;
   }
 
   return (
-    <div className="node-menu" id="node-menu" role="listbox" aria-label="Nodes">
+    <div className="node-menu" id="node-menu" role="listbox" aria-label={t('home.nodesMenu')}>
       <div className="nm-search" hidden={totalCount < 8}>
         <input
           className="input"
@@ -225,7 +225,7 @@ export function NodeMenu({
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
           <path d="M5 5l14 14" />
         </svg>
-        <span>{t('home.routingBlock', '阻断')}</span>
+        <span>{t('home.routingBlock')}</span>
         {blockOn && <MiCheck />}
       </button>
       <div className="mm-sep" />

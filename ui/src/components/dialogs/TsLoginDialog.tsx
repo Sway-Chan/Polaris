@@ -120,9 +120,9 @@ export function TsLoginDialog() {
     open({
       kind: 'confirm',
       payload: {
-        title: t('ts.loginDiscardTitle', '放弃登录？'),
-        message: t('ts.loginDiscardMsg', '已填写的内容将不会保存。'),
-        confirmLabel: t('ts.loginDiscard', '放弃'),
+        title: t('ts.loginDiscardTitle'),
+        message: t('ts.loginDiscardMsg'),
+        confirmLabel: t('ts.loginDiscard'),
         danger: true,
         onConfirm: () => {
           close();
@@ -160,15 +160,15 @@ export function TsLoginDialog() {
         // 否则用户会以为登录已发起。toast 告知原因，弹窗留给用户自行关闭。
         toast.info(
           res.reason === 'inMainCore'
-            ? t('ts.loginInMainCore', '该节点已在主连接中运行，无需重复登录')
-            : t('ts.loginAlreadyActive', '登录已在进行中或已完成'),
+            ? t('ts.loginInMainCore')
+            : t('ts.loginAlreadyActive'),
         );
         return;
       }
       if (mode === 'authkey') {
         // Auth Key 免交互：核起来即完成，没有登录 URL 可等（预授权无需 stdout 的 Waiting for
         // authentication 行）。key 已随上面的 add/update 落盘，这句「已提交」才名副其实。
-        toast.success(t('ts.loginStarted', '已提交，正在连接…'));
+        toast.success(t('ts.loginStarted'));
         close();
         return;
       }
@@ -179,7 +179,7 @@ export function TsLoginDialog() {
       if (res.authUrl) setTailscaleAuthUrl(server.id, res.authUrl);
       setPendingServerId(server.id);
     } catch (e) {
-      toast.error(t('ts.loginFailed', '登录失败'), e instanceof Error ? e.message : String(e));
+      toast.error(t('ts.loginFailed'), e instanceof Error ? e.message : String(e));
     } finally {
       setSubmitting(false);
     }
@@ -188,7 +188,7 @@ export function TsLoginDialog() {
   return (
     <Modal
       titleId="ts-dlg-title"
-      title={t('ts.loginTitle', '连接 Tailscale')}
+      title={t('ts.loginTitle')}
       onClose={requestClose}
       icon={<TsIcon />}
       className="entry-form-dlg"
@@ -198,18 +198,18 @@ export function TsLoginDialog() {
               两个不锁（NodeDialog/SubDialog）—— 不是与原型的差，是实现自己两套。统一为不锁：
               提交卡住（IPC 无应答）时用户必须还能退出，否则弹窗成了死窗。 */}
           <button type="button" className="btn ghost" onClick={requestClose}>
-            {t('common.cancel', '取消')}
+            {t('common.cancel')}
           </button>
           <button type="button" className="btn flow" onClick={() => void handleSubmit()} disabled={submitting}>
             {submitting && <span className="spinner spin-inline" style={{ marginRight: 6 }} />}
-            {mode === 'browser' ? t('ts.openLogin', '打开登录页') : t('ts.signIn', '登录')}
+            {mode === 'browser' ? t('ts.openLogin') : t('ts.signIn')}
           </button>
         </>
       }
     >
       <div className="fld">
-        <label className="fld-l">{t('ts.method', '登录方式')}</label>
-        <div className="seg2" role="group" aria-label={t('ts.method', '登录方式')} style={{ display: 'flex' }}>
+        <label className="fld-l">{t('ts.method')}</label>
+        <div className="seg2" role="group" aria-label={t('ts.method')} style={{ display: 'flex' }}>
           <button
             type="button"
             style={{ flex: 1 }}
@@ -220,7 +220,7 @@ export function TsLoginDialog() {
               setDirty(true);
             }}
           >
-            {t('ts.browserLogin', '浏览器登录')}
+            {t('ts.browserLogin')}
           </button>
           <button
             type="button"
@@ -232,7 +232,7 @@ export function TsLoginDialog() {
               setDirty(true);
             }}
           >
-            Auth Key
+            {t('ts.authKey')}
           </button>
         </div>
       </div>
@@ -241,7 +241,7 @@ export function TsLoginDialog() {
         authUrl ? (
           <div className="fld">
             <label className="fld-l" htmlFor="ts-auth-url">
-              {t('ts.authUrlLabel', '登录页地址')}
+              {t('ts.authUrlLabel')}
             </label>
             <div style={{ display: 'flex', gap: 8 }}>
               <input
@@ -257,27 +257,27 @@ export function TsLoginDialog() {
                 className="btn ghost sm"
                 onClick={() => {
                   void navigator.clipboard.writeText(authUrl);
-                  toast.success(t('ts.authUrlCopied', '已复制登录地址'));
+                  toast.success(t('ts.authUrlCopied'));
                 }}
               >
-                {t('common.copy', '复制')}
+                {t('common.copy')}
               </button>
               <button
                 type="button"
                 className="btn ghost sm"
                 onClick={() => void api.system.openExternal(authUrl)}
               >
-                {t('ts.openUrl', '打开')}
+                {t('ts.openUrl')}
               </button>
             </div>
             <div className="card-sub" style={{ marginTop: 6 }}>
-              {t('ts.authUrlHint', '在浏览器中完成账号授权后关闭本窗口即可，无需等待。')}
+              {t('ts.authUrlHint')}
             </div>
           </div>
         ) : loginTimedOut ? (
           <div className="fld">
             <div className="dlg-err">
-              {t('ts.awaitingUrlTimeout', '获取登录页地址超时，登录已停止。请重试。')}
+              {t('ts.awaitingUrlTimeout')}
             </div>
             <button
               type="button"
@@ -286,24 +286,24 @@ export function TsLoginDialog() {
               onClick={() => void handleSubmit()}
               disabled={submitting}
             >
-              {t('ts.retryLogin', '重试')}
+              {t('ts.retryLogin')}
             </button>
           </div>
         ) : awaitingUrl ? (
           <div className="card-sub" style={{ lineHeight: 1.6, display: 'flex', alignItems: 'center', gap: 8 }}>
             <span className="spinner spin-inline" />
-            {t('ts.awaitingUrl', '正在获取登录页地址…')}
+            {t('ts.awaitingUrl')}
           </div>
         ) : (
           <div className="card-sub" style={{ lineHeight: 1.6 }}>
-            {t('ts.browserHint', '点击「打开登录页」在浏览器中完成账号授权；授权后本机自动加入 tailnet。')}
+            {t('ts.browserHint')}
           </div>
         )
       ) : (
         <>
           <div className="fld">
             <label className="fld-l" htmlFor="ts-authkey">
-              Auth Key (tskey-auth-…)
+              {t('ts.authKeyLabel')}
             </label>
             <input
               id="ts-authkey"
@@ -316,10 +316,10 @@ export function TsLoginDialog() {
               }}
               placeholder="tskey-auth-xxxxCNTRL-xxxxxxxxxxxxxxxxxxxx"
             />
-            {errKey && <div className="err-line">{t('ts.errKey', '请填写 Auth Key')}</div>}
+            {errKey && <div className="err-line">{t('ts.errKey')}</div>}
           </div>
           <div className="card-sub">
-            {t('ts.authkeyHint', '预授权密钥，免交互直接登录（适合无头设备）。')}
+            {t('ts.authkeyHint')}
           </div>
         </>
       )}

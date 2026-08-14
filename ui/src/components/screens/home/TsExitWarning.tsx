@@ -53,24 +53,18 @@ export function TsExitWarning() {
 
   const text =
     warning === 'needs-auth'
-      ? t(
-          'home.tsExitNeedsAuthWarn',
-          'Tailscale 尚未完成登录授权，该出口不会承载任何流量，公网仍走其他线路。'
-        )
+      ? t('home.tsExitNeedsAuthWarn')
       : warning === 'no-exit-device'
-        ? t('home.tsExitNoDeviceWarn', '已设为出口，但未选择出口设备，公网流量仍走直连。')
+        ? t('home.tsExitNoDeviceWarn')
         : warning === 'exit-device-not-advertised'
-          ? t(
-              'home.tsExitNotAdvertisedWarn',
-              '所选出口设备未广告为出口节点，公网无法经其出网，请换一台已广告出口的设备。'
-            )
-          : t('home.tsExitDeviceOfflineWarn', '出口设备当前离线，公网可能无法经 Tailscale 出网。');
+          ? t('home.tsExitNotAdvertisedWarn')
+          : t('home.tsExitDeviceOfflineWarn');
 
   // 动作跟着根因走：未认证 → 去登录；其余三条都是「出口设备选错/失效」→ 去挑设备。
   const isAuth = warning === 'needs-auth';
   const actionLabel = isAuth
-    ? t('home.tsExitGoAuth', '完成登录授权')
-    : t('home.tsExitPickDevice', '选择出口设备');
+    ? t('home.tsExitGoAuth')
+    : t('home.tsExitPickDevice');
 
   return (
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 8 }} role="status">

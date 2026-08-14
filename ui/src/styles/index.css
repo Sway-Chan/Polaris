@@ -342,7 +342,8 @@ h1[tabindex='-1']:focus-visible { outline: none; }
  * 切换文案辨认当前态（这正是「用开关底色表示、不要切文字」这条反馈的由来）。
  * 取 `.icon-btn.on`（components.css:154）的逐属性同值：本仓「这颗开着」的既有语言就是它，
  * 不另造第三套。射程收在 `.log-tb-actions` 内，不动全局 `.btn`（别处的 `on` 语义未逐一核过）。 */
-.log-tb-actions .btn.on {
+.log-tb-actions .btn.on,
+.log-diagnostic-toggle.on {
   color: hsl(var(--flow-hi));
   background: hsl(var(--flow-weak));
   border-color: hsl(var(--flow) / 0.4);
@@ -364,6 +365,76 @@ h1[tabindex='-1']:focus-visible { outline: none; }
   flex: 0 1 auto;
   max-width: 330px;
   min-width: 0;
+}
+
+/* 日志页筛选改成「外层可折、组内不折」：来源标签与 [全部/sing-box/应用] 是一个不可拆单元，
+ * 窄宽时整组换到下一行，不再出现「来源」留在行尾、「全部」掉到下一行。组间只靠留白分层，移除竖线。 */
+.log-filter-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  flex: none;
+  white-space: nowrap;
+}
+.log-level-filter { min-width: 0; }
+.log-source-filter { flex-wrap: nowrap; }
+.log-lvl-info {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  color: hsl(var(--fg-faint));
+  background: transparent;
+  cursor: help;
+}
+.log-lvl-info:hover { color: hsl(var(--fg)); background: hsl(var(--surface-3)); }
+.log-levels button:disabled { cursor: default; }
+.log-levels button:disabled:not(.on) { opacity: .48; }
+
+/* 诊断模式属于筛选语境而非导出工具：放在首行末端，亮态与脱敏/自动滚动共用同一套 on 皮肤。 */
+.log-diagnostic-toggle { margin-left: auto; flex: none; }
+.log-diagnostic-level {
+  padding: 1px 5px;
+  border-radius: 999px;
+  font: 650 9.5px/1.25 var(--mono);
+  letter-spacing: .03em;
+  color: hsl(var(--fg-faint));
+  background: hsl(var(--surface-3));
+}
+.log-diagnostic-toggle.on .log-diagnostic-level {
+  color: hsl(var(--flow-hi));
+  background: hsl(var(--flow) / .16);
+}
+
+/* 搜索是第二行主任务；脱敏/跟随保留文字，清空/复制/导出/目录/诊断包收成低频图标组。 */
+.log-tb-main { flex-wrap: nowrap; }
+.log-tb-actions { flex-wrap: nowrap; margin-left: 0; }
+.log-tb-utilities {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 4px;
+  flex: none;
+  padding: 3px;
+  border-radius: var(--r-sm);
+  background: hsl(var(--surface-2));
+}
+.log-tb-actions .log-icon-action {
+  width: 31px;
+  min-width: 31px;
+  padding-left: 0;
+  padding-right: 0;
+  justify-content: center;
+}
+
+@container mainc (max-width: 720px) {
+  .log-diagnostic-toggle { margin-left: 0; }
+  .log-tb-main { flex-wrap: wrap; }
+  .log-tb-search { flex-basis: 100%; }
+  .log-tb-actions { width: 100%; justify-content: flex-end; }
 }
 
 /* 分段控件族（A 族）选中态文字统一为 flow-hi —— **反向修原型的两级设计**。
@@ -722,8 +793,8 @@ h1[tabindex='-1']:focus-visible { outline: none; }
 .statusbar{ height:var(--statusbar-h); }
 #toast-stack{ bottom:calc(var(--statusbar-h) + var(--toast-gap)); }
 
-/* ── toast 行内动作按钮（`.toast-action`）─────────────────────────────────────────
- * 唯一消费者：测速中断态的「继续」（续测差集）。原型的 `notify()` 没有按钮这一档，故本规则**原型无对应**
+/* ── toast 行内动作与关闭（`.toast-actions` / `.toast-close`）──────────────────────
+ * 唯一消费者：测速中断态的「继续剩余 / 重新测速 / 关闭」。原型的 `notify()` 没有这一档，故本规则**原型无对应**
  * ——写在这里而不是 prototype.css/components.css：那两处是冻结的原型移植面（禁改），端口侧新增一律落本层。
  *
  * 只用 `.toast` 已有的配色变量，不引第二套色板：`.toast` 基础态在浅色下是深底浅字（`--fg` 底 / `--surface` 字），
@@ -731,8 +802,10 @@ h1[tabindex='-1']:focus-visible { outline: none; }
  * `currentColor` —— 它恒等于该条 toast 当前的前景色，两档主题自动同向，且 `.toast.ok/.err` 变体也跟着走。
  * 底色留 `transparent`（描边按钮）：`color-mix()` / 相对色语法能做出更好看的淡填充，但本仓 CSS 至今
  * **零处**使用它们，为一个按钮把 WebKitGTK 的版本下限抬上去不值当 —— 描边在三端 webview 都是无条件可用的。 */
+.toast.dismissible{ position:relative; padding-inline-end:34px; }
+.toast-actions{ display:flex; flex-wrap:wrap; gap:6px; margin-top:7px; }
 .toast-action{
-  display:block; margin-top:6px; padding:3px 10px;
+  display:block; margin:0; padding:3px 10px;
   font-size:11px; font-weight:600; font-family:inherit; line-height:1.5;
   color:currentColor; background:transparent;
   border:1px solid currentColor; border-radius:var(--r-sm);
@@ -740,6 +813,14 @@ h1[tabindex='-1']:focus-visible { outline: none; }
 }
 .toast-action:hover{ opacity:1; }
 .toast-action:focus-visible{ outline:2px solid currentColor; outline-offset:2px; }
+.toast-close{
+  position:absolute; inset-block-start:5px; inset-inline-end:6px;
+  display:grid; place-items:center; width:24px; height:24px; padding:0;
+  color:currentColor; background:transparent; border:0; border-radius:var(--r-sm);
+  cursor:pointer; opacity:0.7; transition:opacity .15s, background .15s;
+}
+.toast-close:hover{ opacity:1; background:hsl(var(--surface)/0.12); }
+.toast-close:focus-visible{ outline:2px solid currentColor; outline-offset:1px; }
 
 /* ── pending-bar docked 形态（P2：条迁到 AppShell `<main>` 底，贴 statusbar）─────────────────────
  *
@@ -1598,6 +1679,13 @@ body:has(.pending-bar.show) #toast-stack{
  * 不透明度取 .42，与既有禁用语汇同档（components.css:421 `.csel-opt.disabled`）。
  * 纯状态样式，浅色深色同一份，不需要 `[data-theme]` 分支。 */
 .swt:disabled{ opacity:.42; cursor:not-allowed; }
+
+/* 设置项与其从属内容按一个整体分组：组内不画线，完整设置项之间统一画线。 */
+.set-row-group{ border-bottom:1px solid hsl(var(--hair)); }
+.set-row-group:last-child{ border-bottom:0; }
+.set-row-group > .set-row{ border-bottom:0; }
+.set-row-section{ margin-top:12px; border-top:1px solid hsl(var(--hair)); }
+.set-row-section > .set-row:last-child{ border-bottom:0; }
 
 /* ══════════════════════════════════════════════════════════════════════════════════════════════
  * 设置页 TUN 说明折叠区（`.tun-details`）—— 折叠头与其内容的视觉层级倒挂

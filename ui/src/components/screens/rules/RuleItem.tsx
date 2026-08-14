@@ -18,7 +18,7 @@ import { ruleConditions } from '@/domain/rules';
 import { RULE_TYPE_CATEGORY } from '@/domain/rules';
 import { cn } from '@/lib/utils';
 import { useHoverCard, HoverCardPanel } from '@/components/hover-cards/HoverCard';
-import { RuleHoverCardContent, TYPE_LABEL } from '@/components/hover-cards/RuleHoverCard';
+import { RuleHoverCardContent } from '@/components/hover-cards/RuleHoverCard';
 
 /**
  * 单枚条件计数标签：`域名后缀 ×15`，悬停出该类型的全部值。
@@ -29,7 +29,7 @@ import { RuleHoverCardContent, TYPE_LABEL } from '@/components/hover-cards/RuleH
 function CondCount({ cond }: { cond: RuleCondition }) {
   const { t } = useTranslation();
   const hc = useHoverCard<HTMLSpanElement>();
-  const label = t(`rules.types.${cond.type}.name`, TYPE_LABEL[cond.type] ?? cond.type);
+  const label = t(`rules.types.${cond.type}.name`);
   const n = cond.values.length;
   return (
     <span className="rmeta-cnt" ref={hc.triggerRef} {...hc.triggerHandlers}>
@@ -129,14 +129,14 @@ function TypeIcon({ rule }: { rule: Rule }) {
 }
 
 /** 动作 → pill 类 + 文案。block = 阻断，direct = 直连，proxy = 代理。key 与 RuleHoverCard 共用，避免同行 hover 卡文案漂移。 */
-function actionPill(action: Rule['action'], t: (key: string, defaultValue: string) => string): { cls: string; text: string } {
+function actionPill(action: Rule['action'], t: (key: string) => string): { cls: string; text: string } {
   switch (action) {
     case 'block':
-      return { cls: 'pill act-block', text: t('rules.targetBlock', '阻断') };
+      return { cls: 'pill act-block', text: t('rules.targetBlock') };
     case 'direct':
-      return { cls: 'pill act-direct', text: t('rules.targetDirect', '直连') };
+      return { cls: 'pill act-direct', text: t('rules.targetDirect') };
     default:
-      return { cls: 'pill act-proxy', text: t('rules.policyProxy', '代理') };
+      return { cls: 'pill act-proxy', text: t('rules.policyProxy') };
   }
 }
 
@@ -280,21 +280,21 @@ export function RuleItem({
           {stagedOnly && (
             <span
               className="pill"
-              data-tip={t('home.stagedOnlyHint', '尚未保存到配置文件：内核还看不到它，节点也暂时不能被选为出口。点条上的「保存」后生效。')}
+              data-tip={t('home.stagedOnlyHint')}
             >
-              {t('home.stagedOnlyBadge', '待保存')}
+              {t('home.stagedOnlyBadge')}
             </span>
           )}
           {hasMeshOverlap && (
-            <span className="pill region" data-tip={t('rules.meshOverlapTip', '该规则网段与组网(WG/Tailscale)路由段重叠，优先级更高将覆盖组网路由，该段可能不走组网节点。如非有意请调整。')}>
-              {t('rules.meshOverlap', '覆盖组网')}
+            <span className="pill region" data-tip={t('rules.meshOverlapTip')}>
+              {t('rules.meshOverlap')}
             </span>
           )}
           {/* 角标①「资源缺失」：fail-closed 语义的唯一 UI 出口。后端生成配置时会静默跳过该条件
               （route.rs 按 fileExists 过滤），不标就等于规则失效而用户无感（上游 :237-247）。 */}
           {hasMissingResource && (
-            <span className="pill warn" data-tip={t('rules.resourceMissingTip', '该规则引用的规则资源缺失（已删除或文件丢失），当前不生效；请到「规则资源」页下载恢复')}>
-              {t('rules.resourceMissing', '资源缺失')}
+            <span className="pill warn" data-tip={t('rules.resourceMissingTip')}>
+              {t('rules.resourceMissing')}
             </span>
           )}
         </div>
@@ -302,8 +302,8 @@ export function RuleItem({
             与 `→ 节点名` 互斥：节点还在就显示名字，删了就显示角标，绝不显示空箭头。 */}
         {rule.action === 'proxy' && targetMissing ? (
           <div style={{ marginTop: 3 }}>
-            <span className="pill warn" data-tip={t('rules.targetMissingTip', '指定节点已删除，运行时回退为跟随全局选中节点')}>
-              {t('rules.targetMissing', '节点已失效')}
+            <span className="pill warn" data-tip={t('rules.targetMissingTip')}>
+              {t('rules.targetMissing')}
             </span>
           </div>
         ) : (
@@ -323,8 +323,8 @@ export function RuleItem({
               className="nd-a"
               disabled={isFirst}
               onClick={() => onMove(rule, 'top')}
-              data-tip={t('rules.moveTop', '置顶')}
-              aria-label={t('rules.moveTop', '置顶')}
+              data-tip={t('rules.moveTop')}
+              aria-label={t('rules.moveTop')}
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
                 <path d="M5 5h14M12 20V9M7 14l5-5 5 5" />
@@ -335,8 +335,8 @@ export function RuleItem({
               className="nd-a"
               disabled={isFirst}
               onClick={() => onMove(rule, 'up')}
-              data-tip={t('rules.moveUp', '上移')}
-              aria-label={t('rules.moveUp', '上移')}
+              data-tip={t('rules.moveUp')}
+              aria-label={t('rules.moveUp')}
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
                 <path d="M12 19V6M6 12l6-6 6 6" />
@@ -347,8 +347,8 @@ export function RuleItem({
               className="nd-a"
               disabled={isLast}
               onClick={() => onMove(rule, 'down')}
-              data-tip={t('rules.moveDown', '下移')}
-              aria-label={t('rules.moveDown', '下移')}
+              data-tip={t('rules.moveDown')}
+              aria-label={t('rules.moveDown')}
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
                 <path d="M12 5v13M6 12l6 6 6-6" />
@@ -359,8 +359,8 @@ export function RuleItem({
               className="nd-a"
               disabled={isLast}
               onClick={() => onMove(rule, 'bottom')}
-              data-tip={t('rules.moveBottom', '置底')}
-              aria-label={t('rules.moveBottom', '置底')}
+              data-tip={t('rules.moveBottom')}
+              aria-label={t('rules.moveBottom')}
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
                 <path d="M5 19h14M12 4v11M7 10l5 5 5-5" />
@@ -373,7 +373,7 @@ export function RuleItem({
           role="switch"
           aria-checked={rule.enabled}
           tabIndex={0}
-          data-tip={t('rules.toggleEnabled', '启用 / 停用')}
+          data-tip={t('rules.toggleEnabled')}
           onClick={() => onToggle?.(rule)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
@@ -387,8 +387,8 @@ export function RuleItem({
             type="button"
             className="nd-a"
             onClick={() => onDuplicate(rule)}
-            data-tip={t('rules.duplicate', '复制')}
-            aria-label={t('rules.duplicate', '复制')}
+            data-tip={t('rules.duplicate')}
+            aria-label={t('rules.duplicate')}
           >
             {/* 双叠矩形 = 通用「复制」形，与连接页右键菜单的复制图标同源 */}
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -400,8 +400,8 @@ export function RuleItem({
           type="button"
           className="nd-a"
           onClick={() => onEdit?.(rule)}
-          data-tip={t('common.edit', '编辑')}
-          aria-label={t('common.edit', '编辑')}
+          data-tip={t('common.edit')}
+          aria-label={t('common.edit')}
         >
           <EditIcon />
         </button>
@@ -416,9 +416,9 @@ export function RuleItem({
             type="button"
             className={cn('nd-a err', deleteConfirming && 'confirming')}
             onClick={() => onDelete(rule)}
-            data-tip={deleteConfirming ? t('common.confirmAgain', '再点一次确认') : t('common.delete', '删除')}
+            data-tip={deleteConfirming ? t('common.confirmAgain') : t('common.delete')}
             aria-label={
-              deleteConfirming ? t('common.confirmAgain', '再点一次确认') : t('common.delete', '删除')
+              deleteConfirming ? t('common.confirmAgain') : t('common.delete')
             }
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>

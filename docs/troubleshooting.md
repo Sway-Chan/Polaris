@@ -4,8 +4,9 @@
 
 Polaris **不进行代码签名**（§I-Q1 用户定调，沿 Polaris 现状）：
 
-- **macOS**：首次打开「无法验证开发者」。Gatekeeper 放行 = 右键 App → 「打开」→ 确认；或
-  `xattr -dr com.apple.quarantine /Applications/Polaris.app`。更新脚本内置 xattr 清理。
+- **macOS**：先把 App 拖入「应用程序」，再执行
+  `xattr -cr /Applications/Polaris.app`。若只是提示「无法验证开发者」，也可右键 App →「打开」→ 确认。
+  该命令会递归清除应用包扩展属性，仅应对可信的 Polaris 发布包执行；更新脚本内置 xattr 清理。
   DMG 内附一份同内容的中英文首次打开引导（`0 首次打开必读 READ ME FIRST.txt`）——
   用户被 Gatekeeper 拦下时进不了应用、也未必看过本文件，那份引导是他当时唯一能看到的说明。
 - **Windows**：SmartScreen「Windows 已保护你的电脑」→ 「更多信息」→ 「仍要运行」。UAC 提权流

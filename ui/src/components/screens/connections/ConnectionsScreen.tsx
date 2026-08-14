@@ -376,7 +376,7 @@ export function ConnectionsScreen() {
    * （对齐已接的 81 处 toast 套路，原型 :4113/:4114 notify('已关闭全部连接'/'已关闭 N 条连接','ok')；
    * 单条关闭原型 :4115 无 notify——静默移除即反馈，成功不额外 toast，仅失败上报）。
    */
-  const closeFailedText = t('connections.closeFailed', '关闭连接失败');
+  const closeFailedText = t('connections.closeFailed');
 
   /* 乐观移除：点了叉立刻走人，别让用户对着一行「关不掉的连接」等下一帧（≤1s）。
    * 入 closingRef 是为了扛住在途快照回填（详见该 ref 的注释）；失败则回滚 —— 暂停态没有后续快照，
@@ -457,9 +457,9 @@ export function ConnectionsScreen() {
       setMenu(null);
       try {
         await navigator.clipboard.writeText(text);
-        toast.success(t('connections.copied', '已复制'));
+        toast.success(t('connections.copied'));
       } catch {
-        toast.error(t('connections.copyFailed', '复制失败'));
+        toast.error(t('connections.copyFailed'));
       }
     },
     [t],
@@ -501,7 +501,7 @@ export function ConnectionsScreen() {
     try {
       const res = await api.connections.closeAll();
       if (res?.ok) {
-        toast.success(t('connections.closeAllDone', '已关闭全部连接'));
+        toast.success(t('connections.closeAllDone'));
       } else {
         unsuppressClosing(ids);
         toast.error(closeFailedText);
@@ -527,7 +527,7 @@ export function ConnectionsScreen() {
         filteredRows.map((r) => api.connections.close(r.entry.id)),
       );
       if (results.every((r) => r?.ok)) {
-        toast.success(t('connections.closeFilteredDone', { defaultValue: '已关闭 {{n}} 条连接', n }));
+        toast.success(t('connections.closeFilteredDone', { n }));
       } else {
         // **只放回失败的那几条**：成功的那些继续被抑制到快照追上为止，否则整批一起闪回。
         unsuppressClosing(ids.filter((_, i) => !results[i]?.ok));
@@ -601,7 +601,7 @@ export function ConnectionsScreen() {
             aria-selected={view === 'table'}
             onClick={() => setView('table')}
           >
-            <span>{t('connections.detailTab', '明细')}</span>
+            <span>{t('connections.detailTab')}</span>
           </button>
         </div>
 
@@ -655,7 +655,7 @@ export function ConnectionsScreen() {
               data-tip={
                 confirmingFiltered
                   ? t('connections.confirm')
-                  : t('connections.closeFilteredTitle', '关闭当前筛选命中的全部连接')
+                  : t('connections.closeFilteredTitle')
               }
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -666,7 +666,6 @@ export function ConnectionsScreen() {
                 {confirmingFiltered
                   ? t('connections.confirm')
                   : t('connections.closeFiltered', {
-                      defaultValue: '关闭当前 {{n}} 条',
                       n: filteredRows.length,
                     })}
               </span>
@@ -731,10 +730,10 @@ export function ConnectionsScreen() {
                   </tr>
                 ) : (
                   visibleRows.map((r) => {
-                    const blocked = r.chain === '阻断' || r.chain === 'block';
-                    const direct = r.chain === '直连' || r.chain === 'direct';
+                    const blocked = r.chain === 'block';
+                    const direct = r.chain === 'direct';
                     const cx = blocked
-                      ? t('home.routingBlock', '阻断')
+                      ? t('home.routingBlock')
                       : direct
                         ? t('home.routingDirect')
                         : r.chain;
@@ -832,7 +831,7 @@ export function ConnectionsScreen() {
               <svg viewBox="0 0 24 24" width="15" fill="none" stroke="currentColor" strokeWidth="1.8">
                 <path d="M9 9h10v10H9zM5 15V5h10" />
               </svg>
-              {t('connections.copyHost', '复制域名')}
+              {t('connections.copyHost')}
             </button>
             <button
               type="button"
@@ -843,7 +842,7 @@ export function ConnectionsScreen() {
               <svg viewBox="0 0 24 24" width="15" fill="none" stroke="currentColor" strokeWidth="1.8">
                 <path d="M9 9h10v10H9zM5 15V5h10" />
               </svg>
-              {t('connections.copyDest', '复制 IP')}
+              {t('connections.copyDest')}
             </button>
             {/* 只有像域名/IP 的 host 才给「加规则」——`—` 或纯进程名加进规则是造一条永不命中的死规则。
                 判据与 `topology-layout.ts::isRuleableHost` 同口径（含 `.` 或 `:`）。
@@ -917,9 +916,9 @@ export function ConnectionsScreen() {
         <div className="top-grid">
           <div className="card pad">
             <div className="card-h top-card-h" style={{ marginBottom: 12 }}>
-              <span>{t('connections.topHostsTitle', '流量 TOP 域名')}</span>
+              <span>{t('connections.topHostsTitle')}</span>
               {/* 原型 :2030 拆「前」标签 + 纯数字 #top-host-n 两节点；id 保留挂点（现由 seg2 承载取值） */}
-              <div className="seg2" role="group" aria-label="Top count" id="top-host-n">
+              <div className="seg2" role="group" aria-label={t('connections.topCount')} id="top-host-n">
                 {TOP_N_OPTIONS.map((n) => (
                   <button
                     key={n}
@@ -956,11 +955,11 @@ export function ConnectionsScreen() {
           </div>
           <div className="card pad">
             <div className="card-h top-card-h" style={{ marginBottom: 12 }}>
-              <span>{t('connections.topOutboundsTitle', '出站分布')}</span>
+              <span>{t('connections.topOutboundsTitle')}</span>
               {/* 只读：与域名卡的 seg2 同一个 `topN`。不做成第二个 seg2 —— 两份控件绑同一状态，
                   用户会问「这两个有什么区别」，而答案是「没有」。 */}
               <span className="pill region">
-                {t('connections.topBadge', { defaultValue: '前 {{n}}', n: topN })}
+                {t('connections.topBadge', { n: topN })}
               </span>
             </div>
             <div id="top-outbounds">

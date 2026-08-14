@@ -340,8 +340,8 @@ export default function App() {
       tsAuthSeen.current.add(data.url);
       void api.system.openExternal(data.url);
       void notifyDesktop(
-        t('notify.tsLogin.title', 'Tailscale 登录'),
-        t('notify.tsLogin.body', '已在浏览器打开 Tailscale 登录页，请完成账号授权。')
+        t('notify.tsLogin.title'),
+        t('notify.tsLogin.body')
       );
     });
   }, [t]);
@@ -525,7 +525,7 @@ export default function App() {
         toast,
         t: (key, vars) => i18n.t(key, vars ?? {}),
         currentServerIds: () => useAppStore.getState().servers.map((s) => s.id),
-        resume: (ids) => {
+        run: (ids) => {
           void api.server.speedTest(ids).catch(() => {
             /* 续测失败静默（见上） */
           });
@@ -645,7 +645,7 @@ export default function App() {
       // R2 pull 兜底：订阅自动刷新的新节点绕过 switch_mode 落盘（不经 PUSH）→ 其差集经此 pull 纳入（设计 §5.3）。
       pullPendingChanges();
       if (!data.success) {
-        toast.error(t('nodes.subAutoUpdateFail', '订阅自动更新失败'), data.error);
+        toast.error(t('nodes.subAutoUpdateFail'), data.error);
       }
     });
     return off;

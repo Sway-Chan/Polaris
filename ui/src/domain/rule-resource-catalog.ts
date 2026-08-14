@@ -20,8 +20,8 @@
  */
 import type { RuleResourceCategory } from '../contracts/types';
 
-/** 分类显示名（geosite/geosite-lite → Geosite；geoip/geoip-lite → GeoIP；custom → 自定义）。 */
-export function categoryLabel(cat: RuleResourceCategory): string {
+/** 分类显示名：技术类别固定显示 Geosite/GeoIP；custom 文案由调用方按当前 locale 注入。 */
+export function categoryLabel(cat: RuleResourceCategory, customLabel: string): string {
   switch (cat) {
     case 'geosite':
     case 'geosite-lite':
@@ -30,7 +30,7 @@ export function categoryLabel(cat: RuleResourceCategory): string {
     case 'geoip-lite':
       return 'GeoIP';
     default:
-      return '自定义';
+      return customLabel;
   }
 }
 

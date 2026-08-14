@@ -22,12 +22,9 @@ export function speedTestErrorMessage(err: unknown, t: TFunction): string {
   const code = err instanceof IpcError ? err.code : undefined;
   switch (code) {
     case 'SPEEDTEST_NO_ACTIVE_EXIT':
-      return t('nodes.speedTestNoActiveExit', '当前出口为直连或未选节点，无可测出站');
+      return t('nodes.speedTestNoActiveExit');
     case 'SPEEDTEST_PROBE_POOL_UNWIRED':
-      return t(
-        'nodes.speedTestOnlyActive',
-        '测速探测池本次不可用（端口分配失败已回退），仅当前出口可测'
-      );
+      return t('nodes.speedTestOnlyActive');
     default:
       return err instanceof Error ? err.message : String(err);
   }
@@ -65,7 +62,6 @@ export function notInPoolMessage(
     parts.push(
       t('nodes.speedTestSkipped', {
         count: notInPool,
-        defaultValue: '{{count}} 个节点未纳入本次测速（未入运行核测速池，重启内核后纳入）',
       })
     );
   }
@@ -73,7 +69,6 @@ export function notInPoolMessage(
     parts.push(
       t('nodes.speedTestSkippedTsNotReady', {
         count: tsNotReady,
-        defaultValue: '{{count}} 个 Tailscale 节点未纳入本次测速（尚未登录就绪，登录后可测）',
       })
     );
   }
@@ -93,36 +88,18 @@ export function notInPoolMessage(
 export function speedTestBlockedMessage(reason: SpeedTestBlockReason, t: TFunction): string {
   switch (reason) {
     case 'staged-only':
-      return t(
-        'nodes.speedTestBlockedStagedOnly',
-        '该节点还没保存到配置文件：运行核里没有它，测不出真实延迟。点条上的「保存」后即可测速'
-      );
+      return t('nodes.speedTestBlockedStagedOnly');
     case 'system-interface':
-      return t(
-        'nodes.speedTestBlockedSystem',
-        '该节点绑定 System 内核接口：测速会走系统默认路由，测出的是直连的假数值，故不可测'
-      );
+      return t('nodes.speedTestBlockedSystem');
     case 'ts-no-exit':
-      return t(
-        'nodes.speedTestBlockedTsNoExit',
-        'Tailscale 未设置出口节点（Exit Node）：没有公网出口，测速必然超时'
-      );
+      return t('nodes.speedTestBlockedTsNoExit');
     case 'lan-only':
-      return t(
-        'nodes.speedTestBlockedLanOnly',
-        '该组网节点关闭了「允许访问外网」：只承载内网网段，公网测速必然超时'
-      );
+      return t('nodes.speedTestBlockedLanOnly');
     case 'ts-core-not-ready':
-      return t(
-        'nodes.speedTestBlockedTsCoreNotReady',
-        'Tailscale 出口测速需要代理正在运行（主核测速池），请先连接再测'
-      );
+      return t('nodes.speedTestBlockedTsCoreNotReady');
     case 'custom-endpoint':
-      return t(
-        'nodes.speedTestBlockedCustomEndpoint',
-        '自定义端点的原始 JSON 判不出出口形态，测速结果不可信，故不可测'
-      );
+      return t('nodes.speedTestBlockedCustomEndpoint');
     default:
-      return t('nodes.speedTestNotApplicable', '不支持测速');
+      return t('nodes.speedTestNotApplicable');
   }
 }

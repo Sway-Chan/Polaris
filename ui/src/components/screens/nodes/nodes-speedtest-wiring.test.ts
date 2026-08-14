@@ -105,6 +105,11 @@ describe('T1：三个测速入口共用 isSpeedTestable 口径（候选集不同
     const body = callbackBody(NODES, 'runSpeedTest');
     expect(body).toContain('nodes.noTestableNodes');
   });
+
+  it('卡片单节点测速也消费 invoke 返回值兜底，不能只赌事件一定送达', () => {
+    const body = callbackBody(NODES, 'testOne');
+    expect(body).toContain('absorbRunResult(await api.server.speedTest([server.id]))');
+  });
 });
 
 describe('T2：节点卡不得再自造弱判定（谓词在、调用点却绕开它，是本轮的根因形态）', () => {
@@ -149,7 +154,8 @@ describe('T3：不可测的 ⚡ 是「置灰 + 说明原因」，不是整个藏
   it('置灰必须带得出理由（tooltip 挂按钮 + 延迟位两处）', () => {
     expect(CARD).toContain('speedTestBlockedHint');
     // 延迟位也挂一份：部分 WebView 上 disabled 按钮的 title 不弹。
-    expect(CARD).toMatch(/nd-lat[\s\S]{0,120}speedTestBlockedHint/);
+    expect(CARD).toMatch(/const latencyTip[\s\S]{0,120}speedTestBlockedHint/);
+    expect(CARD).toMatch(/nd-lat[\s\S]{0,120}latencyTip/);
   });
 
   it('理由必须进 aria-label —— 只挂 title 时键盘/读屏用户拿不到（2026-07-28 复审 LOW #8）', () => {

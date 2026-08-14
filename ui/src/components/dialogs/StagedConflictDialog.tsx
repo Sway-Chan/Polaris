@@ -54,7 +54,7 @@ export function StagedConflictDialog({
       footer={
         <>
           <button type="button" className="btn ghost" onClick={onDismiss}>
-            {t('common.cancel', '取消')}
+            {t('common.cancel')}
           </button>
           <button
             type="button"

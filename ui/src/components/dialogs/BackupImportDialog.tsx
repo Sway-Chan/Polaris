@@ -18,13 +18,13 @@ import { cn } from '@/lib/utils';
 import { Modal } from './Modal';
 import { useDialogStore } from './dialog-store';
 
-const CATEGORY_LABELS: Record<BackupCategory, string> = {
-  manualNodes: '手动节点',
-  meshNodes: '组网节点',
-  subscriptions: '订阅（含展开节点）',
-  customRules: '自定义规则（含规则集资源）',
-  appRules: '应用分流',
-  generalSettings: '通用设置',
+const CATEGORY_LABEL_KEYS: Record<BackupCategory, string> = {
+  manualNodes: 'settings.advanced.backup.manualNodes',
+  meshNodes: 'settings.advanced.backup.meshNodes',
+  subscriptions: 'settings.backup.catSubscriptions',
+  customRules: 'settings.backup.catCustomRules',
+  appRules: 'settings.advanced.backup.appRules',
+  generalSettings: 'settings.advanced.backup.generalSettings',
 };
 
 interface Picked {
@@ -56,13 +56,13 @@ export function BackupImportDialog() {
       const r = await api.backup.importPick();
       if (r.canceled) return;
       if (!r.filePath || !r.available) {
-        toast.error(t('backupImport.errParse', '未能解析备份文件'), r.error ?? undefined);
+        toast.error(t('backupImport.errParse'), r.error ?? undefined);
         return;
       }
       setPicked({ filePath: r.filePath, available: r.available, counts: r.counts ?? {} });
       setSelected(new Set(r.available));
     } catch (e) {
-      toast.error(t('backupImport.errParse', '未能解析备份文件'), e instanceof Error ? e.message : String(e));
+      toast.error(t('backupImport.errParse'), e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -82,9 +82,9 @@ export function BackupImportDialog() {
       open({
         kind: 'confirm',
         payload: {
-          title: t('backupImport.discardTitle', '放弃导入？'),
-          message: t('backupImport.discardMsg', '已选择的备份文件与类别将不会恢复。'),
-          confirmLabel: t('node.discard', '放弃'),
+          title: t('backupImport.discardTitle'),
+          message: t('backupImport.discardMsg'),
+          confirmLabel: t('node.discard'),
           danger: true,
           onConfirm: () => {
             close();
@@ -103,12 +103,12 @@ export function BackupImportDialog() {
     try {
       const r = await api.backup.importApply(picked.filePath, [...selected]);
       if (!r.success) {
-        toast.error(t('backupImport.errApply', '恢复失败'), r.error ?? undefined);
+        toast.error(t('backupImport.errApply'), r.error ?? undefined);
         return;
       }
       close();
     } catch (e) {
-      toast.error(t('backupImport.errApply', '恢复失败'), e instanceof Error ? e.message : String(e));
+      toast.error(t('backupImport.errApply'), e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -119,13 +119,13 @@ export function BackupImportDialog() {
   return (
     <Modal
       titleId="import-dlg-title"
-      title={t('backupImport.title', '导入备份')}
+      title={t('backupImport.title')}
       onClose={requestClose}
       icon={<ImportIcon />}
       footer={
         <>
           <button type="button" className="btn ghost" onClick={requestClose}>
-            {t('common.cancel', '取消')}
+            {t('common.cancel')}
           </button>
           <button
             type="button"
@@ -133,7 +133,7 @@ export function BackupImportDialog() {
             onClick={() => void handleApply()}
             disabled={!picked || selected.size === 0 || busy}
           >
-            {t('backupImport.restoreSelected', '恢复所选')}
+            {t('backupImport.restoreSelected')}
           </button>
         </>
       }
@@ -155,16 +155,16 @@ export function BackupImportDialog() {
             <path d="M12 15V4M8 8l4-4 4 4" />
             <path d="M4 15v3a2 2 0 002 2h12a2 2 0 002-2v-3" />
           </svg>
-          <div>{t('backupImport.pickHint', '点击选择备份文件')}</div>
+          <div>{t('backupImport.pickHint')}</div>
           <div style={{ fontSize: 10.5, marginTop: 4 }}>polaris-backup.json</div>
         </div>
       ) : (
         <>
           <div className="card-sub">
-            {t('backupImport.fileLabel', { defaultValue: '文件：{{name}}', name: fileName })}
+            {t('backupImport.fileLabel', { name: fileName })}
           </div>
           <div className="fld">
-            <label className="fld-l">{t('backupImport.categories', '文件内的类别')}</label>
+            <label className="fld-l">{t('backupImport.categories')}</label>
             <div className="parse-list" style={{ maxHeight: 'none' }}>
               {BACKUP_CATEGORIES.filter((cat) => picked.available.includes(cat)).map((cat) => (
                 <label
@@ -186,7 +186,7 @@ export function BackupImportDialog() {
                         }
                       }}
                     />
-                    <span>{CATEGORY_LABELS[cat]}</span>
+                    <span>{t(CATEGORY_LABEL_KEYS[cat])}</span>
                   </span>
                   <span className="mono" style={{ color: 'hsl(var(--fg-faint))' }}>
                     {picked.counts[cat] ?? '—'}
@@ -209,10 +209,7 @@ export function BackupImportDialog() {
               <path d="M12 8v5M12 16h.01" />
             </svg>
             <span>
-              {t(
-                'backupImport.replaceWarn',
-                '选中类别将被备份内容整体替换；未选类别保留不变。',
-              )}
+              {t('backupImport.replaceWarn')}
             </span>
           </div>
         </>

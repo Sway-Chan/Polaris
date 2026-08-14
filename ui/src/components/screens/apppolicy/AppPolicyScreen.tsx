@@ -80,20 +80,20 @@ type AppCategory = 'all' | 'video' | 'social' | 'ai' | 'tools' | 'game';
 /** 移除自定义应用的原地二次确认 key 前缀（原型 :4173 `app-remove`）。 */
 const APP_REMOVE_PREFIX = 'app-remove:';
 
-const CATEGORIES: { key: AppCategory; zh: string }[] = [
-  { key: 'all', zh: '全部' },
-  { key: 'video', zh: '视频' },
-  { key: 'social', zh: '社交' },
-  { key: 'ai', zh: 'AI' },
-  { key: 'tools', zh: '工具' },
-  { key: 'game', zh: '游戏' },
+const CATEGORIES: { key: AppCategory }[] = [
+  { key: 'all' },
+  { key: 'video' },
+  { key: 'social' },
+  { key: 'ai' },
+  { key: 'tools' },
+  { key: 'game' },
 ];
 
 /** `.mini-menu` 内 3 个快速策略（原型 nodeSelMenu 行内数组，proxy 对应「默认代理」= 跟随全局）。 */
-const QUICK_PICKS: { action: RuleAction; icon: string; key: string; zh: string; danger?: boolean }[] = [
-  { action: 'proxy', icon: 'M12 5v14M5 12h14', key: 'appPolicy.defaultProxy', zh: '默认代理' },
-  { action: 'direct', icon: 'M4 12h16', key: 'appPolicy.action.direct', zh: '直连' },
-  { action: 'block', icon: 'M5 5l14 14', key: 'appPolicy.action.block', zh: '阻断', danger: true },
+const QUICK_PICKS: { action: RuleAction; icon: string; key: string; danger?: boolean }[] = [
+  { action: 'proxy', icon: 'M12 5v14M5 12h14', key: 'appPolicy.defaultProxy' },
+  { action: 'direct', icon: 'M4 12h16', key: 'appPolicy.action.direct' },
+  { action: 'block', icon: 'M5 5l14 14', key: 'appPolicy.action.block', danger: true },
 ];
 
 export function AppPolicyScreen() {
@@ -183,7 +183,7 @@ export function AppPolicyScreen() {
   const sortedCats = useMemo(
     () =>
       sortAppCategories(
-        CATEGORIES.map((c) => ({ key: c.key, label: t(`appPolicy.cat.${c.key}`, c.zh) })),
+        CATEGORIES.map((c) => ({ key: c.key, label: t(`appPolicy.cat.${c.key}`) })),
         i18n.language,
       ),
     [t, i18n.language],
@@ -231,11 +231,11 @@ export function AppPolicyScreen() {
       stage({
         id: `appRule:${appId}`,
         kind: 'appRule',
-        label: t('home.stagedAppPolicy', { name: appLabel(appId), defaultValue: '应用策略 · {{name}}' }),
+        label: t('home.stagedAppPolicy', { name: appLabel(appId) }),
         entityPath: ['appRules', appId],
         nextValue: newRule,
       });
-      toast.success(t('appPolicy.policyUpdated', '策略已更新'));
+      toast.success(t('appPolicy.policyUpdated'));
       return; // 零 IPC 写、零磁盘写（FR-1）
     }
     const nextRules = [...(config?.appRules ?? [])];
@@ -249,12 +249,12 @@ export function AppPolicyScreen() {
       useAppStore.setState((s) => (s.config ? { config: { ...s.config, appRules: nextRules } } : {}));
       // 原型 nodeSelMenu onPick :4635 → notify('策略已更新','ok')。本函数只此一个调用点（setAppPolicy），
       // 故 toast 挂这里即等价于挂在策略提交点上。
-      toast.success(t('appPolicy.policyUpdated', '策略已更新'));
+      toast.success(t('appPolicy.policyUpdated'));
     } catch (err) {
       // 写失败时 store 未 patch → pill 停在旧策略，与「菜单点了没反应」同形；且用户会以为该应用已按新策略走。
       console.error('[AppPolicyScreen] applyRule failed:', err);
       toast.error(
-        t('appPolicy.policyUpdateFail', '策略更新失败'),
+        t('appPolicy.policyUpdateFail'),
         err instanceof Error ? err.message : undefined
       );
     }
@@ -286,7 +286,7 @@ export function AppPolicyScreen() {
       stage({
         id: `appPreset:${appId}`,
         kind: 'appPreset',
-        label: t('home.stagedAppRemove', { name: appLabel(appId), defaultValue: '移除应用 · {{name}}' }),
+        label: t('home.stagedAppRemove', { name: appLabel(appId) }),
         entityPath: ['customAppPresets', appId],
         nextValue: null,
         groupId: removeGroup,
@@ -297,14 +297,13 @@ export function AppPolicyScreen() {
           kind: 'appRule',
           label: t('home.stagedAppRuleRemove', {
             name: appLabel(appId),
-            defaultValue: '移除应用规则 · {{name}}',
           }),
           entityPath: ['appRules', appId],
           nextValue: null,
           groupId: removeGroup,
         });
       }
-      toast.info(t('appPolicy.removed', '已移除'));
+      toast.info(t('appPolicy.removed'));
       return; // 零 IPC 写、零磁盘写（FR-1）
     }
     const nextCustom = (config?.customAppPresets ?? []).filter((p) => p.id !== appId);
@@ -315,13 +314,13 @@ export function AppPolicyScreen() {
       // 用户刚在确认弹窗点了「删除」，弹窗关掉但卡片还在 → 不报就是「确认了个寂寞」。
       console.error('[AppPolicyScreen] removeCustomApp failed:', err);
       toast.error(
-        t('appPolicy.removeFail', '移除失败'),
+        t('appPolicy.removeFail'),
         err instanceof Error ? err.message : undefined
       );
       return;
     }
     // 原型 app-remove :4173 → notify('已移除')（中性 kind）。此时卡片已消失，这条是「确实删了」的落定确认。
-    toast.info(t('appPolicy.removed', '已移除'));
+    toast.info(t('appPolicy.removed'));
     const existingRules = config?.appRules ?? [];
     if (existingRules.some((r) => r.appId === appId)) {
       const cleaned = existingRules.filter((r) => r.appId !== appId);
@@ -332,7 +331,7 @@ export function AppPolicyScreen() {
         // 应用本体已移除但其分流规则没清掉 —— 这是**部分失败**，上面那条「已移除」并不涵盖它。
         // config 里会留下指向已删预设的孤儿规则（仍在生效），必须单独告警，不能被成功 toast 盖过去。
         console.error('[AppPolicyScreen] removeCustomApp rule cleanup failed:', err);
-        toast.warning(t('appPolicy.removeRuleCleanupFail', '应用已移除，但其分流规则未能清除'));
+        toast.warning(t('appPolicy.removeRuleCleanupFail'));
       }
     }
   };
@@ -353,7 +352,7 @@ export function AppPolicyScreen() {
       <div className="phead">
         <div>
           {/* 「实验性」徽章已移除（陈先生 2026-07-29 裁定）：该面已随本轮真机验证转入正式功能面。 */}
-          <h1>{t('sidebar.appPolicy', '应用分流')}</h1>
+          <h1>{t('sidebar.appPolicy')}</h1>
         </div>
         <div className="acts">
           <span
@@ -361,7 +360,7 @@ export function AppPolicyScreen() {
             role="switch"
             aria-checked={enabled}
             tabIndex={0}
-            data-tip={t('appPolicy.masterTip', '应用分流总开关')}
+            data-tip={t('appPolicy.masterTip')}
             onClick={async () => {
               const nextEnabled = !enabled;
               // 同一个 `api.config.setValue` 调用点跨三个键（appRules / customAppPresets /
@@ -371,7 +370,7 @@ export function AppPolicyScreen() {
                 stage({
                   id: 'setting:appRoutingEnabled',
                   kind: 'setting',
-                  label: t('appPolicy.masterTip', '应用分流总开关'),
+                  label: t('appPolicy.masterTip'),
                   entityPath: ['appRoutingEnabled'],
                   nextValue: nextEnabled,
                 });
@@ -385,7 +384,7 @@ export function AppPolicyScreen() {
                 // 写失败时 store 未 patch → 开关弹回原位，用户读作「开关坏了」而非「没存上」。
                 console.error('[AppPolicyScreen] toggle master:', err);
                 toast.error(
-                  t('appPolicy.masterToggleFail', '应用分流开关保存失败'),
+                  t('appPolicy.masterToggleFail'),
                   err instanceof Error ? err.message : undefined
                 );
               }
@@ -398,19 +397,19 @@ export function AppPolicyScreen() {
           对齐原型 updateAppSummary :4598-4602） */}
       <div className="app-summary">
         <span>
-          <span className="as-n">{summary.total}</span> {t('rules.appCountUnit', '应用')}
+          <span className="as-n">{summary.total}</span> {t('rules.appCountUnit')}
         </span>
         <span style={{ color: 'hsl(var(--flow-hi))' }}>
-          {t('appPolicy.followGlobal', '跟随全局')} <b>{summary.followGlobal}</b>
+          {t('appPolicy.followGlobal')} <b>{summary.followGlobal}</b>
         </span>
         <span style={{ color: 'hsl(var(--flow-hi))' }}>
-          {t('appPolicy.summary.node', '指定节点')} <b>{summary.node}</b>
+          {t('appPolicy.summary.node')} <b>{summary.node}</b>
         </span>
         <span style={{ color: 'hsl(var(--ok))' }}>
-          {t('appPolicy.summary.direct', '直连')} <b>{summary.direct}</b>
+          {t('appPolicy.summary.direct')} <b>{summary.direct}</b>
         </span>
         <span style={{ color: 'hsl(var(--err))' }}>
-          {t('appPolicy.summary.block', '阻断')} <b>{summary.block}</b>
+          {t('appPolicy.summary.block')} <b>{summary.block}</b>
         </span>
       </div>
 
@@ -422,7 +421,7 @@ export function AppPolicyScreen() {
           <path d="M12 8v5M12 16h.01" />
         </svg>
         <span>
-          {t('appPolicy.wfpNote', 'Windows WFP 进程分流为尽力而为，已内建 IP 兜底排除')}
+          {t('appPolicy.wfpNote')}
         </span>
       </div>
 
@@ -435,7 +434,7 @@ export function AppPolicyScreen() {
             <path d="M12 8v5M12 16h.01" />
           </svg>
           <span>
-            {t('appPolicy.presetsLoadFailed', '内置应用预设加载失败，仅显示自定义应用')}
+            {t('appPolicy.presetsLoadFailed')}
           </span>
         </div>
       )}
@@ -448,12 +447,7 @@ export function AppPolicyScreen() {
             <path d="M12 8v5M12 16h.01" />
           </svg>
           <span>
-            {t(
-              'appPolicy.modeWarn',
-              proxyMode === 'global'
-                ? '当前为全局模式，应用分流未生效'
-                : '当前为直连模式，应用分流未生效',
-            )}
+            {t('appPolicy.modeWarn')}
           </span>
           <button
             type="button"
@@ -462,7 +456,7 @@ export function AppPolicyScreen() {
               void useAppStore.getState().updateProxyMode('smart');
             }}
           >
-            {t('appPolicy.backToSmart', '切回智能')}
+            {t('appPolicy.backToSmart')}
           </button>
         </div>
       )}
@@ -475,10 +469,7 @@ export function AppPolicyScreen() {
             <path d="M12 8v5M12 16h.01" />
           </svg>
           <span>
-            {t(
-              'appPolicy.offNote',
-              '应用分流未启用 · 编辑已保存，启用后生效',
-            )}
+            {t('appPolicy.offNote')}
           </span>
         </div>
       )}
@@ -489,12 +480,11 @@ export function AppPolicyScreen() {
           {/* 分类筛选：下拉而非平铺 chips（用户真机反馈）。平铺的横向占用随类目数线性增长，六个已把
               `.ap-toolbar` 首行吃掉大半，再加类目就把同排搜索框挤到换行；下拉的宽度与类目数无关。
               复用既有 Csel（非 dialog 场景它自己 portal 到 body 逃 container-type 包含块，见其文件头注），
-              不新造下拉。aria-label 沿用原 `.ap-chips` 的英文原文，与同排 `.seg2` 的 "View" 一致，
-              不在本次改动里顺手扩 i18n 键（会连带动 locale-parity 门的债务基线）。 */}
+              不新造下拉；可见文案与无障碍名称都从同一份 locale 取值。 */}
           <Csel
             className="ap-cat"
             id="ap-cat-filter"
-            ariaLabel="Category filter"
+            ariaLabel={t('appPolicy.categoryFilter')}
             value={category}
             onChange={(v) => setCategory(v as AppCategory)}
             options={sortedCats.map((c) => ({ value: c.key, label: c.label }))}
@@ -506,26 +496,26 @@ export function AppPolicyScreen() {
             </svg>
             <input
               type="search"
-              placeholder={t('appPolicy.search', '搜索应用 / 进程…')}
+              placeholder={t('appPolicy.search')}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               style={{ border: 0, background: 'none', outline: 'none', flex: 1, color: 'inherit' }}
             />
           </label>
-          <div className="seg2" role="group" aria-label="View">
+          <div className="seg2" role="group" aria-label={t('appPolicy.viewAria')}>
             <button
               type="button"
               className={cn(view === 'cards' && 'on')}
               onClick={() => setView('cards')}
             >
-              {t('appPolicy.view.cards', '卡片')}
+              {t('appPolicy.view.cards')}
             </button>
             <button
               type="button"
               className={cn(view === 'list' && 'on')}
               onClick={() => setView('list')}
             >
-              {t('appPolicy.view.list', '列表')}
+              {t('appPolicy.view.list')}
             </button>
           </div>
         </div>
@@ -535,7 +525,7 @@ export function AppPolicyScreen() {
         <div id="ap-content">
           {visiblePresets.length === 0 ? (
             <div className="ap-empty">
-              {presetsPending ? t('common.loading', '加载中…') : t('appPolicy.empty', '无匹配应用')}
+              {presetsPending ? t('common.loading') : t('appPolicy.empty')}
             </div>
           ) : (
             groupCats.map((cat) => {
@@ -608,7 +598,7 @@ export function AppPolicyScreen() {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
               <path d="M12 5v14M5 12h14" />
             </svg>
-            <span>{t('appPolicy.addCustom', '添加自定义应用')}</span>
+            <span>{t('appPolicy.addCustom')}</span>
           </button>
         </div>
       </div>
@@ -677,7 +667,7 @@ function targetNodeNameFor(rule: AppRule | undefined, servers: ServerConfig[]): 
  * ⇒ 无文案可换，与 NodeCard 的 `node-del` 同形。 */
 function RemoveButton({ confirming, onClick }: { confirming: boolean; onClick: () => void }) {
   const { t } = useTranslation();
-  const label = confirming ? t('common.confirmAgain', '再点一次确认') : 'Remove';
+  const label = confirming ? t('common.confirmAgain') : 'Remove';
   return (
     <button
       type="button"
@@ -819,16 +809,16 @@ function appPolicyView(
   t: TFunction,
 ): { cls: string; dot: string; label: string } {
   if (action === 'direct') {
-    return { cls: 'act-direct', dot: 'direct', label: t('appPolicy.action.direct', '直连') };
+    return { cls: 'act-direct', dot: 'direct', label: t('appPolicy.action.direct') };
   }
   if (action === 'block') {
-    return { cls: 'act-block', dot: 'block', label: t('appPolicy.action.block', '阻断') };
+    return { cls: 'act-block', dot: 'block', label: t('appPolicy.action.block') };
   }
   if (targetServerId) {
     const name = servers.find((s) => s.id === targetServerId)?.name;
-    return { cls: 'act-proxy', dot: 'proxy', label: name ?? t('appPolicy.summary.node', '指定节点') };
+    return { cls: 'act-proxy', dot: 'proxy', label: name ?? t('appPolicy.summary.node') };
   }
-  return { cls: 'act-proxy', dot: 'proxy', label: t('appPolicy.followGlobal', '跟随全局') };
+  return { cls: 'act-proxy', dot: 'proxy', label: t('appPolicy.followGlobal') };
 }
 
 function CheckMark() {
@@ -949,7 +939,7 @@ function PolicySelector({
           role="menu"
           style={{ position: 'fixed', left: pos?.left ?? -9999, top: pos?.top ?? -9999 }}
         >
-          <div className="mm-lbl">{t('appPolicy.policy', '策略')}</div>
+          <div className="mm-lbl">{t('appPolicy.policy')}</div>
           {QUICK_PICKS.map((q) => (
             <button
               key={q.action}
@@ -963,20 +953,20 @@ function PolicySelector({
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
                 <path d={q.icon} />
               </svg>
-              <span>{t(q.key, q.zh)}</span>
+              <span>{t(q.key)}</span>
               {curKind === q.action && <CheckMark />}
             </button>
           ))}
           {groups.length > 0 && (
             <>
               <div className="mm-sep" />
-              <div className="mm-lbl">{t('appPolicy.summary.node', '指定节点')}</div>
+              <div className="mm-lbl">{t('appPolicy.summary.node')}</div>
               {groups.map((g) => {
                 const groupOpen = openGroups.has(g.id);
                 const groupLabel = g.isManual
-                  ? t('nodes.tab.manual', '自建节点')
+                  ? t('nodes.tab.manual')
                   : g.isMesh
-                    ? t('nodes.tab.mesh', '组网')
+                    ? t('nodes.tab.mesh')
                     : g.name;
                 return (
                   <Fragment key={g.id}>

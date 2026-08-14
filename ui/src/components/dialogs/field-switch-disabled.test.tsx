@@ -37,14 +37,11 @@ const SPEC: FieldSpec = {
   t: 'switch',
   k: 'reverseMesh',
   label: 'wg.reverseMesh',
-  zh: 'System 接入模式（内核接口）',
   hint: 'wg.reverseMeshHint',
-  hintZh: '建真实内核接口……',
   disabledHint: 'wg.reverseMeshWarp',
-  disabledHintZh: 'WARP 不支持 System 接入模式：会与主 TUN 抢内核接口。',
 };
 
-/** i18n 未初始化时 `t(key, default)` 回落到 default，故断言打在中文缺省上。 */
+/** i18n 未初始化时返回键名；本组只验证结构切换，译文完整性由 i18n coverage 负责。 */
 const render = (spec: FieldSpec, value: unknown = false) =>
   renderToStaticMarkup(<FieldRenderer spec={spec} value={value as never} onChange={() => {}} />);
 
@@ -53,8 +50,8 @@ describe('switch 禁用态：可见但不可写，且说明为什么', () => {
     const html = render(SPEC);
     expect(html).toContain('role="switch"');
     expect(html).not.toContain('disabled');
-    expect(html).toContain('建真实内核接口');
-    expect(html).not.toContain('WARP 不支持');
+    expect(html).toContain('wg.reverseMeshHint');
+    expect(html).not.toContain('wg.reverseMeshWarp');
   });
 
   it('不变式1+2：禁用时仍然渲染，且带原生 disabled（onChange 结构上不可达）', () => {
@@ -63,24 +60,24 @@ describe('switch 禁用态：可见但不可写，且说明为什么', () => {
     expect(html).toContain('role="switch"');
     expect(html).toContain('disabled');
     // 「可见」= 标签还在。若哪天有人改回 `when` 那种整条滤掉的写法，标签会一起消失。
-    expect(html).toContain('System 接入模式');
+    expect(html).toContain('wg.reverseMesh');
   });
 
   it('不变式3：禁用时 hint 换成「为什么不能开」，常态 hint 不再显示', () => {
     // 牙：把 hint 的三元换成恒取 spec.hint → 用户读到的是一条拨不动的开关「拨动后会怎样」→ 红。
     const html = render({ ...SPEC, disabled: true });
-    expect(html).toContain('WARP 不支持');
-    expect(html).not.toContain('建真实内核接口');
+    expect(html).toContain('wg.reverseMeshWarp');
+    expect(html).not.toContain('wg.reverseMeshHint');
   });
 
   it('禁用但没给 disabledHint → 退回常态 hint（不留空白，也不吞掉说明）', () => {
-    const { disabledHint: _k, disabledHintZh: _v, ...noDisabledHint } = SPEC as Extract<
+    const { disabledHint: _k, ...noDisabledHint } = SPEC as Extract<
       FieldSpec,
       { t: 'switch' }
     >;
     const html = render({ ...noDisabledHint, disabled: true });
     expect(html).toContain('disabled');
-    expect(html).toContain('建真实内核接口');
+    expect(html).toContain('wg.reverseMeshHint');
   });
 
   it('禁用与「开/关」正交：已开启的开关被禁用时，aria-checked 仍如实报 true', () => {

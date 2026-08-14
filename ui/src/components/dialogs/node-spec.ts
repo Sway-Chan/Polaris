@@ -599,7 +599,7 @@ export const ND_SPEC: Record<NodeProto, NodeSpec> = {
       { t: 'number', k: 'obfsMin', label: 'node.field.obfsMin', opt: true, when: whenObfsGecko },
       { t: 'number', k: 'obfsMax', label: 'node.field.obfsMax', opt: true, when: whenObfsGecko },
       // BBR 拥塞控制 profile（sing-box bbr_profile，1.14）——空=核心默认；仅 standard/aggressive/conservative 合法。
-      { t: 'select', k: 'bbr', label: 'node.field.bbr', options: [['', '默认'], ['standard', 'Standard'], ['aggressive', 'Aggressive'], ['conservative', 'Conservative']] },
+      { t: 'select', k: 'bbr', label: 'node.field.bbr', options: [['', 'common.default'], ['standard', 'Standard'], ['aggressive', 'Aggressive'], ['conservative', 'Conservative']] },
       { t: 'text', k: 'ports', label: 'node.field.ports', ph: '20000:30000', opt: true },
       { t: 'text', k: 'hopInterval', label: 'node.field.hopInterval', ph: '30s', opt: true },
       // 出站可用网络（`hysteria2.network`，后端 `outbound.rs` 的 `ob.network = h.network.clone()`）——

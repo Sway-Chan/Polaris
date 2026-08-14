@@ -191,18 +191,17 @@ export default function SettingsGeneral({ config, update }: SettingsGeneralProps
           </SetRow>
         )}
         {/* 关闭日志写盘 → sing-box log.disabled（builder/log.rs:37,51；运行中保存由
-            runtime/proxy.rs:4874-4878 重启生效）。归在隐私块：它的正当用途就是「不落盘留痕」。
-            用 DescFull 而非另造短描述——这项的代价（应用内实时日志与日志诊断一并失效）必须说全，
-            半句话的短描述会让人以为只是少写点文件。 */}
+            runtime/proxy.rs:4874-4878 重启生效）。归在隐私块，并保留实时日志/诊断失效这一必要代价；
+            省去实现细节与重复解释，避免单行说明膨胀。 */}
         <SetRow
-          label={t('settings.advanced.disableLogFile', '关闭日志写盘')}
+          label={t('settings.advanced.disableLogFile')}
           desc={t('settings.advanced.disableLogFileDescFull')}
         >
           <Switch
             id="disable-log-file-swt"
             checked={!!config.disableLogFile}
             onChange={(v) => void update({ disableLogFile: v })}
-            aria-label={t('settings.advanced.disableLogFile', '关闭日志写盘')}
+            aria-label={t('settings.advanced.disableLogFile')}
           />
         </SetRow>
       </SetBlock>

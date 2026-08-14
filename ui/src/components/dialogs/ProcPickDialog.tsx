@@ -108,26 +108,26 @@ export function ProcPickDialog({ onPick }: { onPick: (procs: SystemProcessInfo[]
   return (
     <Modal
       titleId="pp-dlg-title"
-      title={t('procPick.title', '选择进程')}
+      title={t('procPick.title')}
       onClose={close}
       icon={<ProcIcon />}
       footer={
         <>
           <button type="button" className="btn ghost" onClick={close}>
-            {t('common.cancel', '取消')}
+            {t('common.cancel')}
           </button>
           <button type="button" className="btn flow" onClick={handleAdd} disabled={sel.size === 0}>
             <span>
               {sel.size > 0
-                ? t('procPick.addN', { defaultValue: '添加 {{n}} 项', n: sel.size })
-                : t('procPick.add', '添加')}
+                ? t('procPick.addN', { n: sel.size })
+                : t('procPick.add')}
             </span>
           </button>
         </>
       }
     >
       <div className="card-sub" style={{ marginTop: -4 }}>
-        {t('procPick.hint', '从运行中的进程选择，快速加入进程规则')}
+        {t('procPick.hint')}
       </div>
 
       <div className="pp-tools">
@@ -139,16 +139,16 @@ export function ProcPickDialog({ onPick }: { onPick: (procs: SystemProcessInfo[]
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={t('procPick.searchPh', '搜索进程名 / 路径…')}
-            aria-label={t('procPick.searchPh', '搜索进程名 / 路径…')}
+            placeholder={t('procPick.searchPh')}
+            aria-label={t('procPick.searchPh')}
             style={{ border: 0, background: 'none', outline: 'none', flex: 1, padding: '8px 0', font: 'inherit', color: 'inherit' }}
           />
         </label>
         <button
           type="button"
           className="btn ghost sm pp-refresh"
-          aria-label={t('procPick.refresh', '刷新')}
-          data-tip={t('procPick.refresh', '刷新')}
+          aria-label={t('procPick.refresh')}
+          data-tip={t('procPick.refresh')}
           onClick={() => setReloadTick((n) => n + 1)}
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
@@ -158,7 +158,7 @@ export function ProcPickDialog({ onPick }: { onPick: (procs: SystemProcessInfo[]
       </div>
 
       <div className="pp-sys">
-        <span>{t('procPick.hideSys', '隐藏系统进程')}</span>
+        <span>{t('procPick.hideSys')}</span>
         <span
           className={`swt${hideSys ? ' on' : ''}`}
           role="switch"
@@ -176,18 +176,18 @@ export function ProcPickDialog({ onPick }: { onPick: (procs: SystemProcessInfo[]
 
       <div className="proc-pick-list">
         {state.phase === 'loading' && (
-          <div className="proc-pick-empty">{t('procPick.loading', '加载中…')}</div>
+          <div className="proc-pick-empty">{t('procPick.loading')}</div>
         )}
         {state.phase === 'error' && (
           <div className="proc-pick-empty">
-            {t('procPick.error', '进程列表加载失败')}
+            {t('procPick.error')}
           </div>
         )}
         {state.phase === 'ready' && filtered.length === 0 && (
           <div className="proc-pick-empty">
             {state.procs.length === 0
-              ? t('procPick.empty', '暂无进程数据 / 后端未接入')
-              : t('procPick.noMatch', '没有匹配的进程')}
+              ? t('procPick.empty')
+              : t('procPick.noMatch')}
           </div>
         )}
         {state.phase === 'ready' &&

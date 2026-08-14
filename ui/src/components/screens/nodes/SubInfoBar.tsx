@@ -172,14 +172,13 @@ export function SubInfoBar({
       case 'providers':
         // 全库唯一有真计数的阶段（provider 串行子拉取，每个最长 15s）。
         return t('nodes.subUpdatingProviders', {
-          defaultValue: '拉取子订阅 {{done}}/{{total}}',
           done: progress.done ?? 0,
           total: progress.total ?? 0,
         });
       case 'applying':
-        return t('nodes.subUpdatingApplying', '应用中…');
+        return t('nodes.subUpdatingApplying');
       default:
-        return t('nodes.subUpdatingFetching', '拉取中…');
+        return t('nodes.subUpdatingFetching');
     }
   };
 
@@ -201,10 +200,7 @@ export function SubInfoBar({
           <span
             className="pill warn si-auto"
             role="status"
-            data-tip={t(
-              'nodes.subUpdatingHint',
-              '正在更新本订阅（手动刷新与后台自动刷新共用同一进度）',
-            )}
+            data-tip={t('nodes.subUpdatingHint')}
           >
             <span className="spinner spin-inline" />
             {phaseLabel()}
@@ -215,39 +211,32 @@ export function SubInfoBar({
           <span
             className="pill ok si-auto"
             data-tip={t('nodes.subAutoUpdateActiveHint', {
-              defaultValue: '后台调度器每 {{h}} 小时自动刷新一次本订阅',
               h: intervalHours,
             })}
           >
             <RefreshIcon />
-            {t('nodes.subAutoUpdateEvery', { defaultValue: '自动 · {{h}}h', h: intervalHours })}
+            {t('nodes.subAutoUpdateEvery', { h: intervalHours })}
           </span>
         ) : autoStatus === 'master-off' ? (
           <span
             className="pill region si-auto"
-            data-tip={t(
-              'nodes.subAutoUpdateMasterOffHint',
-              '本订阅已开自动更新，但全局「启动时自动更新订阅」是关的 → 不会自动刷新，需手动点刷新',
-            )}
+            data-tip={t('nodes.subAutoUpdateMasterOffHint')}
           >
             <RefreshIcon />
-            {t('nodes.subAutoUpdatePaused', '自动 · 未生效')}
+            {t('nodes.subAutoUpdatePaused')}
           </span>
         ) : autoStatus === 'startup-only' ? (
           <span
             className="pill region si-auto"
-            data-tip={t(
-              'nodes.subAutoUpdateStartupOnlyHint',
-              '更新间隔设为「仅手动」→ 只在应用启动时补更一次，不按周期刷新',
-            )}
+            data-tip={t('nodes.subAutoUpdateStartupOnlyHint')}
           >
             <RefreshIcon />
-            {t('nodes.subAutoUpdateStartupOnly', '自动 · 仅启动时')}
+            {t('nodes.subAutoUpdateStartupOnly')}
           </span>
         ) : (
           <span className="pill region si-auto">
             <ClockIcon />
-            {t('nodes.subManualUpdate', '手动更新')}
+            {t('nodes.subManualUpdate')}
           </span>
         )}
         <div className="si-acts">
@@ -259,14 +248,14 @@ export function SubInfoBar({
             onClick={() => onRefresh?.(subscription)}
           >
             {updating ? <span className="spinner spin-inline" /> : <RefreshIcon />}
-            <span>{updating ? t('nodes.subUpdating', '更新中') : t('nodes.subRefresh', '刷新')}</span>
+            <span>{updating ? t('nodes.subUpdating') : t('nodes.subRefresh')}</span>
           </button>
           <button
             type="button"
             className="nd-a"
             onClick={() => onEdit?.(subscription)}
-            data-tip={t('nodes.subEditTitle', '编辑订阅')}
-            aria-label={t('nodes.subEditTitle', '编辑订阅')}
+            data-tip={t('nodes.subEditTitle')}
+            aria-label={t('nodes.subEditTitle')}
           >
             <EditIcon />
           </button>
@@ -274,8 +263,8 @@ export function SubInfoBar({
             type="button"
             className="nd-a err"
             onClick={() => onDelete?.(subscription)}
-            data-tip={t('nodes.subDeleteTitle', '删除订阅')}
-            aria-label={t('nodes.subDeleteTitle', '删除订阅')}
+            data-tip={t('nodes.subDeleteTitle')}
+            aria-label={t('nodes.subDeleteTitle')}
           >
             <DeleteIcon />
           </button>
@@ -292,16 +281,16 @@ export function SubInfoBar({
               style={!onMenuAction ? { opacity: 0.5, pointerEvents: 'none' } : undefined}
               data-tip={
                 onMenuAction
-                  ? t('nodes.subMenu', '更多')
-                  : t('nodes.subMenuDisabledHint', '尚未接入：调用方未提供更多菜单功能')
+                  ? t('nodes.subMenu')
+                  : t('nodes.subMenuDisabledHint')
               }
-              aria-label={t('nodes.subMenu', '更多')}
+              aria-label={t('nodes.subMenu')}
             >
               <MoreIcon />
             </button>
             {menuOpen && onMenuAction && (
               <div ref={anchored.menuRef} className="mini-menu" role="menu" style={anchored.style}>
-                <div className="mm-lbl">{t('nodes.subMenuHeader', '订阅')}</div>
+                <div className="mm-lbl">{t('nodes.subMenuHeader')}</div>
                 <button
                   type="button"
                   className="mi"
@@ -310,7 +299,7 @@ export function SubInfoBar({
                   onClick={() => runMenu('rename')}
                 >
                   <MenuIcon d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" />
-                  <span>{t('nodes.subRename', '重命名')}</span>
+                  <span>{t('nodes.subRename')}</span>
                 </button>
                 <button
                   type="button"
@@ -320,7 +309,7 @@ export function SubInfoBar({
                   onClick={() => runMenu('edit-url')}
                 >
                   <MenuIcon d="M9 15l6-6M8 8a3 3 0 10-3 3" />
-                  <span>{t('nodes.subEditUrl', '编辑 URL')}</span>
+                  <span>{t('nodes.subEditUrl')}</span>
                 </button>
                 <button
                   type="button"
@@ -330,7 +319,7 @@ export function SubInfoBar({
                   onClick={() => runMenu('copy-url')}
                 >
                   <MenuIcon d="M9 15l6-6M8 8a3 3 0 10-3 3M16 16a3 3 0 103 3" />
-                  <span>{t('nodes.subCopyUrl', '复制 URL')}</span>
+                  <span>{t('nodes.subCopyUrl')}</span>
                 </button>
                 {/* Polaris 无 per-sub 间隔字段（调度器只读全局）→ 不做假的"本订阅间隔"，
                     如实标「全局」并跳到设置里那唯一一处真开关。 */}
@@ -340,13 +329,10 @@ export function SubInfoBar({
                   role="menuitem"
                   data-act="sub-interval"
                   onClick={() => runMenu('interval')}
-                  data-tip={t(
-                    'nodes.subIntervalHint',
-                    'Polaris 的更新间隔是全局设置（无单订阅覆盖），点击前往设置 → 更新',
-                  )}
+                  data-tip={t('nodes.subIntervalHint')}
                 >
                   <MenuIcon d="M12 8v5M12 16h.01" />
-                  <span>{t('nodes.subInterval', '更新间隔…（全局）')}</span>
+                  <span>{t('nodes.subInterval')}</span>
                 </button>
                 <div className="mm-sep" />
                 <button
@@ -359,7 +345,6 @@ export function SubInfoBar({
                   <MenuIcon d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" />
                   <span>
                     {t('nodes.subDeleteWithCount', {
-                      defaultValue: '删除订阅（移除 {{count}} 个节点）',
                       count: deleteNodeCount ?? nodeCount,
                     })}
                   </span>
@@ -384,9 +369,9 @@ export function SubInfoBar({
           <span
             className="pill err"
             role="status"
-            data-tip={failure.error || t('nodes.subRefreshFail', '订阅更新失败')}
+            data-tip={failure.error || t('nodes.subRefreshFail')}
           >
-            {t('nodes.subUpdateFailed', '更新失败')}
+            {t('nodes.subUpdateFailed')}
           </span>
         )}
         {totalBytes > 0 && (
@@ -401,7 +386,7 @@ export function SubInfoBar({
             </span>
           </span>
         )}
-        {expiryText && <span className="si-expiry">{t('nodes.subExpiry', { defaultValue: '到期 {{date}}', date: expiryText })}</span>}
+        {expiryText && <span className="si-expiry">{t('nodes.subExpiry', { date: expiryText })}</span>}
       </div>
     </div>
   );

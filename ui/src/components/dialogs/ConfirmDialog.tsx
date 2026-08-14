@@ -41,7 +41,7 @@ export function ConfirmDialog({ payload }: { payload: ConfirmPayload }) {
       footer={
         <>
           <button type="button" className="btn ghost" onClick={dismiss}>
-            {payload.cancelLabel ?? t('common.cancel', '取消')}
+            {payload.cancelLabel ?? t('common.cancel')}
           </button>
           <button
             type="button"
@@ -50,7 +50,7 @@ export function ConfirmDialog({ payload }: { payload: ConfirmPayload }) {
               void payload.onConfirm();
             }}
           >
-            {payload.confirmLabel ?? t('common.confirm', '确认')}
+            {payload.confirmLabel ?? t('common.confirm')}
           </button>
         </>
       }

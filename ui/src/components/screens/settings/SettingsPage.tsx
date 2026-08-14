@@ -48,11 +48,11 @@ export function SettingsPage() {
     return (
       <section className="screen">
         <div style={{ fontSize: 13, color: 'hsl(var(--err))' }}>
-          {t('common.configLoadFail', '配置加载失败')}
-          {error ? `：${error}` : ''}
+          {t('common.configLoadFail')}
+          {error ? `${t('common.colon')}${error}` : ''}
         </div>
         <button type="button" onClick={() => void reload()} className="btn ghost sm" style={{ marginTop: 12 }}>
-          <span>{t('common.retry', '重试')}</span>
+          <span>{t('common.retry')}</span>
         </button>
       </section>
     );

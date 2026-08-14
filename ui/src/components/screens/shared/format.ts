@@ -9,7 +9,8 @@
 export type LatLevel = 'fast' | 'mid' | 'slow' | 'dead' | 'none';
 
 export function latLevel(v: number | null | undefined): LatLevel {
-  if (v === null || v === undefined) return 'none';
+  if (v === undefined) return 'none';
+  if (v === null || !Number.isFinite(v) || v < 0) return 'dead';
   if (v < 80) return 'fast';
   if (v < 150) return 'mid';
   if (v < 300) return 'slow';

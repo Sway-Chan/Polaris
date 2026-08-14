@@ -481,7 +481,7 @@ export const serverApi = {
   },
 
   /**
-   * 订阅一轮测速的**终态**（`{outcome,tested,total,pending}`）。
+   * 订阅一轮测速的**终态**（`{outcome,tested,total,serverIds,pending}`）。
    *
    * 广播通道 ⇒ **不管是谁发起的**（主窗 / 托盘浮层）都收得到。进度 toast 的终态判定以它为主路径，
    * 静默超时降级为纯兜底。载荷语义见 `contracts/speed-test.ts` 的 `SpeedTestDonePayload`。
@@ -558,6 +558,16 @@ export const logsApi = {
    */
   async runtimeLevel(): Promise<RuntimeLogLevel> {
     return invoke(IPC_CHANNELS.LOGS_RUNTIME_LEVEL);
+  },
+
+  /** 当前进程是否临时启用了 DEBUG 诊断；不读取/修改持久配置。 */
+  async diagnosticState(): Promise<boolean> {
+    return invoke(IPC_CHANNELS.LOGS_DIAGNOSTIC_STATE);
+  },
+
+  /** 临时抬高本次运行的日志门槛；应用重启后由启动配置自然恢复。 */
+  async setDiagnostic(enabled: boolean): Promise<boolean> {
+    return invoke(IPC_CHANNELS.LOGS_SET_DIAGNOSTIC, { enabled });
   },
 
   /**

@@ -132,7 +132,7 @@ export default function StatusBar() {
     t('home.routingDirect'),
     t('home.plsConfigServer'),
     blockSelected,
-    t('home.routingBlock', '阻断')
+    t('home.routingBlock')
   );
   const exitIp = resolveStatusBarExitIp(connected, ipInfo?.proxy?.ip, ipInfo?.direct?.ip);
   // 出口地区：与 exitIp 同一条口径、同一次探测（按连接态分叉、不跨态回落）。旗优先，无旗回落地名文本

@@ -34,6 +34,7 @@ import {
   subscribeLatencyEvents,
   isLatencyStale,
   LATENCY_STALE_MS,
+  normalizeLatencyResult,
 } from './use-latency-store';
 
 /** 投递一条后端 `event:speedTestResult`（打给所有在册监听器）。 */
@@ -56,7 +57,7 @@ describe('use-latency-store：单一真值', () => {
     applyLatencyResult('b', 240);
     applyLatencyResult('c', -1); // 后端判定的真实不可测
 
-    expect(useLatencyStore.getState().latencyMap).toEqual({ a: 120, b: 240, c: -1 });
+    expect(useLatencyStore.getState().latencyMap).toEqual({ a: 120, b: 240, c: null });
   });
 
   it('批量合并保留未在本批的历史值（invoke 返回值兜底同步不得抹掉旧结果）', () => {
@@ -71,6 +72,15 @@ describe('use-latency-store：单一真值', () => {
     useLatencyStore.getState().applyLatencyResult('a', 88);
 
     expect(useLatencyStore.getState().latencyMap.a).toBe(88);
+  });
+
+  it('IPC 的负数失败码在唯一写入口归一为 null，绝不泄漏成绿色的 “-1 ms”', () => {
+    expect(normalizeLatencyResult(-1)).toBeNull();
+    expect(normalizeLatencyResult(Number.NaN)).toBeNull();
+    expect(normalizeLatencyResult(0)).toBe(0);
+
+    useLatencyStore.getState().applyLatencyResults({ failed: -1, ok: 86 });
+    expect(useLatencyStore.getState().latencyMap).toEqual({ failed: null, ok: 86 });
   });
 });
 

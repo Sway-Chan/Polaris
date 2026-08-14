@@ -43,15 +43,6 @@ export const RULE_CATEGORY_ORDER: readonly RuleCategory[] = [
 /** 分类名的 i18n 键（值在五个 locale 的 `rules.cat.*`）。 */
 export const ruleCategoryLabelKey = (cat: RuleCategory): string => `rules.cat.${cat}`;
 
-/** 分类名的防御默认值（口径同本仓 `t(key, '中文')` 惯例；与 zh-CN.json 的一致性有门守）。 */
-export const RULE_CATEGORY_LABEL_ZH: Record<RuleCategory, string> = {
-  domain: '域名',
-  network: 'IP / 端口',
-  device: '局域网设备',
-  process: '进程',
-  ruleset: '规则集',
-};
-
 // ─────────────────────────────────────────────────────────────────────────────
 // 15 份类型描述符 —— 规则弹窗的**唯一**物料源
 //
@@ -141,10 +132,6 @@ export interface RuleTypeTest {
 export interface RuleTypeDescriptor {
   readonly id: RuleType;
   readonly category: RuleCategory;
-  /** 显示名 / 逐类型 hint / placeholder 的防御默认值（i18n 键由下方三个 `ruleType*Key` 生成）。 */
-  readonly nameZh: string;
-  readonly hintZh: string;
-  readonly placeholderZh: string;
   readonly source: ValueSource;
   readonly test: RuleTypeTest | null;
 }
@@ -194,25 +181,18 @@ const procPool = (addressing: 'proc-name' | 'proc-path'): ValueSource => ({
 
 /**
  * 15 份描述符。**加第 16 个类型只改这张表**（外加 `RULE_TYPE_IDS` 与契约里的 `RuleType` 联合）。
- * 每份的 zh 三项必须与 `zh-CN.json` 的 `rules.types.<id>` / `rules.typeHints.<id>` 逐字一致
- * （`rules.test.ts` 有门守 —— 两份中文漂开就等于「防御默认值」比 locale 还旧）。
+ * 展示名、提示与占位符只由 `ruleType*Key` 指向 locale，不在描述符里复制第二份文案。
  */
 export const RULE_TYPES: Record<RuleType, RuleTypeDescriptor> = {
   domain: {
     id: 'domain',
     category: 'domain',
-    nameZh: '域名',
-    hintZh: '每行一条完整域名',
-    placeholderZh: 'www.google.com',
     source: FREE,
     test: { axis: 'domain', match: eqDomain },
   },
   domainSuffix: {
     id: 'domainSuffix',
     category: 'domain',
-    nameZh: '域名后缀',
-    hintZh: '每行一条域名（匹配其及全部子域名）',
-    placeholderZh: 'google.com',
     source: FREE,
     test: {
       axis: 'domain',
@@ -222,18 +202,12 @@ export const RULE_TYPES: Record<RuleType, RuleTypeDescriptor> = {
   domainKeyword: {
     id: 'domainKeyword',
     category: 'domain',
-    nameZh: '域名关键词',
-    hintZh: '每行一个关键词，域名包含即匹配',
-    placeholderZh: 'youtube',
     source: FREE,
     test: { axis: 'domain', match: substrDomain },
   },
   domainRegex: {
     id: 'domainRegex',
     category: 'domain',
-    nameZh: '域名正则',
-    hintZh: 'Golang RE2 正则，不支持 lookahead / 反向引用',
-    placeholderZh: '^stun\\..+',
     source: FREE,
     test: {
       axis: 'domain',
@@ -251,81 +225,54 @@ export const RULE_TYPES: Record<RuleType, RuleTypeDescriptor> = {
   ipCidr: {
     id: 'ipCidr',
     category: 'network',
-    nameZh: '目的 IP/CIDR',
-    hintZh: '每行一条，裸 IP 视为单主机；IPv4/IPv6 均可',
-    placeholderZh: '8.8.8.8/32',
     source: FREE,
     test: { axis: 'ip', match: ipPrefix },
   },
   sourceIpCidr: {
     id: 'sourceIpCidr',
     category: 'network',
-    nameZh: '源 IP/CIDR',
-    hintZh: '每行一条源 IP/CIDR',
-    placeholderZh: '192.168.1.100/32',
     source: FREE,
     test: { axis: 'ip', match: ipPrefix },
   },
   port: {
     id: 'port',
     category: 'network',
-    nameZh: '目的端口',
-    hintZh: '每行一条端口或区间（如 443 或 1000-2000）',
-    placeholderZh: '443\n1000-2000',
     source: FREE,
     test: null,
   },
   sourcePort: {
     id: 'sourcePort',
     category: 'network',
-    nameZh: '源端口',
-    hintZh: '每行一条源端口或区间',
-    placeholderZh: '5060',
     source: FREE,
     test: null,
   },
   sourceMac: {
     id: 'sourceMac',
     category: 'device',
-    nameZh: '源设备 MAC',
-    hintZh: '每行一个 MAC（00:11:22:33:44:55 / 00-11-22-33-44-55 / 0011.2233.4455）',
-    placeholderZh: '00:11:22:33:44:55',
     source: FREE,
     test: null,
   },
   sourceHostname: {
     id: 'sourceHostname',
     category: 'device',
-    nameZh: '源设备主机名',
-    hintZh: '每行一个设备主机名（来自 DHCP 租约）',
-    placeholderZh: 'my-laptop',
     source: FREE,
     test: null,
   },
   processName: {
     id: 'processName',
     category: 'process',
-    nameZh: '进程名',
-    hintZh: '每行一个进程名（Windows 含 .exe）',
-    placeholderZh: 'Telegram',
     source: procPool('proc-name'),
     test: null,
   },
   processPath: {
     id: 'processPath',
     category: 'process',
-    nameZh: '进程路径',
-    hintZh: '每行一个进程完整路径',
-    placeholderZh: '/Applications/Telegram.app/Contents/MacOS/Telegram',
     source: procPool('proc-path'),
     test: null,
   },
   geosite: {
     id: 'geosite',
     category: 'ruleset',
-    nameZh: 'Geosite',
-    hintZh: '每行一个标签（如 youtube），或从下方候选中勾选',
-    placeholderZh: 'youtube',
     source: geoTagBare(),
     // 启发式：geosite 标签背后是一张域名表，客户端拿不到 ⇒ 退化成「标签名是域名子串」。
     test: { axis: 'domain', match: substrDomain },
@@ -333,9 +280,6 @@ export const RULE_TYPES: Record<RuleType, RuleTypeDescriptor> = {
   geoip: {
     id: 'geoip',
     category: 'ruleset',
-    nameZh: 'GeoIP',
-    hintZh: '每行一个标签（如 cn），或从下方候选中勾选',
-    placeholderZh: 'cn',
     source: geoTagBare(),
     // 启发式：假定被测 IP 落在地区标签内（客户端无 GeoIP 库）。
     test: { axis: 'ip', match: () => true },
@@ -343,11 +287,8 @@ export const RULE_TYPES: Record<RuleType, RuleTypeDescriptor> = {
   ruleSet: {
     id: 'ruleSet',
     category: 'ruleset',
-    nameZh: '规则集',
-    hintZh: '从下方勾选已下载的规则集；手填须为 res:<资源 id>',
     // 生成端 `custom_rules.rs:139` 只认 `res:` 前缀，其余一律 warn + 跳过（fail-closed）——
     // 照裸 tag 填出来的规则会**静默不生效**，只在日志里留一行 warn（2026-07-30 真机反馈）。
-    placeholderZh: 'res:builtin:geosite-cn',
     source: {
       kind: 'pool',
       pool: 'geoTag',

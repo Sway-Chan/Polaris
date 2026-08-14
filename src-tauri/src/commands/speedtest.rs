@@ -1329,6 +1329,11 @@ fn record_measured(
     total: usize,
 ) {
     let latency_val = latency.map_or(-1_i64, i64::from);
+    if latency.is_none() {
+        log::debug!(
+            "测速未取得有效延迟：nodeId={node_id}（可能为探针热切失败、冷建链/复用请求超时、传输错误或测速端点非 2xx）"
+        );
+    }
     results.insert(node_id.to_string(), json!(latency_val));
     emit(
         EVENT_SPEED_TEST_RESULT,
@@ -2597,6 +2602,7 @@ mod tests {
         assert_eq!(outcome, "interrupted");
         let done = sole_done_payload(&events);
         assert_eq!(done["outcome"], json!("interrupted"));
+        assert_eq!(done["serverIds"], json!(["a", "b", "c"]));
         assert_eq!(
             done["pending"],
             json!(["c"]),
@@ -2629,6 +2635,7 @@ mod tests {
         assert_eq!(outcome, "completed");
         let done = sole_done_payload(&events);
         assert_eq!(done["outcome"], json!("completed"));
+        assert_eq!(done["serverIds"], json!(["a", "b", "c"]));
         assert_eq!(done["pending"], json!([]), "跑完了就没有待续的");
         assert_eq!(done["tested"], json!(3));
         assert_eq!(done["total"], json!(3));
@@ -3308,6 +3315,7 @@ mod tests {
             .collect();
         assert_eq!(done.len(), 1, "中断也必须**恰好**发一条终态事件");
         assert_eq!(done[0]["outcome"], json!("interrupted"));
+        assert_eq!(done[0]["serverIds"], json!(["srv-active"]));
         assert_eq!(
             done[0]["pending"],
             json!(["srv-active"]),

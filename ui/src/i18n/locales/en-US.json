@@ -51,6 +51,10 @@
     "copyFail": "Copy failed",
     "retry": "Retry",
     "loading": "Loading...",
+    "close": "Close",
+    "windowMinimize": "Minimize",
+    "windowMaximize": "Maximize",
+    "windowRestore": "Restore window",
     "saveFailed": "Save failed",
     "configLoadFail": "Failed to load config",
     "search": "Search",
@@ -73,7 +77,10 @@
     "relHoursAgo": "{{count}}h ago",
     "relYesterday": "Yesterday",
     "relDaysAgo": "{{count}}d ago",
-    "itemCount": "{{n}} items"
+    "itemCount": "{{n}} items",
+    "default": "Default",
+    "colon": ": ",
+    "listSeparator": ", "
   },
   "sidebar": {
     "home": "Home",
@@ -85,6 +92,7 @@
     "rules": "Rules",
     "settings": "Settings",
     "collapse": "Collapse sidebar",
+    "primaryNav": "Primary navigation",
     "expand": "Expand sidebar",
     "group": {
       "routing": "Routing",
@@ -129,7 +137,14 @@
     "coreLevelHint": "The level the core is actually running at, read back from the core itself. It only decides how detailed the core's own log file is — the core half of \"Export logs\" and \"Export diagnostics\"; the core logs shown on this page are unaffected.",
     "coreLevelDriftUnsaved": "The level change has not been applied yet. The core still writes its own log file at the old level, so exported core logs will be missing the lines you want. It catches up once you apply the change and restart the core.",
     "coreLevelDriftRestart": "The core was started at the old level and still writes its own log file at that level, so exported core logs will be missing the lines you want. It catches up once the core restarts. The core logs shown on this page are unaffected.",
-    "sourceLabel": "Source"
+    "sourceLabel": "Source",
+    "levelAria": "Log display level",
+    "sourceAria": "Log source",
+    "diagnosticMode": "Diagnostic mode",
+    "diagnosticLevel": "DEBUG",
+    "diagnosticTipOff": "Temporarily show and record DEBUG output for this run without changing your settings. Restarting the app restores the configured level. The core's own log-file level is unchanged.",
+    "diagnosticTipOn": "Diagnostic mode is on: app output and the live core stream are temporarily at DEBUG. Click to restore the configured level; restarting the app also restores it.",
+    "diagnosticFailed": "Failed to toggle diagnostic mode"
   },
   "notify": {
     "proxyError": {
@@ -199,6 +214,7 @@
     "closeFiltered": "Close current {{n}}",
     "closeFilteredDone": "Closed {{n}} connections",
     "topHostsTitle": "Top hosts by traffic",
+    "topCount": "Number to show",
     "topBadge": "Top {{n}}",
     "topOutboundsTitle": "Outbound distribution",
     "copied": "Copied",
@@ -283,6 +299,7 @@
     "ruleResourcesMissing": "Rule resources missing — routing rules skipped · download them on the Rule Resources page and reconnect",
     "runningPrefix": "up",
     "searchNodesPlaceholder": "Search nodes…",
+    "nodesMenu": "Node list",
     "searchTopology": "Search domain / IP / outbound",
     "searchTopologyNoMatch": "No matches (excludes connections merged into “Others”)",
     "selectPendingNodeRestartHint": "Selected node has pending changes — restarting the core to apply, ready in a moment",
@@ -500,13 +517,15 @@
       "mgmtEnableDesc": "Off by default. Exposes the sing-box control API on 127.0.0.1 for the built-in dashboard",
       "mgmtPort": "Listen port",
       "mgmtPortDesc": "Assigned automatically by default; you can pin it",
+      "mgmtSecret": "API secret",
       "mgmtSecretDesc": "Generated automatically and checked when the dashboard loads",
+      "copySecret": "Copy API secret",
       "secretToggleTip": "Show / hide",
       "secretRegenerateTip": "Regenerate",
       "officialDashboard": "Official dashboard",
-      "officialDashboardDesc": "Opens the official sing-box dashboard in an in-app window with the connection pre-filled (the core must be running). You can also copy the connection details for an external dashboard, or clear the cached dashboard assets so the core re-downloads them on its next start",
-      "resolveBeforeDial": "Resolve domains before dialing",
-      "resolveBeforeDialDesc": "Resolve the destination domain to a real IP before handing it to the node. Off by default: a failed resolve terminates the connection outright, and node-side routing or unblocking that keys on domain/SNI stops working. Still affects traffic through the local proxy port even when FakeIP is off."
+      "officialDashboardDesc": "Open the sing-box dashboard in Polaris; it connects automatically while the core is running",
+      "resolveBeforeDial": "Resolve domains before connecting",
+      "resolveBeforeDialDesc": "Resolve the destination domain locally before handing its IP to the node. A lookup failure stops the connection and may affect node-side domain/SNI routing."
     },
     "proxyMode": {
       "confirmTitle": "Confirm Proxy Mode Change",
@@ -562,7 +581,7 @@
       },
       "autoSwitchNode": "Auto-Switch Node on Failure",
       "autoSwitchNodeDesc": "Switches to a working node automatically when the current one is detected as faulty",
-      "disableLogFileDescFull": "Fully disables sing-box logging (privacy / disk). In-app real-time logs and log-based diagnostics become unavailable; crash detection still works. Applies automatically by restarting the proxy after save (when running).",
+      "disableLogFileDescFull": "Stops sing-box logging. Live logs and log-based diagnostics become unavailable; crash detection is unaffected. Saving restarts the proxy when it is running.",
       "lanGateway": "LAN Gateway",
       "neighborDomains": "LAN short-name resolution",
       "neighborDomainsHint": "One suffix per line (leading dot added automatically); dot-less short names under it (e.g. nas.lan) resolve via LAN devices.",
@@ -789,9 +808,9 @@
       "remoteDnsDesc": "Upstream used for overseas domains",
       "domesticDns": "Domestic DNS",
       "domesticDnsDesc": "Upstream used for domestic domains",
-      "bootstrap": "DNS bootstrap",
-      "bootstrapDesc": "Domain-form DoH endpoints are first resolved by these IPs over a direct DoH connection (immune to UDP 53 hijacking and poisoning)",
-      "bootstrapNone": "Both fields are IP DoH · no bootstrap layer needed",
+      "bootstrap": "Resolve DNS server hostnames",
+      "bootstrapDesc": "When a remote or domestic DNS address uses a hostname, resolve it through these IP-based DoH services instead of the local DNS.",
+      "bootstrapNone": "The current DNS servers use IP addresses; no preliminary lookup is needed",
       "takeoverSystemDnsDesc": "Restores the original system DNS automatically after a crash or power loss",
       "nodeResolverBlock": "Node domain resolution",
       "raceStrategy": "Resolution strategy",
@@ -816,7 +835,8 @@
       "browserDohTitle": "Block browser DoH",
       "browserDohDesc": "A browser's built-in Secure DNS bypasses this app's DNS handling, so domain routing and FakeIP don't apply to it. When on, endpoints on the list are rejected on 443/853 and QUIC, forcing the browser back to system DNS. Off by default.",
       "browserDohFold": "DoH endpoints",
-      "browserDohHint": "Matched by domain suffix (cloudflare-dns.com covers all its subdomains). The built-in entries are a starting point, not a complete list — a DoH endpoint can be any self-hosted domain, so add whatever you find missing."
+      "browserDohHint": "Matched by domain suffix (cloudflare-dns.com covers all its subdomains). The built-in entries are a starting point, not a complete list — a DoH endpoint can be any self-hosted domain, so add whatever you find missing.",
+      "domain": "Domain"
     }
   },
   "rules": {
@@ -981,6 +1001,8 @@
     "candidateNotRunning": "Not running — entered manually",
     "manualInput": "Manual input",
     "ruleSetMissingHint": "{{n}} referenced rule set(s) not available locally",
+    "bypassFakeIP": "Bypass FakeIP",
+    "bypassFakeIPHint": "Domain-based rules only; direct matches use the real IP instead of FakeIP",
     "discard": "Discard",
     "discardMsg": "What you've entered won't be saved.",
     "discardTitle": "Discard changes?",
@@ -1094,12 +1116,9 @@
     "updated": "Subscription updated"
   },
   "errors": {
-    "configError": "Configuration Error",
-    "connectionError": "Connection Error",
-    "systemError": "System Error",
-    "processError": "Process Error",
-    "unknownError": "Unknown Error",
     "operationFailed": "Operation failed, please try again later",
+    "ipcMissingMessage": "Command \"{{command}}\" failed without an error message from the backend",
+    "configNotLoaded": "Cannot start the proxy before configuration has loaded",
     "startupFailed": "sing-box failed to start. Please check the server configuration",
     "helperNotInstalledTitle": "Helper not installed",
     "helperNotInstalledDesc": "TUN mode requires the privileged helper, but it isn't installed. Go to Settings › Helper to install it, then try again.",
@@ -1134,6 +1153,8 @@
     "icoOnline": "Online icon",
     "icoSearchPh": "Search icons… (chatgpt / netflix …)",
     "icon": "App icon",
+    "iconMethod": "Icon method",
+    "tagKind": "Resource type",
     "letterHint": "Uses the app name's initial as the icon; switch to \"Online icon\" to browse the icon gallery",
     "missingHint": "{{n}} resource tag(s) not yet downloaded locally",
     "name": "Name",
@@ -1169,6 +1190,8 @@
     "policy": "Policy",
     "presetsLoadFailed": "Failed to load built-in app presets; showing custom apps only",
     "search": "Search apps / processes…",
+    "viewAria": "View mode",
+    "categoryFilter": "Category filter",
     "summary": {
       "block": "Block",
       "direct": "Direct",
@@ -1289,6 +1312,11 @@
     },
     "meshTunnelRequired": "Complete the required authentication fields for this connection",
     "meshTunnelJsonInvalid": "Extension settings must be a valid JSON object",
+    "codecError": {
+      "customJsonInvalid": "Custom protocol JSON is invalid: {{detail}}",
+      "customJsonObject": "Custom protocol JSON must be an object",
+      "customJsonTypeRequired": "Custom protocol JSON requires a non-empty \"type\" field"
+    },
     "field": {
       "aid": "AlterID",
       "alpn": "ALPN",
@@ -1579,8 +1607,10 @@
     "speedTestInterrupted": "Speed test interrupted",
     "speedTestNotApplicable": "Not testable",
     "speedTestInterruptedSummary": "Completed {{tested}}/{{total}} nodes; the rest keep prior values",
-    "speedTestResume": "Resume",
-    "speedTestResumeGone": "Remaining nodes no longer exist",
+    "speedTestResume": "Resume remaining",
+    "speedTestRetry": "Retest",
+    "speedTestDismiss": "Dismiss",
+    "speedTestTargetsGone": "Nodes from this test no longer exist",
     "speedTestingNodes": "Testing · {{tested}}/{{total}} nodes",
     "noTestableNodes": "No testable nodes",
     "cloneSuccess": "Cloned to manual nodes",
@@ -1588,6 +1618,7 @@
     "deleteSuccess": "Server deleted",
     "deleteFail": "Failed to delete server",
     "timeout": "Timeout",
+    "timeoutHint": "The probe ran but did not receive a valid response in time. This does not necessarily mean the node is unusable: normal traffic and the test endpoint can take different paths. Enable Diagnostic mode on the Logs page and test again for details.",
     "nodeInvalid": "Invalid node config, skipped at startup",
     "nodeInvalidSep": ": ",
     "invalidDetourCascade": "The proxy node it chains through is invalid, so this node was skipped too",
@@ -1639,6 +1670,7 @@
     "cancelFailed": "Cancel failed",
     "cancelled": "Cancelled",
     "catalog": "Resource Library",
+    "categoryCustom": "Custom",
     "col": {
       "name": "Name",
       "size": "Size",
@@ -1712,6 +1744,8 @@
     "alwaysRoute": "Always route subnets",
     "alwaysRouteHint": "Keep peer-advertised subnets reachable even when this node is not the active exit.",
     "authkeyHint": "Pre-authorized key for non-interactive login (good for headless devices).",
+    "authKey": "Auth Key",
+    "authKeyLabel": "Auth Key (tskey-auth-…)",
     "authUrlCopied": "Login URL copied",
     "authUrlHint": "Complete authorization in your browser, then close this window — no need to wait here.",
     "authUrlLabel": "Login page URL",
