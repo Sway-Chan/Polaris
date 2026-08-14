@@ -45,7 +45,7 @@ export default function SettingsDisplay({ config, update }: SettingsDisplayProps
 
       <SetBlock header={t('settings.nav.appearance')}>
         {/* 语言说明按平台选键：mac 上多一句「原生对话框重启后跟随」（见 languageDescKey）。 */}
-        <SetRow label={t('settings.appearance.language')} desc={t(languageDescKey(os))}>
+        <SetRow label={t('settings.appearance.language')} tip={t(languageDescKey(os))}>
           <Select
             value={lang}
             onChange={(e) => void update({ language: e.target.value === 'system' ? 'auto' : e.target.value })}
@@ -97,7 +97,7 @@ export default function SettingsDisplay({ config, update }: SettingsDisplayProps
       <SetBlock header={t('settings.display.groupWindowNotify')}>
         <SetRow
           label={t('settings.display.closeBehavior')}
-          desc={t('settings.display.closeBehaviorDesc')}
+          tip={t('settings.display.closeBehaviorDesc')}
         >
           <Segmented<CloseBehavior>
             ariaLabel={t('settings.display.closeBehavior')}

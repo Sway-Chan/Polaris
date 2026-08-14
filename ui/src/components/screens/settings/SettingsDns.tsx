@@ -503,7 +503,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
 
         <SetRow
           label={t('settings.dns.remoteDns')}
-          desc={t('settings.dns.remoteDnsDesc')}
+          tip={t('settings.dns.remoteDnsDesc')}
           align="start"
           ctrlStyle={{ minWidth: 252, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'stretch' }}
         >
@@ -547,7 +547,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
 
         <SetRow
           label={t('settings.dns.domesticDns')}
-          desc={t('settings.dns.domesticDnsDesc')}
+          tip={t('settings.dns.domesticDnsDesc')}
           align="start"
           ctrlStyle={{ minWidth: 252, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'stretch' }}
         >
@@ -590,7 +590,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
 
         <SetRow
           label={t('settings.dns.bootstrap')}
-          desc={t('settings.dns.bootstrapDesc')}
+          tip={t('settings.dns.bootstrapDesc')}
           align="start"
           className={bootstrapNeeded ? undefined : 'no-boot'}
           id="dns-bootstrap-row"
@@ -628,7 +628,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
             范围 1-60000 与 store/sanitize.rs:498-517 同口径（见 normalizeDnsTimeoutInput）。 */}
         <SetRow
           label={t('settings.advanced.dnsTimeout')}
-          desc={t('settings.advanced.dnsTimeoutDesc')}
+          tip={t('settings.advanced.dnsTimeoutDesc')}
           align="start"
           ctrlStyle={{ minWidth: 160, display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'stretch' }}
         >
@@ -658,7 +658,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
 
       {/* 2. 节点域名解析（race） */}
       <SetBlock header={t('settings.dns.nodeResolverBlock')}>
-        <SetRow label={t('settings.dns.raceStrategy')} desc={t('settings.dns.raceStrategyDesc')}>
+        <SetRow label={t('settings.dns.raceStrategy')} tip={t('settings.dns.raceStrategyDesc')}>
           <Segmented<RaceStrategy>
             ariaLabel={t('settings.dns.raceStrategy')}
             value={raceStrategy}
@@ -676,7 +676,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
         {raceStrategy === 'single' ? (
           <SetRow
             label={t('settings.advanced.nodeResolverSingleLabel')}
-            desc={t('settings.advanced.nodeResolverSingleHint')}
+            tip={t('settings.advanced.nodeResolverSingleHint')}
           >
             <Select
               id="dns-single-resolver"
@@ -696,7 +696,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
           <SetRowGroup>
             <SetRow
               label={t('settings.dns.raceUpstreams')}
-              desc={t('settings.dns.raceUpstreamsDesc')}
+              tip={t('settings.dns.raceUpstreamsDesc')}
               align="start"
             />
 
@@ -812,11 +812,9 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
               className="set-row-details"
               id="fold-fakeip-filter"
               title={t('settings.dns.fakeIpFilterFold')}
+              tip={t('settings.dns.fakeIpFilterHint')}
               count={fakeIpFilterList.length}
             >
-              <div className="fld-hint" style={{ marginTop: 0 }}>
-                {t('settings.dns.fakeIpFilterHint')}
-              </div>
               <ListEditor
                 id="fakeip-filter-list"
                 value={fakeIpFilterList}
@@ -853,11 +851,9 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
               className="set-row-details"
               id="fold-browser-doh"
               title={t('settings.dns.browserDohFold')}
+              tip={t('settings.dns.browserDohHint')}
               count={browserDohList.length}
             >
-              <div className="fld-hint" style={{ marginTop: 0 }}>
-                {t('settings.dns.browserDohHint')}
-              </div>
               <ListEditor
                 id="browser-doh-list"
                 value={browserDohList}

@@ -88,15 +88,12 @@ pub fn build_wireguard_endpoint(
     if uses_system && platform != "darwin" {
         ep.name = Some(WG_SYSTEM_INTERFACE_NAME.to_string());
     }
-    ep.mtu = Some(if let Some(m) = s.mtu {
-        if m > 0 {
-            m
-        } else {
-            1408
-        }
+    let default_mtu = if crate::warp::is_warp_server(server) {
+        crate::warp::WARP_MTU
     } else {
         1408
-    });
+    };
+    ep.mtu = Some(s.mtu.filter(|mtu| *mtu > 0).unwrap_or(default_mtu));
     ep.address = Some(s.local_address.clone());
     ep.private_key = Some(private_key);
     let mut peer = WireGuardPeer {
@@ -105,15 +102,8 @@ pub fn build_wireguard_endpoint(
         public_key: peer_public_key,
         pre_shared_key: s.pre_shared_key.clone(),
         allowed_ips,
-        persistent_keepalive_interval: Some(if let Some(k) = s.persistent_keepalive {
-            if k > 0 {
-                k
-            } else {
-                25
-            }
-        } else {
-            25
-        }),
+        // 缺省按 Polaris 既有策略回落 25 秒；显式 0 遵循 WireGuard 语义关闭保活。
+        persistent_keepalive_interval: Some(s.persistent_keepalive.unwrap_or(25)),
         reserved: None,
     };
     if s.reserved.len() == 3 {
@@ -269,6 +259,7 @@ mod tests {
         let dial = crate::builder::helpers::get_node_dial_domain_resolver("dns-bootstrap", false);
         let ep = build_wireguard_endpoint(&s, "tag-w1", Some(&dial), "linux", None).unwrap();
         assert_eq!(ep.type_field, "wireguard");
+        assert_eq!(ep.mtu, Some(1408));
         assert_eq!(ep.peers.as_ref().unwrap()[0].address, "1.2.3.4");
         // allowInternet=on → allowed_ips 含 0/0。
         assert!(ep.peers.as_ref().unwrap()[0]
@@ -320,7 +311,7 @@ mod tests {
     /// 之间的接线断了（比如有人把 `ep.system = Some(uses_system)` 改成 `Some(reverse_mesh)`），
     /// 谓词测试照绿，而磁盘上的 WARP 节点照样 FATAL。
     #[test]
-    fn warp_endpoint_never_emits_system_true() {
+    fn warp_endpoint_policy_differs_from_plain_wireguard() {
         fn wg(address: &str) -> ServerConfig {
             ServerConfig {
                 id: "w1".into(),
@@ -350,11 +341,27 @@ mod tests {
         .expect("WARP endpoint 应能构建");
         assert_eq!(warp.system, Some(false), "WARP 不得发 system:true");
         assert_eq!(warp.name, None, "WARP 不得占用内核接口名");
+        assert_eq!(warp.mtu, Some(crate::warp::WARP_MTU));
 
         // 反向对照：同样的 reverseMesh:true，普通 WG 仍应发 system:true + 接口名。
         let plain = build_wireguard_endpoint(&wg("vpn.example.com"), "tag", None, "linux", None)
             .expect("普通 WG endpoint 应能构建");
         assert_eq!(plain.system, Some(true));
         assert_eq!(plain.name.as_deref(), Some(WG_SYSTEM_INTERFACE_NAME));
+        assert_eq!(plain.mtu, Some(1408));
+
+        // 用户显式设置始终优先于协议缺省值。
+        let mut custom = wg("engage.cloudflareclient.com");
+        let settings = custom.wireguard_settings.as_mut().unwrap();
+        settings.mtu = Some(1360);
+        settings.persistent_keepalive = Some(0);
+        let custom = build_wireguard_endpoint(&custom, "tag", None, "linux", None)
+            .expect("显式 MTU 的 WARP endpoint 应能构建");
+        assert_eq!(custom.mtu, Some(1360));
+        assert_eq!(
+            custom.peers.unwrap()[0].persistent_keepalive_interval,
+            Some(0),
+            "显式 0 应关闭保活，不能被改写回 25 秒"
+        );
     }
 }

@@ -762,7 +762,7 @@
       "strictRoute": "嚴格路由",
       "strictRouteDesc": "把所有流量嚴格鎖入 TUN 防止繞行洩漏；可能影響區域網路直連與虛擬機網路，遇到連不上時先關掉它",
       "natType": "NAT 類型",
-      "natTypeDesc": "決定哪些遠端能把 UDP 回應封包送進本機，也就決定了連線與 P2P 打洞的成功率。預設已是最寬鬆的全錐，玩遊戲、下載都不必動它；只有想縮小本機的 UDP 暴露面時才往下收緊，越往下打洞越容易失敗。",
+      "natTypeDesc": "預設全錐；限制越嚴，UDP 與 P2P 打洞成功率越低。",
       "natTypeDefault": "跟隨核心預設",
       "natTypeFullCone": "全錐",
       "natTypeRestricted": "受限錐",
@@ -1806,9 +1806,8 @@
   },
   "warp": {
     "addTitle": "接入 Cloudflare WARP",
-    "allowed": "自訂網段",
     "detour": "前置代理 / detour",
-    "detourHint": "先經該節點再撥號。WARP 就是 WireGuard，握手走 UDP，前置代理必須支援 UDP 轉發（SOCKS5 UDP ASSOCIATE），否則本節點靜默不通——不會回落直連。",
+    "detourHint": "WARP 使用 UDP；前置代理需支援 UDP 轉發（SOCKS5 UDP ASSOCIATE），否則無法連線。",
     "discard": "放棄",
     "discardMsg": "已填寫的內容將不會儲存。",
     "discardTitle": "放棄變更？",
@@ -1816,6 +1815,7 @@
     "doneTitle": "WARP 裝置已註冊",
     "editTitle": "編輯 WARP",
     "endpoint": "端點（Endpoint）",
+    "endpointAuto": "由 Cloudflare 自動分配",
     "errEndpoint": "端點格式應為 host:port（IPv6 用 [::1]:port），請檢查後重試",
     "errLicense": "WARP+ 許可套用失敗",
     "errLicense2": "請填寫 WARP+ 許可金鑰",
@@ -1823,18 +1823,14 @@
     "errNoCreds": "此節點缺少 WARP 裝置憑證，無法套用 WARP+ 許可",
     "licenseHint": "填入 WARP+ 許可金鑰即註冊/升級為 WARP+；免費版無需填寫。",
     "licenseLabel": "WARP+ 許可金鑰",
-    "keepalive": "保活（秒）",
+    "keepalive": "保活（秒，0 關閉）",
     "mtu": "MTU",
     "name": "節點名稱",
-    "note": "一鍵註冊匿名 WARP 裝置並加入為 WireGuard 節點——無需填寫金鑰；之後可在「編輯」裡微調路由。",
+    "note": "註冊匿名 WARP 裝置並作為 WireGuard 雲端出口使用，無需手動填寫金鑰。",
     "plan": "許可類型",
     "planFree": "免費 WARP",
     "register": "註冊並接入",
-    "registering": "正在註冊匿名裝置…",
-    "reserved": "Reserved",
-    "route": "路由（AllowedIPs）",
-    "routeAll": "全域出口（0.0.0.0/0、::/0）",
-    "routeCustom": "僅特定網段"
+    "registering": "正在註冊匿名裝置…"
   },
   "wg": {
     "address": "對端位址",
@@ -1877,7 +1873,7 @@
     "reserved": "Reserved",
     "reverseMesh": "System 接入模式（核心介面）",
     "reverseMeshHint": "建立真實核心介面：可被對端反向存取、可代子網轉送。需 TUN 模式，Windows 不支援，不滿足時自動降級為 gVisor 使用者態。開啟後該節點不參與測速。",
-    "reverseMeshWarp": "WARP 不支援 System 接入模式：它會與主 TUN 搶同一個核心介面，開啟後核心直接起不來（Connect: resource busy）。WARP 固定走 gVisor 使用者態。",
+    "reverseMeshWarp": "WARP 的 System 接入會與主 TUN 衝突，因此固定使用 gVisor 使用者態。",
     "source": "來源"
   }
 }

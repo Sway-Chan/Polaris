@@ -248,13 +248,13 @@ describe('reverseMesh：WARP 恒 gVisor', () => {
 /**
  * WarpDialog 的提交腿 —— `buildWarpSettings`。
  *
- * 这里钉的核心是**否决与控件无关**：WARP 弹窗里那个 System 开关已改成「可见但禁用」，
- * 但禁用只挡住「这次编辑新写入」。真正会把 `reverseMesh:true` 送上盘的是 `...base` ——
+ * 这里钉的核心是**否决与控件无关**：WARP 弹窗不展示 System 接入模式，但真正会把
+ * `reverseMesh:true` 送上盘的是 `...base` ——
  * 存量值来自导入配置 / 手改 config.json / 从 上游 迁移这三条**不经渲染端**的入口。
  * 故下面每一条都刻意让 `base` 带着 true 进来。
  */
 describe('buildWarpSettings：WARP 提交腿恒否决 System 接入模式', () => {
-  const baseDraft = { route: 'all', allowedIPs: '', mtu: 1280, keepalive: 25, reserved: '' };
+  const baseDraft = { mtu: undefined, keepalive: undefined };
 
   it('base 带 reverseMesh:true（导入/手改/迁移的存量值）→ 提交后不落键', () => {
     // 牙：删掉 `delete s.reverseMesh` → true 经 `...base` 幸存 → 红。
@@ -285,24 +285,34 @@ describe('buildWarpSettings：WARP 提交腿恒否决 System 接入模式', () =
     expect(s.warpDevice).toEqual({ deviceId: 'd', token: 't' });
   });
 
-  it('接线原样搬家：route/mtu/keepalive/reserved/allowedIPs 的语义与搬家前逐条一致', () => {
-    // `settingsOverride` 从 WarpDialog 的闭包搬进本文件，这条是搬家的等价性对照。
-    const all = buildWarpSettings({}, { ...baseDraft, mtu: 1400, keepalive: 30, reserved: '9, 8, 7' });
-    expect(all.allowInternet).toBe(true);
-    expect(all.alwaysRouteSubnets).toBe(true);
-    expect(all.mtu).toBe(1400);
-    expect(all.persistentKeepalive).toBe(30);
-    expect(all.reserved).toEqual([9, 8, 7]);
-    expect(all.allowedIPs).toBeUndefined();
-
-    const custom = buildWarpSettings({}, { ...baseDraft, route: 'custom', allowedIPs: '10.0.0.0/24, 192.168.1.0/24' });
-    expect(custom.allowInternet).toBe(false);
-    expect(custom.allowedIPs).toEqual(['10.0.0.0/24', '192.168.1.0/24']);
+  it('MTU 与保活可覆盖；0 保活保留为关闭语义', () => {
+    const s = buildWarpSettings({}, { ...baseDraft, mtu: 1400, keepalive: 0 });
+    expect(s.mtu).toBe(1400);
+    expect(s.persistentKeepalive).toBe(0);
   });
 
-  it('reserved 空 → **不删键**（异于 buildWgServer）：注册态 base 里那 3 字节 client_id 必须留着', () => {
-    const s = buildWarpSettings({ reserved: [5, 6, 7] }, { ...baseDraft, reserved: '' });
+  it('留空恢复协议默认；注册下发的 reserved 仍原样保留', () => {
+    const s = buildWarpSettings(
+      { mtu: 1400, persistentKeepalive: 30, reserved: [5, 6, 7] },
+      { ...baseDraft }
+    );
+    expect(s.mtu).toBeUndefined();
+    expect(s.persistentKeepalive).toBeUndefined();
     expect(s.reserved).toEqual([5, 6, 7]);
+  });
+
+  it('旧 WARP 的自定义 AllowedIPs/路由开关被清理，回到全隧道 peer 缺省语义', () => {
+    const s = buildWarpSettings(
+      {
+        allowedIPs: ['10.0.0.0/24'],
+        allowInternet: false,
+        alwaysRouteSubnets: false,
+      },
+      { ...baseDraft, route: 'custom', allowedIPs: '192.168.0.0/16' }
+    );
+    expect(s.allowedIPs).toBeUndefined();
+    expect(s.allowInternet).toBeUndefined();
+    expect(s.alwaysRouteSubnets).toBeUndefined();
   });
 });
 

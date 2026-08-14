@@ -363,15 +363,13 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
           {/* 折叠体**必须**留在 showList 门控内侧：放外面会出现「总开关已关、清单不生效，折叠标题却还杵在那」
               的怪相（用户点开是空壳）。门控与折叠是两层独立状态，顺序固定为「先门控、后折叠」。 */}
           {bypassLan.showList && (
-            <Fold className="set-row-details" id="fold-bypass" title={t('settings.network.bypassFold')} count={bypassList.length}>
-              <div className="fld-hint" style={{ marginTop: 0 }}>
-                {t('settings.network.bypassHint')}
-                {/* #1 与 #3 同源：route_exclude 无独立字段，由本清单的 CIDR 子集派生（SettingsTun.tsx:180-191）。
-                    两处各自独立折叠（互不联动），但必须让用户知道编辑的是同一份数据 —— 否则会以为
-                    「TUN 页那份没设，得再填一遍」。加粗半句与其余半句分成两个键，只为保住 `<b>` 的排版。 */}
-                <b>{t('settings.network.sharedListBold')}</b>
-                {t('settings.network.sharedListRest')}
-              </div>
+            <Fold
+              className="set-row-details"
+              id="fold-bypass"
+              title={t('settings.network.bypassFold')}
+              tip={`${t('settings.network.bypassHint')} ${t('settings.network.sharedListBold')}${t('settings.network.sharedListRest')}`}
+              count={bypassList.length}
+            >
               <ListEditor
                 id="le-bypass"
                 value={bypassList}
@@ -387,7 +385,7 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
         {/* 清理与日常开关不同：入口简短、危险语义在确认弹窗中完整说明。 */}
         <SetRow
           label={t('proxy.clearSystemProxy')}
-          desc={t('settings.network.clearSystemProxyDesc')}
+          tip={t('settings.network.clearSystemProxyDesc')}
         >
           <Button className="danger" variant="ghost" size="sm" onClick={requestClearSystemProxy}>
             <span>{t('proxy.clear')}</span>
@@ -403,34 +401,32 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
         >
           <Switch checked={!!config.blockQuic} onChange={(v) => void update({ blockQuic: v })} />
         </SetRow>
-        {/* 手写而非 SetRow：sr-tx 下需要 desc 文案 + webrtc-note 两个平级 div（原型 L2141），
-            webrtc-note 常渲染，显隐交给 `.webrtc-row.disabled .webrtc-note` CSS（非 TUN 模式才可见）。 */}
-        <div
-          className={webrtcDisabled ? 'set-row webrtc-row disabled' : 'set-row webrtc-row'}
+        <SetRow
+          className={webrtcDisabled ? 'webrtc-row disabled' : 'webrtc-row'}
           id="webrtc-row"
-          style={{ alignItems: 'flex-start' }}
+          align="start"
+          label={t('settings.network.webrtcLeakProtection')}
+          tip={t('settings.network.webrtcLeakDesc')}
+          desc={
+            webrtcDisabled ? (
+              <div className="webrtc-note" id="webrtc-note">
+                {t('settings.network.webrtcTunOnlyNote')}
+              </div>
+            ) : undefined
+          }
         >
-          <div className="sr-tx">
-            <b>{t('settings.network.webrtcLeakProtection')}</b>
-            <div>{t('settings.network.webrtcLeakDesc')}</div>
-            <div className="webrtc-note" id="webrtc-note">
-              {t('settings.network.webrtcTunOnlyNote')}
-            </div>
-          </div>
-          <div className="sr-ctl">
-            <Segmented<WebRTC>
-              id="webrtc-seg"
-              ariaLabel={t('settings.network.webrtcLeakProtection')}
-              value={config.webrtcLeakProtection ?? 'off'}
-              onChange={(v) => void update({ webrtcLeakProtection: v })}
-              options={[
-                { value: 'off', label: t('settings.network.webrtcLeakOff') },
-                { value: 'proxy', label: t('settings.network.webrtcLeakProxy') },
-                { value: 'block', label: t('settings.network.webrtcLeakBlock') },
-              ]}
-            />
-          </div>
-        </div>
+          <Segmented<WebRTC>
+            id="webrtc-seg"
+            ariaLabel={t('settings.network.webrtcLeakProtection')}
+            value={config.webrtcLeakProtection ?? 'off'}
+            onChange={(v) => void update({ webrtcLeakProtection: v })}
+            options={[
+              { value: 'off', label: t('settings.network.webrtcLeakOff') },
+              { value: 'proxy', label: t('settings.network.webrtcLeakProxy') },
+              { value: 'block', label: t('settings.network.webrtcLeakBlock') },
+            ]}
+          />
+        </SetRow>
         <SetRow
           label={t('settings.advanced.tlsFragment')}
           tip={t('settings.advanced.tlsFragmentDesc')}
@@ -491,7 +487,7 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
             默认，故前端必须先标红，否则「填了个错 URL，测速照跑但量的是别的端点」无从察觉）。 */}
         <SetRow
           label={t('settings.network.speedTestUrl')}
-          desc={t('settings.network.speedTestUrlDesc')}
+          tip={t('settings.network.speedTestUrlDesc')}
           align="start"
           ctrlStyle={{ minWidth: 260, display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'stretch' }}
         >
@@ -531,7 +527,7 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
                 此处只做范围校验，不复刻避让逻辑。 */}
             <SetRow
               label={t('settings.network.mgmtPort')}
-              desc={t('settings.network.mgmtPortDesc')}
+              tip={t('settings.network.mgmtPortDesc')}
               align="start"
               ctrlStyle={{ minWidth: 120, display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'stretch' }}
             >
@@ -558,7 +554,7 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
             </SetRow>
             <SetRow
               label={t('settings.network.mgmtSecret')}
-              desc={t('settings.network.mgmtSecretDesc')}
+              tip={t('settings.network.mgmtSecretDesc')}
               ctrlStyle={{ display: 'flex', gap: 6, alignItems: 'center', width: 288 }}
             >
               <TextInput
@@ -618,7 +614,7 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
                 内核在跑，沿用旧标题会让 desc 里的前提条件张冠李戴。 */}
             <SetRow
               label={t('settings.network.officialDashboard')}
-              desc={t('settings.network.officialDashboardDesc')}
+              tip={t('settings.network.officialDashboardDesc')}
             >
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                 <Button

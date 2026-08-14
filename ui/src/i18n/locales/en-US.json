@@ -762,7 +762,7 @@
       "strictRoute": "Strict route",
       "strictRouteDesc": "Locks all traffic into the TUN so nothing leaks around it; may break direct LAN access and VM networking — turn it off first when something cannot connect",
       "natType": "NAT type",
-      "natTypeDesc": "Controls which remote peers may send UDP packets back to this machine, which is what decides how easily games and P2P apps punch through. The default is already the loosest setting (full cone), so gaming and downloads need no change here; tighten it only to shrink this machine's UDP exposure, and expect hole punching to fail more often the further down the list you go.",
+      "natTypeDesc": "Defaults to full cone; stricter modes reduce UDP and P2P hole-punching success.",
       "natTypeDefault": "Kernel default",
       "natTypeFullCone": "Full cone",
       "natTypeRestricted": "Restricted cone",
@@ -1806,9 +1806,8 @@
   },
   "warp": {
     "addTitle": "Connect Cloudflare WARP",
-    "allowed": "Custom subnets",
     "detour": "Front proxy / detour",
-    "detourHint": "Dial through that node first. WARP is WireGuard, so its handshake runs over UDP and the front proxy must support UDP relay (SOCKS5 UDP ASSOCIATE); otherwise this node fails silently — it never falls back to a direct connection.",
+    "detourHint": "WARP uses UDP; the front proxy must support UDP relay (SOCKS5 UDP ASSOCIATE) or the connection will fail.",
     "discard": "Discard",
     "discardMsg": "What you've entered won't be saved.",
     "discardTitle": "Discard changes?",
@@ -1816,6 +1815,7 @@
     "doneTitle": "WARP Device Registered",
     "editTitle": "Edit WARP",
     "endpoint": "Endpoint",
+    "endpointAuto": "Assigned automatically by Cloudflare",
     "errEndpoint": "Endpoint should be host:port (use [::1]:port for IPv6) — please check and retry",
     "errLicense": "Failed to apply the WARP+ license",
     "errLicense2": "Please enter a WARP+ license key",
@@ -1823,18 +1823,14 @@
     "errNoCreds": "This node is missing WARP device credentials — can't apply the WARP+ license",
     "licenseHint": "Enter a WARP+ license key to register/upgrade to WARP+; leave blank for the free plan.",
     "licenseLabel": "WARP+ license key",
-    "keepalive": "Keepalive (seconds)",
+    "keepalive": "Keepalive (seconds, 0 disables)",
     "mtu": "MTU",
     "name": "Node name",
-    "note": "One click registers an anonymous WARP device and adds it as a WireGuard node — no key required; fine-tune routing later in \"Edit\".",
+    "note": "Registers an anonymous WARP device for use as a WireGuard cloud exit. No manual key entry is required.",
     "plan": "License type",
     "planFree": "Free WARP",
     "register": "Register and Connect",
-    "registering": "Registering an anonymous device…",
-    "reserved": "Reserved",
-    "route": "Routing (AllowedIPs)",
-    "routeAll": "Internet exit (0.0.0.0/0, ::/0)",
-    "routeCustom": "Specific subnets only"
+    "registering": "Registering an anonymous device…"
   },
   "wg": {
     "address": "Peer address",
@@ -1877,7 +1873,7 @@
     "reserved": "Reserved",
     "reverseMesh": "System access mode (kernel interface)",
     "reverseMeshHint": "Creates a real kernel interface: reachable by peers, can forward for subnets. Requires TUN mode and is unsupported on Windows — it falls back to the gVisor userspace stack otherwise. This node is excluded from speed tests while enabled.",
-    "reverseMeshWarp": "WARP does not support System access mode: it would contend with the main TUN for the same kernel interface, and the core fails to start outright (Connect: resource busy). WARP always uses the gVisor userspace stack.",
+    "reverseMeshWarp": "WARP System access conflicts with the main TUN, so WARP always uses the gVisor userspace stack.",
     "source": "Source"
   }
 }

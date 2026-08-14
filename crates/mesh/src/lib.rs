@@ -53,10 +53,9 @@ pub use warp::{
     enqueue_pending_deregister, parse_register_response, plan_deregister_drain,
     reserved_from_client_id, split_endpoint, DeregisterResult, DrainAction, DrainPlanItem,
     PendingDeregisterEntry, WarpDeviceCreds, WarpDraftMeta, WarpRegisterResult, WarpWireGuardDraft,
-    WARP_ALLOWED_IPS, WARP_API_BASE, WARP_API_VERSION, WARP_CLIENT_VERSION,
-    WARP_DEFAULT_ENDPOINT_HOST, WARP_DEFAULT_ENDPOINT_PORT, WARP_DEREGISTER_MAX_AGE_MS,
-    WARP_DEREGISTER_MAX_PER_DRAIN, WARP_DEREGISTER_MAX_QUEUE, WARP_ENDPOINT_DOMAIN, WARP_MTU,
-    WARP_USER_AGENT,
+    WARP_API_BASE, WARP_API_VERSION, WARP_CLIENT_VERSION, WARP_DEFAULT_ENDPOINT_HOST,
+    WARP_DEFAULT_ENDPOINT_PORT, WARP_DEREGISTER_MAX_AGE_MS, WARP_DEREGISTER_MAX_PER_DRAIN,
+    WARP_DEREGISTER_MAX_QUEUE, WARP_ENDPOINT_DOMAIN, WARP_USER_AGENT,
 };
 pub use warp_http::{
     ApplyLicenseResult, NoopWarpLog, RegisterOptions, WarpHttp, WarpHttpMethod, WarpHttpRequest,

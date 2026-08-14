@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url';
 import { allFields, ND_SPEC, nodeFormGroups, PROTO_OPTIONS } from './node-spec';
 import {
   TS_FORM_GROUP_KEYS,
-  WARP_FORM_GROUP_KEYS,
   WG_FORM_GROUP_KEYS,
   meshTunnelDraftError,
 } from './mesh-form-layout';
@@ -50,7 +49,7 @@ describe('统一接入表单的信息架构', () => {
     ]);
   });
 
-  it('Tailscale 与 WARP 使用同一基础 / 路由 / 高级规格', () => {
+  it('Tailscale 使用基础 / 路由 / 高级三组规格', () => {
     expect(TS_FORM_GROUP_KEYS).toEqual({
       basic: ['hostname', 'exitNode', 'exitNodeCustom'],
       routing: [
@@ -62,11 +61,15 @@ describe('统一接入表单的信息架构', () => {
         'sshServer', 'resolveByName', 'acceptDefaultResolvers',
       ],
     });
-    expect(WARP_FORM_GROUP_KEYS).toEqual({
-      basic: ['endpoint'],
-      routing: ['route', 'allowedIPs', 'reverseMesh'],
-      advanced: ['mtu', 'keepalive', 'reserved', 'detour'],
-    });
+  });
+
+  it('WARP 只保留一个可折叠高级区，不为内部协议字段强造路由分组', () => {
+    const src = readDialog('WarpDialog.tsx');
+    expect(src).toContain("title={t('node.formGroup.advanced')}");
+    expect(src).not.toContain("title={t('node.formGroup.routing')}");
+    for (const internalKey of ["k: 'route'", "k: 'allowedIPs'", "k: 'reserved'", "k: 'reverseMesh'"]) {
+      expect(src).not.toContain(internalKey);
+    }
   });
 
   it('required and JSON errors point to the group that can fix them', () => {

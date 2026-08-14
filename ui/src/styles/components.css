@@ -462,6 +462,7 @@
    「计数 + 箭头」自然贴右，无需覆盖上面既有的 svg 规则（该规则在 prototype.css 里另有一份重复定义，
    改它必须两处同改；这里绕开它，只加新类）。 */
 .fld-fold-t{ flex:1; min-width:0; }
+.fld-fold-info{ margin-left:6px; vertical-align:-3px; }
 /* 折叠段条目计数（取值逐字抄自 .ns-c，见 :854-858 —— 那套被 .mini-menu/.node-menu 前缀锁死，
    设置页拿不到，故在此另接同款视觉，不新造组件族）。 */
 .fld-fold-c{ font-size:10px; color:hsl(var(--fg-faint)); font-variant-numeric:tabular-nums; }

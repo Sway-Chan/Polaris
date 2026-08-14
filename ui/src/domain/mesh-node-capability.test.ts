@@ -17,6 +17,7 @@ import {
   landsInEndpoints,
   endpointForcedRouteCidrs,
   meshAllowsInternet,
+  wireguardPeerAllowedIps,
 } from './endpoint-routes';
 import { groupServersBySubscription } from './server-grouping';
 
@@ -59,6 +60,22 @@ describe('endpoint 腿 VPN 客户端的组网资格', () => {
     expect(meshAllowsInternet(ov(false))).toBe(false);
     // OpenConnect 无对应开关，本就是全隧道。
     expect(meshAllowsInternet(node({ protocol: 'openconnect' }))).toBe(true);
+  });
+
+  it('WARP 忽略旧配置的自定义路由字段，恒作为全隧道云出口', () => {
+    const warp = node({
+      protocol: 'wireguard',
+      address: 'engage.cloudflareclient.com',
+      port: 2408,
+      wireguardSettings: {
+        allowInternet: false,
+        alwaysRouteSubnets: false,
+        allowedIPs: ['10.0.0.0/24'],
+      },
+    } as Partial<ServerConfig>);
+    expect(meshAllowsInternet(warp)).toBe(true);
+    expect(endpointForcedRouteCidrs(warp)).toEqual([]);
+    expect(wireguardPeerAllowedIps(warp)).toEqual(['0.0.0.0/0', '::/0']);
   });
 
   it('UI 分组与路由能力解耦：不论是否声明段，企业 VPN endpoint 都留在「组网」', () => {

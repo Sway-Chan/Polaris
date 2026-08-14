@@ -19,8 +19,8 @@
  *    它同时是 `meshUsesSystemInterface` 的否决判据，而 `system:true` 的唯一发射方是 config-engine，
  *    落盘的 `servers[]` 又有导入配置 / 手改 `config.json` / 上游 迁移三条**不经渲染端**的入口 ⇒
  *    漂移后果是 `Connect: resource busy` **FATAL**，不止于 UI。Rust 对应物见
- *    `crates/config-engine/src/warp.rs` 的 `is_warp_server`（`WARP_ENDPOINT_DOMAIN` 的 Rust 唯一定义也在那儿，
- *    `crates/mesh` re-export）；两侧不漂移由 `src/contracts/warp-veto-parity.test.ts` 守。
+ *    `crates/config-engine/src/warp.rs` 的 `is_warp_server`（`WARP_ENDPOINT_DOMAIN` / `WARP_MTU` 的 Rust
+ *    真值也在那儿，前端镜像由 `src/contracts/warp-veto-parity.test.ts` 守）。
  *
  * DESIGN-REVIEW(warp-singleton-subscription-path-uncovered)：单例闸门覆盖的是**渲染端造节点的每条腿**
  * （`meshSingletonConflict`，接线于 NodeDialog / WgDialog / ImportDialog / WarpDialog 注册 / 节点克隆）。
@@ -36,6 +36,9 @@
 
 /** WARP 端点域名锚点：注册响应给出的 endpoint 均属此域（engage / 162.159.x 走 *.cloudflareclient.com）。 */
 export const WARP_ENDPOINT_DOMAIN = 'cloudflareclient.com';
+
+/** WARP 接口缺省 MTU；与 config-engine 的 `WARP_MTU` 逐字对拍。 */
+export const WARP_MTU = 1280;
 
 /**
  * 判定 WireGuard 节点是否为 Cloudflare WARP。**鲁棒**：新节点带自删凭据 `warpDevice`，但**旧/导入的 WARP 节点无此标记**
@@ -85,9 +88,7 @@ export interface WarpWireGuardDraft {
   privateKey: string;
   peerPublicKey: string;
   localAddress: string[];
-  allowedIPs: string[];
   reserved?: number[];
-  mtu: number;
   meta: { deviceId: string; accountId: string; license: string; warpPlus: boolean };
   /** 远端设备自删凭据（deviceId+token）。删除此节点时据它发 DELETE /reg/{deviceId} 注销匿名设备。 */
   warpDevice: { deviceId: string; token: string };

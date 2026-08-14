@@ -34,12 +34,6 @@ pub const WARP_DEFAULT_ENDPOINT_HOST: &str = "engage.cloudflareclient.com";
 /// WARP 标准 endpoint 兜底端口。上游 `WARP_DEFAULT_ENDPOINT_PORT`。
 pub const WARP_DEFAULT_ENDPOINT_PORT: u16 = 2408;
 
-/// WARP MTU。上游 `WARP_MTU`。
-pub const WARP_MTU: u32 = 1280;
-
-/// WARP allowed_ips。上游 `WARP_ALLOWED_IPS`。
-pub const WARP_ALLOWED_IPS: &[&str] = &["0.0.0.0/0", "::/0"];
-
 /// WARP 端点域名锚点：注册响应给出的 endpoint 均属此域。上游 `WARP_ENDPOINT_DOMAIN`。
 ///
 /// **定义在 `polaris-config-engine`**（`crate::warp`），这里只再导出：该域名同时是 config-engine
@@ -69,11 +63,8 @@ pub struct WarpWireGuardDraft {
     pub peer_public_key: String,
     #[serde(rename = "localAddress")]
     pub local_address: Vec<String>,
-    #[serde(rename = "allowedIPs")]
-    pub allowed_ips: Vec<String>,
     #[serde(rename = "reserved", default, skip_serializing_if = "Option::is_none")]
     pub reserved: Option<Vec<u8>>,
-    pub mtu: u32,
     pub meta: WarpDraftMeta,
     /// 远端设备自删凭据（deviceId+token）。删除此节点时据它发 DELETE 注销匿名设备。
     #[serde(rename = "warpDevice")]

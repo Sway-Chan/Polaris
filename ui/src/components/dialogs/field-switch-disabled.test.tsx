@@ -10,10 +10,9 @@
  *
  * # 守什么
  *
- * WARP 的 System 接入模式此前在两个弹窗里的形态是「隐藏」：`WarpDialog` 干脆不渲染，
- * `WgDialog` 用 `when: v => !isWarpDraft(v, base)` 整条滤掉。不能开是对的（WARP 走 system 内核接口
- * 会与主 TUN 抢 utun ⇒ `Connect: resource busy` FATAL，真机实证见 `domain/warp.ts`），
- * **但隐藏且不解释**会让用户分不清「不支持」「没做」「藏在别处」——本仓正在系统性消除这种形态。
+ * WARP 的 System 接入模式不能开启（WARP 走 system 内核接口会与主 TUN 抢 utun ⇒
+ * `Connect: resource busy` FATAL，真机实证见 `domain/warp.ts`）。专用 WARP 表单只展示适用字段，
+ * 因此不渲染这一项；通用 WireGuard 编辑器仍可能打开 WARP 存量配置，必须展示禁用项并解释原因。
  *
  * 三条不变式：
  *  1. 禁用的开关**仍然渲染**（可见），不是被滤掉；
@@ -23,9 +22,8 @@
  * # 抓不到什么
  *
  *  - `.swt:disabled` 的视觉（不透明度/光标）—— CSS 不在渲染射程内，真机看。
- *  - **两个弹窗真实的运行时取值**：`WarpDialog` / `WgDialog` 在 node 环境 import 即炸
- *    （`document is not defined`，模块加载期就有依赖碰 DOM），所以 `advSpec()` / `wgSpec()` 的返回值
- *    测不到。下面第二组退而求其次，用**源码结构门**钉那两张表里的 `reverseMesh` 项 —— 见该组的自述。
+ *  - `WgDialog` 真实的运行时取值：该模块在 node 环境 import 即炸（`document is not defined`，
+ *    模块加载期就有依赖碰 DOM），所以 `wgSpec()` 的返回值测不到。下面第二组用源码结构门钉职责边界。
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -83,7 +81,7 @@ describe('switch 禁用态：可见但不可写，且说明为什么', () => {
   });
 
   it('禁用与「开/关」正交：已开启的开关被禁用时，aria-checked 仍如实报 true', () => {
-    // 存量 reverseMesh:true 的 WARP 节点（导入/手改/迁移）打开弹窗时就是这一态 ——
+    // 通用 WireGuard 编辑器遇到存量 reverseMesh:true 的 WARP 节点时就是这一态 ——
     // 界面必须如实显示「它现在是开的、而你不能改」，不能假装是关的。
     const html = render({ ...SPEC, disabled: true }, true);
     expect(html).toContain('aria-checked="true"');
@@ -92,22 +90,17 @@ describe('switch 禁用态：可见但不可写，且说明为什么', () => {
 });
 
 /**
- * 两张 FieldSpec 表里的 `reverseMesh` 项 —— **源码结构门，不是行为门**。
+ * 两张表单的 `reverseMesh` 职责边界 —— **源码结构门，不是行为门**。
  *
  * # 为什么只能是结构门
  *
- * 理想做法是 import `advSpec()` / `wgSpec()` 直接看返回值。做不到：这两个函数住在
- * `WarpDialog.tsx` / `WgDialog.tsx` 里，而那两个模块在 node 环境**加载期**就炸
- * （`document is not defined`）。搬进纯 `.ts` 逻辑模块能解决加载问题，但**那样是错的** ——
- * `contracts/protocol-settings-coverage.test.ts` 刻意只把这两个 `.tsx` 算作「编辑器」，
- * 判据就是「FieldSpec 表里有没有这一项」＝**有没有控件**；把表搬走等于把那道门架空。
- * 故这里读源码。它证明不了运行时真的传了 `disabled`，只证明表里那一项是这么写的。
+ * 理想做法是 import `wgSpec()` 直接看返回值。做不到：`WgDialog.tsx` 在 node 环境加载期就有依赖
+ * 访问 DOM。故这里读源码：WARP 专用表单不得出现不适用项，通用 WG 表单则保留可见禁用项。
  *
  * # 为什么值得有
  *
- * 变异实测：把 `WarpDialog` 那条的 `disabled: true` 删掉 —— tsc 绿（少写可选属性合法）、
- * build 绿、覆盖门绿（它只问 `k: 'reverseMesh'` 在不在）、上面那组渲染门也绿（它测的是渲染器，
- * 喂的是合成 spec）。**全仓没有任何门会红**，WARP 的开关就这么变回可点的了。本组就是补这个洞。
+ * 这道门同时防两种回退：把不适用项重新塞进 WARP 专用表单，以及让通用 WG 编辑器里的 WARP
+ * 开关恢复可写或重新被隐藏。
  *
  * # 剔注释是承重步骤
  *
@@ -115,7 +108,7 @@ describe('switch 禁用态：可见但不可写，且说明为什么', () => {
  * 把代码删干净、注释留着，门照样报绿（同款教训见 `protocol-settings-coverage.test.ts` 的
  * `stripComments` 文档）。
  */
-describe('FieldSpec 表里的 reverseMesh 项：可见但禁用（源码结构门）', () => {
+describe('reverseMesh 表单边界：WARP 专用表单省略，通用 WG 可见但禁用', () => {
   const read = (f: string) => readFileSync(fileURLToPath(new URL(f, import.meta.url)), 'utf8');
   const stripComments = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
 
@@ -145,19 +138,12 @@ describe('FieldSpec 表里的 reverseMesh 项：可见但禁用（源码结构�
     return entry;
   }
 
-  const warp = specEntry(read('./WarpDialog.tsx'));
+  const warp = stripComments(read('./WarpDialog.tsx'));
   const wg = specEntry(read('./WgDialog.tsx'));
 
-  it('自检：两个弹窗里都解析到了这一项，且都是 switch', () => {
-    for (const [name, e] of [['WarpDialog', warp], ['WgDialog', wg]] as const) {
-      expect(e, `${name} 解析到的不是 switch 项`).toContain("t: 'switch'");
-      expect(e.length, `${name} 解析出的片段太短，配对可能出错`).toBeGreaterThan(60);
-    }
-  });
-
-  it('WARP：恒禁用（disabled: true 写死，不是条件）', () => {
-    // 牙：删掉 `disabled: true` → 红。这正是全仓其它门都抓不到的那个变异。
-    expect(warp).toMatch(/\bdisabled:\s*true\b/);
+  it('WARP 专用表单不展示不适用的 reverseMesh 项', () => {
+    expect(warp).not.toContain("k: 'reverseMesh'");
+    expect(warp).toContain('buildWarpSettings');
   });
 
   it('WG：按 WARP 判据禁用（不是写死 true —— 普通 WG 节点必须还能开）', () => {
@@ -166,21 +152,13 @@ describe('FieldSpec 表里的 reverseMesh 项：可见但禁用（源码结构�
     expect(wg).not.toMatch(/\bdisabled:\s*true\b/);
   });
 
-  it('两处都给了 disabledHint（禁用而不解释 = 本轮要消除的那个形态）', () => {
-    for (const [name, e] of [['WarpDialog', warp], ['WgDialog', wg]] as const) {
-      expect(e, `${name} 的 reverseMesh 禁用了却没说为什么`).toMatch(
-        /disabledHint:\s*'wg\.reverseMeshWarp'/
-      );
-      expect(e, `${name} 不应保留 locale 之外的中文第二真值`).not.toMatch(
-        /disabledHintZh:\s*'/,
-      );
-    }
+  it('WG 给出 disabledHint，禁用时解释原因', () => {
+    expect(wg).toMatch(/disabledHint:\s*'wg\.reverseMeshWarp'/);
+    expect(wg).not.toMatch(/disabledHintZh:\s*'/);
   });
 
-  it('两处都**不得**再用 when 把它整条隐掉（隐藏是这次要改掉的旧形态）', () => {
+  it('WG 不得再用 when 把它整条隐掉', () => {
     // 牙：把 `disabled: …` 换回 `when: (v) => !isWarpDraft(v, base)` → 红。
-    for (const [name, e] of [['WarpDialog', warp], ['WgDialog', wg]] as const) {
-      expect(e, `${name} 的 reverseMesh 又被 when 隐藏了`).not.toMatch(/\bwhen:\s*\(/);
-    }
+    expect(wg).not.toMatch(/\bwhen:\s*\(/);
   });
 });

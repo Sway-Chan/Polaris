@@ -173,7 +173,7 @@ export default function SettingsTun({ config, update }: SettingsTunProps) {
 
       {/* 1. TUN 接管 */}
       <SetBlock header={t('settings.tun.takeoverBlock')}>
-        <SetRow label={t('settings.tun.stack')} desc={t('settings.tun.stackDesc')}>
+        <SetRow label={t('settings.tun.stack')} tip={t('settings.tun.stackDesc')}>
           <Select
             id="tun-stack-sel"
             value={tun.stack}
@@ -192,7 +192,7 @@ export default function SettingsTun({ config, update }: SettingsTunProps) {
             塌到 11 Mbps），两项分开放会让「换了栈占位符里的数也变了」显得莫名其妙。 */}
         <SetRow
           label="MTU"
-          desc={t('settings.tun.mtuDesc')}
+          tip={t('settings.tun.mtuDesc')}
         >
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
             <TextInput
@@ -240,7 +240,7 @@ export default function SettingsTun({ config, update }: SettingsTunProps) {
             这里就会有两份表，且没有任何门守它们相等。
             宽度 190 而非邻居的 150：ru 的「Ограниченный конус」在 150px 下会被 .csv 的 ellipsis 截断，
             而档名被截断正是这颗控件唯一要避免的事（选项看不全 = 选不对）。 */}
-        <SetRow label={t('settings.tun.natType')} desc={t('settings.tun.natTypeDesc')}>
+        <SetRow label={t('settings.tun.natType')} tip={t('settings.tun.natTypeDesc')}>
           <Select
             id="tun-nat-type"
             value={tun.udpNatType ?? 'default'}
@@ -259,10 +259,10 @@ export default function SettingsTun({ config, update }: SettingsTunProps) {
           <SetRow
             label={t('settings.general.enableIPv6')}
             align="start"
+            tip={t('settings.network.enableIPv6Desc')}
             desc={
-              <>
-                {t('settings.network.enableIPv6Desc')}
-                <div className="ipv6-hint" hidden={!showIpv6Hint}>
+              showIpv6Hint ? (
+                <div className="ipv6-hint">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
                     <circle cx="12" cy="12" r="9" />
                     <path d="M12 8v5M12 16h.01" />
@@ -283,10 +283,10 @@ export default function SettingsTun({ config, update }: SettingsTunProps) {
                     <span>{t('settings.network.enableFakeIpAction')}</span>
                   </Button>
                 </div>
-              </>
+              ) : undefined
             }
           >
-            {/* 风险说明常驻在左侧，开关只负责启停，不再另发瞬时 toast。 */}
+            {/* 当前配置组合的风险与修复动作常驻；IPv6 的静态解释已收进标题旁信息提示。 */}
             <Switch
               id="ipv6-swt"
               checked={!!config.enableIPv6}
@@ -340,15 +340,9 @@ export default function SettingsTun({ config, update }: SettingsTunProps) {
           <Fold
             id="fold-route-exclude"
             title={t('settings.tun.routeExcludeFold')}
+            tip={`${t('settings.tun.routeExcludeHint')} ${t('settings.tun.sharedListBold')}${t('settings.tun.sharedListRest')}`}
             count={bypassList.length}
           >
-            <div className="fld-hint" style={{ marginTop: 0 }}>
-              {t('settings.tun.routeExcludeHint')}
-              {/* 同源提示与「网络 · 系统代理」页对称：两处各自独立折叠，但编辑的是同一份 bypassLANList。
-                  加粗的半句与其余半句分成两个键：只为保住 `<b>` 的排版而拆，别把它们合成一句。 */}
-              <b>{t('settings.tun.sharedListBold')}</b>
-              {t('settings.tun.sharedListRest')}
-            </div>
             <ListEditor
               id="cidr-list"
               value={bypassList}
@@ -377,11 +371,9 @@ export default function SettingsTun({ config, update }: SettingsTunProps) {
         <Fold
           id="fold-inbound-exclude"
           title={t('settings.tun.inboundExcludeFold')}
+          tip={t('settings.tun.inboundExcludeHint')}
           count={inboundExcludeCidrs.length}
         >
-          <div className="fld-hint" style={{ marginTop: 0 }}>
-            {t('settings.tun.inboundExcludeHint')}
-          </div>
           {/* plat-warn：默认 display:none，仅 :root[data-os="lin"] 时 CSS 显示——常渲染，不做 JS 平台判断 */}
           <div id="inbound-lin-warn" className="plat-warn" style={{ margin: 0 }}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
@@ -423,11 +415,9 @@ export default function SettingsTun({ config, update }: SettingsTunProps) {
               className="set-row-details"
               id="fold-neighbor-domains"
               title={t('settings.advanced.neighborDomains')}
+              tip={t('settings.advanced.neighborDomainsHint')}
               count={neighborDomains.length}
             >
-              <div className="fld-hint" style={{ marginTop: 0 }}>
-                {t('settings.advanced.neighborDomainsHint')}
-              </div>
               <ListEditor
                 id="neighbor-domain-list"
                 value={neighborDomains}
@@ -458,7 +448,7 @@ export default function SettingsTun({ config, update }: SettingsTunProps) {
                     <Pill variant="region">{t('settings.network.onlyLinux')}</Pill>
                   </>
                 }
-                desc={t('settings.advanced.macFilterDesc')}
+                tip={t('settings.advanced.macFilterDesc')}
               >
                 <Select
                   id="mac-filter-mode"
@@ -482,10 +472,13 @@ export default function SettingsTun({ config, update }: SettingsTunProps) {
               {/* 清单只在模式已选时渲染：模式 off 时内核完全不消费 macFilterList（inbounds.rs:306
                   以 mac_filter_mode 为入口），留个可编辑清单同样是误导。 */}
               {tun.macFilterMode && (
-                <Fold className="set-row-details" id="fold-mac-filter" title={t('settings.advanced.macFilter')} count={macFilterList.length}>
-                  <div className="fld-hint" style={{ marginTop: 0 }}>
-                    {t('settings.advanced.macFilterHint')}
-                  </div>
+                <Fold
+                  className="set-row-details"
+                  id="fold-mac-filter"
+                  title={t('settings.advanced.macFilter')}
+                  tip={t('settings.advanced.macFilterHint')}
+                  count={macFilterList.length}
+                >
                   <ListEditor
                     id="mac-filter-list"
                     value={macFilterList}

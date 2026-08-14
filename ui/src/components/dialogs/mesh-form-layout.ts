@@ -53,24 +53,6 @@ export function groupTsFields(fields: FieldSpec[]): Record<TsFormGroup, FieldSpe
   };
 }
 
-export type WarpFormGroup = 'basic' | 'routing' | 'advanced';
-
-export const WARP_FORM_GROUP_KEYS: Record<WarpFormGroup, readonly string[]> = {
-  basic: ['endpoint'],
-  routing: ['route', 'allowedIPs', 'reverseMesh'],
-  advanced: ['mtu', 'keepalive', 'reserved', 'detour'],
-};
-
-/** WARP 的 WireGuard 字段按任务分组；名称与许可证作为手写基础字段连续展示。 */
-export function groupWarpFields(fields: FieldSpec[]): Record<WarpFormGroup, FieldSpec[]> {
-  const inGroup = (group: WarpFormGroup, key: string) => WARP_FORM_GROUP_KEYS[group].includes(key);
-  return {
-    basic: fields.filter((field) => inGroup('basic', field.k)),
-    routing: fields.filter((field) => inGroup('routing', field.k)),
-    advanced: fields.filter((field) => inGroup('advanced', field.k)),
-  };
-}
-
 /** OpenConnect / OpenVPN 组网隧道的本地语法门；内核语义仍由后端最终校验。 */
 export function meshTunnelDraftError(
   proto: NodeProto,

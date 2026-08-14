@@ -233,9 +233,9 @@ export interface WireGuardSettings {
   // 仅在此节点被选中为主出口、或被自定义规则/应用分流显式指向（targetServerId）时才 force-route，其余不强加给全局。
   // **只 gate route.rules（force-route），不影响 peer.allowed_ips**（隧道仍接受这些段，故选中时网段照样可达）。
   alwaysRouteSubnets?: boolean;
-  persistentKeepalive?: number; // 保活间隔（秒）
+  persistentKeepalive?: number; // 保活间隔（秒）；缺省 25，显式 0 关闭
   reserved?: number[]; // 3 字节 reserved（Cloudflare WARP 等需要）
-  mtu?: number; // 缺省 1408
+  mtu?: number; // 普通 WireGuard 缺省 1408；WARP 缺省 1280
   // Phase 2：反向 mesh（system=真内核 WG 接口，提供「被组网访问/作 subnet router」反向可达）；默认 false=userspace
   // gVisor 栈。true 时 peer.allowed_ips 恒 specific-only（去 0/0，结论A：内核接口永不当全局出口），需 helper/提权。
   reverseMesh?: boolean;

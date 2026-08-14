@@ -22,8 +22,8 @@ use serde_json::Value;
 
 use crate::warp::{
     self, build_register_body, build_unregister_request, classify_deregister_result,
-    parse_register_response, DeregisterResult, WarpWireGuardDraft, WARP_ALLOWED_IPS, WARP_API_BASE,
-    WARP_API_VERSION, WARP_CLIENT_VERSION, WARP_MTU, WARP_USER_AGENT,
+    parse_register_response, DeregisterResult, WarpWireGuardDraft, WARP_API_BASE, WARP_API_VERSION,
+    WARP_CLIENT_VERSION, WARP_USER_AGENT,
 };
 
 /// WARP HTTP 响应：status + 截断后的 body。对齐 上游 `requestStatus` 的返回（注销需据 status/body 分类）。
@@ -226,16 +226,13 @@ where
             ),
         );
 
-        let allowed_ips: Vec<String> = WARP_ALLOWED_IPS.iter().map(|s| s.to_string()).collect();
         Ok(WarpWireGuardDraft {
             address: result.address,
             port: result.port,
             private_key,
             peer_public_key: result.peer_public_key,
             local_address: result.local_address,
-            allowed_ips,
             reserved: result.reserved,
-            mtu: WARP_MTU,
             meta: warp::WarpDraftMeta {
                 device_id: result.device_id.clone(),
                 account_id: result.account_id,
@@ -504,8 +501,6 @@ mod tests {
         assert_eq!(draft.private_key, "PRIVB64");
         assert_eq!(draft.peer_public_key, "PEERPUB");
         assert_eq!(draft.local_address, vec!["172.16.0.2/32"]);
-        assert_eq!(draft.allowed_ips, vec!["0.0.0.0/0", "::/0"]);
-        assert_eq!(draft.mtu, WARP_MTU);
         assert_eq!(draft.warp_device.device_id, "devid");
         assert_eq!(draft.warp_device.token, "secret-token");
         assert!(!draft.meta.warp_plus);

@@ -40,10 +40,12 @@ import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
+import { InfoIcon } from './InfoIcon';
 import { revealOnToggle } from './reveal';
 
 export function Fold({
   title,
+  tip,
   count,
   defaultOpen,
   forceOpen,
@@ -52,6 +54,8 @@ export function Fold({
   className,
 }: {
   title: ReactNode;
+  /** 静态说明与设置行一致，收进标题旁的信息提示。 */
+  tip?: string;
   /** 条目数徽章；undefined = 不显示（如「其余平台」这类非清单折叠）。0 会照常显示。 */
   count?: number;
   defaultOpen?: boolean;
@@ -77,7 +81,10 @@ export function Fold({
       }}
     >
       <summary>
-        <span className="fld-fold-t">{title}</span>
+        <span className="fld-fold-t">
+          {title}
+          {tip && <InfoIcon tip={tip} className="fld-fold-info" />}
+        </span>
         {count !== undefined && (
           <span className="fld-fold-c">{t('common.itemCount', { n: count })}</span>
         )}

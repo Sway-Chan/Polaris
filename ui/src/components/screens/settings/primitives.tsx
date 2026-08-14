@@ -143,7 +143,7 @@ export function SetRow({
 }: {
   label: ReactNode;
   desc?: ReactNode;
-  /** 复杂解释收进统一信息提示；`desc` 只保留需要常驻的短说明或状态。 */
+  /** 静态解释统一收进信息提示；`desc` 只保留当前状态、校验/平台警告或可操作提示。 */
   tip?: string;
   children?: ReactNode;
   className?: string;

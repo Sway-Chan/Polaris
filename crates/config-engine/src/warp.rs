@@ -23,8 +23,8 @@
 //! # 常量归属
 //!
 //! [`WARP_ENDPOINT_DOMAIN`] 的 Rust 唯一定义在本模块，`polaris-mesh` 从这里再导出
-//! （`polaris-mesh` 依赖 `polaris-config-engine`，反向会成环）。**别在 mesh 侧重新写一份字面量**
-//! —— 那等于把本次修的「两侧各自判定」缺陷原样复制进 Rust 内部。
+//! （`polaris-mesh` 依赖 `polaris-config-engine`，反向会成环）。[`WARP_MTU`] 同样归生成配置的
+//! config-engine 所有，注册服务不再把默认值塞进草稿。**别在 mesh 侧重新写一份字面量**。
 
 #![forbid(unsafe_code)]
 
@@ -33,6 +33,9 @@ use crate::user_config::server_config::{Protocol, ServerConfig};
 /// WARP 端点域名锚点：注册响应给出的 endpoint 均属此域（engage / 162.159.x 走 `*.cloudflareclient.com`）。
 /// 前端同名常量在 `ui/src/domain/warp.ts`。
 pub const WARP_ENDPOINT_DOMAIN: &str = "cloudflareclient.com";
+
+/// WARP 接口的缺省 MTU。显式配置仍优先；普通 WireGuard 使用 sing-box 的 1408 缺省值。
+pub const WARP_MTU: u32 = 1280;
 
 /// 判定 WireGuard 节点是否为 Cloudflare WARP。前端 `isWarpServer`（`ui/src/domain/warp.ts`）的逐字对应物。
 ///

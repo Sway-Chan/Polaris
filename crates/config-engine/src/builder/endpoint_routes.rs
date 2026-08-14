@@ -46,7 +46,7 @@ pub fn has_catch_all(cidrs: &[String]) -> bool {
 /// 该组网节点应被「强制路由到自身 tag」的具体 CIDR。上游 `endpointForcedRouteCidrs`。
 ///
 /// 三个来源，都是**配置期已知**的段（这正是 `is_mesh_protocol` / `is_mesh_node` 的判据）：
-///  - WireGuard：`allowedIPs` 去 catch-all；
+///  - WireGuard：`allowedIPs` 去 catch-all；WARP 没有子网广播能力，恒为空；
 ///  - Tailscale：tailnet 两族段 + `routes` 去 catch-all；
 ///  - openconnect / openvpn-client：用户在 `meshRoutes` 里显式声明的段（这两个协议的段本由服务端
 ///    运行期 push、配置期不可知，故只认用户手填的那份）。
@@ -55,6 +55,9 @@ pub fn has_catch_all(cidrs: &[String]) -> bool {
 pub fn endpoint_forced_route_cidrs(server: &ServerConfig) -> Vec<String> {
     let raw: Vec<String> = match server.protocol {
         Protocol::Wireguard => {
+            if crate::warp::is_warp_server(server) {
+                return vec![];
+            }
             let allowed = server
                 .wireguard_settings
                 .as_ref()
@@ -81,14 +84,17 @@ pub fn endpoint_forced_route_cidrs(server: &ServerConfig) -> Vec<String> {
 }
 
 /// 组网节点是否允许作外网出口（缺省 true）。上游 `meshAllowsInternet`。
-/// WG：allowInternet !== false；TS：!!exitNode（allowInternet 由 exit_node 派生）。
+/// WG：allowInternet !== false；WARP 恒为云出口；TS：!!exitNode（allowInternet 由 exit_node 派生）。
 pub fn mesh_allows_internet(server: &ServerConfig) -> bool {
     match server.protocol {
-        Protocol::Wireguard => server
-            .wireguard_settings
-            .as_ref()
-            .and_then(|w| w.allow_internet)
-            .unwrap_or(true),
+        Protocol::Wireguard => {
+            crate::warp::is_warp_server(server)
+                || server
+                    .wireguard_settings
+                    .as_ref()
+                    .and_then(|w| w.allow_internet)
+                    .unwrap_or(true)
+        }
         Protocol::Tailscale => server
             .tailscale_settings
             .as_ref()
@@ -505,6 +511,23 @@ mod tests {
         assert!(mesh_allows_internet(&ts_server("t", Some("exit"), &[])));
         assert!(!mesh_allows_internet(&ts_server("t", None, &[])));
         assert!(!mesh_allows_internet(&ts_server("t", Some("  "), &[])));
+    }
+
+    #[test]
+    fn warp_ignores_legacy_custom_route_fields() {
+        let mut s = wg_server("warp", &["10.0.0.0/24"], Some(false));
+        s.address = "engage.cloudflareclient.com".into();
+        assert!(mesh_allows_internet(&s), "WARP 恒为云出口");
+        assert!(endpoint_forced_route_cidrs(&s).is_empty());
+        assert_eq!(
+            wireguard_peer_allowed_ips(&s),
+            Some(
+                FULL_TUNNEL_CIDRS
+                    .iter()
+                    .map(|cidr| cidr.to_string())
+                    .collect()
+            )
+        );
     }
 
     #[test]

@@ -351,7 +351,7 @@ export default function SettingsHelper() {
       <SetBlock header={t('helper.fallbackTitle')}>
         <SetRow
           label={t('helper.autoRecover')}
-          desc={t('helper.autoRecoverDesc')}
+          tip={t('helper.autoRecoverDesc')}
         />
       </SetBlock>
     </section>

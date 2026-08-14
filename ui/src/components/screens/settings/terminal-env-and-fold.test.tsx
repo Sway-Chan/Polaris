@@ -553,6 +553,16 @@ describe('Fold 原语（直接渲染）', () => {
   it('标题带 .fld-fold-t（flex:1）—— 少了它计数徽章会飘到 summary 中间', () => {
     expect(renderToStaticMarkup(<Fold title="T">x</Fold>)).toContain('class="fld-fold-t"');
   });
+
+  it('静态说明经标题旁信息提示渲染，不占用折叠内容区', () => {
+    const html = renderToStaticMarkup(
+      <Fold title="T" tip="Help text">
+        x
+      </Fold>,
+    );
+    expect(html).toContain('class="info-i fld-fold-info"');
+    expect(html).toContain('data-tip="Help text"');
+  });
 });
 
 describe('四处清单确实折叠了，且计数跟着真实清单走', () => {

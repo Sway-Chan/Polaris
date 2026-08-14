@@ -339,6 +339,14 @@ const REGISTRY: readonly PromiseRow[] = [
     evidence: { kind: 'config-key', key: 'autoRoute' },
   },
   {
+    snippet: '每行一个后缀（自动补前导点）',
+    evidence: {
+      kind: 'anchor',
+      file: 'crates/config-engine/src/builder/dns.rs',
+      needle: 'fn neighbor_domains_attached_to_dns_local_on_linux',
+    },
+  },
+  {
     // 承诺是「留空即自动，按协议栈与平台取推荐值」——兑现方是生成期那条派生，不是某个配置键
     // （恰恰相反：留空意味着**磁盘上没有那个键**，config-key 这条腿在这里天然举不出证）。
     snippet: '留空即自动，按协议栈与平台取推荐值',

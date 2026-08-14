@@ -977,7 +977,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
             与下一行**正交**：本行决定看不看预发布，下一行决定跨不跨 minor，开这个不放开那个。 */}
           <SetRow
             label={t('settings.coreManagement.channel')}
-            desc={t('settings.coreManagement.channelDesc')}
+            tip={t('settings.coreManagement.channelDesc')}
           >
             <Select
               style={{ width: 132 }}
@@ -1096,7 +1096,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
             于是「为什么我的订阅规则明明走代理，它却直连」永远对不上账。 */}
         <SetRow
           label={t('settings.update.subChannel')}
-          desc={t('settings.update.subChannelDesc')}
+          tip={t('settings.update.subChannelDesc')}
         >
           <Segmented<SubProxyPolicy>
             ariaLabel={t('settings.update.subChannel')}

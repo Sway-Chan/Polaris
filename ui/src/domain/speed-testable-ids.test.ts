@@ -62,7 +62,7 @@ describe('speedTestableIds：过滤口径 = isSpeedTestable（不产假数值）
     expect(speedTestableIds(servers, { mainCorePool: true })).toEqual(['ok']);
   });
 
-  it('WG/WARP-mesh-only（allowInternet=off）同样排除 —— 与 TS-mesh-only 对称，此前只判了 TS', () => {
+  it('普通 WG mesh-only（allowInternet=off）同样排除 —— 与 TS-mesh-only 对称', () => {
     // 关了「允许访问外网」的组网节点，peer.allowed_ips 只含具体段（wireguardPeerAllowedIps），
     // 公网探测 URL 不命中 cryptokey routing 即被丢弃 → 必返 -1，而 -1 在 UI 上读作「真实超时」= 假数值。
     const servers = [

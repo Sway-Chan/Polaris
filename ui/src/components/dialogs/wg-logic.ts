@@ -283,21 +283,21 @@ export function buildWgServer(
  * WARP 表单草稿 → `WireGuardSettings`（`WarpDialog` 的提交路径；注册态与编辑态共用）。
  *
  * `base` 两种来源：注册态 = `registerWarp` 刚下发的草稿（privateKey / peerPublicKey / reserved /
- * warpDevice…），编辑态 = 现有 WARP 节点的 `wireguardSettings`。表单只覆盖它认得的那几项，
- * 其余原样带过 —— 这也正是下面那道否决必须存在的理由。
+ * warpDevice…），编辑态 = 现有 WARP 节点的 `wireguardSettings`。表单只覆盖 MTU / 保活，注册凭据
+ * 与 Reserved 原样带过；路由字段则收口为 WARP 固定语义。
  *
  * # 为什么放在这里而不是留在 `WarpDialog.tsx` 里当闭包
  *
  * 与 [`buildWgServer`] **并排**，「一处补了、另一处漏」这件事就在同屏可见；且它是纯函数，
  * `wg-logic.test.ts` 能直接给那道否决上牙（闭包只能靠源码 grep 守，是弱得多的门）。
  * 覆盖门（`contracts/protocol-settings-coverage.test.ts`）不受影响：它刻意不把本文件算作「编辑器」，
- * 控件仍在两个 dialog 的 FieldSpec 表里 —— 接线搬家不等于控件搬家，正是那道门要区分的事。
+ * WARP 的 Reserved / Allowed IPs 不再是控件：前者由 Cloudflare 注册结果下发，后者固定为全隧道 peer。
  *
  * # `reverseMesh` 恒删键（本函数的承重行）
  *
- * WARP 结构上永远不能走 System 内核接口（理由见 [`isWarpDraft`]）。UI 那一项已改成
- * **可见但禁用**，但禁用只挡住「这次编辑新写入」——盘上原有的 `reverseMesh:true`（导入 / 手改
- * config.json / 上游 迁移三条不经渲染端的入口）会经上面的 `...base` 幸存下来，被原样写回。
+ * WARP 结构上永远不能走 System 内核接口（理由见 [`isWarpDraft`]）。UI 不展示这个不适用的控件，
+ * 但盘上原有的 `reverseMesh:true`（导入 / 手改 config.json / 上游 迁移三条不经渲染端的入口）
+ * 仍会经上面的 `...base` 幸存下来，被原样写回。
  * 故此处无条件 `delete`：本弹窗产出的节点**恒是 WARP**（单例槽 + `registerWarp`／编辑现有 WARP），
  * 没有「有时该保留」的分支。删键而非写 `false` 是「缺省即默认」（见文件头）。
  */
@@ -305,26 +305,20 @@ export function buildWarpSettings(
   base: Partial<WireGuardSettings>,
   draft: FormValues,
 ): WireGuardSettings {
-  const route = draft.route === 'custom' ? 'custom' : 'all';
-  const s: WireGuardSettings = {
-    ...(base as WireGuardSettings),
-    allowInternet: route === 'all',
-    alwaysRouteSubnets: true,
-  };
+  const s: WireGuardSettings = { ...(base as WireGuardSettings) };
   const mtu = parseNumberField(String(draft.mtu ?? ''));
-  if (mtu !== undefined) s.mtu = mtu;
+  if (mtu !== undefined && Number.isInteger(mtu) && mtu > 0) s.mtu = mtu;
+  else delete s.mtu;
   const keep = parseNumberField(String(draft.keepalive ?? ''));
-  if (keep !== undefined) s.persistentKeepalive = keep;
-  // 注册态**刻意不删键**（异于 `buildWgServer`）：此时 `base.reserved` 是 Cloudflare 刚下发的 3 字节
-  // （`doRegister` 从 `WarpWireGuardDraft` 起底），而表单里那个框按设计是空的 —— 空即「不覆盖」。
-  // 换成「空就删键」会把刚注册到的 client_id 分派字节丢掉，WARP 随即连得上但不通。
-  const rsv = parseReserved(draft.reserved);
-  if (rsv) s.reserved = rsv;
-  if (route === 'custom') {
-    const a = splitCsv(draft.allowedIPs);
-    if (a.length) s.allowedIPs = a;
-  }
-  // ── WARP 恒否决 System 接入模式（见函数头「承重行」）。禁用挡不住 `...base` 幸存的旧值。
+  if (keep !== undefined && Number.isInteger(keep) && keep >= 0) s.persistentKeepalive = keep;
+  else delete s.persistentKeepalive;
+
+  // WARP 是 Cloudflare 全隧道 peer；由 Polaris 的选择器/分流规则决定哪些流量使用它。
+  // 删除旧配置里的自定义路由字段，让通用缺省语义生成 0/0 + ::/0，且不制造额外 force-route。
+  delete s.allowedIPs;
+  delete s.allowInternet;
+  delete s.alwaysRouteSubnets;
+  // ── WARP 恒否决 System 接入模式（见函数头「承重行」）。表单不展示也挡不住旧值。
   delete s.reverseMesh;
   return s;
 }

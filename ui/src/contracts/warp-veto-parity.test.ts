@@ -25,9 +25,9 @@
  *
  *  1. **解析器自检**：四个函数体解析不到就抛错。解析不到必须转红，不得「读不到就跳过」——
  *     那样任一侧改名门就静默消失，「没检查」与「检查通过」的输出不可区分 = 没有这道门。
- *  2. **常量字面量**：两侧 `WARP_ENDPOINT_DOMAIN` 逐字相等；且 `crates/mesh/src/warp.rs`
- *     **不得**重新定义该常量（它必须 re-export config-engine 的那份）—— 防「Rust 内部两份字面量」
- *     把本次修的缺陷原样复制进 Rust。
+ *  2. **常量字面量**：两侧 `WARP_ENDPOINT_DOMAIN` / `WARP_MTU` 逐字相等；且
+ *     `crates/mesh/src/warp.rs` **不得**重新定义它们（域名只 re-export config-engine 的那份，MTU
+ *     完全归生成器所有）—— 防注册草稿、表单和生成器各塞一份默认值。
  *  3. **判据字段集**：两个谓词体读的 ServerConfig 字段集必须逐项相等（归一化后比较，
  *     `wireguard_settings` ≡ `wireguardSettings`）。单侧加/减判据字段即红。
  *  4. **域名兜底腿**：两个谓词体都必须引用 `WARP_ENDPOINT_DOMAIN`。这条单独钉是因为它守的是
@@ -54,7 +54,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { WARP_ENDPOINT_DOMAIN } from '../domain/warp';
+import { WARP_ENDPOINT_DOMAIN, WARP_MTU } from '../domain/warp';
 
 function read(rel: string): string {
   return readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
@@ -170,6 +170,12 @@ describe('锁 2：WARP 端点域名常量单一真值', () => {
     expect(m![1]).toBe(WARP_ENDPOINT_DOMAIN);
   });
 
+  it('前端提示值与 Rust 的 WARP_MTU 逐字相等', () => {
+    const m = /pub const WARP_MTU:\s*u32\s*=\s*(\d+)/.exec(stripComments(RUST_WARP));
+    expect(m, 'Rust 侧 WARP_MTU 解析失败（改名/移走了？）').not.toBeNull();
+    expect(Number(m![1])).toBe(WARP_MTU);
+  });
+
   /**
    * `polaris-mesh` 必须 re-export config-engine 那份，不得自己再写一遍字面量。
    * 牙：在 `crates/mesh/src/warp.rs` 恢复 `pub const WARP_ENDPOINT_DOMAIN: &str = "…";` → 转红。
@@ -177,6 +183,7 @@ describe('锁 2：WARP 端点域名常量单一真值', () => {
   it('crates/mesh 不重新定义该常量（re-export，不是第二份字面量）', () => {
     const meshSrc = stripComments(RUST_MESH_WARP);
     expect(meshSrc).not.toMatch(/pub const WARP_ENDPOINT_DOMAIN\s*:/);
+    expect(meshSrc).not.toMatch(/pub const WARP_MTU\s*:/);
     expect(meshSrc, 'mesh 侧应 re-export config-engine 的常量').toMatch(
       /pub use polaris_config_engine::warp::WARP_ENDPOINT_DOMAIN\s*;/
     );

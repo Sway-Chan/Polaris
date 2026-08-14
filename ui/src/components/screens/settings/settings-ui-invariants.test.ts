@@ -5,6 +5,7 @@
  *  1. 下拉只能经共享 Select → Csel，禁止重新引入系统原生弹层；
  *  2. 设置项与从属内容只能用语义分组组件组织，页面不得靠内联边框补缝；
  *  3. disabled 必须传到真实触发器，不能只有变灰但仍可点击的假禁用态。
+ *  4. 静态帮助统一进入标题旁信息提示，常驻 desc 只承载当前状态/警告/动作。
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -53,6 +54,39 @@ describe('Settings UI 使用统一组件与语义分组', () => {
         violations.push(name);
     }
     expect(violations, '开关行仍永久铺开说明，应改用 SetRow tip').toEqual([]);
+  });
+
+  it('静态字段说明统一进入信息提示，常驻 desc 只保留动态上下文', () => {
+    const allowedDescCounts: Record<string, number> = {
+      'SettingsGeneral.tsx': 1, // 密码已设置/未设置
+      'SettingsNetwork.tsx': 2, // WebRTC 当前模式限制 + 当前本地代理端口
+      'SettingsTun.tsx': 1, // IPv6 与 FakeIP 当前组合风险 + 修复动作
+    };
+    for (const { name, source } of settingScreens) {
+      const count = source.match(/\bdesc=/g)?.length ?? 0;
+      expect(
+        count,
+        `${name} 出现新的常驻说明；静态帮助应改用 SetRow tip，动态状态需登记本门`,
+      ).toBe(allowedDescCounts[name] ?? 0);
+    }
+
+    const general = settingScreens.find(({ name }) => name === 'SettingsGeneral.tsx')!.source;
+    const network = settingScreens.find(({ name }) => name === 'SettingsNetwork.tsx')!.source;
+    const tun = settingScreens.find(({ name }) => name === 'SettingsTun.tsx')!.source;
+    expect(general).toContain('hasPassword');
+    expect(network).toContain('webrtcDisabled ?');
+    expect(network).toContain("tipHttpPort', { port: mixedPort }");
+    expect(tun).toContain('showIpv6Hint ?');
+  });
+
+  it('折叠清单的静态说明也使用 Fold tip，不在内容区铺 fld-hint', () => {
+    for (const { name, source } of settingScreens) {
+      expect(source, `${name} 的折叠清单仍在内容区常驻静态说明`).not.toContain('fld-hint');
+    }
+
+    const fold = stripComments(read('../../Fold.tsx'));
+    expect(fold).toContain('tip?: string');
+    expect(fold).toContain('<InfoIcon tip={tip}');
   });
 
   it('共享 Select 由 Csel 实现并把 disabled 传到真实控件', () => {
