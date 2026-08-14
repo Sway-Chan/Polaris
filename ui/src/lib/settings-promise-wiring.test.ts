@@ -223,6 +223,7 @@ if (MS_CONSTANTS.size === 0) {
 type Evidence =
   | { kind: 'config-key'; key: string }
   | { kind: 'anchor'; file: string; needle: string }
+  | { kind: 'anchors'; items: readonly { file: string; needle: string }[] }
   | { kind: 'not-a-promise'; reason: string };
 
 interface PromiseRow {
@@ -372,6 +373,34 @@ const REGISTRY: readonly PromiseRow[] = [
     snippet: '仅在启动时更新一次',
     evidence: { kind: 'config-key', key: 'autoUpdateSubscriptionOnStart' },
   },
+  {
+    snippet: '订阅与规则资源按此周期在后台刷新',
+    evidence: {
+      kind: 'anchors',
+      items: [
+        {
+          file: 'ui/src/components/screens/settings/SettingsUpdate.tsx',
+          needle: 'ruleResourceUpdateIntervalHours: Number(e.target.value)',
+        },
+        {
+          file: 'src-tauri/src/runtime/subscription_scheduler.rs',
+          needle: '.get("subscriptionUpdateIntervalHours")',
+        },
+        {
+          file: 'src-tauri/src/runtime/rule_resource_scheduler.rs',
+          needle: '.get("ruleResourceUpdateIntervalHours")',
+        },
+      ],
+    },
+  },
+  {
+    snippet: '按「后台检查间隔」自动重新下载规则资源',
+    evidence: {
+      kind: 'anchor',
+      file: 'src-tauri/src/runtime/rule_resource_scheduler.rs',
+      needle: 'select_due_resources(',
+    },
+  },
 ] as const;
 
 // ── 断言 ────────────────────────────────────────────────────────────────────
@@ -484,11 +513,13 @@ describe('G13-B：每条承诺文案都必须登记并举证', () => {
     expect(empty, '界面承诺了这个行为，但那个配置键在设置屏之外没人读 —— 空承诺').toEqual([]);
   });
 
-  it('登记为 anchor 的承诺，锚点源码片段真的还在', () => {
+  it('登记为 anchor / anchors 的承诺，所有锚点源码片段真的还在', () => {
     // 变异对照：把 proxy.rs 的 `fn spawn_crash_monitor` 改名 → 本条转红。
-    const gone = REGISTRY.filter((r) => r.evidence.kind === 'anchor').filter((r) => {
-      const e = r.evidence as { file: string; needle: string };
-      return !readFileSync(join(REPO, e.file), 'utf8').includes(e.needle);
+    const gone = REGISTRY.filter(
+      (r) => r.evidence.kind === 'anchor' || r.evidence.kind === 'anchors',
+    ).filter((r) => {
+      const items = r.evidence.kind === 'anchor' ? [r.evidence] : r.evidence.items;
+      return items.some((e) => !readFileSync(join(REPO, e.file), 'utf8').includes(e.needle));
     }).map((r) => r.snippet);
     expect(gone, '承诺的兑现锚点消失了 —— 实现被删/改名而文案没跟').toEqual([]);
   });

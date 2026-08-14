@@ -358,45 +358,41 @@ h1[tabindex='-1']:focus-visible { outline: none; }
   background: hsl(var(--flow) / 0.2);
   color: hsl(var(--flow-hi));
 }
-/* 级别说明从独占一行移进 `.log-tb-main` 行首（原来源分段的位置）：给宽度上限并允许压缩，
- * 否则这段长文案会把搜索框挤成一条缝；窄窗下整行本就 flex-wrap，会自然折行。 */
-.log-tb-main .log-tb-cap {
-  padding: 0;
-  flex: 0 1 auto;
-  max-width: 330px;
-  min-width: 0;
+/* 日志页第一行是一条完整任务链：筛选 → 临时提级 → 导出诊断。级别/来源统一使用 GUI 下拉，
+ * 不再靠 5+3 个分段按钮消耗整行宽度；诊断与诊断包固定成组，避免新增功能时继续横向堆按钮。 */
+.log-tb-primary{
+  display:grid;
+  grid-template-columns:minmax(180px,220px) minmax(124px,156px) 1fr;
+  align-items:end;
+  gap:12px;
+  padding:12px 16px 13px;
 }
-
-/* 日志页筛选改成「外层可折、组内不折」：来源标签与 [全部/sing-box/应用] 是一个不可拆单元，
- * 窄宽时整组换到下一行，不再出现「来源」留在行尾、「全部」掉到下一行。组间只靠留白分层，移除竖线。 */
-.log-filter-group {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  flex: none;
-  white-space: nowrap;
+.log-filter-field{ min-width:0; }
+.log-filter-label{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  min-width:0;
+  margin-bottom:6px;
+  color:hsl(var(--fg-faint));
+  font-size:10.5px;
+  font-weight:660;
+  letter-spacing:.04em;
 }
-.log-level-filter { min-width: 0; }
-.log-source-filter { flex-wrap: nowrap; }
-.log-lvl-info {
-  display: inline-grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  flex: none;
-  padding: 0;
-  border: 0;
-  border-radius: 999px;
-  color: hsl(var(--fg-faint));
-  background: transparent;
-  cursor: help;
+.log-filter-value{ display:flex; align-items:center; gap:7px; min-width:0; }
+.log-level-select{ flex:1 1 96px; min-width:88px; max-width:116px; }
+.log-source-select{ width:124px; }
+.log-diagnostic-actions{
+  display:inline-flex;
+  align-items:stretch;
+  justify-self:end;
+  gap:6px;
+  padding:3px;
+  border-radius:var(--r-sm);
+  background:hsl(var(--surface-2));
 }
-.log-lvl-info:hover { color: hsl(var(--fg)); background: hsl(var(--surface-3)); }
-.log-levels button:disabled { cursor: default; }
-.log-levels button:disabled:not(.on) { opacity: .48; }
-
-/* 诊断是级别的会话级覆盖：紧邻级别状态，跟随整个级别组换行，不再单独占据一行。 */
-.log-diagnostic-toggle { flex:none; margin-left:2px; }
+.log-diagnostic-actions .btn{ min-height:34px; white-space:nowrap; }
+.log-diagnostic-toggle{ flex:none; }
 
 /* 底栏按“流状态”重新成组并固定在左侧，右下角留给全局 toast。 */
 .log-foot { justify-content:flex-start; }
@@ -424,7 +420,9 @@ h1[tabindex='-1']:focus-visible { outline: none; }
   justify-content: center;
 }
 
-@container mainc (max-width: 720px) {
+@container mainc (max-width: 620px) {
+  .log-tb-primary{ grid-template-columns:minmax(180px,1fr) 124px; }
+  .log-diagnostic-actions{ grid-column:1 / -1; justify-self:start; }
   .log-tb-main { flex-wrap: wrap; }
   .log-tb-search { flex-basis: 100%; }
   .log-tb-actions { width: 100%; justify-content: flex-end; }
@@ -433,7 +431,7 @@ h1[tabindex='-1']:focus-visible { outline: none; }
 /* 分段控件族（A 族）选中态文字统一为 flow-hi —— **反向修原型的两级设计**。
  *
  * 原型在 A 族内分两级（本文件上方「选中态视觉语言统一」段有原始记录）：选「配置值」的 `.seg2` 用
- * flow-hi 强调，选「看哪一页」的 `.sub-tabs` / `.cat-tabs` / `.log-levels` / `.hc-plat` 用中性 fg。
+ * flow-hi 强调，选「看哪一页」的 `.sub-tabs` / `.cat-tabs` / `.hc-plat` 用中性 fg。
  * 这个区分在原型里是自洽的，但真机上表现为「同样长相的分段控件，有的选中变蓝、有的不变」——
  * 陈先生 2026-07-29 逐处点名（节点页 自建/组网/订阅组、连接页、日志级别），裁定一律蓝字灰底。
  *
@@ -443,7 +441,6 @@ h1[tabindex='-1']:focus-visible { outline: none; }
  * 「两级不一致」换成「三处一致 + 两处不一致」，问题没解决只是挪了位置。 */
 .sub-tabs button.on,
 .cat-tabs button.on,
-.log-levels button.on,
 .hc-plat button.on { color: hsl(var(--flow-hi)); }
 
 /* 侧栏选中项：实色填充 → flow 的 alpha 叠色。
@@ -600,9 +597,9 @@ h1[tabindex='-1']:focus-visible { outline: none; }
  * 基线 = 原型 polaris-prototype.html 的 <style>。原型里选中态只有三套语言，各自成族：
  *  A) 分段控件族（轨道 = surface-2 底 + line 边 + 3~4px 内衬，内含 r=7px 按钮）：
  *     选中 = **surface 浮块 + 投影**。成员：.seg2 L305-310 / .sub-tabs L602-606 / .cat-tabs L1034-1036 /
- *     .log-levels L1109-1111 / .hc-plat L1148-1150 / .geo-region L802-805。
+ *     .hc-plat L1148-1150 / .geo-region L802-805。
  *     文字分两级，原型内一致贯彻（是有意区分，不是漂移）：选「配置值」的 .seg2 用 flow-hi 强调；
- *     选「看哪一页」的 sub-tabs/cat-tabs/log-levels/hc-plat 用中性 fg。
+ *     选「看哪一页」的 sub-tabs/cat-tabs/hc-plat 用中性 fg。
  *  B) 导航族（.nav-item L157-168）：flow-weak 填充 + flow-hi 文字 + flow 左条。设置页左侧导航复用
  *     同一条规则（原型 L1629 markup 写死 `class="set-nav nav-item on"`，无独立 .set-nav 皮肤），
  *     与主侧栏同源 ⇒ 本节不动，动它会连带主侧栏。
@@ -662,13 +659,13 @@ h1[tabindex='-1']:focus-visible { outline: none; }
  *  · 深色：明度差方向相反且很小（10.5% vs 14%，对比约 1.1:1），投影在 shadow(L1%) 下近乎不可见 ⇒
  *    分离主要由**文字**承担：色 fg-dim→flow-hi、字重 540→660。关键收益是底色回到中性面，accent 只
  *    留在文字上，"整块发蓝"消失；文字对比同时从 8.5:1 升到 10.7:1（flow-hi 亮青 on surface 近黑蓝）。
- * 即：本处不为深色另开分支，深色的观感差异是 token 换值的自然结果，与 sub-tabs/cat-tabs/log-levels/
+ * 即：本处不为深色另开分支，深色的观感差异是 token 换值的自然结果，与 sub-tabs/cat-tabs/
  * hc-plat/seg2 完全一致 —— 统一的定义就是「同族同规则」，不是「两个主题里长得一样」。 */
 .geo-region button.on{ background:hsl(var(--surface)); color:hsl(var(--flow-hi)); font-weight:660;
   box-shadow:0 1px 3px hsl(var(--shadow)/0.16); }
 
-/* 工具栏同排控件高度对齐（node-toolbar 搜索/视图/协议排序/测速/多选一排；log-tb-main 来源视图/搜索/
- * 操作一排）：.btn.sm 比同排的 .input/.csel-trigger 矮。
+/* 工具栏同排控件高度对齐（node-toolbar 搜索/视图/协议排序/测速/多选一排；log-tb-main 搜索/操作
+ * 一排）：.btn.sm 比同排的 .input/.csel-trigger 矮。
  *
  * 原实现写死 `min-height:33px`，那个 33 是**估的且估错了** —— Chromium 实测（scratchpad/measure.mjs，
  * 逐字取 dist 产物 CSS 渲染 node-toolbar 六个控件）：.input/.csel-trigger = **36.75px**、.seg2 = 35px、
@@ -1667,8 +1664,7 @@ body:has(.pending-bar.show) #toast-stack{
  * 是第一个「结构上永远不能开」的开关（理由见 WarpDialog 的 `advSpec` 与 wg-logic 的 `isWarpDraft`），
  * 需要它。
  *
- * 只压**控件**，不压 `.swt-tx` 里的标签与 `.fld-hint`：那行 hint 正是「为什么禁用」的载体 ——
- * 把解释压到 42% 不透明度等于让它自己也读不清（`.fld-hint` 本就是 10.5px / `--fg-dim`）。
+ * 只压**控件**，不压 `.swt-tx` 里的标签与信息提示：禁用原因仍须可读。
  * 不透明度取 .42，与既有禁用语汇同档（components.css:421 `.csel-opt.disabled`）。
  * 纯状态样式，浅色深色同一份，不需要 `[data-theme]` 分支。 */
 .swt:disabled{ opacity:.42; cursor:not-allowed; }
@@ -1680,11 +1676,17 @@ body:has(.pending-bar.show) #toast-stack{
 .set-row-group > .set-row-details{ margin:0 0 12px; }
 .set-row-section{ margin-top:12px; border-top:1px solid hsl(var(--hair)); }
 .set-row-section > .set-row:last-child{ border-bottom:0; }
+.rule-resource-auto-control{ display:flex; align-items:center; gap:9px; }
+.card-h-info{ display:flex; align-items:center; gap:6px; }
 
 /* 标题与复杂说明：名称常驻，解释收进可聚焦的统一信息提示。 */
 .sr-title,
 .swt-label{ display:inline-flex; align-items:center; gap:6px; min-width:0; }
 .swt-label b{ display:inline; }
+.fld-l-info,
+.field-lbl-info{ display:flex; align-items:center; gap:6px; min-width:0; }
+.fld-l-info > span:first-child,
+.field-lbl-info > span:first-child{ min-width:0; }
 
 /* 协议编辑表单采用渐进式分组：基础连续展示，传输/路由用轻分隔，高级才折叠。 */
 .form-field-section{ margin-top:16px; padding-top:14px; border-top:1px solid hsl(var(--hair)); }

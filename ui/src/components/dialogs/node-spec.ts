@@ -372,7 +372,7 @@ const F_TRANSPORT: FieldSpec[] = [
   //  · `method` 缺席 → 不发（内核用 h2 默认方法）；内核 schema 对它无 enum，故是自由文本不是下拉；
   //  · `headers` 缺席 → 不发。
   { t: 'text', k: 'h2Path', label: 'node.field.h2Path', ph: '/path', opt: true, when: whenH2 },
-  // 这三条的说明走 **hint**（`.fld-hint`），不再并进标签 —— 原注释「`text`/`textarea` 分支没有 hint 位，
+  // 这三条的说明走 **hint**（标签后的统一 `InfoIcon`），不再并进标签 —— 原注释「`text`/`textarea` 分支没有 hint 位，
   // 不为两个字段去扩 union」的前提在 2026-08-07 变了两处：`hint` 已提到 `FieldBase`（见 field-spec.tsx），
   // 且 `styles/text-fit.test.ts` 的 `.fld-l` 2 行预算把它们逐条顶了出来（en-US/fa/ru 三语各占满 2 行）。
   // 标签是控件的名字，占到第 3 行说明它其实是一句说明。ssh 的 `hostKey`「（逗号分隔，留空接受所有）」

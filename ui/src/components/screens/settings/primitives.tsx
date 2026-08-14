@@ -101,9 +101,14 @@ export function SetRowSection({ children }: { children: ReactNode }) {
   return <div className="set-row-section">{children}</div>;
 }
 
-/* ── card-h / card-sub：卡内标题 + 副说明 ── 原型 .card-h L271 / .card-sub L272 */
-export function CardH({ children }: { children: ReactNode }) {
-  return <div className="card-h">{children}</div>;
+/* ── card-h / card-sub：卡内标题 + 动态状态说明 ── 原型 .card-h L271 / .card-sub L272 */
+export function CardH({ children, tip }: { children: ReactNode; tip?: string }) {
+  return (
+    <div className={cn('card-h', tip && 'card-h-info')}>
+      <span>{children}</span>
+      {tip && <InfoIcon tip={tip} />}
+    </div>
+  );
 }
 export function CardSub({
   children,

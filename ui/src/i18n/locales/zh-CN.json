@@ -106,7 +106,7 @@
     "pageTitle": "日志",
     "pageDesc": "内核与应用的实时输出流",
     "currentLevel": "日志级别",
-    "levelCaption": "内核以此单一级别记录日志，并在视图中显示该级别及以上。想只看部分日志，用下方搜索过滤；隐私锁开启时级别自动抬到 warn 及以上，避免记录域名 / IP。",
+    "levelCaption": "显示并记录所选级别及以上；隐私锁会将最低级别提升至 WARN。",
     "privacyNote": "隐私锁开启中 — 日志流已对域名与 IP 脱敏",
     "sourceApp": "应用",
     "searchPlaceholder": "搜索日志…",
@@ -133,19 +133,19 @@
     "openDirDone": "已在文件管理器中打开日志目录",
     "openDirFailed": "打开日志目录失败",
     "follow": "自动滚动",
-    "levelCoreRestartHint": "（改完即刻生效：本页的应用日志与内核日志都按新级别显示。仍需重启内核的只有内核写进自己那份日志文件的级别。）",
+    "levelCoreRestartHint": " 页面筛选立即生效；内核日志文件的级别在内核重启后生效。",
     "coreLevelValue": "内核实跑 {{level}}",
     "coreLevelNotRunning": "内核未运行",
     "coreLevelUnavailable": "读不到内核级别",
-    "coreLevelHint": "从内核读回的、它此刻实际在用的级别。它只决定内核写进自己那份日志文件时有多详细 —— 也就是「导出日志」「导出诊断包」里内核的那一半；本页显示的内核日志不受它影响。",
-    "coreLevelDriftUnsaved": "级别改动还没应用。内核仍按旧级别写自己那份日志文件，导出的内核日志会缺少你要的行。应用并重启内核后跟上。",
-    "coreLevelDriftRestart": "内核是按旧级别起的，它写自己那份日志文件时仍用旧级别，导出的内核日志会缺少你要的行。重启内核后跟上。本页显示的内核日志不受影响。",
+    "coreLevelHint": "内核当前写文件的实际级别；影响导出内容，不影响本页实时流。",
+    "coreLevelDriftUnsaved": "级别改动尚未应用，内核仍以旧级别写文件。应用并重启内核后同步。",
+    "coreLevelDriftRestart": "内核仍以旧级别写文件；重启内核后同步。本页实时流不受影响。",
     "sourceLabel": "来源",
     "levelAria": "日志显示级别",
     "sourceAria": "日志来源",
     "diagnosticMode": "诊断",
-    "diagnosticTipOff": "仅本次运行临时显示并记录 DEBUG，不修改配置；重启应用后恢复已配置级别。内核自身日志文件的级别不变。",
-    "diagnosticTipOn": "诊断模式已开启：应用与内核实时流临时提升到 DEBUG。点击关闭并恢复已配置级别；重启应用也会自动恢复。",
+    "diagnosticTipOff": "本次运行临时启用 DEBUG；不改设置，重启应用后恢复。内核日志文件级别不变。",
+    "diagnosticTipOn": "诊断已开启：应用与内核实时流暂用 DEBUG；再次点击或重启应用即恢复。",
     "diagnosticFailed": "切换诊断模式失败"
   },
   "notify": {
@@ -634,8 +634,8 @@
       "noTelemetry": "零遥测 — 无崩溃上报、无分析、无回传"
     },
     "update": {
-      "ruleResourceAutoStatusOn": "已开启，按所选间隔在后台刷新",
-      "ruleResourceAutoStatusManual": "已开启，但「后台检查间隔」为仅手动，不会自动刷新",
+      "ruleResourceAutoStatusOn": "按间隔刷新",
+      "ruleResourceAutoStatusManual": "仅手动",
       "formMismatch": "更新包形态与当前安装形态不匹配，已交由系统处理",
       "portableManualReplace": "便携版更新包已下载到：{{path}}。请退出 Polaris 后，把压缩包内容解压覆盖到当前程序所在目录即可完成更新。便携版没有安装程序，请勿双击安装。",
       "advisory": {
@@ -685,7 +685,7 @@
       "downloadInterrupted": "下载中断",
       "coreCard": "sing-box 内核",
       "coreCardSub": "暂存更新仅在内核停止窗口应用",
-      "coreCardSub2": "内核下载同样遵循下方的 GitHub 加速设置",
+      "coreCardSub2": "内核下载同样遵循上方的 GitHub 加速设置",
       "coreCurrent": "当前",
       "coreStaged": "已暂存",
       "coreStagedDesc": "下次内核停止时应用",
@@ -702,8 +702,7 @@
       "subFollow": "跟随订阅",
       "subViaProxy": "走代理",
       "subDirect": "直连",
-      "ruleResourceAutoDesc": "按「后台检查间隔」自动重新下载规则资源",
-      "ruleResourceAutoTip": "射程包含已下载的规则资源与随包内置 geo。更新走「先下到临时文件、校验通过再原子替换」，失败时保留现有副本不动"
+      "ruleResourceAutoDesc": "按「后台检查间隔」自动重新下载规则资源"
     },
     "core": {
       "applied": "内核已更新",
@@ -1272,7 +1271,6 @@
   },
   "meshJoin": {
     "title": "添加接入",
-    "intro": "选择接入方式后再填写配置；组网页只展示已配置节点，不长期堆放协议入口。",
     "managed": "账号与托管网络",
     "tunnels": "标准与企业隧道",
     "tsConfigured": "已配置 · 打开设置或切换账号",
@@ -1283,9 +1281,9 @@
     "logout": "登出",
     "reregister": "重新注册",
     "deregister": "注销设备",
-    "wg": "导入 .conf 或手动填写",
-    "oc": "AnyConnect / GlobalProtect 等企业 VPN",
-    "ovpn": "账号、证书与企业内网接入",
+    "wg": ".conf / 手动配置",
+    "oc": "企业 VPN 接入",
+    "ovpn": "账号与证书接入",
     "routesHint": "OpenConnect / OpenVPN 始终归入组网；“内网段”只决定强制路由的企业网段，留空时仍可作为普通 VPN 出口。"
   },
   "node": {
@@ -1401,7 +1399,7 @@
       "snellVer": "Snell 版本",
       "sni": "SNI",
       "spoofMethod": "TLS Spoof 方法",
-      "spoofMethodHint": "真握手前先发一个伪造 ClientHello 诱使 SNI 过滤中间盒放行。需要提权；ARM64 内核不支持；诱饵 SNI 必须是域名且不同于真实 SNI，否则构建期自动不下发。",
+      "spoofMethodHint": "真握手前发送伪造 ClientHello。需要提权，不支持 ARM64；诱饵 SNI 必须是不同于真实 SNI 的域名。",
       "spoofSni": "TLS Spoof 诱饵 SNI",
       "stls": "启用 ShadowTLS",
       "stlsFp": "ShadowTLS uTLS 指纹",
@@ -1430,7 +1428,7 @@
       "torArgs": "额外参数",
       "torArgsHint": "空格分隔，逐个传给 tor 进程",
       "meshRoutes": "内网段（CIDR，每行一个）",
-      "meshRoutesHint": "声明「经该节点可达的内网段」，如公司的 10.10.0.0/16。填写后，这些网段会被强制路由到该节点；留空则不强制路由，但节点仍保留在组网中并可作为普通 VPN 出口。这两个协议的网段由服务端在连接后下发，客户端配置时无法自动获知，因此需要手动填写。",
+      "meshRoutesHint": "每行一个经此节点强制路由的子网；留空不启用强制路由。OpenConnect/OpenVPN 的路由在连接后下发，无法自动预填。",
       "flavor": "厂商方言",
       "authGroup": "认证组",
       "token": "令牌",

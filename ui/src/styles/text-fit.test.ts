@@ -45,9 +45,8 @@
  *   主窗   S1 主侧栏 nav 标签 / S2 设置侧栏 nav 标签 / S3 两侧栏的 nav-group 组头
  *          S4 连接表定宽列表头（c-dest / c-rule / c-chain / c-rate）
  *          S9 首页右列 seg2 三档（接管方式 / 分流策略）—— 见下方「S9 是一类形态」
- *          S11 节点弹窗（统一录入宽度 540px）的表单字段：`.fld-l` 标签 / `.fld-hint` 提示 /
- *              `.swt-row` 开关行的标签与提示 —— **可换行、无 ellipsis、无 overflow-wrap**，
- *              两条判据同时生效，见「S11 判据为什么是两条」
+ *          S11 节点弹窗（统一录入宽度 540px）的表单字段：`.fld-l` / `.swt-row` 标签与统一
+ *              `#tip` 信息提示 —— 标签可换行且不截断，提示受 tooltip 宽度与行数预算约束
  *          S12 导入弹窗的解析结果预览（同一个 `.dlg` 定宽）：`.imp-stat` 三颗计数 pill /
  *              `.card-sub` 清单小标题 / `.imp-badge`「不支持」徽标 —— 徽标那条判的不是溢出
  *              （它 `flex:none` 不收缩、名称轨带 ellipsis 会替它让位），而是「别把名称轨压到
@@ -70,7 +69,7 @@
  *
  * # S11 判据为什么是两条（一条硬、一条棘轮）
  *
- * `.fld-l` / `.fld-hint` 都是**可折行的块**（无 `white-space:nowrap`）、**无** `text-overflow:ellipsis`、
+ * `.fld-l` 是**可折行的块**（无 `white-space:nowrap`）、**无** `text-overflow:ellipsis`、
  * **无** `overflow-wrap:anywhere`。三条合起来决定了它跟 S1（nowrap 画到框外）和 S8（定死窗高裁按钮）
  * 都不同形，判据必须分成两条：
  *
@@ -103,7 +102,7 @@
  *  e. **未进注册表的受限容器**：`.app-pol`(max-width:112px)、`.ctx-note`(120px)、
  *     `.res-row` 定宽列、`.lock-field`(280px)、`.node-menu`(360px)、`.proto-grid` 等
  *     —— 它们要么已带 ellipsis（信息损失但不破版），要么渲染的是用户数据。
- *     ⚠️ 这条**从来没有涵盖过弹窗表单的 `.fld` 一族**（`.fld-l` / `.fld-hint` / `.swt-row`）：
+ *     ⚠️ 这条**从来没有涵盖过弹窗表单的 `.fld` 一族**（`.fld-l` / `.swt-row` / 信息提示）：
  *     它们不带 ellipsis、渲染的也不是用户数据，只是**一直没被列进来**——不是判过不进门，是没看见。
  *     2026-08-06 起节点弹窗那份进门（S11），其余弹窗仍在门外，逐条见下面的 i.。
  *  f. **纵向**：只算宽度与行数，不算像素高度。换行后行数增加导致的**纵向**溢出，只有在容器有硬高度
@@ -323,7 +322,7 @@ function breakUnits(s: string): { text: string; space: boolean }[] {
  * ── CJK 断点是 2026-08-06 补的，方向是**去掉假红** ────────────────────────────────────────
  * 旧版只按空白切词，于是一整句无空格中文 = **一个不可断的词**，其宽度必然 > 任何窄容器
  * ⇒ 对「不可断单元超宽」那条判据是**误报**方向。S1–S10 一直没踩到：它们要么带
- * `overflow-wrap:anywhere`（词内可断，误差被吸收），要么文案短。S11 的 `.fld-hint` 两条都不占，
+ * `overflow-wrap:anywhere`（词内可断，误差被吸收），要么文案短。S11 的标签与 tooltip 两条都不占，
  * 首次把它暴露成假红（zh-TW `node.field.muxPadHint` 整句算 357.0px vs 可用 346px，而真机在每两个
  * 汉字之间都能断，实测 5 行、最宽行 343.0px）。
  * 加断点只会让行数与最宽行**单调变小**（贪心排版下断点集变大 ⇒ 每行填得不会更少），
@@ -876,7 +875,6 @@ const swtW = px(decl('./prototype.css', '.swt', 'width')); // 36
 const swtTextAvail = (container: number) => container - swtRowGap - swtW;
 
 const fldLabelFont = px(dupAgreed('.fld-l', 'font-size')); // 11.5
-const fldHintFont = px(dupAgreed('.fld-hint', 'font-size')); // 10.5
 const swtLabelFont = px(dupAgreed('.swt-row .swt-tx b', 'font-size')); // 12.5
 const fldOptFont = px(decl('./components.css', '.fld-l > .fld-opt', 'font-size')); // 10
 const tipFont = px(decl('./prototype.css', '#tip', 'font-size')); // 11.5
@@ -885,9 +883,8 @@ const tipAvail =
   padX(decl('./prototype.css', '#tip', 'padding')) -
   px(decl('./prototype.css', '#tip', 'border').split(/\s+/)[0]) * 2; // 280 − 18 − 2 = 260
 
-/** `.fld-l` / `.fld-hint` 的选择器链（`wraps`/`clips`/`breaksAnywhere` 用）。 */
+/** 字段标签的选择器链（`wraps`/`clips`/`breaksAnywhere` 用）。 */
 const FLD_LABEL_SELS = ['.fld-l', '.swt-row .swt-tx b'];
-const FLD_HINT_SELS = ['.fld-hint'];
 
 /**
  * `.fld-opt`「可选」徽标贴在标签行尾；52 个字段带 `opt:true`，不建模会把标签行
@@ -904,7 +901,7 @@ const optTail = (loc: Locale) =>
 const optTailPx = (loc: Locale) => textPx(` ${optTail(loc)}`, { fontSize: fldOptFont });
 
 /** S11 的一个测点：某个 i18n 键渲染在哪个槽里（同一个键跨协议复用时只留一份）。 */
-type FldSlot = 'LABEL' | 'HINT' | 'SWT_LABEL' | 'TIP';
+type FldSlot = 'LABEL' | 'SWT_LABEL' | 'TIP';
 interface FldPoint {
   key: string;
   slot: FldSlot;
@@ -920,10 +917,9 @@ interface FldPoint {
  * 槽由 `FieldSpec.t` 决定，与 `FieldRenderer` 的分支一一对应：
  *  - `switch` → 标签渲染成 `.swt-tx b`（12.5px），hint/disabledHint 进入统一 `#tip` 浮层；
  *    开关不再因复杂说明永久增高。switch 分支不渲染 `.fld-opt`（无徽标）。
- *  - 其余 → 标签是 `.fld-l`（11.5px，带可选徽标）、hint 渲染成控件下方占整幅宽的 `.fld-hint`。
- *    **hint 不再只有 `select` 有**：2026-08-07 `hint` 提到了 `FieldBase`（text/number/textarea 也能有），
- *    这里的判据同步从 `f.t === 'select' && f.hint` 放宽成 `f.hint` —— 否则新加的 text hint
- *    会**静默不进门**（正是 `.fld` 一族当初整族漏测的同款形态）。
+ *  - 其余 → 标签是 `.fld-l`（11.5px，带可选徽标），hint 同样进入统一 `#tip` 浮层。
+ *    **hint 不再只有 `select` 有**：2026-08-07 `hint` 提到了 `FieldBase`，这里继续对所有非 switch
+ *    字段无差别收集，否则新加的 text/textarea hint 会静默漏测。
  * 同一个键在多个协议里出现时取「任一处 opt 即 opt」，即最坏情形。
  */
 function nodeFieldPoints(): FldPoint[] {
@@ -947,7 +943,7 @@ function nodeFieldPoints(): FldPoint[] {
           if (f.disabledHint) put(f.disabledHint, 'TIP', section, false);
         } else {
           put(f.label, 'LABEL', section, f.opt === true);
-          if (f.hint) put(f.hint, 'HINT', section, false);
+          if (f.hint) put(f.hint, 'TIP', section, false);
         }
       }
     for (const group of ND_SPEC[proto].groups ?? [])
@@ -959,7 +955,7 @@ function nodeFieldPoints(): FldPoint[] {
           if (f.disabledHint) put(f.disabledHint, 'TIP', 'cred', false);
         } else {
           put(f.label, 'LABEL', 'cred', f.opt === true);
-          if (f.hint) put(f.hint, 'HINT', 'cred', false);
+          if (f.hint) put(f.hint, 'TIP', 'cred', false);
         }
       }
   }
@@ -974,17 +970,14 @@ function nodeFieldPoints(): FldPoint[] {
  *
  * 逐档怎么定的（模型口径，模型偏宽 ⇒ 真机行数只会更少）：
  *  - `LABEL` / `SWT_LABEL` = **2**：这是个**设计判据**不是实测跟随 —— 标签是控件的名字，占到第 3 行
- *    就说明它其实是一句说明、该拆进 `.fld-hint`。今天实测最差正好 2 行
+ *    就说明它其实是一句说明、该拆进标签旁的信息提示。今天实测最差正好 2 行
  *    （`.fld-l` 15/325 个测点 2 行、`.swt-tx b` 1/60 个测点 2 行），故它同时也是紧的。
- *  - `HINT` = **8**：控件下方占整幅宽的说明行（当前 502px）。2026-08-07 起 `hint` 提到了
- *    `FieldBase`，这一档不再只覆盖 `select`，text/number/textarea 的说明也走同一个槽。
- *  - `TIP` = **12**：开关复杂说明进入 280px 的统一 tooltip；扣除内边距与边框后正文宽 260px。
+ *  - `TIP` = **12**：所有字段的复杂说明进入 280px 的统一 tooltip；扣除内边距与边框后正文宽 260px。
  *    仍以 12 行为上限，避免“收进 i”变成容纳无限长文案的借口。
  */
 const FLD_MAX_LINES: Record<FldSlot, number> = {
   LABEL: 2,
   SWT_LABEL: 2,
-  HINT: 8,
   TIP: 12,
 };
 
@@ -1543,9 +1536,8 @@ describe('⑥ 更新弹窗（380px 独立窗，五语种，`.row` 可换行）',
  * （e. 条列的是 `.app-pol`/`.ctx-note`/`.lock-field`/`.node-menu` 那批，**没提过节点弹窗**）
  * ⇒ 它不是「判过不进门」，是**一直没被看见**。
  */
-describe('⑧ 节点弹窗表单字段（统一 540px 录入宽度，五语种，`.fld-l` / `.fld-hint` 可折行）', () => {
+describe('⑧ 节点弹窗表单字段（统一 540px 录入宽度，五语种，标签 + 统一信息提示）', () => {
   const labelWrap = wraps(FLD_LABEL_SELS);
-  const hintWrap = wraps(FLD_HINT_SELS);
   const BOXES: Record<FldSlot, (section: 'cred' | 'adv') => Box> = {
     LABEL: (section) => ({
       where: `S11 ${section} 字段标签`,
@@ -1554,14 +1546,6 @@ describe('⑧ 节点弹窗表单字段（统一 540px 录入宽度，五语种�
       wrap: labelWrap,
       breakAnywhere: breaksAnywhere(FLD_LABEL_SELS),
       maxLines: labelWrap ? FLD_MAX_LINES.LABEL : 1,
-    }),
-    HINT: (section) => ({
-      where: `S11 ${section} 下拉说明`,
-      avail: FLD_AVAIL,
-      type: { fontSize: fldHintFont },
-      wrap: hintWrap,
-      breakAnywhere: breaksAnywhere(FLD_HINT_SELS),
-      maxLines: hintWrap ? FLD_MAX_LINES.HINT : 1,
     }),
     SWT_LABEL: (section) => ({
       where: `S11 ${section} 开关标签`,
@@ -1585,7 +1569,7 @@ describe('⑧ 节点弹窗表单字段（统一 540px 录入宽度，五语种�
     expect(ENTRY_DLG_W, '统一录入弹窗宽度变了 → 重新标定 FLD_MAX_LINES').toBe(540);
     expect(FLD_AVAIL).toBeCloseTo(540 - 2 - 36, 5); // 502
     expect(swtTextAvail(FLD_AVAIL)).toBeCloseTo(502 - 12 - 36, 5); // 454
-    expect([fldLabelFont, fldHintFont, swtLabelFont, fldOptFont, tipFont]).toEqual([11.5, 10.5, 12.5, 10, 11.5]);
+    expect([fldLabelFont, swtLabelFont, fldOptFont, tipFont]).toEqual([11.5, 12.5, 10, 11.5]);
     expect(tipAvail).toBeCloseTo(260, 5);
     // `.fld-opt` 在 prototype.css 另存一份同名规则（:933），两份必须同值 —— 本仓经典坑。
     expect(px(decl('./prototype.css', '.fld-opt', 'font-size'))).toBe(fldOptFont);
@@ -1593,17 +1577,9 @@ describe('⑧ 节点弹窗表单字段（统一 540px 录入宽度，五语种�
 
   it('修法前提仍在位：可折行、无 ellipsis、无 overflow-wrap ⇒ 两条判据都必须活着', () => {
     expect(labelWrap, '.fld-l / .swt-tx b 变成了 nowrap ⇒ 判据要改回「单行宽度」那一类').toBe(true);
-    expect(hintWrap, '.fld-hint 变成了 nowrap ⇒ 判据要改回「单行宽度」那一类').toBe(true);
     expect(clips(FLD_LABEL_SELS), '字段标签有了 ellipsis —— 标签被截断正是这类控件最要避免的事').toBe(
       false,
     );
-    expect(clips(FLD_HINT_SELS), '.fld-hint 有了 ellipsis ⇒ 说明会被截断').toBe(false);
-    // 加 `overflow-wrap:anywhere` 本身是改进（长串不再顶出横向滚动条），但那会让「硬判据」整条失效，
-    // 本节就只剩棘轮了 —— 故让它的出现也转红，逼人来这里改口径，而不是悄悄弱化一道门。
-    expect(
-      breaksAnywhere(FLD_HINT_SELS),
-      '.fld-hint 多了 overflow-wrap/word-break ⇒ 硬判据（不可断长串宽度）失效，请重写本节口径',
-    ).toBe(false);
   });
 
   it('「可选」徽标只按 locale → en-US 回落，不在源码保留文案兜底', () => {

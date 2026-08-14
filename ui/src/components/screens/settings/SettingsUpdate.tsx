@@ -40,13 +40,13 @@ import {
   SetRowSection,
   Switch,
   Select,
+  TextInput,
   Segmented,
   Button,
   Dot,
   Pill,
   Spinner,
   ProgressBar,
-  InfoIcon,
 } from './primitives';
 import CoreVersionBanner from './CoreVersionBanner';
 import { markAppVersionSkipped } from '../../layout/app-update-banner';
@@ -451,7 +451,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
         ? config.ghProxyPrefix
         : 'custom';
   const subPolicy: SubProxyPolicy = config.subscriptionProxyPolicy ?? 'follow';
-  // 规则资源自动更新的真实三态（off / manual / active）——绿点只在 active 时给，见状态行注释。
+  // 规则资源自动更新的真实三态（off / manual / active），右侧状态徽标据此如实回显。
   const resAutoStatus = ruleResourceAutoStatus(config);
   const subAutoStatus = subscriptionAutoUpdateStatus(config);
   /**
@@ -466,12 +466,10 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
       <Phead title={t('settings.nav.update')} sub={t('settings.update.pageSub')} />
 
       {/* 1. 后台检查间隔（全局 cadence，故置顶） */}
-      <Card pad style={{ marginBottom: 16 }}>
-        <CardH>{t('settings.update.intervalCard')}</CardH>
+      <SetBlock>
         {/* 文案按真实调度形态写，不含糊其辞：订阅与规则资源确实按此周期后台刷新；应用更新则只在
             每次启动时检查一次（startup_tasks 的 5s 一次性任务），全仓没有周期性 app update 轮询——
             旧文案「应用更新、规则资源、订阅刷新统一使用此检查周期」把应用更新也算进周期，是错的。 */}
-        <CardSub>{t('settings.update.intervalCardSub')}</CardSub>
         {/* subscriptionUpdateIntervalHours 已有真实消费者，disabled 已删除：
             `subscription_scheduler.rs::select_due` 按此周期判订阅是否陈旧（0 = 「仅手动」→ 周期不跑，
             后端已正确处理该哨兵值）；`rule_resource_scheduler.rs` 落地后规则资源也跟随同一周期。
@@ -479,75 +477,80 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
         {/* **两个字段一起写**：规则资源调度器读的是 `ruleResourceUpdateIntervalHours`（独立字段，
             store seed 12），而本卡文案与下方规则资源卡都承诺「跟随上方后台检查间隔」。此前该字段
             只在规则资源开关被拨动的那一刻快照一次 → 之后改本下拉不会传导，「跟随」是假的；且若拨动
-            开关时本项恰为「仅手动」(0)，会把规则资源也永久钉成 0，而开关旁却显示绿点「按所选间隔在
+            开关时本项恰为「仅手动」(0)，会把规则资源也永久钉成 0，而开关旁却显示「按所选间隔在
             后台刷新」——又一处假绿。两边同写即让「跟随」成为真话。 */}
-        <Select
-          value={interval}
-          onChange={(e) =>
-            void update({
-              subscriptionUpdateIntervalHours: Number(e.target.value),
-              ruleResourceUpdateIntervalHours: Number(e.target.value),
-            })
-          }
-          aria-label={t('settings.update.intervalCard')}
-          style={{ marginTop: 12, width: '170px' }}
+        <SetRow
+          label={t('settings.update.intervalCard')}
+          tip={t('settings.update.intervalCardSub')}
         >
-          <option value="0">{t('settings.update.intervalManualOnly')}</option>
-          <option value="6">{t('settings.update.intervalHours', { n: 6 })}</option>
-          <option value="12">{t('settings.update.intervalHours', { n: 12 })}</option>
-          <option value="24">{t('settings.update.intervalHours', { n: 24 })}</option>
-          <option value="72">{t('settings.update.intervalDays', { n: 3 })}</option>
-          <option value="168">{t('settings.update.intervalDays', { n: 7 })}</option>
-        </Select>
-      </Card>
+          <Select
+            value={interval}
+            onChange={(e) =>
+              void update({
+                subscriptionUpdateIntervalHours: Number(e.target.value),
+                ruleResourceUpdateIntervalHours: Number(e.target.value),
+              })
+            }
+            aria-label={t('settings.update.intervalCard')}
+            style={{ width: '170px' }}
+          >
+            <option value="0">{t('settings.update.intervalManualOnly')}</option>
+            <option value="6">{t('settings.update.intervalHours', { n: 6 })}</option>
+            <option value="12">{t('settings.update.intervalHours', { n: 12 })}</option>
+            <option value="24">{t('settings.update.intervalHours', { n: 24 })}</option>
+            <option value="72">{t('settings.update.intervalDays', { n: 3 })}</option>
+            <option value="168">{t('settings.update.intervalDays', { n: 7 })}</option>
+          </Select>
+        </SetRow>
+      </SetBlock>
 
       {/* 2. GitHub 加速器 */}
-      <Card pad style={{ marginBottom: 16 }}>
-        <CardH>{t('resources.ghProxy')}</CardH>
-        <CardSub>{t('settings.update.ghAccelSub')}</CardSub>
-        <Select
-          id="gh-mirror-sel"
-          value={ghProxy}
-          onChange={(e) => {
-            const v = e.target.value;
-            if (v === 'none') {
-              setGhCustomMode(false);
-              void update({ ghProxyPrefix: '' });
-            } else if (v === 'custom') {
-              setGhCustomMode(true);
-            } else {
-              // 选中推荐预设：直接落盘该镜像前缀（走通用 config 保存路径）。
-              setGhCustomMode(false);
-              void update({ ghProxyPrefix: v });
-            }
-          }}
-          aria-label={t('settings.update.ghAccelSub')}
-          style={{ marginTop: 12, maxWidth: '340px' }}
+      <SetBlock>
+        <SetRow
+          label={t('resources.ghProxy')}
+          tip={`${t('settings.update.ghAccelSub')} ${t('settings.update.ghNote')}`}
         >
-          <option value="none">{t('resources.direct')}</option>
-          {GH_PROXY_PRESETS.map((p) => (
-            <option key={p} value={p}>
-              {t('settings.update.ghMirrorOption', { url: p })}
-            </option>
-          ))}
-          <option value="custom">{t('common.customEllipsis')}</option>
-        </Select>
+          <Select
+            id="gh-mirror-sel"
+            value={ghProxy}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === 'none') {
+                setGhCustomMode(false);
+                void update({ ghProxyPrefix: '' });
+              } else if (v === 'custom') {
+                setGhCustomMode(true);
+              } else {
+                // 选中推荐预设：直接落盘该镜像前缀（走通用 config 保存路径）。
+                setGhCustomMode(false);
+                void update({ ghProxyPrefix: v });
+              }
+            }}
+            aria-label={t('resources.ghProxy')}
+            style={{ width: '340px' }}
+          >
+            <option value="none">{t('resources.direct')}</option>
+            {GH_PROXY_PRESETS.map((p) => (
+              <option key={p} value={p}>
+                {t('settings.update.ghMirrorOption', { url: p })}
+              </option>
+            ))}
+            <option value="custom">{t('common.customEllipsis')}</option>
+          </Select>
+        </SetRow>
         {ghProxy === 'custom' && (
-          <div id="gh-custom-wrap" style={{ marginTop: 12, maxWidth: '340px' }}>
-            <label className="fld-l">{t('resources.customDomainLabel')}</label>
-            <input
-              className="input mono"
+          <SetRow label={t('resources.customDomainLabel')}>
+            <TextInput
               id="gh-custom-input"
+              className="mono"
               value={config.ghProxyPrefix ?? ''}
               onChange={(e) => void update({ ghProxyPrefix: e.target.value })}
               placeholder="https://cdn.example/ · cdn.example"
+              style={{ width: '340px' }}
             />
-          </div>
+          </SetRow>
         )}
-        <CardSub style={{ marginTop: 10 }}>
-          {t('settings.update.ghNote')}
-        </CardSub>
-      </Card>
+      </SetBlock>
 
       {/* 3. 应用版本 6 态更新机 */}
       <Card className="core-card" id="app-update-card">
@@ -728,9 +731,11 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
              `pendingChangeNotice` 由同一处写入 ⇒ 本横幅会真实触发。已订正。 */}
       <CoreVersionBanner />
       <Card className="core-card">
-        <CardH>{t('settings.update.coreCard')}</CardH>
-        <CardSub>{t('settings.update.coreCardSub')}</CardSub>
-        <CardSub style={{ marginTop: 2 }}>{t('settings.update.coreCardSub2')}</CardSub>
+        <CardH
+          tip={`${t('settings.update.coreCardSub')} ${t('settings.update.coreCardSub2')}`}
+        >
+          {t('settings.update.coreCard')}
+        </CardH>
 
         {coreVer && (
           <div className="core-ver" style={{ marginTop: 12 }}>
@@ -1011,23 +1016,22 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
 
       {/* 5. 规则资源自动更新 */}
       <Card pad style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 7 }}>
-            <div>
-              <CardH>{t('settings.update.ruleResourceAutoCard')}</CardH>
-              {/* 说明与「刷新间隔跟随上方后台检查间隔」并成一句：后者原先另起一行（`#res-int-wrap`），
-                  两句合起来才 20 个字却吃掉一整行（陈先生 2026-07-30）。 */}
-              <CardSub>{t('settings.update.ruleResourceAutoDesc')}</CardSub>
-            </div>
-            {/* 旧 tip「本地 .srs 不会自动更新，需按周期重新下载」**两句都不准**：前半句在本批之后
-                成了假话（随包内置 geo 已纳入自动更新射程，见 rule_resource_scheduler），
-                后半句把「自动」说成要用户去做。改写成真实射程 + 失败语义。 */}
-            <InfoIcon tip={t('settings.update.ruleResourceAutoTip')} />
-          </div>
-          {/* ruleResourceAutoUpdate 已有真实调度器（`runtime/rule_resource_scheduler.rs`），disabled 已删除。
-              **正向语义、缺省为开**：调度器按 上游 语义 `=== false 才停、缺省视为开启`。此前 UI 写
-              `!!config.ruleResourceAutoUpdate`（缺省显示成关）会造成「UI 显示关、后台却在跑」——
-              最恶劣的一类不一致，故必须与后端同口径。 */}
+        <SetRow
+          label={t('settings.update.ruleResourceAutoCard')}
+          tip={t('settings.update.ruleResourceAutoDesc')}
+          ctrlClassName="rule-resource-auto-control"
+        >
+          {/* 状态是当前调度结果，不是静态说明：与开关组成同一行尾控件簇，避免标题区一套布局、
+              下方状态再另起一套布局。间隔为仅手动时用 warn，避免开关亮着却给出“正在自动刷新”的假绿。 */}
+          {resAutoStatus !== 'off' && (
+            <Pill variant={resAutoStatus === 'active' ? 'ok' : 'warn'}>
+              {resAutoStatus === 'active'
+                ? t('settings.update.ruleResourceAutoStatusOn')
+                : t('settings.update.ruleResourceAutoStatusManual')}
+            </Pill>
+          )}
+          {/* ruleResourceAutoUpdate 已有真实调度器（`runtime/rule_resource_scheduler.rs`）。
+              **正向语义、缺省为开**：仅显式 false 才停，与后端同口径。 */}
           <Switch
             id="res-auto-swt"
             checked={ruleResourceAutoUpdateChecked(config)}
@@ -1039,22 +1043,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
             }
             aria-label={t('settings.update.ruleResourceAutoCard')}
           />
-        </div>
-        {/* 调度器已落地 → 恢复原型/上游的 ok 绿点 + 真实状态文案（此前的中性点 + 「暂无调度器读取」
-            是缺调度器期间的诚实降级，现已不再成立）。
-            **但绿点只在真会刷新时给**：间隔为「仅手动」(0) 时后端周期腿整轮不跑，开关虽开也不会有任何
-            后台刷新 —— 此时给绿点就是断言一个不会发生的行为。三态判定收在 `ruleResourceAutoStatus`
-            （纯函数、单测锁死），组件只负责把状态映射成点色与文案。 */}
-        {resAutoStatus !== 'off' && (
-          <div className="res-auto-status" id="res-auto-status" style={{ marginTop: 14 }}>
-            <Dot variant={resAutoStatus === 'active' ? 'ok' : 'idle'} />
-            <span>
-              {resAutoStatus === 'active'
-                ? t('settings.update.ruleResourceAutoStatusOn')
-                : t('settings.update.ruleResourceAutoStatusManual')}
-            </span>
-          </div>
-        )}
+        </SetRow>
       </Card>
 
       {/* 6. 订阅更新 */}
@@ -1072,9 +1061,11 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
         <SetRow
           label={t('settings.update.subAutoOnStart')}
           tip={
-            subAutoStatus === 'startup-only'
-              ? t('settings.update.subAutoStartupOnly')
-              : t('settings.update.subAutoWithInterval')
+            `${
+              subAutoStatus === 'startup-only'
+                ? t('settings.update.subAutoStartupOnly')
+                : t('settings.update.subAutoWithInterval')
+            } ${t('settings.update.subPerSubNote')}`
           }
         >
           <Switch
@@ -1083,13 +1074,8 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
           />
         </SetRow>
         {/* 原「更新周期」只读行已删（陈先生 2026-07-30）：它恒显「跟随后台检查间隔」或「仅手动」，
-            而上一行的 `desc` 已按同一个 `subAutoStatus` 把这件事说完了 —— 两行说同一句话，
+            而上一行的 `tip` 已按同一个 `subAutoStatus` 把这件事说完了 —— 两行说同一句话，
             后一行还占一整行。删的是复述，不是信息。 */}
-        {/* 逐订阅粒度：`select_due` 里 per-sub `autoUpdate != true` 直接 continue，
-            即总开关是**与**关系而非覆盖。开着总开关但某订阅自己关了 → 那条订阅两条腿都不跑。 */}
-        <CardSub style={{ marginTop: 8 }}>
-          {t('settings.update.subPerSubNote')}
-        </CardSub>
         {/* 文案按 `resolveSubscriptionViaProxy` 的真实判据写：`follow` 取的是**该订阅自己的**
             `updateViaProxy`（per-sub，默认直连），与分流规则毫无关系；`proxy`/`direct` 是全局覆盖，
             忽略 per-sub 字段。旧文案「跟随分流」是事实错误——用户会以为订阅拉取按路由规则走，

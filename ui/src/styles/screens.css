@@ -347,7 +347,6 @@
    .cat-list/.cat-item/.cat-ck 现状已有 React flex 适配版本，此处不覆盖，仅补非冲突族。───── */
 .ref-trigger{ text-decoration:underline dotted; text-decoration-color:hsl(var(--fg-faint)); text-underline-offset:2px; cursor:default; }
 .ref-none{ color:hsl(var(--fg-faint)); }
-.res-auto-status{ display:flex; align-items:center; gap:7px; font-size:11.5px; color:hsl(var(--fg-dim)); }
 .cat-tabs{ display:inline-flex; gap:3px; padding:3px; border-radius:var(--r-sm); border:1px solid hsl(var(--line)); background:hsl(var(--surface-2)); }
 .cat-tabs button{ padding:5px 14px; border-radius:6px; font-size:12px; font-weight:560; color:hsl(var(--fg-dim)); border:0; background:transparent; cursor:pointer; }
 .cat-tabs button.on{ background:hsl(var(--surface)); color:hsl(var(--fg)); box-shadow:0 1px 3px hsl(var(--shadow)/0.16); }
@@ -407,7 +406,7 @@
 .app-update-banner .aub-dismiss{ padding-left:7px; padding-right:7px; }
 
 /* ───── LOGS：「核在跑的真实级别」徽标（LogsScreen `.log-core-lvl`）。
-   左边那排 `.log-levels` 分段显示的是**我写下的值**，这颗徽标显示的是**核此刻实际在用的值**
+   左边的级别下拉显示的是**我写下的值**，这颗徽标显示的是**核此刻实际在用的值**
    ——即核写进 `singbox.log`（两个导出产物里核的那一半）时用的级别。
    与控件一致（或核只是更啰嗦）时它只是一句安静的确认，故用 --fg-dim + 细描边、不与分段控件抢注意力；
    **核记得比你要的少**时（暂存未应用 / 核没重启）转 --warn 语义色 —— 那一刻它是本屏最值得看的一句话。

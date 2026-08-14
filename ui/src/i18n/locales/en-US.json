@@ -106,7 +106,7 @@
     "pageTitle": "Logs",
     "pageDesc": "Real-time output from the core and the app.",
     "currentLevel": "Log level",
-    "levelCaption": "One level for the core: it records at this level and above, and the view shows the same. To narrow what you see, filter with the search below. With the privacy lock on, the level is raised to at least warn so domains / IPs aren't recorded.",
+    "levelCaption": "Shows and records the selected level and above. Privacy lock raises the minimum to WARN.",
     "privacyNote": "Privacy lock is on — domains and IPs are redacted in the log stream.",
     "sourceApp": "App",
     "searchPlaceholder": "Search logs…",
@@ -133,19 +133,19 @@
     "openDirDone": "Opened the log folder in your file manager",
     "openDirFailed": "Failed to open the log folder",
     "follow": "Auto-scroll",
-    "levelCoreRestartHint": " (takes effect immediately: both app and core logs on this page follow the new level. Only the level the core writes into its own log file still needs a core restart.)",
+    "levelCoreRestartHint": " View filtering applies immediately; the core log-file level applies after the core restarts.",
     "coreLevelValue": "Core: {{level}}",
     "coreLevelNotRunning": "Core not running",
     "coreLevelUnavailable": "Core level can't be read",
-    "coreLevelHint": "The level the core is actually running at, read back from the core itself. It only decides how detailed the core's own log file is — the core half of \"Export logs\" and \"Export diagnostics\"; the core logs shown on this page are unaffected.",
-    "coreLevelDriftUnsaved": "The level change has not been applied yet. The core still writes its own log file at the old level, so exported core logs will be missing the lines you want. It catches up once you apply the change and restart the core.",
-    "coreLevelDriftRestart": "The core was started at the old level and still writes its own log file at that level, so exported core logs will be missing the lines you want. It catches up once the core restarts. The core logs shown on this page are unaffected.",
+    "coreLevelHint": "The core's current log-file level. It affects exports, not the live stream on this page.",
+    "coreLevelDriftUnsaved": "The change is not applied yet, so the core still writes files at the old level. Apply it and restart the core to sync.",
+    "coreLevelDriftRestart": "The core still writes files at the old level. Restart it to sync; the live stream is unaffected.",
     "sourceLabel": "Source",
     "levelAria": "Log display level",
     "sourceAria": "Log source",
     "diagnosticMode": "Diagnose",
-    "diagnosticTipOff": "Temporarily show and record DEBUG output for this run without changing your settings. Restarting the app restores the configured level. The core's own log-file level is unchanged.",
-    "diagnosticTipOn": "Diagnostic mode is on: app output and the live core stream are temporarily at DEBUG. Click to restore the configured level; restarting the app also restores it.",
+    "diagnosticTipOff": "Temporarily use DEBUG for this run without changing settings. Restarting the app restores the configured level; the core log-file level is unchanged.",
+    "diagnosticTipOn": "Diagnostics is on: app output and the live core stream use DEBUG. Click again or restart the app to restore the configured level.",
     "diagnosticFailed": "Failed to toggle diagnostic mode"
   },
   "notify": {
@@ -634,8 +634,8 @@
       "noTelemetry": "Zero telemetry — no crash reports, no analytics, nothing sent back"
     },
     "update": {
-      "ruleResourceAutoStatusOn": "Enabled — refreshing in the background at the selected interval",
-      "ruleResourceAutoStatusManual": "Enabled, but the background check interval is set to manual only — no automatic refresh",
+      "ruleResourceAutoStatusOn": "Scheduled refresh",
+      "ruleResourceAutoStatusManual": "Manual only",
       "formMismatch": "The update package does not match the current install form; handed to the system",
       "portableManualReplace": "The portable update was downloaded to: {{path}}. Quit Polaris, then extract the archive over your current program folder to finish updating. The portable build has no installer — do not double-click to install.",
       "advisory": {
@@ -702,8 +702,7 @@
       "subFollow": "Per subscription",
       "subViaProxy": "Via proxy",
       "subDirect": "Direct",
-      "ruleResourceAutoDesc": "Re-downloads rule resources on the background check interval",
-      "ruleResourceAutoTip": "Covers downloaded rule resources as well as the geo data bundled with the app. An update downloads to a temporary file, verifies it, then swaps atomically; on failure the existing copy is left untouched"
+      "ruleResourceAutoDesc": "Re-downloads rule resources on the background check interval"
     },
     "core": {
       "applied": "Core updated",
@@ -1272,7 +1271,6 @@
   },
   "meshJoin": {
     "title": "Add Access",
-    "intro": "Choose an access method, then configure it. The Mesh page lists configured nodes instead of permanently stacking protocol entry points.",
     "managed": "Accounts & managed networks",
     "tunnels": "Standard & enterprise tunnels",
     "tsConfigured": "Configured · open settings or switch accounts",
@@ -1283,9 +1281,9 @@
     "logout": "Log out",
     "reregister": "Re-register",
     "deregister": "Deregister device",
-    "wg": "Import .conf or enter manually",
-    "oc": "Enterprise VPN via AnyConnect / GlobalProtect and others",
-    "ovpn": "Account, certificates, and enterprise network access",
+    "wg": ".conf import or manual setup",
+    "oc": "Enterprise VPN access",
+    "ovpn": "Account and certificate access",
     "routesHint": "OpenConnect / OpenVPN always appear under Mesh. Internal routes only control which private subnets are forced through the connection; leave them empty to use it as a regular VPN exit."
   },
   "node": {
@@ -1401,7 +1399,7 @@
       "snellVer": "Snell version",
       "sni": "SNI",
       "spoofMethod": "TLS spoof method",
-      "spoofMethodHint": "Sends a fake ClientHello before the real handshake to trick SNI-filtering middleboxes into letting the connection through. Requires elevated privileges; the core does not support it on ARM64; the decoy SNI must be a domain and must differ from the real SNI, otherwise it is dropped when the config is built.",
+      "spoofMethodHint": "Sends a decoy ClientHello before the real handshake. Requires elevated privileges, is unsupported on ARM64, and needs a domain different from the real SNI.",
       "spoofSni": "TLS spoof decoy SNI",
       "stls": "Enable ShadowTLS",
       "stlsFp": "ShadowTLS uTLS fingerprint",
@@ -1430,7 +1428,7 @@
       "torArgs": "Extra arguments",
       "torArgsHint": "Space-separated, passed through to the tor process",
       "meshRoutes": "Intranet routes (CIDR, one per line)",
-      "meshRoutesHint": "Subnets reachable through this node, such as your office's 10.10.0.0/16. Declared subnets are force-routed through the node. Leave this empty to skip forced subnet routing; the node still remains under Mesh and can be used as a regular VPN exit. These protocols learn their routes from the server only after the tunnel is up, so Polaris cannot fill them in during configuration.",
+      "meshRoutesHint": "One subnet per line for forced routing through this node. Leave empty to disable forced subnet routing. OpenConnect/OpenVPN routes arrive after connection and cannot be filled automatically.",
       "flavor": "Vendor dialect",
       "authGroup": "Auth group",
       "token": "Token",

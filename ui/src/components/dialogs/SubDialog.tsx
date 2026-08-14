@@ -33,6 +33,7 @@ import { toast } from '@/lib/error-handler';
 import { Modal } from './Modal';
 import { useDialogStore } from './dialog-store';
 import { Fold } from '@/components/Fold';
+import { InfoIcon } from '@/components/InfoIcon';
 
 function SubIcon() {
   return (
@@ -282,9 +283,10 @@ function SubForm({ base, focus, onAdded }: SubFormProps) {
       </div>
 
       <div className="fld">
-        <label className="fld-l" htmlFor="sub-ua">
+        <label className="fld-l fld-l-info" htmlFor="sub-ua">
           <span>{t('sub.ua')}</span>
           <span className="fld-opt"> {t('common.optional')}</span>
+          <InfoIcon tip={t('sub.uaHint')} />
         </label>
         <input
           id="sub-ua"
@@ -296,16 +298,15 @@ function SubForm({ base, focus, onAdded }: SubFormProps) {
           }}
           placeholder={t('sub.uaPh')}
         />
-        <div className="fld-hint">
-          {t('sub.uaHint')}
-        </div>
       </div>
 
       <Fold title={t('common.advanced')}>
         <div className="fld swt-row">
           <div className="swt-tx">
-            <b>{t('sub.autoUpdate')}</b>
-            <div className="fld-hint">{t('sub.autoUpdateHint')}</div>
+            <span className="swt-label">
+              <b>{t('sub.autoUpdate')}</b>
+              <InfoIcon tip={t('sub.autoUpdateHint')} />
+            </span>
           </div>
           <button
             type="button"
@@ -332,14 +333,16 @@ function SubForm({ base, focus, onAdded }: SubFormProps) {
         {/* per-sub「经代理更新」：全局策略 follow 时可设；proxy/direct 被全局覆盖 → 置灰并提示（对齐 上游）。 */}
         <div className="fld swt-row" style={{ marginTop: 14 }}>
           <div className="swt-tx">
-            <b>{t('sub.viaProxy')}</b>
-            <div className="fld-hint">
-              {proxyPolicy === 'proxy'
-                ? t('sub.viaProxyOverrideProxy')
-                : proxyPolicy === 'direct'
-                  ? t('sub.viaProxyOverrideDirect')
-                  : t('sub.viaProxyHint')}
-            </div>
+            <span className="swt-label">
+              <b>{t('sub.viaProxy')}</b>
+              <InfoIcon
+                tip={proxyPolicy === 'proxy'
+                  ? t('sub.viaProxyOverrideProxy')
+                  : proxyPolicy === 'direct'
+                    ? t('sub.viaProxyOverrideDirect')
+                    : t('sub.viaProxyHint')}
+              />
+            </span>
           </div>
           <button
             type="button"

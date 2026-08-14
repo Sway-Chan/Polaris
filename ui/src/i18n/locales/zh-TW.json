@@ -106,7 +106,7 @@
     "pageTitle": "記錄",
     "pageDesc": "核心與應用程式的即時輸出串流",
     "currentLevel": "記錄層級",
-    "levelCaption": "核心以此單一層級記錄記錄檔，並在檢視中顯示該層級及以上。想只看部分記錄，用下方搜尋篩選；隱私鎖開啟時層級會自動提升到 warn 及以上，避免記錄網域 / IP。",
+    "levelCaption": "顯示並記錄所選層級及以上；隱私鎖會將最低層級提升至 WARN。",
     "privacyNote": "隱私鎖已開啟 — 記錄串流已對網域與 IP 進行遮蔽",
     "sourceApp": "應用程式",
     "searchPlaceholder": "搜尋記錄…",
@@ -133,19 +133,19 @@
     "openDirDone": "已在檔案管理員中開啟記錄目錄",
     "openDirFailed": "開啟記錄目錄失敗",
     "follow": "自動捲動",
-    "levelCoreRestartHint": "（改完即刻生效：本頁的應用日誌與核心日誌都會依新層級顯示。仍需重新啟動核心的只有核心寫進自己那份記錄檔的層級。）",
+    "levelCoreRestartHint": " 頁面篩選立即生效；核心記錄檔層級在核心重啟後生效。",
     "coreLevelValue": "核心實跑 {{level}}",
     "coreLevelNotRunning": "核心未執行",
     "coreLevelUnavailable": "讀不到核心層級",
-    "coreLevelHint": "從核心讀回的、它此刻實際在用的層級。它只決定核心寫進自己那份記錄檔時有多詳細 —— 也就是「匯出日誌」「匯出診斷包」裡核心的那一半；本頁顯示的核心日誌不受其影響。",
-    "coreLevelDriftUnsaved": "層級變更尚未套用。核心仍依舊層級寫自己那份記錄檔，匯出的核心日誌會缺少你要的行。套用並重新啟動核心後跟上。",
-    "coreLevelDriftRestart": "核心是依舊層級啟動的，它寫自己那份記錄檔時仍用舊層級，匯出的核心日誌會缺少你要的行。重新啟動核心後跟上。本頁顯示的核心日誌不受影響。",
+    "coreLevelHint": "核心目前寫入檔案的實際層級；影響匯出內容，不影響本頁即時串流。",
+    "coreLevelDriftUnsaved": "層級變更尚未套用，核心仍以舊層級寫入檔案。套用並重啟核心後同步。",
+    "coreLevelDriftRestart": "核心仍以舊層級寫入檔案；重啟核心後同步。本頁即時串流不受影響。",
     "sourceLabel": "來源",
     "levelAria": "記錄顯示層級",
     "sourceAria": "記錄來源",
     "diagnosticMode": "診斷",
-    "diagnosticTipOff": "僅在本次執行期間暫時顯示並記錄 DEBUG，不修改設定；重新啟動應用程式後恢復已設定層級。核心自身記錄檔的層級不變。",
-    "diagnosticTipOn": "診斷模式已開啟：應用程式與核心即時記錄流暫時提升至 DEBUG。按一下可關閉並恢復已設定層級；重新啟動應用程式也會自動恢復。",
+    "diagnosticTipOff": "本次執行暫時啟用 DEBUG；不改設定，重啟應用程式後恢復。核心記錄檔層級不變。",
+    "diagnosticTipOn": "診斷已開啟：應用程式與核心即時串流暫用 DEBUG；再次點擊或重啟應用即恢復。",
     "diagnosticFailed": "切換診斷模式失敗"
   },
   "notify": {
@@ -634,8 +634,8 @@
       "noTelemetry": "零遙測 — 無當機回報、無分析、無回傳"
     },
     "update": {
-      "ruleResourceAutoStatusOn": "已開啟，依所選間隔在背景重新整理",
-      "ruleResourceAutoStatusManual": "已開啟，但「背景檢查間隔」為僅手動，不會自動重新整理",
+      "ruleResourceAutoStatusOn": "依排程更新",
+      "ruleResourceAutoStatusManual": "僅手動",
       "formMismatch": "更新包形態與目前安裝形態不符，已交由系統處理",
       "portableManualReplace": "可攜版更新套件已下載到：{{path}}。請結束 Polaris 後，將壓縮檔內容解壓縮並覆蓋到目前程式所在資料夾即可完成更新。可攜版沒有安裝程式，請勿按兩下安裝。",
       "advisory": {
@@ -685,7 +685,7 @@
       "downloadInterrupted": "下載中斷",
       "coreCard": "sing-box 核心",
       "coreCardSub": "暫存更新僅在核心停止的空檔套用",
-      "coreCardSub2": "核心下載同樣遵循下方的 GitHub 加速設定",
+      "coreCardSub2": "核心下載同樣遵循上方的 GitHub 加速設定",
       "coreCurrent": "目前",
       "coreStaged": "已暫存",
       "coreStagedDesc": "下次核心停止時套用",
@@ -702,8 +702,7 @@
       "subFollow": "跟隨訂閱",
       "subViaProxy": "走代理",
       "subDirect": "直連",
-      "ruleResourceAutoDesc": "依「背景檢查間隔」自動重新下載規則資源",
-      "ruleResourceAutoTip": "射程包含已下載的規則資源與隨套件內建的 geo。更新走「先下到暫存檔、驗證通過再原子替換」，失敗時保留現有副本不動"
+      "ruleResourceAutoDesc": "依「背景檢查間隔」自動重新下載規則資源"
     },
     "core": {
       "applied": "內核已更新",
@@ -1272,7 +1271,6 @@
   },
   "meshJoin": {
     "title": "新增接入",
-    "intro": "選擇接入方式後再填寫設定；組網頁只顯示已設定節點，不長期堆放協定入口。",
     "managed": "帳號與託管網路",
     "tunnels": "標準與企業隧道",
     "tsConfigured": "已設定 · 開啟設定或切換帳號",
@@ -1283,9 +1281,9 @@
     "logout": "登出",
     "reregister": "重新註冊",
     "deregister": "註銷裝置",
-    "wg": "匯入 .conf 或手動填寫",
-    "oc": "AnyConnect / GlobalProtect 等企業 VPN",
-    "ovpn": "帳號、憑證與企業內網接入",
+    "wg": ".conf / 手動設定",
+    "oc": "企業 VPN 接入",
+    "ovpn": "帳號與憑證接入",
     "routesHint": "OpenConnect / OpenVPN 始終歸入組網；「內網段」只決定強制路由的企業網段，留空時仍可作為一般 VPN 出口。"
   },
   "node": {
@@ -1401,7 +1399,7 @@
       "snellVer": "Snell 版本",
       "sni": "SNI",
       "spoofMethod": "TLS Spoof 方法",
-      "spoofMethodHint": "真交握前先發一個偽造 ClientHello，誘使 SNI 過濾中間盒放行。需要提權；ARM64 核心不支援；誘餌 SNI 必須是網域且不同於真實 SNI，否則建置設定時自動不寫入。",
+      "spoofMethodHint": "真交握前傳送偽造 ClientHello。需要提權，不支援 ARM64；誘餌 SNI 必須是不同於真實 SNI 的網域。",
       "spoofSni": "TLS Spoof 誘餌 SNI",
       "stls": "啟用 ShadowTLS",
       "stlsFp": "ShadowTLS uTLS 指紋",
@@ -1430,7 +1428,7 @@
       "torArgs": "額外參數",
       "torArgsHint": "以空白分隔，逐個傳給 tor 行程",
       "meshRoutes": "內網段（CIDR，每行一個）",
-      "meshRoutesHint": "宣告「經此節點可達的內網網段」，例如公司的 10.10.0.0/16。填寫後，這些網段會強制路由至此節點；留空則不強制路由，但節點仍保留於組網中，並可作為一般 VPN 出口。這兩個協定的網段會在連線後由伺服器下發，用戶端設定時無法自動得知，因此需要手動填寫。",
+      "meshRoutesHint": "每行一個經此節點強制路由的子網；留空不啟用強制路由。OpenConnect/OpenVPN 的路由會在連線後下發，無法自動預填。",
       "flavor": "廠商方言",
       "authGroup": "認證群組",
       "token": "權杖",

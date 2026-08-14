@@ -8,21 +8,23 @@ const read = (relative: string): string =>
 const SCREEN = read('./LogsScreen.tsx');
 const CSS = read('../../../styles/index.css');
 
-describe('日志工具栏折行不变量', () => {
-  it('来源标签与来源分段在同一个不可拆组，且不再渲染竖分割线', () => {
-    expect(SCREEN).toMatch(
-      /className="log-filter-group log-source-filter"[\s\S]*?logs\.sourceLabel[\s\S]*?className="seg2"/,
-    );
-    expect(SCREEN).not.toContain('className="log-tb-sep"');
-    expect(CSS).toMatch(/\.log-source-filter\s*\{[^}]*flex-wrap:\s*nowrap/);
+describe('日志工具栏布局不变量', () => {
+  it('级别与来源统一使用 GUI 下拉，不再展开成 5+3 个按钮', () => {
+    expect(SCREEN).toMatch(/className="log-filter-field log-level-filter"[\s\S]*?<Csel[\s\S]*?LEVEL_SELECT_OPTIONS/);
+    expect(SCREEN).toMatch(/className="log-filter-field log-source-filter"[\s\S]*?<Csel[\s\S]*?sourceOptions/);
+    expect(SCREEN).not.toContain('className="log-levels"');
+    expect(SCREEN).not.toMatch(/className="seg2"[\s\S]*?logs\.sourceAria/);
   });
 
-  it('诊断操作属于日志级别组，不再作为第三块单独占行', () => {
+  it('筛选与诊断任务链固定成一行，诊断和诊断包在同一操作组', () => {
     expect(SCREEN).toMatch(
-      /className="log-filter-group log-level-filter"[\s\S]*?log-diagnostic-toggle[\s\S]*?<\/div>\s*<div className="log-filter-group log-source-filter"/,
+      /className="log-tb-primary"[\s\S]*?log-level-filter[\s\S]*?log-source-filter[\s\S]*?className="log-diagnostic-actions"[\s\S]*?log-diagnostic-toggle[\s\S]*?logs\.exportDiag/,
     );
-    expect(SCREEN).not.toContain('logs.diagnosticLevel');
-    expect(CSS).not.toMatch(/\.log-diagnostic-toggle\s*\{[^}]*margin-left:\s*auto/);
+    expect(CSS).toMatch(/\.log-tb-primary\s*\{[^}]*display:\s*grid[^}]*grid-template-columns/);
+    expect(CSS).toMatch(
+      /grid-template-columns:\s*minmax\(180px,220px\)\s+minmax\(124px,156px\)\s+1fr/,
+    );
+    expect(CSS).not.toMatch(/@container mainc \(max-width: 7\d\dpx\)[\s\S]*?\.log-tb-primary/);
   });
 
   it('底栏把直播、行数与恢复入口组成左侧流状态簇，避开右下 toast', () => {

@@ -5,7 +5,7 @@
  *  - .phead（h1 + .sub）
  *  - #log-privacy-note.mode-warn（隐私锁提示条，原型内联覆盖 flow 色而非默认 warn 色）
  *  - .card.log-toolbar：
- *      .log-tb-lvl（两个不可拆分的筛选组：日志级别 / 来源；来源标签与「全部」永不跨行）
+ *      .log-tb-primary（日志级别 / 来源下拉 + 诊断任务组，最小窗口仍保持一行）
  *      .log-tb-main（搜索 + 常用开关 + 紧凑图标工具组）
  *    动作区的脱敏 / 自动滚动 / 清空三颗**只用底色表达状态、文案恒定**；状态的读屏通路改由
  *    `aria-pressed`（前两颗）与 `aria-label`（清空的武装态）承担，暂停期的缓冲行数改由 `.cnt` 徽标带。
@@ -58,6 +58,8 @@ import { redactSensitive, shouldRedactLogs } from '@/domain/privacy';
 import { mergeHydration, maxLogId, type LogRow } from './logs-buffer';
 import { runtimeLevelView } from './runtime-level';
 import type { LogLevel, RuntimeLogLevel } from '@/contracts/types';
+import { Csel, type CselOption } from '@/components/dialogs/Csel';
+import { InfoIcon } from '@/components/InfoIcon';
 
 /** 级别 → 数字权重（对齐原型 LVL，越大越严重）。 */
 const LVL: Record<LogLevel, number> = {
@@ -68,6 +70,10 @@ const LVL: Record<LogLevel, number> = {
   fatal: 4,
 };
 const LEVEL_OPTS: LogLevel[] = ['debug', 'info', 'warn', 'error', 'fatal'];
+const LEVEL_SELECT_OPTIONS: CselOption[] = LEVEL_OPTS.map((value) => ({
+  value,
+  label: value.toUpperCase(),
+}));
 const MAX_BUFFER = 500; // 渲染端缓冲上限（防日志风暴拖死 DOM）
 /** 本屏唯一的原地二次确认项（原型 :4130 `log-clear`）。超时/复位语义全在 `lib/confirm-twice.ts`。 */
 const CLEAR_KEY = 'logs-clear';
@@ -486,6 +492,11 @@ export function LogsScreen() {
      不能跟着丢 —— 它原先挂在 `autoScrollPausedCount` 那个变体文案里，是全屏唯一的出口。
      改由按钮上的 `.cnt` 计数徽标承载（同 `.nav-item .cnt` 的既有形态）。 */
   const pendingBadge = !follow && pendingCount > 0 ? pendingCount : null;
+  const sourceOptions: CselOption[] = [
+    { value: 'all', label: t('common.all') },
+    { value: 'sing-box', label: 'sing-box' },
+    { value: 'app', label: t('logs.sourceApp') },
+  ];
 
   return (
     <section className="screen" id="s-logs" hidden={false}>
@@ -516,49 +527,51 @@ export function LogsScreen() {
       )}
 
       <div className="card log-toolbar">
-        {/* 筛选行按语义组成不可拆单元：容器可换行，单元内部不换。来源标签因此不会孤零零留在上一行。 */}
-        <div className="log-tb-lvl">
-          <div className="log-filter-group log-level-filter">
-            <span className="log-flow-tag">{t('logs.currentLevel')}</span>
-            <div className="log-levels" role="group" aria-label={t('logs.levelAria')}>
-              {LEVEL_OPTS.map((lv) => (
-                <button
-                  key={lv}
-                  type="button"
-                  className={displayLevel === lv ? 'on' : ''}
-                  disabled={diagnosticMode === true || diagnosticBusy}
-                  onClick={() => onLevelChange(lv)}
+        {/* 第一行只放“筛选 + 诊断”这一条任务链：两个筛选用 GUI 下拉压缩宽度，诊断开关与诊断包
+            相邻成组。这样不是把按钮机械塞进同一行，而是让“发现问题 → 临时提级 → 导出证据”连续。 */}
+        <div className="log-tb-primary">
+          <div className="log-filter-field log-level-filter">
+            <span className="log-filter-label">
+              <span>{t('logs.currentLevel')}</span>
+              <InfoIcon tip={`${t('logs.levelCaption')}${t('logs.levelCoreRestartHint')}`} />
+            </span>
+            <div className="log-filter-value">
+              <Csel
+                className="log-level-select"
+                value={displayLevel}
+                disabled={diagnosticMode === true || diagnosticBusy}
+                onChange={(value) => void onLevelChange(value as LogLevel)}
+                options={LEVEL_SELECT_OPTIONS}
+                ariaLabel={t('logs.levelAria')}
+              />
+              {/* 只描述内核自己的 singbox.log 级别；诊断模式不会伪装这格已经热切。 */}
+              {runtimeView.kind !== 'pending' && (
+                <span
+                  className={`log-core-lvl${runtimeView.kind === 'known' && runtimeView.drift ? ' diverged' : ''}`}
+                  data-tip={coreLevelTip}
                 >
-                  {lv.toUpperCase()}
-                </button>
-              ))}
+                  {runtimeView.kind === 'known'
+                    ? t('logs.coreLevelValue', { level: runtimeView.level.toUpperCase() })
+                    : runtimeView.kind === 'notRunning'
+                      ? t('logs.coreLevelNotRunning')
+                      : t('logs.coreLevelUnavailable')}
+                </span>
+              )}
             </div>
-            {/* 级别说明收进浮窗，避免长文案占掉独立一行。 */}
-            <button
-              type="button"
-              className="log-lvl-info"
-              data-tip={`${t('logs.levelCaption')}${t('logs.levelCoreRestartHint')}`}
-              aria-label={t('logs.levelCaption')}
-            >
-              <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <circle cx="12" cy="12" r="9" />
-                <path d="M12 11v5M12 7.6v.6" />
-              </svg>
-            </button>
-            {/* 只描述内核自己的 singbox.log 级别；诊断模式不会伪装这格已经热切。 */}
-            {runtimeView.kind !== 'pending' && (
-              <span
-                className={`log-core-lvl${runtimeView.kind === 'known' && runtimeView.drift ? ' diverged' : ''}`}
-                data-tip={coreLevelTip}
-              >
-                {runtimeView.kind === 'known'
-                  ? t('logs.coreLevelValue', { level: runtimeView.level.toUpperCase() })
-                  : runtimeView.kind === 'notRunning'
-                    ? t('logs.coreLevelNotRunning')
-                    : t('logs.coreLevelUnavailable')}
-              </span>
-            )}
-            {/* 诊断是日志级别的临时覆盖，不是独立功能区；与级别控件组成一个不可拆筛选单元。 */}
+          </div>
+
+          <div className="log-filter-field log-source-filter">
+            <span className="log-filter-label">{t('logs.sourceLabel')}</span>
+            <Csel
+              className="log-source-select"
+              value={source}
+              onChange={(value) => setSource(value as LogSource)}
+              options={sourceOptions}
+              ariaLabel={t('logs.sourceAria')}
+            />
+          </div>
+
+          <div className="log-diagnostic-actions">
             <button
               type="button"
               className={`btn ghost sm log-diagnostic-toggle${diagnosticMode ? ' on' : ''}`}
@@ -573,24 +586,19 @@ export function LogsScreen() {
               </svg>
               <span>{t('logs.diagnosticMode')}</span>
             </button>
+            <button
+              type="button"
+              className="btn ghost sm"
+              onClick={onExportDiag}
+              data-tip={t('logs.exportDiagTip')}
+            >
+              <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="M3 7l2-3h5l2 3h7a1 1 0 011 1v11a1 1 0 01-1 1H3a1 1 0 01-1-1V8a1 1 0 011-1z" />
+                <path d="M12 11v6M9 14l3 3 3-3" />
+              </svg>
+              <span>{t('logs.exportDiag')}</span>
+            </button>
           </div>
-
-          <div className="log-filter-group log-source-filter">
-            <span className="log-flow-tag">{t('logs.sourceLabel')}</span>
-            <div className="seg2" role="group" aria-label={t('logs.sourceAria')}>
-              {(['all', 'sing-box', 'app'] as LogSource[]).map((src) => (
-                <button
-                  key={src}
-                  type="button"
-                  className={source === src ? 'on' : ''}
-                  onClick={() => setSource(src)}
-                >
-                  {src === 'all' ? t('common.all') : src === 'app' ? t('logs.sourceApp') : 'sing-box'}
-                </button>
-              ))}
-            </div>
-          </div>
-
         </div>
         {/* 级别说明 + 生效范围如实标注：本页显示的两侧日志（应用 + 内核）都在改完那一刻就跟上 ——
             应用侧是 logging.rs::set_level 跟随 config.logLevel，内核侧是 SubscribeLog 恒送全级别、
@@ -703,18 +711,6 @@ export function LogsScreen() {
               >
                 <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
                   <path d="M3 7a1 1 0 011-1h5l2 3h9a1 1 0 011 1v9a1 1 0 01-1 1H4a1 1 0 01-1-1z" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className="btn ghost sm log-icon-action"
-                onClick={onExportDiag}
-                data-tip={t('logs.exportDiagTip')}
-                aria-label={t('logs.exportDiag')}
-              >
-                <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
-                  <path d="M3 7l2-3h5l2 3h7a1 1 0 011 1v11a1 1 0 01-1 1H3a1 1 0 01-1-1V8a1 1 0 011-1z" />
-                  <path d="M12 11v6M9 14l3 3 3-3" />
                 </svg>
               </button>
             </div>

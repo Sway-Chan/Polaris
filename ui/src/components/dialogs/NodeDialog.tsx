@@ -58,6 +58,7 @@ import { protoCodec, ProtoCodecError } from './proto-codec';
 import { blockedByMeshSingleton } from '@/domain/mesh-singleton-guard';
 import { revealOnToggle } from '@/components/reveal';
 import { meshTunnelDraftError } from './mesh-form-layout';
+import { InfoIcon } from '@/components/InfoIcon';
 
 const NODE_PROTOS = new Set<string>(PROTO_OPTIONS.map(([p]) => p));
 function isNodeProto(p: string): p is NodeProto {
@@ -308,8 +309,9 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
 
   const detourField = (
     <div className="fld">
-      <label className="fld-l" htmlFor="nd-detour">
-        {t('node.chainVia')}
+      <label className="fld-l fld-l-info" htmlFor="nd-detour">
+        <span>{t('node.chainVia')}</span>
+        <InfoIcon tip={t('node.chainHint')} />
       </label>
       <Csel
         id="nd-detour"
@@ -321,9 +323,6 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
         }}
         options={detourOpts}
       />
-      <div className="fld-hint">
-        {t('node.chainHint')}
-      </div>
     </div>
   );
 
@@ -472,10 +471,10 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
             </div>
           )}
           {probeResult?.kind === 'supported' && (
-            <div className="fld-hint">{t('node.customProbe.supported')}</div>
+            <div className="form-feedback">{t('node.customProbe.supported')}</div>
           )}
           {probeResult?.kind === 'indeterminate' && (
-            <div className="fld-hint">
+            <div className="form-feedback">
               {t('node.customProbe.indeterminate')}
             </div>
           )}

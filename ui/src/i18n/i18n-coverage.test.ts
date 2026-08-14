@@ -33,7 +33,7 @@
  *  G5 **FieldSpec 表里的键真的落地**（2026-08-07 加，与「删掉 `node-spec.ts` 的 151 条 zh/hintZh 缺省」同批）：
  *     a 节点表单（import `ND_SPEC` 真值源）每个 label/hint 键都必须是 en-US 叶子；
  *     b 全仓 FieldSpec 字面量的键**在 en-US 里 或 仍留着 zh 缺省**（接管 `zh` 由必填改可选后丢掉的
- *       那份类型保证）；c 渲染器的每个字段类型都真把 `hint` 渲染进 `.fld-hint`。
+ *       那份类型保证）；c 渲染器的每个字段类型都真把 `hint` 接进统一 `InfoIcon`。
  *     根因与射程见下方 G5 段的长注释。
  *  G6 **键集双向对账**（2026-08-07 加）：消费点与 locale 两边互为对方的账。
  *     a 用而未声明（`t('a.b')` 的键不在 locale 里）；b 声明而无消费点（死键）。
@@ -592,31 +592,29 @@ describe('G5b 全仓 FieldSpec 字面量：每个键都存在于 en-US', () => {
 });
 
 /**
- * G5c 说明行**真的被渲染出来**（每个字段类型各一份）。
+ * G5c 字段说明**真的进入统一信息提示**（每个字段类型各一份）。
  *
  * # 为什么这条门必须存在
  *
- * 2026-08-07 把 `hint` 从 select/switch 两支提到了 `FieldBase`（text/number/textarea 也能有说明），
- * 于是 `FieldRenderer` 的**五个分支都得渲染它**。漏掉某一支的下场是「locale 里躺着一条译文、
- * text-fit 还在按它量宽度、用户却永远看不到」——**类型不红、build 不红**，而本仓 vitest 是
- * `environment:'node'`，静态扫描也看不出一个 JSX 分支少写了 `{hintEl}`。这正是本文件开篇讲的
- * 那类缺陷（文案漏在用户可见路径之外），只是漏点从「整个界面」缩到了「渲染器的一支」。
+ * `hint` 位于 `FieldBase`，text/number/textarea/select/switch 都能携带。当前统一规则是：静态说明
+ * 收进标签旁的 `InfoIcon`，不在输入框下方铺 `.fld-hint`。漏接某一支不会触发类型或 build 错，
+ * 所以这里同时守住「译文可达」「tooltip 接线」「不回退成常驻说明」三条。
  *
  * # 四支真渲染，`select` 一支退回源码判据（**不是偷懒，是环境边界**）
  *
  * `renderToStaticMarkup` 只要 React 本身，不需要 jsdom（既有先例：
  * `components/dialogs/field-switch-disabled.test.tsx`）。text/number/textarea/switch 四支这么测。
- * **`select` 测不了**：它渲染 `<Csel>`，而 `Csel.tsx:335` 无上下文时走
+ * **`select` 测不了**：它渲染 `<Csel>`，而 `Csel.tsx` 无上下文时走
  * `createPortal(menuNode, document.body)` —— node 环境下 `document is not defined`，整棵树炸在渲染期。
- * 那一支改用源码判据：断言 select 分支的 JSX 里确实有 `{hintEl}`（与另外三支同一个常量）。
- * 弱一档，但方向正确：漏写仍会红。用 `createElement` 而不是 JSX 单纯因为本文件是 `.ts`。
+ * 非 switch 四支共用 `labelEl`，因此 select 只需源码断言它仍渲染这个共享标签，且共享标签挂了
+ * `InfoIcon`。用 `createElement` 而不是 JSX 单纯因为本文件是 `.ts`。
  *
  * # 断言打在**键**上而不是译文上
  *
  * 未初始化 i18n 时 `t(key)` 返回**键本身**（实测 23.16.8，也是 G5a/G5b 那两条门的前提），
  * 所以「键出现在 HTML 里」就等价于「这一支把 hint 渲染出去了」，不必在测试里搭一套 i18n 资源。
  */
-describe('G5c FieldRenderer 每个字段类型都把 hint 渲染进 `.fld-hint`', () => {
+describe('G5c FieldRenderer 每个字段类型都把 hint 收进统一信息提示', () => {
   const HINT_KEY = 'probe.hint.key';
   const FIELD_SPEC_SRC = readFileSync(join(SRC_DIR, 'components', 'dialogs', 'field-spec.tsx'), 'utf8');
   const html = (over: Record<string, unknown>) =>
@@ -656,37 +654,26 @@ describe('G5c FieldRenderer 每个字段类型都把 hint 渲染进 `.fld-hint`'
       expect(withHint, `${kind} 分支填了 hint 却没渲染 —— 那条译文永远到不了用户眼前`).toContain(
         HINT_KEY,
       );
-      if (kind === 'switch') {
-        expect(withHint, 'switch 的复杂说明应收进统一信息提示').toContain('class="info-i"');
-        expect(withHint, 'switch 的信息提示必须可被 tooltip 引擎读取').toContain(`data-tip="${HINT_KEY}"`);
-        expect(withHint, 'switch 不应再永久铺开说明行').not.toContain('fld-hint');
-        expect(html(over), 'switch 没给 hint 却渲染了信息提示').not.toContain('class="info-i"');
-      } else {
-        expect(withHint, `${kind} 的 hint 没有落在 .fld-hint 里（样式对不上）`).toContain('fld-hint');
-        expect(html(over), `${kind} 没给 hint 却渲染了 .fld-hint`).not.toContain('fld-hint');
-      }
+      expect(withHint, `${kind} 的复杂说明应收进统一信息提示`).toContain('class="info-i"');
+      expect(withHint, `${kind} 的信息提示必须可被 tooltip 引擎读取`).toContain(`data-tip="${HINT_KEY}"`);
+      expect(withHint, `${kind} 不应再永久铺开说明行`).not.toContain('fld-hint');
+      expect(html(over), `${kind} 没给 hint 却渲染了信息提示`).not.toContain('class="info-i"');
     });
   }
 
-  it(`select：渲染不了（Csel 要 DOM），改判源码里那一支确实挂了 {hintEl}`, () => {
+  it('select：渲染不了（Csel 要 DOM），改判它仍复用挂有 InfoIcon 的 labelEl', () => {
     // 先钉住「渲染不了」这个前提本身 —— 哪天 Csel 不再无条件用 document 了，这条会红，
     // 提示把 select 挪回上面的真渲染那一组（否则本条会永远停在弱判据上，没人再回来看）。
     expect(() => html({ t: 'select', options: [['a', 'A']], hint: HINT_KEY })).toThrow(/document/);
     const branch = FIELD_SPEC_SRC.match(/if \(spec\.t === 'select'\) \{[\s\S]*?\n  \}/);
     if (!branch) throw new Error('field-spec.tsx 里读不到 select 分支 —— 渲染器改写法了？');
-    expect(branch[0], 'select 分支没挂 {hintEl}（填了 hint 也不会显示）').toContain('{hintEl}');
-
-    // 「挂了 `{hintEl}`」只挡得住**字面删掉**那一种改法。另一种同后果的改法是把 `hintEl` 自己的
-    // 生成条件收窄（`spec.hint && spec.t !== 'select'` 之类）—— 四个真渲染分支照常绿（它们仍拿得到
-    // hintEl）、本条的 `toContain` 也照常绿（JSX 还在），而 ND_SPEC 里挂在 select 上的 hint 键会在
-    // 5 个语种下**静默消失**。故把 `hintEl` 的定义式一起钉死：它只许看 `spec.hint`，不许分字段类型。
-    const def = FIELD_SPEC_SRC.match(/const hintEl = ([^;]+);/);
-    if (!def) throw new Error('field-spec.tsx 里读不到 `const hintEl = …` —— 共享 hint 节点改写法了？');
-    expect(
-      def[1],
-      'hintEl 的生成条件里出现了 `spec.t` —— 按字段类型分档会让某一支的 hint 静默消失，' +
-        '而真渲染的四支与上面的 toContain 都不会红',
-    ).not.toMatch(/spec\.t\b/);
+    expect(branch[0], 'select 分支没渲染共享 labelEl').toContain('{labelEl}');
+    const labelDef = FIELD_SPEC_SRC.match(/const labelEl = \([\s\S]*?\n  \);/);
+    if (!labelDef) throw new Error('field-spec.tsx 里读不到共享 labelEl —— 渲染器改写法了？');
+    expect(labelDef[0], '共享标签没有按 spec.hint 挂 InfoIcon').toMatch(
+      /spec\.hint\s*&&\s*<InfoIcon tip=\{t\(spec\.hint\)\}/,
+    );
+    expect(FIELD_SPEC_SRC, '字段说明不应回退成控件下方常驻 hint').not.toContain('const hintEl');
   });
 });
 

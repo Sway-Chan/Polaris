@@ -36,6 +36,7 @@ import { applyDetour, endpointDetourOptions, DETOUR_NONE } from './detour-option
 // 不能只靠「界面没展示」来假定旧配置里不存在。
 import { buildWarpSettings } from './wg-logic';
 import { useDialogStore } from './dialog-store';
+import { InfoIcon } from '@/components/InfoIcon';
 
 function WarpIcon() {
   return (
@@ -370,8 +371,9 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
 
           {plan === 'plus' && (
             <div className="fld">
-              <label className="fld-l" htmlFor="warp-license">
-                {t('warp.licenseLabel')}
+              <label className="fld-l fld-l-info" htmlFor="warp-license">
+                <span>{t('warp.licenseLabel')}</span>
+                <InfoIcon tip={t('warp.licenseHint')} />
               </label>
               <input
                 id="warp-license"
@@ -385,9 +387,6 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
                 placeholder="xxxxxxxx-xxxxxxxx-xxxxxxxx"
               />
               {errLicense && <div className="err-line">{t('warp.errLicense2')}</div>}
-              <div className="card-sub" style={{ marginTop: 6 }}>
-                {t('warp.licenseHint')}
-              </div>
             </div>
           )}
           <FormSection

@@ -54,7 +54,7 @@ interface FieldBase {
   /** 「可选」徽标。 */
   opt?: boolean;
   /**
-   * 字段说明：输入类渲染为控件下方 `.fld-hint`；switch 收进标签后的统一 `InfoIcon`。
+   * 字段说明：所有字段类型统一收进标签后的 `InfoIcon`，不在控件下方常驻铺开。
    *
    * 加这一支最初是因为「选了会怎样」有时**不能只靠标签表达**：endpoint 的前置代理是实例——
    * WireGuard 的握手走 UDP，前置代理不支持 UDP 转发就**静默不通**（不回落直连，见
@@ -190,18 +190,12 @@ export function FieldRenderer({ spec, value, onChange }: FieldRendererProps) {
   }
 
   const labelEl = (
-    <label className="fld-l" htmlFor={fid}>
+    <label className="fld-l fld-l-info" htmlFor={fid}>
       <span>{label}</span>
       {spec.opt && <span className="fld-opt"> {t('common.optional')}</span>}
+      {spec.hint && <InfoIcon tip={t(spec.hint)} />}
     </label>
   );
-  /**
-   * 说明行 —— 非 switch 的四个分支共用同一个元素；switch 在上方以 `InfoIcon` 承载，
-   * 且禁用时用 `disabledHint` 取代。抽成一个常量而不是每支各写一遍 `{spec.hint && …}`：
-   * `hint` 提到 `FieldBase` 之后每支都得渲染，漏一支的下场是**填了 hint 却不显示**——
-   * 类型不红、build 不红、本仓 vitest 无 jsdom 渲染不了，没有任何门抓得到（同 `toCselOptions` 那条理由）。
-   */
-  const hintEl = spec.hint ? <div className="fld-hint">{t(spec.hint)}</div> : null;
 
   if (spec.t === 'select') {
     // 传 value：当前值落在选项集外时并入选项，避免「一碰下拉就被迫改值」（见 toCselOptions 注释）。
@@ -216,7 +210,6 @@ export function FieldRenderer({ spec, value, onChange }: FieldRendererProps) {
           onChange={(v) => onChange(v)}
           options={opts}
         />
-        {hintEl}
       </div>
     );
   }
@@ -233,7 +226,6 @@ export function FieldRenderer({ spec, value, onChange }: FieldRendererProps) {
           onChange={(e) => onChange(parseNumberField(e.target.value))}
           placeholder={spec.ph ?? '—'}
         />
-        {hintEl}
       </div>
     );
   }
@@ -266,7 +258,6 @@ export function FieldRenderer({ spec, value, onChange }: FieldRendererProps) {
             </button>
           </div>
         ) : textarea}
-        {hintEl}
       </div>
     );
   }
@@ -299,7 +290,6 @@ export function FieldRenderer({ spec, value, onChange }: FieldRendererProps) {
           </button>
         </div>
       ) : input}
-      {hintEl}
     </div>
   );
 }

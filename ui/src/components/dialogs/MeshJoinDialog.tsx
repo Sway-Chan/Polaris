@@ -5,6 +5,7 @@ import { useEffectiveServers } from '@/store/app-store';
 import { findWarpNode } from '@/domain/warp';
 import { Modal } from './Modal';
 import { useDialogStore } from './dialog-store';
+import { InfoIcon } from '@/components/InfoIcon';
 
 interface MeshJoinDialogProps {
   onTsLogout: (node: ServerConfig) => void;
@@ -85,10 +86,6 @@ export function MeshJoinDialog({ onTsLogout, onWarpReregister, onWarpDeregister 
         </button>
       }
     >
-      <p className="card-sub mesh-join-intro">
-        {t('meshJoin.intro')}
-      </p>
-
       <div className="field-lbl"><span>{t('meshJoin.managed')}</span></div>
       <div className="mesh-grid mesh-choice-grid">
         <Choice
@@ -129,14 +126,14 @@ export function MeshJoinDialog({ onTsLogout, onWarpReregister, onWarpDeregister 
         />
       </div>
 
-      <div className="field-lbl"><span>{t('meshJoin.tunnels')}</span></div>
+      <div className="field-lbl field-lbl-info">
+        <span>{t('meshJoin.tunnels')}</span>
+        <InfoIcon tip={t('meshJoin.routesHint')} />
+      </div>
       <div className="mesh-grid mesh-choice-grid">
         <Choice title="OpenConnect" description={t('meshJoin.oc')} icon={shield} onClick={() => go({ kind: 'node', initialProto: 'openconnect' })} />
         <Choice title="OpenVPN" description={t('meshJoin.ovpn')} icon={shield} onClick={() => go({ kind: 'node', initialProto: 'openvpn-client' })} />
         <Choice title="WireGuard" description={t('meshJoin.wg')} icon={shield} onClick={() => go({ kind: 'wg' })} />
-      </div>
-      <div className="fld-hint mesh-join-hint">
-        {t('meshJoin.routesHint')}
       </div>
     </Modal>
   );

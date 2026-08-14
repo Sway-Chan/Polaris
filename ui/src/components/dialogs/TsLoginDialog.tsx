@@ -25,6 +25,7 @@ import { toast } from '@/lib/error-handler';
 import { Modal } from './Modal';
 import { useDialogStore } from './dialog-store';
 import { planTsLoginSubmit } from './ts-login-server';
+import { InfoIcon } from '@/components/InfoIcon';
 
 /**
  * 「等登录地址」的放弃时限，对齐后端瞬态登录核的超时臂
@@ -302,8 +303,9 @@ export function TsLoginDialog() {
       ) : (
         <>
           <div className="fld">
-            <label className="fld-l" htmlFor="ts-authkey">
-              {t('ts.authKeyLabel')}
+            <label className="fld-l fld-l-info" htmlFor="ts-authkey">
+              <span>{t('ts.authKeyLabel')}</span>
+              <InfoIcon tip={t('ts.authkeyHint')} />
             </label>
             <input
               id="ts-authkey"
@@ -317,9 +319,6 @@ export function TsLoginDialog() {
               placeholder="tskey-auth-xxxxCNTRL-xxxxxxxxxxxxxxxxxxxx"
             />
             {errKey && <div className="err-line">{t('ts.errKey')}</div>}
-          </div>
-          <div className="card-sub">
-            {t('ts.authkeyHint')}
           </div>
         </>
       )}
