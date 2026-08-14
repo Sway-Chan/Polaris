@@ -41,7 +41,7 @@ import { useStagedConfigStore } from '@/store/staged-config-store';
 import { useStagingActive } from '@/store/use-staging-active';
 import { editRoute } from '@/lib/staged-config';
 import { useDialogStore } from './dialog-store';
-import { groupWgFields, type WgFormTab } from './vpn-form-layout';
+import { groupWgFields, type WgFormTab } from './mesh-form-layout';
 
 const CATCH_ALL = new Set(['0.0.0.0/0', '::/0']);
 

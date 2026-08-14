@@ -1554,8 +1554,7 @@
     "route": "مسیریابی (AllowedIPs)",
     "routeAll": "خروجی اینترنت (0.0.0.0/0، ::/0)",
     "routeCustom": "فقط زیرشبکه‌های مشخص",
-    "addTitle": "اتصال به Cloudflare WARP",
-    "advanced": "مسیریابی / پیشرفته"
+    "addTitle": "اتصال به Cloudflare WARP"
   },
   "wg": {
     "address": "نشانی همتا",
@@ -1774,7 +1773,6 @@
     "editTitle": "ویرایش نود",
     "errAddr": "لطفاً آدرس سرور و پورت را وارد کنید",
     "errName": "لطفاً نام را وارد کنید",
-    "frontProxy": "پروکسی مقدم (detour)",
     "label": "نام",
     "labelPh": "هنگ‌کنگ · 01",
     "port": "پورت",
@@ -1782,20 +1780,19 @@
     "protoGroup": {
       "common": "پرکاربرد",
       "proxy": "پروکسی‌های دیگر",
-      "vpn": "VPN",
       "custom": "سفارشی"
     },
     "server": "آدرس سرور",
     "serverPort": "آدرس / پورت",
-    "transportSecurity": "Transport / امنیت",
     "formGroup": {
       "aria": "بخش‌های پیکربندی",
       "basic": "پایه",
+      "transport": "انتقال",
       "routing": "مسیریابی",
       "advanced": "پیشرفته"
     },
-    "vpnRequired": "فیلدهای الزامی احراز هویت را کامل کنید",
-    "vpnJsonInvalid": "تنظیمات افزونه باید یک شیء JSON معتبر باشد"
+    "meshTunnelRequired": "فیلدهای الزامی احراز هویت این اتصال را کامل کنید",
+    "meshTunnelJsonInvalid": "تنظیمات افزونه باید یک شیء JSON معتبر باشد"
   },
   "appAdd": {
     "galleryMore": "{{shown}} از {{total}} نمایش داده شد — برای بارگذاری بیشتر پیمایش کنید",

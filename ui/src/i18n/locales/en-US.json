@@ -1269,7 +1269,6 @@
     "editTitle": "Edit Node",
     "errAddr": "Please enter the server address and port",
     "errName": "Please enter a name",
-    "frontProxy": "Front proxy / detour",
     "label": "Name",
     "labelPh": "Hong Kong · 01",
     "port": "Port",
@@ -1277,20 +1276,19 @@
     "protoGroup": {
       "common": "Common",
       "proxy": "Other proxies",
-      "vpn": "VPN",
       "custom": "Custom"
     },
     "server": "Server address",
     "serverPort": "Address / Port",
-    "transportSecurity": "Transport / Security",
     "formGroup": {
       "aria": "Configuration sections",
       "basic": "Basic",
+      "transport": "Transport",
       "routing": "Routing",
       "advanced": "Advanced"
     },
-    "vpnRequired": "Complete the required authentication fields for this protocol",
-    "vpnJsonInvalid": "Extension settings must be a valid JSON object",
+    "meshTunnelRequired": "Complete the required authentication fields for this connection",
+    "meshTunnelJsonInvalid": "Extension settings must be a valid JSON object",
     "field": {
       "aid": "AlterID",
       "alpn": "ALPN",
@@ -1767,7 +1765,6 @@
   },
   "warp": {
     "addTitle": "Connect Cloudflare WARP",
-    "advanced": "Routing / Advanced",
     "allowed": "Custom subnets",
     "detour": "Front proxy / detour",
     "detourHint": "Dial through that node first. WARP is WireGuard, so its handshake runs over UDP and the front proxy must support UDP relay (SOCKS5 UDP ASSOCIATE); otherwise this node fails silently — it never falls back to a direct connection.",

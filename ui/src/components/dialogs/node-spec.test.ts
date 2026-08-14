@@ -9,9 +9,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   describeProbeResult,
+  isMeshTunnelNodeProtocol,
+  meshTunnelNodeProtocols,
   PROTO_GROUP_ORDER,
   PROTO_OPTIONS,
-  protoGroupsForNodeForm,
   protosInGroup,
   type ProbeOutboundResult,
 } from './node-spec';
@@ -81,12 +82,13 @@ describe('describeProbeResult', () => {
 });
 
 describe('协议下拉的分组与顺序', () => {
-  it('分组是 PROTO_OPTIONS 的**完全划分** —— 不重不漏', () => {
-    // 漏一个 = 用户在对话框里根本建不出那个协议的节点（下拉里没有它），而其余测试全绿：
-    // 它们遍历的是扁平的 PROTO_OPTIONS，看不见渲染端实际摆出来的是哪些。
-    const laid = PROTO_GROUP_ORDER.flatMap((g) => protosInGroup(g));
+  it('普通代理与组网隧道共同完全覆盖 PROTO_OPTIONS，且入口互斥', () => {
+    const ordinary = PROTO_GROUP_ORDER.flatMap((g) => protosInGroup(g));
+    const mesh = meshTunnelNodeProtocols();
+    const laid = [...ordinary, ...mesh];
     expect([...laid].sort()).toEqual(PROTO_OPTIONS.map(([v]) => v).sort());
     expect(new Set(laid).size).toBe(laid.length);
+    expect(mesh.every((proto) => !ordinary.includes(proto))).toBe(true);
   });
 
   it('Custom 单独一组且置底', () => {
@@ -94,27 +96,27 @@ describe('协议下拉的分组与顺序', () => {
     expect(protosInGroup('custom')).toEqual(['custom']);
   });
 
-  it('VPN 组 = 落 sing-box endpoints[] 的那两个（判据可推，不是口味）', () => {
-    expect(protosInGroup('vpn')).toEqual(['openconnect', 'openvpn-client']);
+  it('组网隧道节点选项只含 OpenConnect / OpenVPN，并按展示名排序', () => {
+    expect(meshTunnelNodeProtocols()).toEqual(['openconnect', 'openvpn-client']);
   });
 
-  it('「其他代理」组按展示名排序，常用组保持既定顺序（不排字母序）', () => {
+  it('所有普通分组都按展示名排序，NaiveProxy 归入常用', () => {
     const label = new Map(PROTO_OPTIONS);
-    const names = protosInGroup('proxy').map((p) => label.get(p)!);
-    expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' })));
-    // 常用组的价值就是「最常用的排最前」，字母序会把 VLESS 推到末尾。
-    expect(protosInGroup('common')[0]).toBe('vless');
+    for (const group of PROTO_GROUP_ORDER) {
+      const names = protosInGroup(group).map((p) => label.get(p)!);
+      expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' })));
+    }
+    expect(protosInGroup('common')).toContain('naive');
   });
 
-  it('OpenConnect 的标签带上 AnyConnect —— 否则找它的人扫不到', () => {
-    // 内核不设独立的 anyconnect 类型，它是 OpenConnect 的一个 flavor（六选一，默认就是它）。
-    expect(new Map(PROTO_OPTIONS).get('openconnect')).toContain('AnyConnect');
+  it('OpenConnect 协议名保持简洁，厂商方言只在表单内选择', () => {
+    expect(new Map(PROTO_OPTIONS).get('openconnect')).toBe('OpenConnect');
   });
 
-  it('创建入口互斥：普通节点不含 VPN，组网接入只含 VPN；编辑态保留全集', () => {
-    expect(protoGroupsForNodeForm(false)).toEqual(['common', 'proxy', 'custom']);
-    expect(protoGroupsForNodeForm(false, 'openconnect')).toEqual(['vpn']);
-    expect(protoGroupsForNodeForm(false, 'openvpn-client')).toEqual(['vpn']);
-    expect(protoGroupsForNodeForm(true)).toEqual(PROTO_GROUP_ORDER);
+  it('入口判据只表达组网表单归属，不存在 vpn 协议分组', () => {
+    expect(PROTO_GROUP_ORDER).toEqual(['common', 'proxy', 'custom']);
+    expect(isMeshTunnelNodeProtocol('openconnect')).toBe(true);
+    expect(isMeshTunnelNodeProtocol('openvpn-client')).toBe(true);
+    expect(isMeshTunnelNodeProtocol('vless')).toBe(false);
   });
 });

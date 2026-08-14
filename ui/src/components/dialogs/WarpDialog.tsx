@@ -8,8 +8,8 @@
  *  - **编辑态**（edit 真）：预填现有 WARP 节点；WARP+ 许可经 `api.server.applyWarpLicense`（REAL，原地升级免重建），
  *    名称/路由改动经 `api.server.update`。
  *
- * 表单：顶部（名称 / 许可类型 seg2 / WARP+ 密钥）手写；高级折叠（端点/路由/MTU/保活/Reserved/detour）
- * 走 D2 FieldSpec 表 + FieldRenderer（§1.4 多字段驱动，复用节点表单同一渲染器）。
+ * 表单按基础 / 路由 / 高级页签分层：名称与许可证留在基础页；WireGuard 参数继续走 D2 FieldSpec
+ * 表 + FieldRenderer（§1.4 多字段驱动，复用节点表单同一渲染器）。
  * R1：`key` 绑编辑目标 id（见导出包装）+ useState 同步初始化。
  */
 
@@ -36,7 +36,7 @@ import { applyDetour, endpointDetourOptions, DETOUR_NONE } from './detour-option
 // 谓词，见该函数文档；此处原有一份更松的私有副本，与后端 `Vec<u32>` + `len()==3` 两处都对不上）。
 import { buildWarpSettings } from './wg-logic';
 import { useDialogStore } from './dialog-store';
-import { Fold } from '@/components/Fold';
+import { groupWarpFields, type WarpFormTab } from './mesh-form-layout';
 
 const CATCH_ALL = new Set(['0.0.0.0/0', '::/0']);
 
@@ -172,12 +172,14 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [formTab, setFormTab] = useState<WarpFormTab>('basic');
 
   const setField = (k: string, v: FormValue) => {
     setDraft((d) => ({ ...d, [k]: v }));
     setDirty(true);
   };
-  const visible = spec.filter((f) => !f.when || f.when(draft));
+  const groups = groupWarpFields(spec);
+  const visibleFields = groups[formTab].filter((f) => !f.when || f.when(draft));
 
   const requestClose = () => {
     if (!dirty || done) {
@@ -283,15 +285,18 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
     }
     if (!name.trim()) {
       setErrName(true);
+      setFormTab('basic');
       return;
     }
     if (plan === 'plus' && !license.trim()) {
       setErrLicense(true);
+      setFormTab('basic');
       return;
     }
     // M6：端点解析失败必须内联报错并保持弹窗打开，不得静默回退旧地址后假装提交成功。
     const ep = parseHostPort(String(draft.endpoint ?? ''));
     if (!ep) {
+      setFormTab('basic');
       toast.error(t('warp.errEndpoint'));
       return;
     }
@@ -356,78 +361,95 @@ function WarpForm({ editNode, servers }: WarpFormProps) {
             </div>
           )}
 
-          <div className="fld" style={{ marginTop: 12 }}>
-            <label className="fld-l" htmlFor="warp-name">
-              {t('warp.name')}
-            </label>
-            <input
-              id="warp-name"
-              className="input"
-              value={name}
-              onChange={(e) => {
-                setName(e.target.value);
-                setErrName(false);
-                setDirty(true);
-              }}
-            />
-            {errName && <div className="err-line">{t('warp.errName')}</div>}
-          </div>
-
-          <div className="fld">
-            <label className="fld-l">{t('warp.plan')}</label>
-            <div className="seg2" role="group" aria-label={t('warp.plan')}>
+          <div className="sub-tabs form-tabs" role="tablist" aria-label={t('node.formGroup.aria')}>
+            {(['basic', 'routing', 'advanced'] as const).map((tab) => (
               <button
+                key={tab}
                 type="button"
-                className={plan === 'free' ? 'on' : ''}
-                onClick={() => {
-                  setPlan('free');
-                  setErrLicense(false);
-                  setDirty(true);
-                }}
+                role="tab"
+                className={formTab === tab ? 'on' : ''}
+                aria-selected={formTab === tab}
+                onClick={() => setFormTab(tab)}
               >
-                {t('warp.planFree')}
+                {t(`node.formGroup.${tab}`)}
               </button>
-              <button
-                type="button"
-                className={plan === 'plus' ? 'on' : ''}
-                onClick={() => {
-                  setPlan('plus');
-                  setDirty(true);
-                }}
-              >
-                WARP+
-              </button>
-            </div>
+            ))}
           </div>
+          <div role="tabpanel" className="form-tab-panel">
+            {formTab === 'basic' && (
+              <>
+                <div className="fld">
+                  <label className="fld-l" htmlFor="warp-name">
+                    {t('warp.name')}
+                  </label>
+                  <input
+                    id="warp-name"
+                    className="input"
+                    value={name}
+                    onChange={(e) => {
+                      setName(e.target.value);
+                      setErrName(false);
+                      setDirty(true);
+                    }}
+                  />
+                  {errName && <div className="err-line">{t('warp.errName')}</div>}
+                </div>
 
-          {plan === 'plus' && (
-            <div className="fld">
-              <label className="fld-l" htmlFor="warp-license">
-                {t('warp.licenseLabel')}
-              </label>
-              <input
-                id="warp-license"
-                className="input mono"
-                value={license}
-                onChange={(e) => {
-                  setLicense(e.target.value);
-                  setErrLicense(false);
-                  setDirty(true);
-                }}
-                placeholder="xxxxxxxx-xxxxxxxx-xxxxxxxx"
-              />
-              {errLicense && <div className="err-line">{t('warp.errLicense2')}</div>}
-              <div className="card-sub" style={{ marginTop: 6 }}>
-                {t('warp.licenseHint')}
-              </div>
-            </div>
-          )}
+                <div className="fld">
+                  <label className="fld-l">{t('warp.plan')}</label>
+                  <div className="seg2" role="group" aria-label={t('warp.plan')}>
+                    <button
+                      type="button"
+                      className={plan === 'free' ? 'on' : ''}
+                      onClick={() => {
+                        setPlan('free');
+                        setErrLicense(false);
+                        setDirty(true);
+                      }}
+                    >
+                      {t('warp.planFree')}
+                    </button>
+                    <button
+                      type="button"
+                      className={plan === 'plus' ? 'on' : ''}
+                      onClick={() => {
+                        setPlan('plus');
+                        setDirty(true);
+                      }}
+                    >
+                      WARP+
+                    </button>
+                  </div>
+                </div>
 
-          <Fold title={t('warp.advanced')}>
-            {visible.map((f) => (
+                {plan === 'plus' && (
+                  <div className="fld">
+                    <label className="fld-l" htmlFor="warp-license">
+                      {t('warp.licenseLabel')}
+                    </label>
+                    <input
+                      id="warp-license"
+                      className="input mono"
+                      value={license}
+                      onChange={(e) => {
+                        setLicense(e.target.value);
+                        setErrLicense(false);
+                        setDirty(true);
+                      }}
+                      placeholder="xxxxxxxx-xxxxxxxx-xxxxxxxx"
+                    />
+                    {errLicense && <div className="err-line">{t('warp.errLicense2')}</div>}
+                    <div className="card-sub" style={{ marginTop: 6 }}>
+                      {t('warp.licenseHint')}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+            {visibleFields.map((f) => (
               <FieldRenderer key={f.k} spec={f} value={draft[f.k]} onChange={(v) => setField(f.k, v)} />
             ))}
-          </Fold>
+          </div>
 
           {submitting && !isEdit && (
             <div className="ts-status">

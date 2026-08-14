@@ -1269,7 +1269,6 @@
     "editTitle": "编辑节点",
     "errAddr": "请填写服务器地址与端口",
     "errName": "请填写备注名",
-    "frontProxy": "前置代理 / detour",
     "label": "备注名",
     "labelPh": "香港 · 01",
     "port": "端口",
@@ -1277,20 +1276,19 @@
     "protoGroup": {
       "common": "常用",
       "proxy": "其他代理",
-      "vpn": "VPN",
       "custom": "自定义"
     },
     "server": "服务器地址",
     "serverPort": "地址 / 端口",
-    "transportSecurity": "传输 / 安全",
     "formGroup": {
       "aria": "配置分组",
       "basic": "基础",
+      "transport": "传输",
       "routing": "路由",
       "advanced": "高级"
     },
-    "vpnRequired": "请补全当前协议的必填认证字段",
-    "vpnJsonInvalid": "扩展配置必须是合法的 JSON 对象",
+    "meshTunnelRequired": "请补全当前接入方式的必填认证字段",
+    "meshTunnelJsonInvalid": "扩展配置必须是合法的 JSON 对象",
     "field": {
       "aid": "AlterID",
       "alpn": "ALPN",
@@ -1767,7 +1765,6 @@
   },
   "warp": {
     "addTitle": "接入 Cloudflare WARP",
-    "advanced": "路由 / 高级",
     "allowed": "自定义网段",
     "detour": "前置代理 / detour",
     "detourHint": "先经该节点再拨号。WARP 是 WireGuard，握手走 UDP，前置代理必须支持 UDP 转发（SOCKS5 UDP ASSOCIATE），否则本节点静默不通——不会回落直连。",

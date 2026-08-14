@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { allFields, ND_SPEC } from './node-spec';
-import { WG_FORM_GROUP_KEYS, vpnDraftError } from './vpn-form-layout';
+import { allFields, ND_SPEC, nodeFormGroups, PROTO_OPTIONS } from './node-spec';
+import {
+  TS_FORM_GROUP_KEYS,
+  WARP_FORM_GROUP_KEYS,
+  WG_FORM_GROUP_KEYS,
+  meshTunnelDraftError,
+} from './mesh-form-layout';
 
 const readDialog = (name: string) =>
   readFileSync(fileURLToPath(new URL(`./${name}`, import.meta.url)), 'utf8');
@@ -16,12 +21,21 @@ const localeValue = (dict: unknown, key: string): unknown =>
     dict,
   );
 
-describe('VPN form information architecture', () => {
+describe('统一接入表单的信息架构', () => {
   it.each(['openconnect', 'openvpn-client'] as const)('%s uses three task-oriented groups without duplicating fields', (protocol) => {
     const groups = ND_SPEC[protocol].groups;
     expect(groups?.map((group) => group.id)).toEqual(['basic', 'routing', 'advanced']);
     const keys = allFields(protocol).map((field) => field.k);
     expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it('所有协议表单字段都被统一页签完全覆盖，且没有重复', () => {
+    for (const [protocol] of PROTO_OPTIONS) {
+      const keys = nodeFormGroups(protocol).flatMap((group) => group.fields.map((field) => field.k));
+      expect([...keys].sort(), protocol).toEqual(allFields(protocol).map((field) => field.k).sort());
+      expect(new Set(keys).size, protocol).toBe(keys.length);
+      expect(nodeFormGroups(protocol).at(-1)?.id, protocol).toBe('advanced');
+    }
   });
 
   it('WireGuard splits connection, routing and low-frequency fields', () => {
@@ -36,11 +50,30 @@ describe('VPN form information architecture', () => {
     ]);
   });
 
+  it('Tailscale 与 WARP 使用同一基础 / 路由 / 高级规格', () => {
+    expect(TS_FORM_GROUP_KEYS).toEqual({
+      basic: ['hostname', 'exitNode', 'exitNodeCustom'],
+      routing: [
+        'reverseMesh', 'alwaysRouteSubnets', 'acceptRoutes', 'routes',
+        'exitNodeAllowLanAccess', 'advertiseRoutes',
+      ],
+      advanced: [
+        'detour', 'controlUrl', 'advertiseTags', 'ephemeral', 'relayServerPort',
+        'sshServer', 'resolveByName', 'acceptDefaultResolvers',
+      ],
+    });
+    expect(WARP_FORM_GROUP_KEYS).toEqual({
+      basic: ['endpoint'],
+      routing: ['route', 'allowedIPs', 'reverseMesh'],
+      advanced: ['mtu', 'keepalive', 'reserved', 'detour'],
+    });
+  });
+
   it('required and JSON errors point to the tab that can fix them', () => {
-    expect(vpnDraftError('openconnect', {},)).toEqual({ tab: 'basic', key: 'required' });
-    expect(vpnDraftError('openvpn-client', { user: 'u', pwd: 'p', ovpnCa: 'CA', extraJson: '[]' }))
+    expect(meshTunnelDraftError('openconnect', {},)).toEqual({ tab: 'basic', key: 'required' });
+    expect(meshTunnelDraftError('openvpn-client', { user: 'u', pwd: 'p', ovpnCa: 'CA', extraJson: '[]' }))
       .toEqual({ tab: 'advanced', key: 'json' });
-    expect(vpnDraftError('openvpn-client', { user: 'u', pwd: 'p', ovpnCa: 'CA', extraJson: '{}' }))
+    expect(meshTunnelDraftError('openvpn-client', { user: 'u', pwd: 'p', ovpnCa: 'CA', extraJson: '{}' }))
       .toBeNull();
   });
 
@@ -66,13 +99,13 @@ describe('VPN form information architecture', () => {
     expect(css).toMatch(/\.dlg\.access-picker-dlg\s*\{[^}]*width:min\(700px,\s*calc\(100vw - 40px\)\)/s);
   });
 
-  it('三段协议页签在紧凑表单中使用短标签', () => {
+  it('统一页签在紧凑表单中使用准确的短标签', () => {
     const expected = {
-      'zh-CN': ['基础', '路由', '高级'],
-      'zh-TW': ['基礎', '路由', '進階'],
-      'en-US': ['Basic', 'Routing', 'Advanced'],
-      ru: ['Основное', 'Маршруты', 'Дополнительно'],
-      fa: ['پایه', 'مسیریابی', 'پیشرفته'],
+      'zh-CN': ['基础', '传输', '路由', '高级'],
+      'zh-TW': ['基礎', '傳輸', '路由', '進階'],
+      'en-US': ['Basic', 'Transport', 'Routing', 'Advanced'],
+      ru: ['Основное', 'Транспорт', 'Маршруты', 'Дополнительно'],
+      fa: ['پایه', 'انتقال', 'مسیریابی', 'پیشرفته'],
     } as const;
 
     for (const [locale, labels] of Object.entries(expected)) {
@@ -82,7 +115,7 @@ describe('VPN form information architecture', () => {
           'utf8',
         ),
       ) as unknown;
-      expect(['basic', 'routing', 'advanced'].map((key) =>
+      expect(['basic', 'transport', 'routing', 'advanced'].map((key) =>
         localeValue(dict, `node.formGroup.${key}`)
       )).toEqual(labels);
     }
@@ -116,6 +149,9 @@ describe('VPN form information architecture', () => {
     expect(meshJoin, '组网接入选择器的文案应以 locale 为唯一真值').not.toMatch(
       /\bt\(\s*['"][A-Za-z0-9_.]+['"]\s*,/,
     );
+    expect(meshJoin.indexOf('title="Cloudflare WARP"')).toBeLessThan(meshJoin.indexOf('title="Tailscale"'));
+    expect(meshJoin.indexOf('title="OpenConnect"')).toBeLessThan(meshJoin.indexOf('title="OpenVPN"'));
+    expect(meshJoin.indexOf('title="OpenVPN"')).toBeLessThan(meshJoin.indexOf('title="WireGuard"'));
 
     const sub = readFileSync(fileURLToPath(new URL('./SubDialog.tsx', import.meta.url)), 'utf8');
     expect(sub.indexOf('await loadConfig(true);')).toBeLessThan(sub.indexOf('onAdded?.(newSub.id);'));

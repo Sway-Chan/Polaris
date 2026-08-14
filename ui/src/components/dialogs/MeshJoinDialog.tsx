@@ -92,24 +92,6 @@ export function MeshJoinDialog({ onTsLogout, onWarpReregister, onWarpDeregister 
       <div className="field-lbl"><span>{t('meshJoin.managed')}</span></div>
       <div className="mesh-grid mesh-choice-grid">
         <Choice
-          title="Tailscale"
-          description={tsNode
-            ? t('meshJoin.tsConfigured')
-            : t('meshJoin.tsNew')}
-          icon={<JoinIcon />}
-          onClick={() => go({ kind: tsNode ? 'ts-settings' : 'ts-login' })}
-          actions={tsNode && (
-            <>
-              <button type="button" className="btn ghost sm" onClick={() => go({ kind: 'ts-login' })}>
-                {t('meshJoin.switchAccount')}
-              </button>
-              <button type="button" className="btn ghost sm danger-text" onClick={() => action(() => onTsLogout(tsNode))}>
-                {t('meshJoin.logout')}
-              </button>
-            </>
-          )}
-        />
-        <Choice
           title="Cloudflare WARP"
           description={warpNode
             ? t('meshJoin.warpConfigured')
@@ -127,13 +109,31 @@ export function MeshJoinDialog({ onTsLogout, onWarpReregister, onWarpDeregister 
             </>
           )}
         />
+        <Choice
+          title="Tailscale"
+          description={tsNode
+            ? t('meshJoin.tsConfigured')
+            : t('meshJoin.tsNew')}
+          icon={<JoinIcon />}
+          onClick={() => go({ kind: tsNode ? 'ts-settings' : 'ts-login' })}
+          actions={tsNode && (
+            <>
+              <button type="button" className="btn ghost sm" onClick={() => go({ kind: 'ts-login' })}>
+                {t('meshJoin.switchAccount')}
+              </button>
+              <button type="button" className="btn ghost sm danger-text" onClick={() => action(() => onTsLogout(tsNode))}>
+                {t('meshJoin.logout')}
+              </button>
+            </>
+          )}
+        />
       </div>
 
       <div className="field-lbl"><span>{t('meshJoin.tunnels')}</span></div>
       <div className="mesh-grid mesh-choice-grid">
-        <Choice title="WireGuard" description={t('meshJoin.wg')} icon={shield} onClick={() => go({ kind: 'wg' })} />
         <Choice title="OpenConnect" description={t('meshJoin.oc')} icon={shield} onClick={() => go({ kind: 'node', initialProto: 'openconnect' })} />
         <Choice title="OpenVPN" description={t('meshJoin.ovpn')} icon={shield} onClick={() => go({ kind: 'node', initialProto: 'openvpn-client' })} />
+        <Choice title="WireGuard" description={t('meshJoin.wg')} icon={shield} onClick={() => go({ kind: 'wg' })} />
       </div>
       <div className="fld-hint mesh-join-hint">
         {t('meshJoin.routesHint')}

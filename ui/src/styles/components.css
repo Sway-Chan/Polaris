@@ -109,7 +109,7 @@
 .sub-tabs .cnt::before{ content:"·"; margin-right:4px; color:hsl(var(--fg-faint)); }
 .sub-tabs button.on .cnt{ color:hsl(var(--fg-dim)); }
 
-/* 长协议表单页签：固定在公共端点字段之后，面板只渲染当前任务层，避免纵向表单无限膨胀。 */
+/* 接入表单页签：固定在公共端点字段或说明卡之后，面板只渲染当前任务层，避免纵向表单膨胀。 */
 .form-tabs{ display:flex; width:100%; margin:4px 0 12px; }
 .form-tabs button{ flex:1; justify-content:center; }
 .form-tab-panel{ min-height:180px; }

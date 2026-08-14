@@ -1,7 +1,8 @@
 /**
  * TsSettingsDialog —— Tailscale 设置弹窗（原型 #ts-settings-dialog :2802）。
  *
- * 本层**最长表单**（主机名 / 出口节点选择 / 接入模式 / 子网路由两向 / 高级折叠）——footer 固定
+ * 本层**最长表单**（主机名 / 出口节点选择 / 接入模式 / 子网路由两向 / 高级设置）按
+ * 基础 / 路由 / 高级页签分层；footer 固定
  * 验收样本：body 超高时 `.dlg-body` 独立滚动、`.dlg-foot` 常驻（Modal 原语的三段结构自动保证）。
  * 多字段驱动走 D2 FieldSpec 表 + FieldRenderer（switch → .swt-row，select → Csel）。
  *
@@ -51,7 +52,7 @@ import { splitStagedOnly, stagedOnlyIds } from '@/lib/staged-config';
 import { editRoute } from '@/lib/staged-config';
 import { useDialogStore } from './dialog-store';
 import { INVALID_NODE_REASON_KEY } from '@/domain/invalid-node-reason';
-import { Fold } from '@/components/Fold';
+import { groupTsFields, type TsFormTab } from './mesh-form-layout';
 
 function TsSetIcon() {
   return (
@@ -128,6 +129,7 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
   const [draft, setDraft] = useState<FormValues>(() => initTsDraft(node));
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [formTab, setFormTab] = useState<TsFormTab>('basic');
 
   // 出口候选：拉状态快照（核未跑 / 无节点时为空）。connected=false 时静态提示手动填写。
   // **原样收下全部 peer**，不在这里筛 `exitNodeOption` —— 「没广告出口」与「不在 tailnet 里」
@@ -170,10 +172,8 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
     setDraft((d) => ({ ...d, [k]: v }));
     setDirty(true);
   };
-  const visibleMain = spec.filter((f) => !f.when || f.when(draft));
-  // 高级区同样过 `when`（此前 ADV_SPEC 里无条件字段故直接 map）—— acceptDefaultResolvers 受
-  // resolveByName 门控，漏了这一步它会恒显，联动就只剩注释。
-  const visibleAdv = ADV_SPEC.filter((f) => !f.when || f.when(draft));
+  const groups = groupTsFields([...spec, ...ADV_SPEC]);
+  const visibleFields = groups[formTab].filter((f) => !f.when || f.when(draft));
 
   const requestClose = () => {
     if (!dirty) {
@@ -203,6 +203,7 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
     // 非法 CIDR 必须前端拦：后端 sanitize 对非法项是**静默丢弃**，不拦就成了「界面收下了、盘上没有」。
     const badCidr = invalidTsCidrs(draft);
     if (badCidr.length) {
+      setFormTab('routing');
       toast.error(t('ts.errCidr', { list: badCidr.join(', ') }));
       return;
     }
@@ -212,6 +213,7 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
     // 拦在这里，光标还在这个输入框旁边，改一下就好了。
     const badControl = invalidControlUrl(draft);
     if (badControl) {
+      setFormTab('advanced');
       toast.error(t('ts.errControlUrl'), t(INVALID_NODE_REASON_KEY[badControl]));
       return;
     }
@@ -315,21 +317,30 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
         </div>
       )}
 
-      {visibleMain.map((f) => (
-        <FieldRenderer key={f.k} spec={f} value={draft[f.k]} onChange={(v) => setField(f.k, v)} />
-      ))}
-
-      {connected === false && (
-        <div className="card-sub" style={{ marginTop: -2 }}>
-          {t('ts.exitEmptyHint')}
-        </div>
-      )}
-
-      <Fold title={t('common.advanced')}>
-        {visibleAdv.map((f) => (
+      <div className="sub-tabs form-tabs" role="tablist" aria-label={t('node.formGroup.aria')}>
+        {(['basic', 'routing', 'advanced'] as const).map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            role="tab"
+            className={formTab === tab ? 'on' : ''}
+            aria-selected={formTab === tab}
+            onClick={() => setFormTab(tab)}
+          >
+            {t(`node.formGroup.${tab}`)}
+          </button>
+        ))}
+      </div>
+      <div role="tabpanel" className="form-tab-panel">
+        {visibleFields.map((f) => (
           <FieldRenderer key={f.k} spec={f} value={draft[f.k]} onChange={(v) => setField(f.k, v)} />
         ))}
-      </Fold>
+        {formTab === 'basic' && connected === false && (
+          <div className="card-sub" style={{ marginTop: -2 }}>
+            {t('ts.exitEmptyHint')}
+          </div>
+        )}
+      </div>
     </Modal>
   );
 }

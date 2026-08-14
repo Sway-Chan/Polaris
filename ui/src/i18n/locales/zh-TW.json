@@ -1269,7 +1269,6 @@
     "editTitle": "編輯節點",
     "errAddr": "請填寫伺服器位址與連接埠",
     "errName": "請填寫備註名稱",
-    "frontProxy": "前置代理 / detour",
     "label": "備註名稱",
     "labelPh": "香港 · 01",
     "port": "連接埠",
@@ -1277,20 +1276,19 @@
     "protoGroup": {
       "common": "常用",
       "proxy": "其他代理",
-      "vpn": "VPN",
       "custom": "自訂"
     },
     "server": "伺服器位址",
     "serverPort": "位址 / 連接埠",
-    "transportSecurity": "傳輸 / 安全",
     "formGroup": {
       "aria": "設定分組",
       "basic": "基礎",
+      "transport": "傳輸",
       "routing": "路由",
       "advanced": "進階"
     },
-    "vpnRequired": "請補齊目前協定的必要驗證欄位",
-    "vpnJsonInvalid": "擴充設定必須是有效的 JSON 物件",
+    "meshTunnelRequired": "請補齊目前接入方式的必要驗證欄位",
+    "meshTunnelJsonInvalid": "擴充設定必須是有效的 JSON 物件",
     "field": {
       "aid": "AlterID",
       "alpn": "ALPN",
@@ -1767,7 +1765,6 @@
   },
   "warp": {
     "addTitle": "接入 Cloudflare WARP",
-    "advanced": "路由 / 進階",
     "allowed": "自訂網段",
     "detour": "前置代理 / detour",
     "detourHint": "先經該節點再撥號。WARP 就是 WireGuard，握手走 UDP，前置代理必須支援 UDP 轉發（SOCKS5 UDP ASSOCIATE），否則本節點靜默不通——不會回落直連。",

@@ -1,12 +1,12 @@
 /**
  * 节点表单数据表 ND_SPEC —— 1:1 移植原型 `polaris-prototype.html` :3658-3696 起步的 8 协议，
- * 后补全 anytls/naive/snell/ssh/custom 5 协议（后端 `crates/config-engine/builder/outbound.rs`
- * `build_proxy_outbound` + `crates/store/validate.rs#ALLOWED_PROTOCOLS` 真值源，全 13 项）。
+ * 后补全其余代理协议与 OpenConnect/OpenVPN 组网隧道（后端
+ * `crates/config-engine/builder/outbound.rs` + `crates/store/validate.rs#ALLOWED_PROTOCOLS` 为能力真值源）。
  * wireguard/tailscale 不在此清单——二者已有专属弹窗（`WgDialog`/`TsSettingsDialog`，`dialog-store`
  * kind `wg`/`ts-settings`），故意不重复建模（见 NodeDialog 顶部注释的已知缺口）。
  *
- * 17 协议 × { cred（凭据，inline）, adv（传输/安全，折叠） } 字段描述符。搬进 TS 类型即消灭同构分支
- * （§1.4 正解）。这是**节点特定**数据，与 `field-spec.tsx` 的通用渲染器解耦（渲染器不认识协议）。
+ * 17 协议的字段描述符仍以 cred/adv 维持 codec 真值；展示层由 `nodeFormGroups` 统一分成任务页签。
+ * 这是**节点特定**数据，与 `field-spec.tsx` 的通用渲染器解耦（渲染器不认识协议）。
  *
  * 条件显隐（原型 `ndSyncCond` :3707）：安全层 sec 驱动 tls/reality 字段——
  *  - `whenTls`：sec ∈ {tls, reality} 时显（tls 字段在 reality 下也需要，如 SNI）；
@@ -25,7 +25,7 @@
 
 import type { FieldSpec, FormValues } from './field-spec';
 
-/** 节点表单支持的 15 协议（不含 wireguard/tailscale，见上方文件头注释）。 */
+/** 节点表单支持的 17 协议（不含 wireguard/tailscale，见上方文件头注释）。 */
 export type NodeProto =
   | 'vless'
   | 'vmess'
@@ -61,33 +61,21 @@ export const PROTO_OPTIONS: readonly (readonly [NodeProto, string])[] = [
   ['ssh', 'SSH'],
   ['hysteria', 'Hysteria v1'],
   ['tor', 'Tor'],
-  ['openconnect', 'OpenConnect (AnyConnect)'],
+  ['openconnect', 'OpenConnect'],
   ['openvpn-client', 'OpenVPN'],
   ['custom', 'Custom'],
 ];
 
 /**
- * 协议下拉的**分组与组内顺序**。`PROTO_OPTIONS` 保持扁平（它是「有哪些协议」的单一真值，几十处
- * `.map` 取值），本表只管「怎么摆」。
+ * 普通代理入口的分组。组网接入不再伪装成普通协议组：OpenConnect / OpenVPN 只由
+ * `MESH_TUNNEL_NODE_PROTOCOLS` 提供给组网入口，避免入口重复和已经失真的旧分类判据。
  *
- * # 为什么不是纯字母序
- *
- * `Csel` 没有搜索框（只有 ↑/↓/Enter 键盘导航），17 项全靠肉眼扫。纯字母序会把 VLESS / VMess /
- * Trojan 这几个占绝大多数的选项推到末尾，常用路径反而变慢。而在此之前，这个下拉根本没有排序 ——
- * 顺序是本仓的**加入历史**（原型带的 8 个 → 后补 4 个 → 再补 4 个 → Custom），对用户零信息量。
- *
- * # 分组判据
- *
- * `vpn` 组不是口味分类，是**代码可推的**：这两个协议落 sing-box `endpoints[]` 而非 `outbounds[]`
- * （`landsInEndpoints`），且没有分享链接 scheme、只能手工添加，本就是长尾。
- * `common` 组的成员是判断，不是推导 —— 依据是机场订阅的实际分布，故只固定这一组的成员与顺序，
- * 其余按名字排，避免「凭感觉排 17 项」。
+ * 所有组内都按用户看到的展示名排序；“常用”只表达成员归属，不再暗含一套难以维护的主观次序。
  */
-export const PROTO_GROUP_ORDER = ['common', 'proxy', 'vpn', 'custom'] as const;
+export const PROTO_GROUP_ORDER = ['common', 'proxy', 'custom'] as const;
 export type ProtoGroupId = (typeof PROTO_GROUP_ORDER)[number];
 
-
-/** 常用组：成员与顺序都固定（不排字母序——这一组的价值就是「最常用的排最前」）。 */
+/** 常用代理；NaiveProxy 与其它主流订阅协议同组。 */
 const COMMON: readonly NodeProto[] = [
   'vless',
   'vmess',
@@ -96,46 +84,42 @@ const COMMON: readonly NodeProto[] = [
   'hysteria2',
   'tuic',
   'anytls',
+  'naive',
 ];
 
-/** endpoint 腿的 VPN 客户端（判据 = 落 `endpoints[]`，见上方组注释）。 */
-const VPN: readonly NodeProto[] = ['openconnect', 'openvpn-client'];
+/** 普通入口的其它代理。显式列举，避免把新的组网 endpoint 误吸进普通节点下拉。 */
+const PROXY: readonly NodeProto[] = ['socks', 'http', 'snell', 'ssh', 'hysteria', 'tor'];
 
-/** 协议 → 组。`custom` 单独一组置底（它不是某种协议，是直通 JSON）。 */
-export function protoGroupOf(p: NodeProto): ProtoGroupId {
-  if (p === 'custom') return 'custom';
-  if (COMMON.includes(p)) return 'common';
-  if (VPN.includes(p)) return 'vpn';
-  return 'proxy';
+/** 组网弹窗中由 NodeDialog 承载的隧道接入。WireGuard 有自己的专用弹窗。 */
+export const MESH_TUNNEL_NODE_PROTOCOLS = ['openconnect', 'openvpn-client'] as const satisfies readonly NodeProto[];
+
+/** 仅用于选择正确的表单入口，不代表后端协议类型。 */
+export function isMeshTunnelNodeProtocol(proto: NodeProto): boolean {
+  return MESH_TUNNEL_NODE_PROTOCOLS.some((candidate) => candidate === proto);
 }
 
-/** 某组的协议，按该组既定顺序（common/vpn 固定序，proxy 按展示名排，custom 只有一个）。 */
+const PROTOCOLS_BY_GROUP: Readonly<Record<ProtoGroupId, readonly NodeProto[]>> = {
+  common: COMMON,
+  proxy: PROXY,
+  custom: ['custom'],
+};
+
+const PROTO_LABEL = new Map<NodeProto, string>(PROTO_OPTIONS);
+
+function sortByDisplayName(protocols: readonly NodeProto[]): NodeProto[] {
+  return [...protocols].sort((a, b) =>
+    (PROTO_LABEL.get(a) ?? a).localeCompare(PROTO_LABEL.get(b) ?? b, 'en', { sensitivity: 'base' })
+  );
+}
+
+/** 普通入口某组的协议，统一按展示名排序。 */
 export function protosInGroup(g: ProtoGroupId): NodeProto[] {
-  if (g === 'common') return [...COMMON];
-  if (g === 'vpn') return [...VPN];
-  const rest = PROTO_OPTIONS.filter(([v]) => protoGroupOf(v) === g);
-  if (g === 'custom') return rest.map(([v]) => v);
-  // 其余代理按**展示名**排（用户看到的是标签，不是内部取值），大小写不敏感。
-  return rest
-    .slice()
-    .sort((a, b) => a[1].localeCompare(b[1], 'en', { sensitivity: 'base' }))
-    .map(([v]) => v);
+  return sortByDisplayName(PROTOCOLS_BY_GROUP[g]);
 }
 
-/**
- * 节点表单在不同入口允许展示的协议组。
- *
- * - 普通「添加代理节点」不展示 VPN endpoint，避免与「添加组网接入」重复；
- * - 从组网接入预选协议进入时，只允许在 OpenConnect / OpenVPN 之间切换；
- * - 编辑存量节点仍展示全集，保证历史配置可编辑、也不改变既有改型能力。
- */
-export function protoGroupsForNodeForm(
-  isEdit: boolean,
-  initialProto?: NodeProto,
-): ProtoGroupId[] {
-  if (isEdit) return [...PROTO_GROUP_ORDER];
-  if (initialProto) return [protoGroupOf(initialProto)];
-  return PROTO_GROUP_ORDER.filter((group) => group !== 'vpn');
+/** 组网隧道选项也按展示名排序。 */
+export function meshTunnelNodeProtocols(): NodeProto[] {
+  return sortByDisplayName(MESH_TUNNEL_NODE_PROTOCOLS);
 }
 
 /** 端口占位符（原型 ndRenderFields :3716：ss=8388 / socks=1080 / http=8080 / ssh=22 / 其余=443）。 */
@@ -504,7 +488,7 @@ const whenStls = (v: FormValues): boolean => v.stls === true;
  * ND_SPEC —— 每协议 { cred, adv }。字段键与 protoCodec 读写键一一对应。
  * label/hint 用 `node.field.*` i18n 键，**没有 zh 缺省**（真值源只有 locale 一处，见文件头）。
  */
-export type NodeFieldGroupId = 'basic' | 'routing' | 'advanced';
+export type NodeFieldGroupId = 'basic' | 'transport' | 'routing' | 'advanced';
 
 export interface NodeFieldGroup {
   id: NodeFieldGroupId;
@@ -515,8 +499,8 @@ interface NodeSpec {
   cred: FieldSpec[];
   adv: FieldSpec[];
   /**
-   * 长表单专用的信息架构。存在时 NodeDialog 按页签渲染，`cred/adv` 留空；短协议继续沿用
-   * inline + 折叠段，避免为了统一外观把全部 17 个协议一并复杂化。
+   * 有专属任务模型的组网 endpoint 信息架构。普通代理的页签由 `nodeFormGroups` 基于
+   * `cred/adv` 生成，避免把展示分组混入 codec 的字段真值。
    */
   groups?: NodeFieldGroup[];
 }
@@ -936,6 +920,57 @@ export function allFields(proto: NodeProto): FieldSpec[] {
   return spec.groups
     ? spec.groups.flatMap((group) => group.fields)
     : [...spec.cred, ...spec.adv];
+}
+
+/**
+ * 普通协议仍以 `cred/adv` 作为 codec 真值；这里只描述 UI 信息架构中少量需要移位的字段。
+ * 未列入 basic/advanced 的 `adv` 字段自然归入“传输”，因此新增连接参数不会静默消失。
+ */
+const BASIC_FIELDS_FROM_ADV: Partial<Record<NodeProto, readonly string[]>> = {
+  tor: ['torExec', 'torDataDir'],
+  ssh: ['privateKey', 'privateKeyPath', 'privateKeyPassphrase'],
+};
+
+const ADVANCED_FIELD_KEYS: Partial<Record<NodeProto, readonly string[]>> = {
+  vless: ['fragment', 'engine', 'spoofMethod', 'spoofSni', 'ech', 'echConfig', 'mux', 'muxProto', 'muxMax', 'muxMin', 'muxPad'],
+  vmess: ['fragment', 'engine', 'spoofMethod', 'spoofSni', 'ech', 'echConfig', 'mux', 'muxProto', 'muxMax', 'muxMin', 'muxPad'],
+  trojan: ['fragment', 'engine', 'spoofMethod', 'spoofSni', 'ech', 'echConfig', 'mux', 'muxProto', 'muxMax', 'muxMin', 'muxPad'],
+  shadowsocks: ['mux', 'muxProto', 'muxMax', 'muxMin', 'muxPad'],
+  hysteria2: ['obfsMin', 'obfsMax', 'bbr', 'noParrot', 'ech', 'echConfig'],
+  tuic: ['zeroRtt', 'heartbeat', 'ech', 'echConfig'],
+  http: ['fragment', 'engine', 'spoofMethod', 'spoofSni'],
+  anytls: ['fragment', 'engine', 'spoofMethod', 'spoofSni', 'ech', 'echConfig', 'idleCheck', 'idleTimeout', 'minIdle'],
+  snell: ['reuse', 'userkey'],
+  hysteria: ['ech', 'echConfig', 'extraJson'],
+  tor: ['torArgs', 'torrcText', 'extraJson'],
+  ssh: ['hostKeyAlgorithms', 'clientVersion', 'cipher', 'mac', 'kexAlgorithm'],
+  custom: ['isEndpoint', 'secretKeys'],
+};
+
+/**
+ * 节点表单的统一任务页签：
+ * - 普通代理：基础 / 传输（有连接字段时）/ 高级；
+ * - OpenConnect、OpenVPN：沿用其明确的基础 / 路由 / 高级模型。
+ *
+ * 高级页签即使没有协议私有字段也保留，因为所有协议都在这里提供 detour；不会生成空页签。
+ */
+export function nodeFormGroups(proto: NodeProto): NodeFieldGroup[] {
+  const spec = ND_SPEC[proto];
+  if (spec.groups) return spec.groups;
+
+  const basicFromAdv = new Set(BASIC_FIELDS_FROM_ADV[proto] ?? []);
+  const advancedKeys = new Set(ADVANCED_FIELD_KEYS[proto] ?? []);
+  const basic = [...spec.cred, ...spec.adv.filter((field) => basicFromAdv.has(field.k))];
+  const transport = spec.adv.filter(
+    (field) => !basicFromAdv.has(field.k) && !advancedKeys.has(field.k),
+  );
+  const advanced = spec.adv.filter((field) => advancedKeys.has(field.k));
+
+  return [
+    { id: 'basic', fields: basic },
+    ...(transport.length > 0 ? [{ id: 'transport' as const, fields: transport }] : []),
+    { id: 'advanced', fields: advanced },
+  ];
 }
 
 // ── C10：custom 协议内核兼容性 probe（`kernel:probeOutbound`）显示态 ──────────────────────

@@ -57,7 +57,7 @@ export type DialogDesc =
   | { kind: 'res-url' }
   | { kind: 'confirm'; payload: ConfirmPayload }
   // D2：节点表单 + 手动导入
-  | { kind: 'node'; serverId?: string; initialProto?: 'openconnect' | 'openvpn-client' } // initialProto 仅用于组网选择器预选企业 VPN
+  | { kind: 'node'; serverId?: string; initialProto?: 'openconnect' | 'openvpn-client' } // initialProto 仅用于组网隧道入口预选
   | { kind: 'import' } // 手动导入（粘贴/文件），恒新增
   // D3：订阅 + 组网接入选择器
   // focus：订阅「更多」菜单的「重命名」/「编辑 URL」两项落到同一弹窗的不同字段（原型 subMenu 是两项，
