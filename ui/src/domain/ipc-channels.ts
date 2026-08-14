@@ -191,7 +191,7 @@ export const IPC_CHANNELS = {
   HELPER_INSTALL: 'helper_install',
   HELPER_UNINSTALL: 'helper_uninstall',
 
-  // 系统代理：用户主动关闭（TUN 残留提示的「关闭系统代理」一键动作）
+  // 系统代理：用户主动清理残留设置（TUN 残留提示的一键恢复动作）
   SYSTEM_PROXY_DISABLE: 'system_proxy_disable',
   // 系统代理活态查询：当前 OS 代理是否仍指向本进程 mixed 入站（只读；连接态 systemProxy 分支的判据）
   SYSTEM_PROXY_GET_STATUS: 'system_proxy_get_status',

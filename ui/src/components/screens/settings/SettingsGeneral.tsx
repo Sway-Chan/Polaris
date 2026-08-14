@@ -93,7 +93,7 @@ export default function SettingsGeneral({ config, update }: SettingsGeneralProps
         </SetRow>
         <SetRow
           label={t('settings.general.silentStart')}
-          desc={t('settings.general.silentStartDesc')}
+          tip={t('settings.general.silentStartDesc')}
         >
           <Switch
             checked={config.silentStart}
@@ -102,7 +102,7 @@ export default function SettingsGeneral({ config, update }: SettingsGeneralProps
         </SetRow>
         <SetRow
           label={t('settings.general.autoConnect')}
-          desc={t('settings.general.autoConnectDesc')}
+          tip={t('settings.general.autoConnectDesc')}
         >
           <Switch
             checked={config.autoConnect}
@@ -111,7 +111,7 @@ export default function SettingsGeneral({ config, update }: SettingsGeneralProps
         </SetRow>
         <SetRow
           label={t('settings.general.autoCheckUpdate')}
-          desc={t('settings.general.autoCheckUpdateDesc')}
+          tip={t('settings.general.autoCheckUpdateDesc')}
         >
           {/* 正向语义、缺省为开：后端按 `!== false` 判定（缺省 = 开）。此前写
               `checked={config.autoCheckUpdate}`，存量配置缺该键时会显示成「关」而后端按「开」跑。 */}
@@ -125,7 +125,7 @@ export default function SettingsGeneral({ config, update }: SettingsGeneralProps
       <SetBlock header={t('settings.general.groupPrivacy')}>
         <SetRow
           label={t('settings.general.autoPrivacyMode')}
-          desc={t('settings.general.autoPrivacyModeDesc')}
+          tip={t('settings.general.autoPrivacyModeDesc')}
         >
           <Switch
             checked={!!config.autoPrivacyMode}
@@ -195,7 +195,7 @@ export default function SettingsGeneral({ config, update }: SettingsGeneralProps
             省去实现细节与重复解释，避免单行说明膨胀。 */}
         <SetRow
           label={t('settings.advanced.disableLogFile')}
-          desc={t('settings.advanced.disableLogFileDescFull')}
+          tip={t('settings.advanced.disableLogFileDescFull')}
         >
           <Switch
             id="disable-log-file-swt"

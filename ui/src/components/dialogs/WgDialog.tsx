@@ -18,7 +18,8 @@ import { api } from '@/ipc';
 import type { ServerConfig } from '@/contracts/types';
 import { Modal } from './Modal';
 import {
-  FieldRenderer,
+  FormFields,
+  FormSection,
   type FieldSpec,
   type FormValue,
   type FormValues,
@@ -41,7 +42,7 @@ import { useStagedConfigStore } from '@/store/staged-config-store';
 import { useStagingActive } from '@/store/use-staging-active';
 import { editRoute } from '@/lib/staged-config';
 import { useDialogStore } from './dialog-store';
-import { groupWgFields, type WgFormTab } from './mesh-form-layout';
+import { groupWgFields } from './mesh-form-layout';
 
 const CATCH_ALL = new Set(['0.0.0.0/0', '::/0']);
 
@@ -157,16 +158,17 @@ function WgForm({ base }: { base?: ServerConfig }) {
   const [dirty, setDirty] = useState(false);
   const [errName, setErrName] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [formTab, setFormTab] = useState<WgFormTab>('basic');
+  const [revealAdvanced, setRevealAdvanced] = useState(false);
 
   const setField = (k: string, v: FormValue) => {
     setDraft((d) => ({ ...d, [k]: v }) as WgDraft);
     setDirty(true);
+    if (revealAdvanced) setRevealAdvanced(false);
   };
 
   // 前置代理候选：排除自身与 endpoint 类节点（判据对齐生成侧，见 `detour-options.ts`）。
   const detourOpts = endpointDetourOptions(servers, base?.id, t('node.detourDirect'));
-  const visible = wgSpec(draft, base, detourOpts).filter((f) => !f.when || f.when(draft));
+  const fields = wgSpec(draft, base, detourOpts);
 
   const onParse = () => {
     const d = parseConfToDraft(confText);
@@ -208,7 +210,6 @@ function WgForm({ base }: { base?: ServerConfig }) {
         setErrName(true);
       } else {
         setSrc('manual');
-        setFormTab('basic');
         // 文案自述完整（列全了缺哪些字段），不套 title。
         toast.error(t('wg.errRequired'));
       }
@@ -218,7 +219,7 @@ function WgForm({ base }: { base?: ServerConfig }) {
     // （判据与理由见 `wg-logic.ts#reservedInputInvalid`）。回手动填写页，让出错的那个框可见。
     if (reservedInputInvalid(draft.reserved)) {
       setSrc('manual');
-      setFormTab('advanced');
+      setRevealAdvanced(true);
       toast.error(t('wg.errReserved'));
       return;
     }
@@ -361,29 +362,24 @@ function WgForm({ base }: { base?: ServerConfig }) {
       )}
 
       {src === 'manual' && (() => {
-        const groups = groupWgFields(visible);
-        const tabs: WgFormTab[] = ['basic', 'routing', 'advanced'];
+        const groups = groupWgFields(fields);
         return (
           <>
-            <div className="sub-tabs form-tabs" role="tablist" aria-label={t('node.formGroup.aria')}>
-              {tabs.map((tab) => (
-                <button
-                  key={tab}
-                  type="button"
-                  role="tab"
-                  className={formTab === tab ? 'on' : ''}
-                  aria-selected={formTab === tab}
-                  onClick={() => setFormTab(tab)}
-                >
-                  {t(`node.formGroup.${tab}`)}
-                </button>
-              ))}
-            </div>
-            <div role="tabpanel" className="form-tab-panel">
-              {groups[formTab].map((f) => (
-                <FieldRenderer key={f.k} spec={f} value={draft[f.k]} onChange={(v) => setField(f.k, v)} />
-              ))}
-            </div>
+            <FormFields fields={groups.basic} values={draft} onChange={setField} />
+            <FormSection
+              title={t('node.formGroup.routing')}
+              fields={groups.routing}
+              values={draft}
+              onChange={setField}
+            />
+            <FormSection
+              title={t('node.formGroup.advanced')}
+              fields={groups.advanced}
+              values={draft}
+              onChange={setField}
+              collapsible
+              forceOpen={revealAdvanced}
+            />
           </>
         );
       })()}

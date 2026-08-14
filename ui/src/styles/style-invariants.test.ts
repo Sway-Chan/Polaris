@@ -1850,24 +1850,14 @@ describe('主窗最小尺寸契约', () => {
 
 describe('规则资源表：列边界不得随「这一行有几颗按钮」漂移（2026-08-05 真机：大小列内置/外置错位）', () => {
   /**
-   * 缺陷不在名称列的收口，而在**弹性轨的位置**。
-   *
-   * 每个 `.res-row` 是各自独立的 grid（prototype.css:1027 的署名如此），故行尾 `auto` 轨 = **该行
-   * 自己**的 max-content。宽档 `248px 92px 132px auto` 把弹性轨放在行尾 ⇒ 逐行差异只推得动行的
-   * 右边缘，看不见；窄档 `minmax(0,1fr) 88px auto` 把弹性轨挪到了**行首** ⇒ 行尾的逐行差异反向
-   * 倒灌进 1fr，把它右边每一条列边界一起推走：
-   *   外置行 更新+删除 60px → 大小列 703px ／ 内置行 不可删只剩 27px → 736px
-   *   下载中 spinner+取消 53px → 710px ／ 表头行 空格 0px → 763px（旧 925×740 headless 实测）。
-   * 当前窗口锁 980（tauri.conf.json minWidth）− 侧栏 148 = `.main` 恒 832 > 780，宽档已是默认态；
-   * 窄档保留为未来若下调最小宽度时的兜底，因此同样不能重新引入列漂移。
-   *
-   * 断言的是关系不是像素：① 弹性轨只准出现在**末轨**（宽档），② 窄档把末轨钉成定宽，
-   * ③ 该定宽 == 动作簇最宽那态（`.nd-a`×2 + gap）现场算出来的值，④ 覆盖落在 @import 之后，
-   * ⑤ 当前最小窗口应落在宽档。改按钮尺寸 / 改断点 / 把定宽改回 auto，任一即红。
+   * 新规格让名称列自适应、动作贴右，但每个 `.res-row` 仍是独立 grid。为防行内按钮数量影响列边界，
+   * 所有动作格必须有相同最小宽度；宽窄两档的末轨统一用 max-content，表头与数据行都发出
+   * `.res-actions`。这里守的是这组关系，不把大小列钉死成旧像素。
    */
   const protoCss = stripComments(read('./prototype.css'));
   const screensCss = stripComments(read('./screens.css'));
   const indexCss = stripComments(read('./index.css'));
+  const resourceScreen = read('../components/screens/resources/ResourcesScreen.tsx');
 
   /** 从 `@container mainc (max-width:N)` 块里取 `.res-row` 的轨道定义。 */
   const narrowOf = (css: string) => {
@@ -1882,6 +1872,11 @@ describe('规则资源表：列边界不得随「这一行有几颗按钮」漂�
     if (!m) throw new Error('解析不到 .res-row 的宽档轨道定义');
     return m[1].trim();
   };
+  const overrideWideTracks = () => {
+    const m = indexCss.match(/\.res-row\s*\{\s*grid-template-columns:\s*([^;}]+)/);
+    if (!m) throw new Error('解析不到覆盖层 .res-row 的宽档轨道定义');
+    return m[1].trim();
+  };
   /** 轨道串切成逐轨（`minmax(0,1fr)` 里有逗号，不能按逗号切）。 */
   const tracksOf = (s: string): string[] => s.match(/minmax\([^)]*\)|[^\s]+/g) ?? [];
   const flexible = (t: string) => /fr\b|auto|max-content|min-content|fit-content/.test(t);
@@ -1893,14 +1888,11 @@ describe('规则资源表：列边界不得随「这一行有几颗按钮」漂�
     }
   });
 
-  it('① 宽档：弹性轨只准落在末轨（前导轨全定宽 ⇒ 列边界与行内容无关）', () => {
-    for (const [name, css] of [['prototype.css', protoCss], ['screens.css', screensCss]] as const) {
-      const t = tracksOf(wideTracks(css));
-      expect(
-        t.slice(0, -1).filter(flexible),
-        `${name} 宽档的前导轨出现了弹性轨 —— 行尾动作簇的逐行宽度差会倒灌进来推走大小列`
-      ).toEqual([]);
-    }
+  it('① 覆盖层宽档为四列：名称自适应、动作列贴右', () => {
+    const t = tracksOf(overrideWideTracks());
+    expect(t).toHaveLength(4);
+    expect(flexible(t[0]), '名称列应吃剩余宽度').toBe(true);
+    expect(t[3], '动作列应按统一动作格宽度收口').toBe('max-content');
   });
 
   it('② 前提：两份禁区文件的窄档末轨仍是 auto（泄漏源在 ⇒ 覆盖层的定宽不能删）', () => {
@@ -1912,26 +1904,27 @@ describe('规则资源表：列边界不得随「这一行有几颗按钮」漂�
     }
   });
 
-  it('③ 覆盖层把窄档末轨钉成定宽，断点与禁区那份一致（不一致 = 两个断点各管一段）', () => {
+  it('③ 覆盖层窄档沿用同一断点，隐藏更新时间后仍把动作列放在末端', () => {
     const proto = narrowOf(protoCss);
     const over = narrowOf(indexCss);
     expect(over.bp, '覆盖层与禁区文件的容器断点不一致').toBe(proto.bp);
     const t = tracksOf(over.tracks);
-    expect(t.slice(0, 2), '覆盖层不该改动前两轨').toEqual(tracksOf(proto.tracks).slice(0, 2));
-    expect(t[2], '覆盖层的窄档末轨不是定宽 px —— 缺陷会原样复发').toMatch(/^\d+px$/);
+    expect(t).toHaveLength(3);
+    expect(flexible(t[0]), '窄档名称列应继续自适应').toBe(true);
+    expect(t[2], '窄档动作列不在末端').toBe('max-content');
   });
 
-  it('④ 定宽值 == 动作簇最宽那态（`.nd-a` ×2 + 动作格 gap），改按钮尺寸即红', () => {
+  it('④ 所有动作格共用足以容纳最宽按钮簇的最小宽度', () => {
     const btn = protoCss.match(/\.nd-a\s*\{[^}]*width:\s*(\d+)px/);
     const gap = protoCss.match(/\.res-row\s*>\s*span:last-child\s*\{[^}]*gap:\s*(\d+)px/);
+    const min = indexCss.match(/\.res-actions\s*\{[^}]*min-width:\s*(\d+)px/);
     expect(btn, '解析不到 .nd-a 宽度').not.toBeNull();
     expect(gap, '解析不到动作格 gap').not.toBeNull();
-    // 最宽态 = 外置常态（更新 + 删除）；内置只有更新、下载中是 spinner + 取消，都更窄。
+    expect(min, '解析不到 .res-actions 的统一最小宽度').not.toBeNull();
     const widest = Number(btn![1]) * 2 + Number(gap![1]);
-    expect(
-      Number(tracksOf(narrowOf(indexCss).tracks)[2].replace('px', '')),
-      `窄档动作轨应为 ${widest}px（=${btn![1]}×2+${gap![1]}）—— 小了裁按钮，大了白占名称列`
-    ).toBe(widest);
+    expect(Number(min![1]), `动作格至少应为 ${widest}px`).toBeGreaterThanOrEqual(widest);
+    expect(resourceScreen.match(/className="res-actions"/g)?.length ?? 0).toBeGreaterThanOrEqual(5);
+    expect(resourceScreen).not.toContain("style={{ textAlign: 'right' }}");
   });
 
   it('⑤ 覆盖写在 index.css 的 @import 之后（写在前面会被 prototype.css 反压）', () => {

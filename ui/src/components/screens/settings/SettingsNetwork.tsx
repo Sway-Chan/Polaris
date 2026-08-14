@@ -19,6 +19,7 @@ import type { UserConfig } from '@/contracts/types';
 import { appApi, proxyApi } from '@/ipc/api-client';
 import { toast } from '@/lib/error-handler';
 import { Fold } from '@/components/Fold';
+import { useDialogStore } from '@/components/dialogs/dialog-store';
 import {
   Phead,
   SetBlock,
@@ -125,6 +126,8 @@ function generateSecret(): string {
 export default function SettingsNetwork({ config, update }: SettingsNetworkProps) {
   // i18n 实例：面板窗口的语言由 `open_singbox_dashboard(locale)` 预写，需当前语言码。
   const { t, i18n } = useTranslation();
+  const openDialog = useDialogStore((state) => state.open);
+  const closeDialog = useDialogStore((state) => state.close);
   // 与后端 `local_proxy_port`（proxy_ports.rs:22-34）同口径：mixed>0 → http>0 → 7890。
   // 此前写 `config.mixedPort ?? 7890`，丢了两条 httpPort 回退路径，导致「说明文字里的端口对、
   // 复制出去的命令端口错」（见 settings-logic.ts::localProxyPort 注释）。
@@ -272,16 +275,32 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
     }
   }
 
-  // B2 一键关闭系统代理：调后端 system_proxy_disable 清除其它软件遗留的系统代理设置（TUN 模式下会干扰连接）。
+  // B2 清理系统代理：后端命令名仍是 disableSystemProxy，但 UI 操作语义是移除残留配置。
   // 后端带 marker 门控（只清残留、不 stomp 用户自配）；幂等——无残留时为 no-op。App.tsx 的残留检测 toast
-  // （event:systemProxyResidual）提示后，用户经此按钮显式关闭（Polaris toast 无动作按钮，故动作入口落此处）。
-  async function handleDisableSystemProxy() {
+  // （event:systemProxyResidual）提示后，用户经此按钮显式清理（Polaris toast 无动作按钮，故动作入口落此处）。
+  async function handleClearSystemProxy() {
     try {
       await proxyApi.disableSystemProxy();
-      toast.success(t('proxy.systemProxyDisabled'));
+      toast.success(t('proxy.systemProxyCleared'));
     } catch {
-      toast.error(t('proxy.systemProxyDisableFailed'));
+      toast.error(t('proxy.systemProxyClearFailed'));
     }
+  }
+
+  function requestClearSystemProxy() {
+    openDialog({
+      kind: 'confirm',
+      payload: {
+        title: t('proxy.clearSystemProxyConfirmTitle'),
+        message: t('proxy.clearSystemProxyConfirmDesc'),
+        confirmLabel: t('proxy.clear'),
+        danger: true,
+        onConfirm: () => {
+          closeDialog();
+          void handleClearSystemProxy();
+        },
+      },
+    });
   }
 
   return (
@@ -330,7 +349,7 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
               此前只缺 UI 入口。正向语义、缺省为开，与后端 `Some(false)` 判定同口径。 */}
           <SetRow
             label={t('settings.advanced.bypassLAN')}
-            desc={t('settings.advanced.bypassLANDesc')}
+            tip={t('settings.advanced.bypassLANDesc')}
           >
             <Switch
               id="bypass-lan-swt"
@@ -344,7 +363,7 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
           {/* 折叠体**必须**留在 showList 门控内侧：放外面会出现「总开关已关、清单不生效，折叠标题却还杵在那」
               的怪相（用户点开是空壳）。门控与折叠是两层独立状态，顺序固定为「先门控、后折叠」。 */}
           {bypassLan.showList && (
-            <Fold id="fold-bypass" title={t('settings.network.bypassFold')} count={bypassList.length}>
+            <Fold className="set-row-details" id="fold-bypass" title={t('settings.network.bypassFold')} count={bypassList.length}>
               <div className="fld-hint" style={{ marginTop: 0 }}>
                 {t('settings.network.bypassHint')}
                 {/* #1 与 #3 同源：route_exclude 无独立字段，由本清单的 CIDR 子集派生（SettingsTun.tsx:180-191）。
@@ -365,13 +384,13 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
             </Fold>
           )}
         </SetRowGroup>
-        {/* B2 一键关闭系统代理入口（对齐 上游 语义：残留检测提示后由用户显式关闭）。 */}
+        {/* 清理与日常开关不同：入口简短、危险语义在确认弹窗中完整说明。 */}
         <SetRow
-          label={t('proxy.disableSystemProxy')}
-          desc={t('settings.network.disableSystemProxyDesc')}
+          label={t('proxy.clearSystemProxy')}
+          desc={t('settings.network.clearSystemProxyDesc')}
         >
-          <Button variant="ghost" size="sm" onClick={() => void handleDisableSystemProxy()}>
-            <span>{t('proxy.disableSystemProxy')}</span>
+          <Button className="danger" variant="ghost" size="sm" onClick={requestClearSystemProxy}>
+            <span>{t('proxy.clear')}</span>
           </Button>
         </SetRow>
       </SetBlock>
@@ -380,7 +399,7 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
       <SetBlock header={t('settings.network.advancedTraffic')}>
         <SetRow
           label={t('settings.advanced.blockQuic')}
-          desc={t('settings.network.blockQuicDescFull')}
+          tip={t('settings.network.blockQuicDescFull')}
         >
           <Switch checked={!!config.blockQuic} onChange={(v) => void update({ blockQuic: v })} />
         </SetRow>
@@ -414,19 +433,19 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
         </div>
         <SetRow
           label={t('settings.advanced.tlsFragment')}
-          desc={t('settings.advanced.tlsFragmentDesc')}
+          tip={t('settings.advanced.tlsFragmentDesc')}
         >
           <Switch checked={!!config.tlsFragment} onChange={(v) => void update({ tlsFragment: v })} />
         </SetRow>
         <SetRow
           label={t('settings.advanced.autoSwitchNode')}
-          desc={t('settings.advanced.autoSwitchNodeDesc')}
+          tip={t('settings.advanced.autoSwitchNodeDesc')}
         >
           <Switch checked={!!config.autoSwitchNode} onChange={(v) => void update({ autoSwitchNode: v })} />
         </SetRow>
         <SetRow
           label={t('settings.network.meshLoginFallback')}
-          desc={t('settings.network.meshLoginFallbackDesc')}
+          tip={t('settings.network.meshLoginFallbackDesc')}
         >
           <Switch
             checked={config.meshLoginFallbackDirect !== false}
@@ -435,7 +454,7 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
         </SetRow>
         <SetRow
           label={t('settings.network.interruptOnSwitch')}
-          desc={t('settings.network.interruptOnSwitchDesc')}
+          tip={t('settings.network.interruptOnSwitchDesc')}
         >
           <Switch
             checked={config.interruptConnectionsOnSwitch !== false}
@@ -443,17 +462,8 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
           />
         </SetRow>
         <SetRow
-          label={t('settings.network.resolveBeforeDial')}
-          desc={t('settings.network.resolveBeforeDialDesc')}
-        >
-          <Switch
-            checked={!!config.resolveBeforeDial}
-            onChange={(v) => void update({ resolveBeforeDial: v })}
-          />
-        </SetRow>
-        <SetRow
           label={t('settings.network.restartOnNodeChange')}
-          desc={t('settings.network.restartOnNodeChangeDesc')}
+          tip={t('settings.network.restartOnNodeChangeDesc')}
         >
           <Switch
             checked={!!config.restartOnNodeChange}
@@ -468,7 +478,7 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
             缺省 true（更新源多在 GitHub，墙内借道更可靠），故 `!== false`。 */}
         <SetRow
           label={t('settings.advanced.mainSessionViaProxy')}
-          desc={t('settings.advanced.mainSessionViaProxyDesc')}
+          tip={t('settings.advanced.mainSessionViaProxyDesc')}
         >
           <Switch
             id="main-session-via-proxy-swt"
@@ -511,7 +521,7 @@ export default function SettingsNetwork({ config, update }: SettingsNetworkProps
         <SetRowGroup>
           <SetRow
             label={t('settings.network.mgmtEnable')}
-            desc={t('settings.network.mgmtEnableDesc')}
+            tip={t('settings.network.mgmtEnableDesc')}
           >
             <Switch checked={mgmtEnabled} onChange={(v) => void update({ singboxDashboard: v })} />
           </SetRow>

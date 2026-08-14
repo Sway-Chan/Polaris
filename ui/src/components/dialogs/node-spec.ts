@@ -5,7 +5,7 @@
  * wireguard/tailscale 不在此清单——二者已有专属弹窗（`WgDialog`/`TsSettingsDialog`，`dialog-store`
  * kind `wg`/`ts-settings`），故意不重复建模（见 NodeDialog 顶部注释的已知缺口）。
  *
- * 17 协议的字段描述符仍以 cred/adv 维持 codec 真值；展示层由 `nodeFormGroups` 统一分成任务页签。
+ * 17 协议的字段描述符仍以 cred/adv 维持 codec 真值；展示层由 `nodeFormGroups` 统一分成任务分组。
  * 这是**节点特定**数据，与 `field-spec.tsx` 的通用渲染器解耦（渲染器不认识协议）。
  *
  * 条件显隐（原型 `ndSyncCond` :3707）：安全层 sec 驱动 tls/reality 字段——
@@ -499,7 +499,7 @@ interface NodeSpec {
   cred: FieldSpec[];
   adv: FieldSpec[];
   /**
-   * 有专属任务模型的组网 endpoint 信息架构。普通代理的页签由 `nodeFormGroups` 基于
+   * 有专属任务模型的组网 endpoint 信息架构。普通代理的展示分组由 `nodeFormGroups` 基于
    * `cred/adv` 生成，避免把展示分组混入 codec 的字段真值。
    */
   groups?: NodeFieldGroup[];
@@ -948,11 +948,11 @@ const ADVANCED_FIELD_KEYS: Partial<Record<NodeProto, readonly string[]>> = {
 };
 
 /**
- * 节点表单的统一任务页签：
+ * 节点表单的统一任务分组：
  * - 普通代理：基础 / 传输（有连接字段时）/ 高级；
  * - OpenConnect、OpenVPN：沿用其明确的基础 / 路由 / 高级模型。
  *
- * 高级页签即使没有协议私有字段也保留，因为所有协议都在这里提供 detour；不会生成空页签。
+ * 高级分组即使没有协议私有字段也保留，因为所有协议都在这里提供 detour；不会生成空折叠段。
  */
 export function nodeFormGroups(proto: NodeProto): NodeFieldGroup[] {
   const spec = ND_SPEC[proto];

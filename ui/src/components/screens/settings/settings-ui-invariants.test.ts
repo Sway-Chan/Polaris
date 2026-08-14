@@ -46,6 +46,15 @@ describe('Settings UI 使用统一组件与语义分组', () => {
     expect(violations, '自然语言应来自 locale；这里只允许跨语言同形的技术名').toEqual([]);
   });
 
+  it('开关行只常驻简短名称，复杂说明统一进入信息提示', () => {
+    const violations: string[] = [];
+    for (const { name, source } of settingScreens) {
+      if (/<SetRow\b[^>]*\bdesc=\{[^}]+\}[^>]*>\s*(?:\{\/\*[\s\S]*?\*\/\}\s*)?<Switch/.test(source))
+        violations.push(name);
+    }
+    expect(violations, '开关行仍永久铺开说明，应改用 SetRow tip').toEqual([]);
+  });
+
   it('共享 Select 由 Csel 实现并把 disabled 传到真实控件', () => {
     const primitives = stripComments(read('./primitives.tsx'));
     const selectStart = primitives.indexOf('export function Select');
@@ -67,5 +76,25 @@ describe('Settings UI 使用统一组件与语义分组', () => {
     expect(css).toMatch(/\.set-row-group\s*\{[^}]*border-bottom/);
     expect(css).toMatch(/\.set-row-group\s*>\s*\.set-row\s*\{[^}]*border-bottom\s*:\s*0/);
     expect(css).toMatch(/\.set-row-section\s*\{[^}]*border-top/);
+    expect(css).toMatch(/\.set-row-group\s*>\s*\.set-row-details\s*\{[^}]*margin/);
+  });
+
+  it('系统代理清理使用简短入口与危险确认，不再以普通关闭开关呈现', () => {
+    const network = read('./SettingsNetwork.tsx');
+    expect(network).toContain("t('proxy.clearSystemProxy')");
+    expect(network).toContain("confirmLabel: t('proxy.clear')");
+    expect(network).toContain('danger: true');
+    expect(network).toContain('proxyApi.disableSystemProxy()');
+    expect(network).not.toContain("t('proxy.disableSystemProxy')");
+  });
+
+  it('目标域名预解析只在 DNS 页展示，且不与 FakeIP 状态互锁', () => {
+    const network = read('./SettingsNetwork.tsx');
+    const dns = read('./SettingsDns.tsx');
+    expect(network).not.toContain('resolveBeforeDial');
+    expect(dns).toContain("label={t('settings.dns.resolveBeforeDial')}");
+    expect(dns).toContain('checked={!!config.resolveBeforeDial}');
+    expect(dns).toContain('update({ resolveBeforeDial: v })');
+    expect(dns).not.toMatch(/resolveBeforeDial[\s\S]{0,160}(?:disabled|enableFakeIp)/);
   });
 });

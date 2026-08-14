@@ -1,5 +1,5 @@
 /**
- * G13 —— 空承诺守卫：设置页 `desc` 文案里的**行为承诺**必须有对应实现。
+ * G13 —— 空承诺守卫：设置页常驻 `desc` 与悬浮 `tip` 文案里的**行为承诺**必须有对应实现。
  *
  * # 守什么
  *
@@ -10,7 +10,7 @@
  *
  * # 判据面
  *
- * `ui/src/components/screens/settings/Settings*.tsx` 里全部 `desc=` 的取值 —— 内联字符串、
+ * `ui/src/components/screens/settings/Settings*.tsx` 里全部 `desc=` / `tip=` 的取值 —— 内联字符串、
  * `t('key')` / `t('key', '兜底')`（key 经 `i18n/locales/zh-CN.json` 解析）、以及三元表达式原文。
  * 命中**承诺词典**（`自动` / `启动时` / `闲置` / `下次打开` / `N 分钟` / `N 秒` / `每天`）的每一条，
  * 必须在下方登记表里，且登记的兑现证据必须在磁盘上真的成立。
@@ -57,7 +57,7 @@ function walk(dir: string, ext: RegExp, acc: string[] = []): string[] {
   return acc;
 }
 
-// ── 判据面 1：设置屏的 desc 文案 ────────────────────────────────────────────
+// ── 判据面 1：设置屏的常驻说明与信息提示 ────────────────────────────────────
 
 const ZH = JSON.parse(
   readFileSync(join(SRC, 'i18n/locales/zh-CN.json'), 'utf8'),
@@ -94,7 +94,7 @@ function collectDescs(): DescHit[] {
   const out: DescHit[] = [];
   for (const f of readdirSync(SETTINGS_DIR).filter((n) => /^Settings.*\.tsx$/.test(n))) {
     const src = code(readFileSync(join(SETTINGS_DIR, f), 'utf8'));
-    const re = /desc=(?:"([^"]*)"|\{t\('([^']+)'(?:,\s*'([^']*)')?[\s\S]*?\}|\{([^}]*)\})/g;
+    const re = /(?:desc|tip)=(?:"([^"]*)"|\{t\('([^']+)'(?:,\s*'([^']*)')?[\s\S]*?\}|\{([^}]*)\})/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(src))) {
       const raw = m[1] ?? (m[2] ? (i18n(m[2]) ?? m[3] ?? `<未解析 ${m[2]}>`) : m[4]) ?? '';
@@ -204,7 +204,7 @@ function timerFor(ms: number): { rel: string; name: string } | null {
 // ── 自曝：任一判据面塌了就在模块加载期炸 ────────────────────────────────────
 
 if (DESCS.length < 30) {
-  throw new Error(`[settings-promise-wiring] 只抽到 ${DESCS.length} 条 desc —— 抽取器塌了`);
+  throw new Error(`[settings-promise-wiring] 只抽到 ${DESCS.length} 条说明 —— 抽取器塌了`);
 }
 if (PROMISES.length === 0) {
   throw new Error('[settings-promise-wiring] 一条承诺文案都没命中 —— 词典或抽取器塌了，登记表会恒绿');

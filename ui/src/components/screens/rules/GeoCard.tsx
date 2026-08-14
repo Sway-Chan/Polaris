@@ -14,8 +14,6 @@ import { useTranslation } from 'react-i18next';
 import type { RegionId, RegionRoutingConfig } from '@/contracts/types';
 import { cn } from '@/lib/utils';
 
-const ROUTING_CHAIN = ['custom', 'app', 'mesh', 'lan', 'smart', 'default'] as const;
-
 export interface GeoCardProps {
   regionRouting: RegionRoutingConfig;
   onChange: (next: RegionRoutingConfig) => void;
@@ -39,6 +37,14 @@ function InfoIcon() {
 export function GeoCard({ regionRouting, onChange, isSmartMode }: GeoCardProps) {
   const { t } = useTranslation();
   const { enabled, region, reverse } = regionRouting;
+  const routingChain = [
+    { id: 'custom', label: t('rules.chainCustom') },
+    { id: 'app', label: t('rules.chainApp') },
+    { id: 'mesh', label: t('rules.chainMesh') },
+    { id: 'lan', label: t('rules.chainLan') },
+    { id: 'smart', label: t('rules.chainSmart') },
+    { id: 'default', label: t('rules.chainDefault') },
+  ] as const;
 
   return (
     <div className="card geo-card">
@@ -87,12 +93,12 @@ export function GeoCard({ regionRouting, onChange, isSmartMode }: GeoCardProps) 
           </span>
         </div>
         <div className="rl-chain-flow">
-          {ROUTING_CHAIN.map((step, i) => (
-            <span key={step} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <span className={cn('rl-step', step === 'custom' && 'on')}>
-                {t(`rules.chain.${step}`)}
+          {routingChain.map((step, i) => (
+            <span key={step.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span className={cn('rl-step', step.id === 'custom' && 'on')}>
+                {step.label}
               </span>
-              {i < ROUTING_CHAIN.length - 1 && <span className="rl-arrow">›</span>}
+              {i < routingChain.length - 1 && <span className="rl-arrow">›</span>}
             </span>
           ))}
         </div>

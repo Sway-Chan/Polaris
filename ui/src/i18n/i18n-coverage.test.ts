@@ -648,7 +648,7 @@ describe('G5c FieldRenderer 每个字段类型都把 hint 渲染进 `.fld-hint`'
   });
 
   for (const [kind, over] of Object.entries(RENDERABLE)) {
-    it(`${kind}：给了 hint 就必须渲染出来；没给就不许凭空长出 .fld-hint`, () => {
+    it(`${kind}：给了 hint 就必须经对应说明通道渲染；没给就不许凭空长出说明`, () => {
       const withHint = html({ ...over, hint: HINT_KEY });
       // 标签同理一并钉住：`tr(spec.label, spec.zh)` 若哪天被写成 `t(key, zh ?? '')`，
       // 没有 zh 缺省的字段（= 今天整张 ND_SPEC）会渲染出**空标签**而不是键名，同样一眼看不出。
@@ -656,9 +656,15 @@ describe('G5c FieldRenderer 每个字段类型都把 hint 渲染进 `.fld-hint`'
       expect(withHint, `${kind} 分支填了 hint 却没渲染 —— 那条译文永远到不了用户眼前`).toContain(
         HINT_KEY,
       );
-      expect(withHint, `${kind} 的 hint 没有落在 .fld-hint 里（样式对不上）`).toContain('fld-hint');
-      // 阴性对照：没有 hint 时不得出现 `.fld-hint`，否则上面那条断言可能只是命中了别处的固定文本。
-      expect(html(over), `${kind} 没给 hint 却渲染了 .fld-hint`).not.toContain('fld-hint');
+      if (kind === 'switch') {
+        expect(withHint, 'switch 的复杂说明应收进统一信息提示').toContain('class="info-i"');
+        expect(withHint, 'switch 的信息提示必须可被 tooltip 引擎读取').toContain(`data-tip="${HINT_KEY}"`);
+        expect(withHint, 'switch 不应再永久铺开说明行').not.toContain('fld-hint');
+        expect(html(over), 'switch 没给 hint 却渲染了信息提示').not.toContain('class="info-i"');
+      } else {
+        expect(withHint, `${kind} 的 hint 没有落在 .fld-hint 里（样式对不上）`).toContain('fld-hint');
+        expect(html(over), `${kind} 没给 hint 却渲染了 .fld-hint`).not.toContain('fld-hint');
+      }
     });
   }
 

@@ -558,6 +558,21 @@ export function LogsScreen() {
                     : t('logs.coreLevelUnavailable')}
               </span>
             )}
+            {/* 诊断是日志级别的临时覆盖，不是独立功能区；与级别控件组成一个不可拆筛选单元。 */}
+            <button
+              type="button"
+              className={`btn ghost sm log-diagnostic-toggle${diagnosticMode ? ' on' : ''}`}
+              disabled={diagnosticMode === null || diagnosticBusy}
+              onClick={() => void onToggleDiagnostic()}
+              data-tip={diagnosticMode ? t('logs.diagnosticTipOn') : t('logs.diagnosticTipOff')}
+              aria-pressed={diagnosticMode === true}
+            >
+              <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="M9 3h6M10 3v6l-5 8a2 2 0 001.7 3h10.6a2 2 0 001.7-3l-5-8V3" />
+                <path d="M8 14h8" />
+              </svg>
+              <span>{t('logs.diagnosticMode')}</span>
+            </button>
           </div>
 
           <div className="log-filter-group log-source-filter">
@@ -576,21 +591,6 @@ export function LogsScreen() {
             </div>
           </div>
 
-          <button
-            type="button"
-            className={`btn ghost sm log-diagnostic-toggle${diagnosticMode ? ' on' : ''}`}
-            disabled={diagnosticMode === null || diagnosticBusy}
-            onClick={() => void onToggleDiagnostic()}
-            data-tip={diagnosticMode ? t('logs.diagnosticTipOn') : t('logs.diagnosticTipOff')}
-            aria-pressed={diagnosticMode === true}
-          >
-            <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <path d="M9 3h6M10 3v6l-5 8a2 2 0 001.7 3h10.6a2 2 0 001.7-3l-5-8V3" />
-              <path d="M8 14h8" />
-            </svg>
-            <span>{t('logs.diagnosticMode')}</span>
-            <span className="log-diagnostic-level">{t('logs.diagnosticLevel')}</span>
-          </button>
         </div>
         {/* 级别说明 + 生效范围如实标注：本页显示的两侧日志（应用 + 内核）都在改完那一刻就跟上 ——
             应用侧是 logging.rs::set_level 跟随 config.logLevel，内核侧是 SubscribeLog 恒送全级别、
@@ -737,11 +737,17 @@ export function LogsScreen() {
       </div>
 
       <div className="log-foot">
-        <span className="log-live">
-          <span className="log-live-dot" />
-          <span>{t('logs.liveStream')}</span>
-        </span>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+        {/* 底栏只承载“流状态”：直播状态、当前行数与暂停后的恢复入口作为一个左侧簇，
+            避开应用统一占用的右下 toast 区域。 */}
+        <span className="log-stream-state">
+          <span className="log-live">
+            <span className="log-live-dot" />
+            <span>{t('logs.liveStream')}</span>
+          </span>
+          <span className="log-count">
+            <b id="log-count">{visible.length}</b>{' '}
+            <span>{t('logs.linesUnit')}</span>
+          </span>
           {/* 回到底部：follow 暂停时才出现（手动按暂停 或 上滚脱离底部）。点它＝回填 pending + 吸回底部
               + 恢复跟随，是「恢复直播」的唯一显式入口。 */}
           {!follow && (
@@ -760,12 +766,6 @@ export function LogsScreen() {
               <span>{t('logs.scrollToBottom')}</span>
             </button>
           )}
-          <span>
-            <b style={{ color: 'hsl(var(--fg))' }} id="log-count">
-              {visible.length}
-            </b>{' '}
-            <span>{t('logs.linesUnit')}</span>
-          </span>
         </span>
       </div>
     </section>

@@ -324,7 +324,7 @@ dialog:focus-visible,
 .dlg:focus-visible { outline: none; }
 
 /* 统一「添加」菜单下的实际录入表单为 540px：单列表单保持紧凑，同时给地址+96px 端口、
-   三段协议页签和长凭据留出可用空间；接入方式选择器因双列卡片单独使用 700px。
+   渐进式协议分组和长凭据留出可用空间；接入方式选择器因双列卡片单独使用 700px。
    两者都保留 20px 视口边距，避免各弹窗自行写 `min(...,100%)` 后在窄窗贴边。 */
 .dlg.entry-form-dlg{ width:min(540px, calc(100vw - 40px)); }
 .dlg.access-picker-dlg{ width:min(700px, calc(100vw - 40px)); }
@@ -395,20 +395,14 @@ h1[tabindex='-1']:focus-visible { outline: none; }
 .log-levels button:disabled { cursor: default; }
 .log-levels button:disabled:not(.on) { opacity: .48; }
 
-/* 诊断模式属于筛选语境而非导出工具：放在首行末端，亮态与脱敏/自动滚动共用同一套 on 皮肤。 */
-.log-diagnostic-toggle { margin-left: auto; flex: none; }
-.log-diagnostic-level {
-  padding: 1px 5px;
-  border-radius: 999px;
-  font: 650 9.5px/1.25 var(--mono);
-  letter-spacing: .03em;
-  color: hsl(var(--fg-faint));
-  background: hsl(var(--surface-3));
-}
-.log-diagnostic-toggle.on .log-diagnostic-level {
-  color: hsl(var(--flow-hi));
-  background: hsl(var(--flow) / .16);
-}
+/* 诊断是级别的会话级覆盖：紧邻级别状态，跟随整个级别组换行，不再单独占据一行。 */
+.log-diagnostic-toggle { flex:none; margin-left:2px; }
+
+/* 底栏按“流状态”重新成组并固定在左侧，右下角留给全局 toast。 */
+.log-foot { justify-content:flex-start; }
+.log-stream-state { display:inline-flex; align-items:center; flex-wrap:wrap; gap:8px 12px; min-width:0; }
+.log-count { color:hsl(var(--fg-dim)); white-space:nowrap; }
+.log-count b { color:hsl(var(--fg)); }
 
 /* 搜索是第二行主任务；脱敏/跟随保留文字，清空/复制/导出/目录/诊断包收成低频图标组。 */
 .log-tb-main { flex-wrap: nowrap; }
@@ -431,7 +425,6 @@ h1[tabindex='-1']:focus-visible { outline: none; }
 }
 
 @container mainc (max-width: 720px) {
-  .log-diagnostic-toggle { margin-left: 0; }
   .log-tb-main { flex-wrap: wrap; }
   .log-tb-search { flex-basis: 100%; }
   .log-tb-actions { width: 100%; justify-content: flex-end; }
@@ -1684,8 +1677,22 @@ body:has(.pending-bar.show) #toast-stack{
 .set-row-group{ border-bottom:1px solid hsl(var(--hair)); }
 .set-row-group:last-child{ border-bottom:0; }
 .set-row-group > .set-row{ border-bottom:0; }
+.set-row-group > .set-row-details{ margin:0 0 12px; }
 .set-row-section{ margin-top:12px; border-top:1px solid hsl(var(--hair)); }
 .set-row-section > .set-row:last-child{ border-bottom:0; }
+
+/* 标题与复杂说明：名称常驻，解释收进可聚焦的统一信息提示。 */
+.sr-title,
+.swt-label{ display:inline-flex; align-items:center; gap:6px; min-width:0; }
+.swt-label b{ display:inline; }
+
+/* 协议编辑表单采用渐进式分组：基础连续展示，传输/路由用轻分隔，高级才折叠。 */
+.form-field-section{ margin-top:16px; padding-top:14px; border-top:1px solid hsl(var(--hair)); }
+.form-field-section-title{ margin-bottom:11px; color:hsl(var(--fg-dim)); font-size:11px; font-weight:650; letter-spacing:.04em; }
+.form-field-section-body{ display:flex; flex-direction:column; gap:14px; }
+.form-field-section-body > .fld{ margin-top:0; }
+.form-field-fold{ margin-top:16px; }
+.form-inline-note{ margin-top:6px; }
 
 /* ══════════════════════════════════════════════════════════════════════════════════════════════
  * 设置页 TUN 说明折叠区（`.tun-details`）—— 折叠头与其内容的视觉层级倒挂
@@ -1728,48 +1735,20 @@ body:has(.pending-bar.show) #toast-stack{
 .tun-details[open] summary{ color:hsl(var(--fg)); border-bottom:1px solid hsl(var(--line)); }
 .tun-details-body{ margin-top:0; padding:11px; }
 
-/* ══════════════════════════════════════════════════════════════════════════════════════════════
- * 规则资源表窄档：动作列必须定宽 —— 否则一行有几颗按钮会挪走它左边所有列
- * ══════════════════════════════════════════════════════════════════════════════════════════════
- *
- * ── 缺陷（陈先生 2026-08-05 macOS 真机：「大小列在外置行与内置行之间没有对齐」）─────────────
- * 宽档 `248px 92px 132px auto`（prototype.css:1030 / screens.css:240 各一份）**前导轨全定宽**，
- * 唯一会变的 `auto` 落在行尾 ⇒ 列边界与行内容无关，天然对齐。窄档换成
- * `minmax(0,1fr) 88px auto`（同两文件 :1040 / :250）把弹性轨挪到了**行首**：每个 `.res-row`
- * 是各自独立的 grid（prototype.css:1027 的署名就是这么写的），行尾 `auto` = 该行自己的
- * max-content，于是动作簇的逐行差异反向倒灌进 1fr，把它右边每一条列边界一起推走 ——
- *   外置行  更新 + 删除 两颗 `.nd-a`(27px) + gap 6 = 60px → 名称轨 496px，大小列左边界 703px
- *   内置行  内置不可删（ResourcesScreen.tsx:546）只剩一颗 = 27px → 529px，大小列 736px
- *   下载中  spinner 14 + gap 6 + margin 6 + 取消 27 = 53px → 503px，大小列 710px
- *   表头行  第四格是空 `<span>` = 0px           → 556px，大小列 763px
- * 四个位置，最大偏差 60px。旧 925×740 窗口下 `.main`=777px，窄档曾是默认态；当前窗口锁
- * 980×740 后 `.main`=832px > 780px，默认直接进入天然对齐的宽档。本覆盖仍保留，防止未来下调
- * 最小宽度时窄档重新出现同一缺陷。
- *
- * ── 为什么不是「名称列没收口」（原假设，已证伪）────────────────────────────────────────────
- * 曾疑内置 geo 的长名（`geosite-geolocation-!cn` 等 28 条）撑破 `.res-name`。925×740 headless
- * 逐行实测：32 行全部 `scrollWidth === clientWidth`，零溢出（窄档名称轨 496px，最长名远够）。
- * 且定宽轨的 min track sizing function 不是 `auto` ⇒ 网格项的 automatic minimum size 不生效，
- * 真撑破了也只会视觉压字，**推不动列**。zh-CN / en-US（`Built-in`/`External` 比中文 pill 长，
- * ru/fa 无 `resources.src` 走 fallbackLng='en-US'）与浅/深两主题几何逐像素相同 ⇒ 与语种、
- * 主题都无关，纯结构问题。故这里不加 `min-width:0`/ellipsis：没有要截断的东西（YAGNI）。
- *
- * ── 定宽取 60px ────────────────────────────────────────────────────────────────────────────
- * = `.nd-a` 27px × 2 + 动作格 gap 6px（prototype.css:725 / :1033），即动作簇四态里最宽的那态。
- * 取最大值而非某一态 ⇒ 其余三态在轨内左对齐，与宽档现状同一口径（宽档下四态的第一颗按钮本就
- * 都落在同一 x），不需要再改 `justify-content`。
- *
- * ── 为什么不是把 `min-width` 挂到动作格上 ──────────────────────────────────────────────────
- * 那条要靠引擎按规范去 clamp 网格项对 `auto` 轨的贡献量才成立；真机是 macOS WKWebView，本机
- * 只验得到 Blink。定宽轨在任何引擎上只有一种解释，不押注引擎行为。
- *
- * ── 为什么落 index.css ──────────────────────────────────────────────────────────────────────
- * prototype.css / components.css 是禁区，且窄档规则在 screens.css:250 与 prototype.css:1040
- * **各有一份**（screens.css 那份还被后导入的 prototype.css 压掉，改它无效 —— 又一次「重复定义
- * 只改一份」）。index.css 自有规则在全部 `@import` 之后，同特异性按源序胜出，一处压两份；
- * 容器查询不改变特异性。纯几何，浅深同一份，不需要 `[data-theme]` 分支。
- * 结构门见 `style-invariants.test.ts`「规则资源表窄档」段。 */
-@container mainc (max-width:780px){ .res-row{ grid-template-columns:minmax(0,1fr) 88px 60px; } }
+/* 规则资源表：名称吃剩余空间，大小/更新时间按比例收缩，动作始终贴住右缘。
+ * 四列由表头与每行共享同一轨道定义；动作内容多少不再反向挤压前面的列。 */
+.res-row {
+  grid-template-columns:minmax(180px,1fr) minmax(72px,.28fr) minmax(112px,.48fr) max-content;
+  justify-content:stretch;
+  column-gap:clamp(12px,2.5cqw,28px);
+}
+.res-name { min-width:0; }
+.res-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.res-actions { min-width:60px; justify-content:flex-end; text-align:right; }
+@container mainc (max-width:780px) {
+  .res-row { grid-template-columns:minmax(0,1fr) 78px max-content; }
+  .res-actions { min-width:60px; }
+}
 
 /* ── 导入弹窗的解析结果预览（#83）─────────────────────────────────────────────────────────
  * 后端一直在返回 `stats`（imported / unsupported / skipped / failed）与 `warnings`，

@@ -602,7 +602,7 @@ pub async fn connections_close_all(state: State<'_, AppRuntime>) -> Result<ApiRe
     })
 }
 
-/// 上游 `SYSTEM_PROXY_DISABLE`：用户主动关闭系统代理（TUN 残留提示的一键动作）。
+/// 上游 `SYSTEM_PROXY_DISABLE`：用户主动清理系统代理残留设置（TUN 残留提示的一键恢复动作）。
 ///
 /// 收口到与「start 失败腿」同一个 marker 门控控制器（`ProxyRuntime::clear_system_proxy`）：
 /// 仅当系统代理确由我们设置且仍指向我们才清（不误清用户自配的第三方代理）。async + `spawn_blocking`

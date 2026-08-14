@@ -33,10 +33,10 @@ import { Modal } from './Modal';
 import { Csel, type CselGroup, type CselOption } from './Csel';
 import { useDialogStore } from './dialog-store';
 import {
-  FieldRenderer,
+  FormFields,
+  FormSection,
   parseNumberField,
   draftFromSpecs,
-  type FieldSpec,
   type FormValue,
   type FormValues,
 } from './field-spec';
@@ -81,8 +81,6 @@ interface NodeFormProps {
   initialProto?: NodeProto;
 }
 
-type FormTab = NodeFieldGroupId;
-
 function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
   const { t } = useTranslation();
   const open = useDialogStore((s) => s.open);
@@ -109,7 +107,7 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
   const [errName, setErrName] = useState(false);
   const [errAddr, setErrAddr] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [formTab, setFormTab] = useState<FormTab>('basic');
+  const [revealGroup, setRevealGroup] = useState<NodeFieldGroupId | null>(null);
 
   // C10：custom 协议内核兼容性 probe（`kernel:probeOutbound`）——套 `SubDialog.previewing`/
   // `previewMsg` 同一形态，非本弹窗首创。`probeResult` 只在协议为 custom 时被读，但状态放这里
@@ -120,6 +118,7 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
   const setField = (k: string, v: FormValue) => {
     setDraft((d) => ({ ...d, [k]: v }));
     setDirty(true);
+    if (revealGroup) setRevealGroup(null);
     // 编辑过 JSON 后，上一次探测结果已经对不上新文本——清掉比留着一条可能早已过期的「支持/不支持」
     // 更诚实。只在 outbound 字段上生效：其它协议的字段编辑与 probe 结果无关。
     if (k === 'outbound') setProbeResult(null);
@@ -131,7 +130,7 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
     setDraft(draftFromSpecs(allFields(next)));
     setDirty(true);
     setProbeResult(null); // 换出 custom 协议后旧探测结果同样失效。
-    setFormTab('basic');
+    setRevealGroup(null);
   };
 
   /**
@@ -164,9 +163,6 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
       setProbing(false);
     }
   };
-
-  const visible = (specs: FieldSpec[]): FieldSpec[] =>
-    specs.filter((f) => !f.when || f.when(draft));
 
   // 普通代理与组网隧道是两套互斥入口。编辑时也沿用节点所属入口，不再把 OpenConnect/OpenVPN
   // 混回普通协议分类。
@@ -220,7 +216,7 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
 
     const meshError = meshTunnelDraftError(proto, draft);
     if (meshError) {
-      setFormTab(meshError.tab);
+      setRevealGroup(meshError.group);
       toast.error(
         meshError.key === 'json'
           ? t('node.meshTunnelJsonInvalid')
@@ -298,6 +294,17 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
   };
 
   const groups = nodeFormGroups(proto);
+  const basicFields = groups.find((group) => group.id === 'basic')?.fields ?? [];
+  const advancedFields = groups.find((group) => group.id === 'advanced')?.fields ?? [];
+  const middleGroups = groups.filter((group) => group.id !== 'basic' && group.id !== 'advanced');
+  const groupTitle = (group: NodeFieldGroupId) =>
+    group === 'transport'
+      ? t('node.formGroup.transport')
+      : group === 'routing'
+        ? t('node.formGroup.routing')
+        : group === 'advanced'
+          ? t('node.formGroup.advanced')
+          : t('node.formGroup.basic');
 
   const detourField = (
     <div className="fld">
@@ -421,33 +428,33 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
         )}
       </div>
 
-      {/* 所有协议共用同一页签规格。普通代理按基础 / 传输 / 高级分层；组网隧道按基础 / 路由 /
-          高级分层。公共名称与地址固定在上方，切页不会丢上下文。 */}
-      <div className="sub-tabs form-tabs" role="tablist" aria-label={t('node.formGroup.aria')}>
-        {groups.map((group) => (
-          <button
-            key={group.id}
-            type="button"
-            role="tab"
-            className={formTab === group.id ? 'on' : ''}
-            aria-selected={formTab === group.id}
-            onClick={() => setFormTab(group.id)}
-          >
-            {t(`node.formGroup.${group.id}`)}
-          </button>
-        ))}
-      </div>
-      <div role="tabpanel" className="form-tab-panel">
-        {visible(groups.find((group) => group.id === formTab)?.fields ?? []).map((f) => (
-          <FieldRenderer key={f.k} spec={f} value={draft[f.k]} onChange={(v) => setField(f.k, v)} />
-        ))}
-        {formTab === 'advanced' && detourField}
-      </div>
+      {/* 基础字段连续展示；传输/路由是可扫读的语义段，高级项默认折叠。分组不再互斥，
+          避免用户为理解一份配置在页签之间来回切换。 */}
+      <FormFields fields={basicFields} values={draft} onChange={setField} />
+      {middleGroups.map((group) => (
+        <FormSection
+          key={group.id}
+          title={groupTitle(group.id)}
+          fields={group.fields}
+          values={draft}
+          onChange={setField}
+        />
+      ))}
+      <FormSection
+        title={groupTitle('advanced')}
+        fields={advancedFields}
+        values={draft}
+        onChange={setField}
+        collapsible
+        forceOpen={revealGroup === 'advanced'}
+      >
+        {detourField}
+      </FormSection>
 
       {/* C10：custom 协议内核兼容性 probe——只有 custom 协议的原始 JSON 才需要问「内核认不认识这个
           outbound」，其余代理协议走本仓自建的 builder，协议合法性由表单本身的必填/枚举
           约束兜底，没有「核认不认识」这一档风险。 */}
-      {proto === 'custom' && formTab === 'basic' && (
+      {proto === 'custom' && (
         <div className="fld">
           <button
             type="button"

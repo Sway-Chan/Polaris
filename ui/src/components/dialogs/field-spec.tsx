@@ -19,8 +19,10 @@
  * select 选项文案多为专有名词（TCP/xtls-rprx-vision/…）直接字面量；通用自然语言可传点分 i18n key。
  */
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Fold } from '@/components/Fold';
+import { InfoIcon } from '@/components/InfoIcon';
 import { Csel, type CselOption } from './Csel';
 
 /** 表单草稿值域：文本/数值/开关/未填。number 空 = undefined（R2）。 */
@@ -52,14 +54,14 @@ interface FieldBase {
   /** 「可选」徽标。 */
   opt?: boolean;
   /**
-   * 控件下方的说明行（`.fld-hint`）—— **所有字段类型都有**（2026-08-07 从 select/switch 两支提上来）。
+   * 字段说明：输入类渲染为控件下方 `.fld-hint`；switch 收进标签后的统一 `InfoIcon`。
    *
    * 加这一支最初是因为「选了会怎样」有时**不能只靠标签表达**：endpoint 的前置代理是实例——
    * WireGuard 的握手走 UDP，前置代理不支持 UDP 转发就**静默不通**（不回落直连，见
    * `crates/config-engine/src/singbox/endpoint.rs` 的实测），而 Tailscale 那侧只需 TCP。
-   * 两句话不同、都必须出现在控件旁，否则用户只能靠试。
+   * 两句话不同、都必须能从控件旁到达，否则用户只能靠试。
    *
-   * 提到 `FieldBase` 是因为 text/textarea 也有同样的需求，而此前它们**没有 hint 位**，于是说明
+   * 提到 `FieldBase` 是因为 text/textarea 也有同样的需求，而此前它们**没有说明位**，于是说明
    * 只能塞进标签：`node.field.h2Host` = 「HTTP/2 Host（逗号分隔，留空回落 SNI/节点地址）」。
    * 这不是排版偏好问题 —— 标签是控件的**名字**，`styles/text-fit.test.ts` 给 `.fld-l` 定的 2 行预算
    * 正是这条判据的具象（占到第 3 行就说明它其实是一句说明），而这四条恰恰是把预算刚好用满的那批。
@@ -166,8 +168,10 @@ export function FieldRenderer({ spec, value, onChange }: FieldRendererProps) {
     return (
       <div className="fld swt-row">
         <div className="swt-tx">
-          <b>{label}</b>
-          {hintKey && <div className="fld-hint">{t(hintKey)}</div>}
+          <span className="swt-label">
+            <b>{label}</b>
+            {hintKey && <InfoIcon tip={t(hintKey)} />}
+          </span>
         </div>
         {/* 原生 `disabled`（而非 `aria-disabled` + 自行拦截）：它连点击事件都不派发 ⇒ `onChange`
             结构上不可达，而不是「拦得住就好」。禁用的开关是「结构上永远不能开」的语义载体，
@@ -192,8 +196,8 @@ export function FieldRenderer({ spec, value, onChange }: FieldRendererProps) {
     </label>
   );
   /**
-   * 说明行 —— 非 switch 的四个分支**共用同一个元素**（switch 有自己那份：它要在 `.swt-tx` 里、
-   * 且禁用时用 `disabledHint` 取代）。抽成一个常量而不是每支各写一遍 `{spec.hint && …}`：
+   * 说明行 —— 非 switch 的四个分支共用同一个元素；switch 在上方以 `InfoIcon` 承载，
+   * 且禁用时用 `disabledHint` 取代。抽成一个常量而不是每支各写一遍 `{spec.hint && …}`：
    * `hint` 提到 `FieldBase` 之后每支都得渲染，漏一支的下场是**填了 hint 却不显示**——
    * 类型不红、build 不红、本仓 vitest 无 jsdom 渲染不了，没有任何门抓得到（同 `toCselOptions` 那条理由）。
    */
@@ -297,6 +301,72 @@ export function FieldRenderer({ spec, value, onChange }: FieldRendererProps) {
       ) : input}
       {hintEl}
     </div>
+  );
+}
+
+export interface FormFieldsProps {
+  fields: readonly FieldSpec[];
+  values: FormValues;
+  onChange: (key: string, value: FormValue) => void;
+}
+
+/** 同一分组的字段渲染入口；显隐判据只在这一处执行。 */
+export function FormFields({ fields, values, onChange }: FormFieldsProps) {
+  return (
+    <>
+      {fields
+        .filter((field) => !field.when || field.when(values))
+        .map((field) => (
+          <FieldRenderer
+            key={field.k}
+            spec={field}
+            value={values[field.k]}
+            onChange={(value) => onChange(field.k, value)}
+          />
+        ))}
+    </>
+  );
+}
+
+export function FormSection({
+  title,
+  fields,
+  values,
+  onChange,
+  collapsible,
+  forceOpen,
+  children,
+}: FormFieldsProps & {
+  title: ReactNode;
+  collapsible?: boolean;
+  forceOpen?: boolean;
+  children?: ReactNode;
+}) {
+  const visibleCount = fields.filter((field) => !field.when || field.when(values)).length;
+  if (visibleCount === 0 && children === undefined) return null;
+  const body = (
+    <div className="form-field-section-body">
+      <FormFields fields={fields} values={values} onChange={onChange} />
+      {children}
+    </div>
+  );
+  if (collapsible) {
+    return (
+      <Fold
+        className="form-field-fold"
+        title={title}
+        count={visibleCount + (children === undefined ? 0 : 1)}
+        forceOpen={forceOpen}
+      >
+        {body}
+      </Fold>
+    );
+  }
+  return (
+    <section className="form-field-section">
+      <div className="form-field-section-title">{title}</div>
+      {body}
+    </section>
   );
 }
 

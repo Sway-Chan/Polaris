@@ -479,12 +479,25 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
 
       {/* 1. 解析器 */}
       <SetBlock header={t('settings.dns.resolverBlock')}>
-        <SetRow label="FakeIP" desc={t('settings.dns.fakeIpDesc')}>
+        <SetRow label="FakeIP" tip={t('settings.dns.fakeIpDesc')}>
           <Switch
             id="fakeip-swt"
             checked={dns.enableFakeIp}
             onChange={onFakeIpToggle}
             aria-label="FakeIP"
+          />
+        </SetRow>
+
+        {/* 与 FakeIP 无联动：它处理的是出站目标域名的预解析；浏览器/手动代理即使不开 FakeIP
+            也会向 mixed 入站提交域名。归入 DNS 只表示职责归属，不改变独立开关语义。 */}
+        <SetRow
+          label={t('settings.dns.resolveBeforeDial')}
+          tip={t('settings.dns.resolveBeforeDialTip')}
+        >
+          <Switch
+            checked={!!config.resolveBeforeDial}
+            onChange={(v) => void update({ resolveBeforeDial: v })}
+            aria-label={t('settings.dns.resolveBeforeDial')}
           />
         </SetRow>
 
@@ -592,7 +605,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
 
         <SetRow
           label={t('settings.advanced.takeoverSystemDns')}
-          desc={t('settings.dns.takeoverSystemDnsDesc')}
+          tip={t('settings.dns.takeoverSystemDnsDesc')}
         >
           <Switch checked={dns.takeoverSystemDns !== false} onChange={(v) => patchDns({ takeoverSystemDns: v })} />
         </SetRow>
@@ -601,7 +614,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
             缺省/false=关，故 `=== true` 判定（不能写 `!== false`，那会让存量配置默认显示成开）。 */}
         <SetRow
           label={t('settings.advanced.optimisticCache')}
-          desc={t('settings.advanced.optimisticCacheDesc')}
+          tip={t('settings.advanced.optimisticCacheDesc')}
         >
           <Switch
             id="dns-optimistic-swt"
@@ -783,7 +796,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
               此前 UI 只在编辑清单时隐式写 true，没有任何关闭路径 —— 用户想整体关掉 filter 够不着。 */}
           <SetRow
             label={t('settings.advanced.fakeIpFilter')}
-            desc={t('settings.advanced.fakeIpFilterDesc')}
+            tip={t('settings.advanced.fakeIpFilterDesc')}
           >
             <Switch
               id="fakeip-filter-swt"
@@ -796,6 +809,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
               清单编辑因此不再隐式写 fakeIpFilter:true —— 开关是这个字段的唯一控制点。 */}
           {fakeIpFilterOn && (
             <Fold
+              className="set-row-details"
               id="fold-fakeip-filter"
               title={t('settings.dns.fakeIpFilterFold')}
               count={fakeIpFilterList.length}
@@ -824,7 +838,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
               已整块移除；现在它是一个默认关的开关。删除依据见 builder/route.rs 的说明块。 */}
           <SetRow
             label={t('settings.dns.browserDohTitle')}
-            desc={t('settings.dns.browserDohDesc')}
+            tip={t('settings.dns.browserDohDesc')}
           >
             <Switch
               id="browser-doh-swt"
@@ -836,6 +850,7 @@ export default function SettingsDns({ config, update }: SettingsDnsProps) {
           {/* 同 FakeIP 例外：关闭时不渲染清单 —— 不生效的可编辑清单是误导。 */}
           {browserDohOn && (
             <Fold
+              className="set-row-details"
               id="fold-browser-doh"
               title={t('settings.dns.browserDohFold')}
               count={browserDohList.length}

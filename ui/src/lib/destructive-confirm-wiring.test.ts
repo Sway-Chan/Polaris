@@ -293,6 +293,8 @@ describe('T3：确认弹窗的存量清册（新增一处必须显式登记，�
     'components/screens/home/HomeScreen.tsx': 2,
     'components/screens/nodes/NodesScreen.tsx': 2,
     'components/screens/settings/SettingsDns.tsx': 1,
+    // 清理系统代理会改系统级网络状态，且用户明确要求二次确认；需要成段说明风险，不适合原地双击。
+    'components/screens/settings/SettingsNetwork.tsx': 1,
     'components/screens/settings/SettingsUpdate.tsx': 3,
     'components/screens/settings/useConfig.ts': 1,
   };

@@ -223,12 +223,12 @@ export default function SettingsTun({ config, update }: SettingsTunProps) {
             )}
           </div>
         </SetRow>
-        <SetRow label={t('settings.tun.autoRoute')} desc={t('settings.tun.autoRouteDesc')}>
+        <SetRow label={t('settings.tun.autoRoute')} tip={t('settings.tun.autoRouteDesc')}>
           <Switch checked={tun.autoRoute} onChange={(v) => patchTun({ autoRoute: v })} />
         </SetRow>
         <SetRow
           label={t('settings.tun.strictRoute')}
-          desc={t('settings.tun.strictRouteDesc')}
+          tip={t('settings.tun.strictRouteDesc')}
         >
           <Switch checked={tun.strictRoute} onChange={(v) => patchTun({ strictRoute: v })} />
         </SetRow>
@@ -420,6 +420,7 @@ export default function SettingsTun({ config, update }: SettingsTunProps) {
           {/* neighborDomains → dns-local 的 neighbor_domain（builder/dns.rs:355-378） */}
           <SetRowGroup>
             <Fold
+              className="set-row-details"
               id="fold-neighbor-domains"
               title={t('settings.advanced.neighborDomains')}
               count={neighborDomains.length}
@@ -481,7 +482,7 @@ export default function SettingsTun({ config, update }: SettingsTunProps) {
               {/* 清单只在模式已选时渲染：模式 off 时内核完全不消费 macFilterList（inbounds.rs:306
                   以 mac_filter_mode 为入口），留个可编辑清单同样是误导。 */}
               {tun.macFilterMode && (
-                <Fold id="fold-mac-filter" title={t('settings.advanced.macFilter')} count={macFilterList.length}>
+                <Fold className="set-row-details" id="fold-mac-filter" title={t('settings.advanced.macFilter')} count={macFilterList.length}>
                   <div className="fld-hint" style={{ marginTop: 0 }}>
                     {t('settings.advanced.macFilterHint')}
                   </div>

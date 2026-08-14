@@ -29,7 +29,7 @@ describe('统一接入表单的信息架构', () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  it('所有协议表单字段都被统一页签完全覆盖，且没有重复', () => {
+  it('所有协议表单字段都被统一语义分组完全覆盖，且没有重复', () => {
     for (const [protocol] of PROTO_OPTIONS) {
       const keys = nodeFormGroups(protocol).flatMap((group) => group.fields.map((field) => field.k));
       expect([...keys].sort(), protocol).toEqual(allFields(protocol).map((field) => field.k).sort());
@@ -69,10 +69,10 @@ describe('统一接入表单的信息架构', () => {
     });
   });
 
-  it('required and JSON errors point to the tab that can fix them', () => {
-    expect(meshTunnelDraftError('openconnect', {},)).toEqual({ tab: 'basic', key: 'required' });
+  it('required and JSON errors point to the group that can fix them', () => {
+    expect(meshTunnelDraftError('openconnect', {},)).toEqual({ group: 'basic', key: 'required' });
     expect(meshTunnelDraftError('openvpn-client', { user: 'u', pwd: 'p', ovpnCa: 'CA', extraJson: '[]' }))
-      .toEqual({ tab: 'advanced', key: 'json' });
+      .toEqual({ group: 'advanced', key: 'json' });
     expect(meshTunnelDraftError('openvpn-client', { user: 'u', pwd: 'p', ovpnCa: 'CA', extraJson: '{}' }))
       .toBeNull();
   });
@@ -99,7 +99,7 @@ describe('统一接入表单的信息架构', () => {
     expect(css).toMatch(/\.dlg\.access-picker-dlg\s*\{[^}]*width:min\(700px,\s*calc\(100vw - 40px\)\)/s);
   });
 
-  it('统一页签在紧凑表单中使用准确的短标签', () => {
+  it('统一分组在紧凑表单中使用准确的短标签', () => {
     const expected = {
       'zh-CN': ['基础', '传输', '路由', '高级'],
       'zh-TW': ['基礎', '傳輸', '路由', '進階'],
@@ -118,6 +118,15 @@ describe('统一接入表单的信息架构', () => {
       expect(['basic', 'transport', 'routing', 'advanced'].map((key) =>
         localeValue(dict, `node.formGroup.${key}`)
       )).toEqual(labels);
+    }
+  });
+
+  it('协议编辑器使用渐进式分组，不再把一份配置切成互斥页签', () => {
+    for (const name of ['NodeDialog.tsx', 'WgDialog.tsx', 'WarpDialog.tsx', 'TsSettingsDialog.tsx']) {
+      const source = readDialog(name);
+      expect(source, `${name} 仍在使用互斥表单页签`).not.toContain('form-tabs');
+      expect(source, `${name} 缺少统一渐进式分段`).toContain('FormSection');
+      expect(source, `${name} 的高级分组没有折叠`).toContain('collapsible');
     }
   });
 

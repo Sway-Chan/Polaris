@@ -350,7 +350,7 @@ export function ResourcesScreen() {
           <span>{t('resources.col.name')}</span>
           <span>{t('resources.col.size')}</span>
           <span className="rc-hide">{t('resources.col.updated')}</span>
-          <span />
+          <span className="res-actions" />
         </div>
 
         {loading ? (
@@ -361,7 +361,7 @@ export function ResourcesScreen() {
             </span>
             <span />
             <span className="rc-hide" />
-            <span />
+            <span className="res-actions" />
           </div>
         ) : error ? (
           <div className="res-row">
@@ -370,7 +370,7 @@ export function ResourcesScreen() {
             </span>
             <span />
             <span className="rc-hide" />
-            <span />
+            <span className="res-actions" />
           </div>
         ) : grouped.length === 0 ? (
           <div className="res-row">
@@ -379,7 +379,7 @@ export function ResourcesScreen() {
             </span>
             <span />
             <span className="rc-hide" />
-            <span />
+            <span className="res-actions" />
           </div>
         ) : (
           // 原型 :1986-1995 res-grp/res-row 是 .res-table 的**扁平兄弟**（非嵌套包一层）。之前用
@@ -461,10 +461,8 @@ function ResRow({
 
   return (
     <div className="res-row">
-      {/* 原型 :1987 res-name 首子节点是裸文本节点（"category-ads-all "）非 <span> 包裹，
-          逐字对齐——.res-name flex+gap:7px 对文本节点/span 视觉等价，但不额外包元素。 */}
       <span className="res-name">
-        {item.name}
+        <span className="res-title">{item.name}</span>
         <span className="pill region">
           {item.builtin ? t('resources.src.builtin') : t('resources.src.external')}
         </span>
@@ -487,9 +485,7 @@ function ResRow({
           updatedText
         )}
       </span>
-      {/* 原型 :1987-1995 每条数据行第 4 列 <span style="text-align:right"> 逐字带上
-          （表头 :1984 该列为裸 <span></span> 无此样式，故仅数据行加）。 */}
-      <span style={{ textAlign: 'right' }}>
+      <span className="res-actions">
         {downloading ? (
           /* 原型 :5376 下载中格：spinner + 「取消」按钮（enhanceResRows 亦在 spinner 旁 append
              data-act="res-cancel"）。后端 rule_resources_cancel 真中断传输，非仅隐藏 spinner。 */

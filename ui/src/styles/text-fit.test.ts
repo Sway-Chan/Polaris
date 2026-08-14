@@ -862,7 +862,7 @@ const BASE_DLG_W = (() => {
 })();
 const dlgBorderX = px(decl('./components.css', '.dlg', 'border').split(/\s+/)[0]) * 2; // 1*2
 const dlgBodyPadX = padX(dupAgreed('.dlg-body', 'padding')); // 18*2 = 36
-/** S11 页签面板槽（没有额外横向 padding）= 540 − 1×2 − 18×2 = 502 */
+/** S11 渐进式表单内容槽（没有额外横向 padding）= 540 − 1×2 − 18×2 = 502 */
 const FLD_AVAIL = ENTRY_DLG_W - dlgBorderX - dlgBodyPadX;
 /** 未使用 entry-form-dlg 的普通弹窗内容槽 = 460 − 1×2 − 18×2 = 422。 */
 const BASE_FLD_AVAIL = BASE_DLG_W - dlgBorderX - dlgBodyPadX;
@@ -879,6 +879,11 @@ const fldLabelFont = px(dupAgreed('.fld-l', 'font-size')); // 11.5
 const fldHintFont = px(dupAgreed('.fld-hint', 'font-size')); // 10.5
 const swtLabelFont = px(dupAgreed('.swt-row .swt-tx b', 'font-size')); // 12.5
 const fldOptFont = px(decl('./components.css', '.fld-l > .fld-opt', 'font-size')); // 10
+const tipFont = px(decl('./prototype.css', '#tip', 'font-size')); // 11.5
+const tipAvail =
+  px(decl('./prototype.css', '#tip', 'max-width')) -
+  padX(decl('./prototype.css', '#tip', 'padding')) -
+  px(decl('./prototype.css', '#tip', 'border').split(/\s+/)[0]) * 2; // 280 − 18 − 2 = 260
 
 /** `.fld-l` / `.fld-hint` 的选择器链（`wraps`/`clips`/`breaksAnywhere` 用）。 */
 const FLD_LABEL_SELS = ['.fld-l', '.swt-row .swt-tx b'];
@@ -899,22 +904,22 @@ const optTail = (loc: Locale) =>
 const optTailPx = (loc: Locale) => textPx(` ${optTail(loc)}`, { fontSize: fldOptFont });
 
 /** S11 的一个测点：某个 i18n 键渲染在哪个槽里（同一个键跨协议复用时只留一份）。 */
-type FldSlot = 'LABEL' | 'HINT' | 'SWT_LABEL' | 'SWT_HINT';
+type FldSlot = 'LABEL' | 'HINT' | 'SWT_LABEL' | 'TIP';
 interface FldPoint {
   key: string;
   slot: FldSlot;
-  /** cred/adv 只保留 codec 字段来源，展示时都在同宽页签面板内。 */
+  /** cred/adv 只保留 codec 字段来源，展示时都在同宽渐进式表单内。 */
   section: 'cred' | 'adv';
   /** 该键至少在一处带「可选」徽标 ⇒ 按带徽标量（取最坏）。 */
   opt: boolean;
 }
 /**
  * 遍历 ND_SPEC 的协议字段，把 {cred, adv} 与专属 groups 一起摊成「键 → 槽」。三者最终都由
- * `nodeFormGroups` 放进 540px 录入弹窗的同宽 tab panel；section 仅用于诊断来源，不再改变宽度。
+ * `nodeFormGroups` 放进 540px 录入弹窗的同宽内容区；section 仅用于诊断来源，不再改变宽度。
  *
  * 槽由 `FieldSpec.t` 决定，与 `FieldRenderer` 的分支一一对应：
- *  - `switch` → 标签渲染成 `.swt-tx b`（12.5px）、hint/disabledHint 渲染成 `.swt-tx` 内的 `.fld-hint`，
- *    两者都在被开关挤窄的那一列里（容器 − 12 − 36）；**且 switch 分支不渲染 `.fld-opt`**（无徽标）。
+ *  - `switch` → 标签渲染成 `.swt-tx b`（12.5px），hint/disabledHint 进入统一 `#tip` 浮层；
+ *    开关不再因复杂说明永久增高。switch 分支不渲染 `.fld-opt`（无徽标）。
  *  - 其余 → 标签是 `.fld-l`（11.5px，带可选徽标）、hint 渲染成控件下方占整幅宽的 `.fld-hint`。
  *    **hint 不再只有 `select` 有**：2026-08-07 `hint` 提到了 `FieldBase`（text/number/textarea 也能有），
  *    这里的判据同步从 `f.t === 'select' && f.hint` 放宽成 `f.hint` —— 否则新加的 text hint
@@ -938,8 +943,8 @@ function nodeFieldPoints(): FldPoint[] {
         n++;
         if (f.t === 'switch') {
           put(f.label, 'SWT_LABEL', section, false);
-          if (f.hint) put(f.hint, 'SWT_HINT', section, false);
-          if (f.disabledHint) put(f.disabledHint, 'SWT_HINT', section, false);
+          if (f.hint) put(f.hint, 'TIP', section, false);
+          if (f.disabledHint) put(f.disabledHint, 'TIP', section, false);
         } else {
           put(f.label, 'LABEL', section, f.opt === true);
           if (f.hint) put(f.hint, 'HINT', section, false);
@@ -950,8 +955,8 @@ function nodeFieldPoints(): FldPoint[] {
         n++;
         if (f.t === 'switch') {
           put(f.label, 'SWT_LABEL', 'cred', false);
-          if (f.hint) put(f.hint, 'SWT_HINT', 'cred', false);
-          if (f.disabledHint) put(f.disabledHint, 'SWT_HINT', 'cred', false);
+          if (f.hint) put(f.hint, 'TIP', 'cred', false);
+          if (f.disabledHint) put(f.disabledHint, 'TIP', 'cred', false);
         } else {
           put(f.label, 'LABEL', 'cred', f.opt === true);
           if (f.hint) put(f.hint, 'HINT', 'cred', false);
@@ -973,17 +978,14 @@ function nodeFieldPoints(): FldPoint[] {
  *    （`.fld-l` 15/325 个测点 2 行、`.swt-tx b` 1/60 个测点 2 行），故它同时也是紧的。
  *  - `HINT` = **8**：控件下方占整幅宽的说明行（当前 502px）。2026-08-07 起 `hint` 提到了
  *    `FieldBase`，这一档不再只覆盖 `select`，text/number/textarea 的说明也走同一个槽。
- *  - `SWT_HINT` = **12**：开关行的说明（当前 454px，被开关挤窄 48px）。宽度从旧折叠布局放开后，
- *    仍保留原有行数上限作为棘轮，不因页面更宽而放松文案复杂度。
- *    12 行 × (10.5px × line-height 1.5) ≈ 189px，加上标题行 ≈ 210px —— 在最小窗口（740px 高，
- *    `.dlg` ≤ 700px，头尾固定约 124px ⇒ 正文可视约 576px）里占三分之一强。**难看，但不破版**；
- *    要真收，得改译文而不是改容器（`.dlg` 宽度已由 2026-07-30 裁定「不加宽」，见 index.css:1137 段）。
+ *  - `TIP` = **12**：开关复杂说明进入 280px 的统一 tooltip；扣除内边距与边框后正文宽 260px。
+ *    仍以 12 行为上限，避免“收进 i”变成容纳无限长文案的借口。
  */
 const FLD_MAX_LINES: Record<FldSlot, number> = {
   LABEL: 2,
   SWT_LABEL: 2,
   HINT: 8,
-  SWT_HINT: 12,
+  TIP: 12,
 };
 
 // ── 溢出计算 ────────────────────────────────────────────────────────────────────────────
@@ -1569,13 +1571,13 @@ describe('⑧ 节点弹窗表单字段（统一 540px 录入宽度，五语种�
       breakAnywhere: breaksAnywhere(FLD_LABEL_SELS),
       maxLines: labelWrap ? FLD_MAX_LINES.SWT_LABEL : 1,
     }),
-    SWT_HINT: (section) => ({
-      where: `S11 ${section} 开关说明`,
-      avail: swtTextAvail(FLD_AVAIL),
-      type: { fontSize: fldHintFont },
-      wrap: hintWrap,
-      breakAnywhere: breaksAnywhere(FLD_HINT_SELS),
-      maxLines: hintWrap ? FLD_MAX_LINES.SWT_HINT : 1,
+    TIP: (section) => ({
+      where: `S11 ${section} 开关提示`,
+      avail: tipAvail,
+      type: { fontSize: tipFont },
+      wrap: true,
+      breakAnywhere: false,
+      maxLines: FLD_MAX_LINES.TIP,
     }),
   };
 
@@ -1583,7 +1585,8 @@ describe('⑧ 节点弹窗表单字段（统一 540px 录入宽度，五语种�
     expect(ENTRY_DLG_W, '统一录入弹窗宽度变了 → 重新标定 FLD_MAX_LINES').toBe(540);
     expect(FLD_AVAIL).toBeCloseTo(540 - 2 - 36, 5); // 502
     expect(swtTextAvail(FLD_AVAIL)).toBeCloseTo(502 - 12 - 36, 5); // 454
-    expect([fldLabelFont, fldHintFont, swtLabelFont, fldOptFont]).toEqual([11.5, 10.5, 12.5, 10]);
+    expect([fldLabelFont, fldHintFont, swtLabelFont, fldOptFont, tipFont]).toEqual([11.5, 10.5, 12.5, 10, 11.5]);
+    expect(tipAvail).toBeCloseTo(260, 5);
     // `.fld-opt` 在 prototype.css 另存一份同名规则（:933），两份必须同值 —— 本仓经典坑。
     expect(px(decl('./prototype.css', '.fld-opt', 'font-size'))).toBe(fldOptFont);
   });
@@ -1648,7 +1651,7 @@ describe('⑧ 节点弹窗表单字段（统一 540px 录入宽度，五语种�
    * 改真译文的对照做完就得还原，还原漏了就变成静默篡改语料。
    */
   it('阳性对照：两条判据各造一个已知缺陷，门必须都抓到', () => {
-    const box = BOXES.SWT_HINT('adv'); // 最窄的那档：454px
+    const box = BOXES.TIP('adv');
     const bucket: Over[] = [];
 
     // ① 硬判据：一个比字段还宽的**不可断**单元（长 token / URL 那一类）。
@@ -1663,13 +1666,13 @@ describe('⑧ 节点弹窗表单字段（统一 540px 录入宽度，五语种�
     expect(w.key).toBe('node.field.__probeWidth');
     expect(w.need).toBeGreaterThan(box.avail); // 最宽行确实超了可用宽
     expect(l.key).toBe('node.field.__probeLines');
-    expect(l.lines).toBeGreaterThan(FLD_MAX_LINES.SWT_HINT);
+    expect(l.lines).toBeGreaterThan(FLD_MAX_LINES.TIP);
     // 报文必须指名槽 / 语种 / 键 / 超出量，否则红了也没法定位。
     const msg = fmt(bucket);
-    expect(msg).toMatch(/S11 adv 开关说明/);
+    expect(msg).toMatch(/S11 adv 开关提示/);
     expect(msg).toMatch(/\| ru \|/);
     expect(msg).toMatch(/node\.field\.__probeWidth/);
-    expect(msg).toMatch(/最宽行 [\d.]+px \/ 可用 454\.0px/);
+    expect(msg).toMatch(/最宽行 [\d.]+px \/ 可用 260\.0px/);
     expect(msg).toMatch(/\d+ 行 \/ 预算 12 行/);
   });
 
@@ -1680,10 +1683,10 @@ describe('⑧ 节点弹窗表单字段（统一 540px 录入宽度，五语种�
   it('阴性对照：无空格中文长句必须能折行，不得被算成「不可断长串」', () => {
     const source = DICT['zh-TW']['node.field.muxPadHint'];
     expect(source).toContain('隨機填充'); // 语料换了就该重新对照，不许静默跟着变
-    const zh = source.repeat(2); // 合成长句，确保在放宽后的 454px 槽里仍覆盖折行腿
-    const box = BOXES.SWT_HINT('adv');
+    const zh = source.repeat(2); // 合成长句，确保在 260px tooltip 里覆盖折行腿
+    const box = BOXES.TIP('adv');
     const { lines, maxLineWidth } = layout(zh, box.avail, box.type, box);
-    expect(lines, '中文长句在 454px 里仍应折行').toBeGreaterThan(1);
+    expect(lines, '中文长句在 260px tooltip 里仍应折行').toBeGreaterThan(1);
     expect(
       maxLineWidth,
       `整句被当成一个不可断的词了（${maxLineWidth.toFixed(1)}px > ${box.avail}px）—— breakUnits 的 CJK 断点没生效`,

@@ -695,7 +695,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
         <SetRowSection>
           <SetRow
             label={t('settings.update.autoDownloadApp')}
-            desc={
+            tip={
               config.autoDownloadUpdate
                 ? t('settings.update.autoDownloadAppDesc')
                 : t('settings.update.autoDownloadAppDescOff')
@@ -953,7 +953,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
         <SetRowSection>
           <SetRow
             label={t('settings.coreManagement.autoUpdate')}
-            desc={t('settings.coreManagement.autoUpdateNoSchedulerHint')}
+            tip={t('settings.coreManagement.autoUpdateNoSchedulerHint')}
           >
             <Switch
               id="auto-core-swt"
@@ -999,7 +999,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
             （`!== false` 即生效，与后端同口径）。此前「全仓零消费者」的注释与 disabled 均已过时。 */}
           <SetRow
             label={t('settings.update.restrictMinor')}
-            desc={t('settings.update.restrictMinorDesc')}
+            tip={t('settings.update.restrictMinorDesc')}
           >
             <Switch
               checked={config.restrictCoreUpdateToCompatibleMinor !== false}
@@ -1071,7 +1071,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
             选了「仅手动」，会以为后台还在按时刷新。判据抽在 settings-logic 并直测。 */}
         <SetRow
           label={t('settings.update.subAutoOnStart')}
-          desc={
+          tip={
             subAutoStatus === 'startup-only'
               ? t('settings.update.subAutoStartupOnly')
               : t('settings.update.subAutoWithInterval')

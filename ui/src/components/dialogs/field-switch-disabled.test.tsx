@@ -63,11 +63,13 @@ describe('switch 禁用态：可见但不可写，且说明为什么', () => {
     expect(html).toContain('wg.reverseMesh');
   });
 
-  it('不变式3：禁用时 hint 换成「为什么不能开」，常态 hint 不再显示', () => {
+  it('不变式3：禁用时信息提示换成「为什么不能开」，常态说明不再显示', () => {
     // 牙：把 hint 的三元换成恒取 spec.hint → 用户读到的是一条拨不动的开关「拨动后会怎样」→ 红。
     const html = render({ ...SPEC, disabled: true });
     expect(html).toContain('wg.reverseMeshWarp');
     expect(html).not.toContain('wg.reverseMeshHint');
+    expect(html).toContain('class="info-i"');
+    expect(html).not.toContain('fld-hint');
   });
 
   it('禁用但没给 disabledHint → 退回常态 hint（不留空白，也不吞掉说明）', () => {

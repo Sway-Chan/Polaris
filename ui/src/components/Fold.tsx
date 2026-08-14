@@ -37,7 +37,7 @@
  * 过期成 7 处（两轮对拍各撞一次）。注释里写别处的行号本身就是会腐烂的资产；改用「类名 + 文件名」定位。 */
 
 import type { ReactNode } from 'react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { revealOnToggle } from './reveal';
@@ -46,6 +46,7 @@ export function Fold({
   title,
   count,
   defaultOpen,
+  forceOpen,
   children,
   id,
   className,
@@ -54,12 +55,17 @@ export function Fold({
   /** 条目数徽章；undefined = 不显示（如「其余平台」这类非清单折叠）。0 会照常显示。 */
   count?: number;
   defaultOpen?: boolean;
+  /** 校验失败等场景可强制露出内容；用户随后仍可自行收起。 */
+  forceOpen?: boolean;
   children: ReactNode;
   id?: string;
   className?: string;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(!!defaultOpen);
+  useEffect(() => {
+    if (forceOpen) setOpen(true);
+  }, [forceOpen]);
   return (
     <details
       id={id}

@@ -39,9 +39,12 @@
   },
   "proxy": {
     "systemProxyResidualDesc": "A system proxy is still enabled ({{proxy}}) in TUN mode. It wasn't set by Polaris and may cause connection issues. Consider disabling it unless you need it.",
-    "disableSystemProxy": "Disable system proxy",
-    "systemProxyDisabled": "System proxy disabled",
-    "systemProxyDisableFailed": "Failed to disable system proxy"
+    "clearSystemProxy": "Clear system proxy",
+    "clear": "Clear",
+    "systemProxyCleared": "System proxy cleared",
+    "systemProxyClearFailed": "Failed to clear system proxy",
+    "clearSystemProxyConfirmTitle": "Clear the system proxy?",
+    "clearSystemProxyConfirmDesc": "This removes the system proxy residue detected by Polaris and may interrupt connections that depend on it."
   },
   "common": {
     "cancel": "Cancel",
@@ -140,8 +143,7 @@
     "sourceLabel": "Source",
     "levelAria": "Log display level",
     "sourceAria": "Log source",
-    "diagnosticMode": "Diagnostic mode",
-    "diagnosticLevel": "DEBUG",
+    "diagnosticMode": "Diagnose",
     "diagnosticTipOff": "Temporarily show and record DEBUG output for this run without changing your settings. Restarting the app restores the configured level. The core's own log-file level is unchanged.",
     "diagnosticTipOn": "Diagnostic mode is on: app output and the live core stream are temporarily at DEBUG. Click to restore the configured level; restarting the app also restores it.",
     "diagnosticFailed": "Failed to toggle diagnostic mode"
@@ -165,7 +167,7 @@
     },
     "fakeIpTun": {
       "title": "TUN Mode",
-      "body": "FakeIP was enabled automatically for TUN mode (recommended). You can turn it off in Settings → Network."
+      "body": "FakeIP was enabled automatically for TUN mode (recommended). You can turn it off in Settings → DNS."
     },
     "helperNotInstalled": {
       "title": "Polaris could not start TUN mode",
@@ -504,7 +506,7 @@
       "bypassHint": "Domains and CIDRs that skip the system proxy.",
       "sharedListBold": "This is the same list as TUN · Excluded subnets",
       "sharedListRest": "; editing either place changes both.",
-      "disableSystemProxyDesc": "Clears system proxy settings left behind by other software so they cannot disturb connections under TUN",
+      "clearSystemProxyDesc": "Remove detected residual proxy settings",
       "blockQuicDescFull": "Rejects UDP 443 towards proxy nodes so browsers fall back to TCP through the proxy, keeping QUIC from slipping past routing or leaking",
       "webrtcLeakDesc": "Off / forward STUN through the proxy / reject STUN outright. Only takes effect in TUN mode",
       "webrtcTunOnlyNote": "Only takes effect in TUN mode — switch the takeover mode to TUN on the home screen to use it",
@@ -523,16 +525,14 @@
       "secretToggleTip": "Show / hide",
       "secretRegenerateTip": "Regenerate",
       "officialDashboard": "Official dashboard",
-      "officialDashboardDesc": "Open the sing-box dashboard in Polaris; it connects automatically while the core is running",
-      "resolveBeforeDial": "Resolve domains before connecting",
-      "resolveBeforeDialDesc": "Resolve the destination domain locally before handing its IP to the node. A lookup failure stops the connection and may affect node-side domain/SNI routing."
+      "officialDashboardDesc": "Open the sing-box dashboard in Polaris; it connects automatically while the core is running"
     },
     "proxyMode": {
       "confirmTitle": "Confirm Proxy Mode Change",
       "confirmDesc": "Switching the takeover mode restarts the proxy to apply it, briefly dropping the current connection.",
       "confirmBtn": "Confirm Switch",
       "failUpdate": "Failed to save settings",
-      "fakeIpAutoEnabled": "FakeIP was enabled automatically for TUN mode (recommended). You can turn it off in Settings → Network."
+      "fakeIpAutoEnabled": "FakeIP was enabled automatically for TUN mode (recommended). You can turn it off in Settings → DNS."
     },
     "advanced": {
       "dnsInvalid": "Unrecognized DNS address (supports https:// DoH, tls:// DoT, udp:// or IP); not saved, please correct",
@@ -804,6 +804,8 @@
       "brandTencent": "Tencent",
       "resolverBlock": "Resolvers",
       "fakeIpDesc": "Answers with fake IPs to dodge DNS poisoning",
+      "resolveBeforeDial": "Resolve before connecting",
+      "resolveBeforeDialTip": "Resolve the destination domain locally before passing its IP to the node. This is independent of FakeIP; a lookup failure stops the connection and may affect node-side domain/SNI routing.",
       "remoteDns": "Remote DNS",
       "remoteDnsDesc": "Upstream used for overseas domains",
       "domesticDns": "Domestic DNS",
@@ -1019,6 +1021,12 @@
     "newTitle": "New Rule",
     "priority": "Rule priority",
     "routingPriority": "Routing priority · Left to right, first match wins",
+    "chainCustom": "Custom",
+    "chainApp": "Apps",
+    "chainMesh": "Mesh",
+    "chainLan": "LAN",
+    "chainSmart": "Smart",
+    "chainDefault": "Default",
     "target": "Target outbound",
     "targetBlock": "Block",
     "targetDefaultProxy": "Proxy (default proxy)",
@@ -1304,7 +1312,6 @@
     "server": "Server address",
     "serverPort": "Address / Port",
     "formGroup": {
-      "aria": "Configuration sections",
       "basic": "Basic",
       "transport": "Transport",
       "routing": "Routing",
@@ -1405,7 +1412,7 @@
       "tlsEngine": "TLS engine",
       "tlsEngineHint": "Uses the OS-native TLS stack so the ClientHello fingerprint looks genuine. It only takes effect on the matching platform; the wrong choice is simply not written to the config.",
       "tlsFragment": "TLS fragmentation",
-      "tlsFragmentHint": "Splits the ClientHello across several TCP packets to get past middleboxes that block on SNI keywords. Turn it on only when the handshake itself is reset and a different SNI does get through; the cost is one extra round trip, a slower handshake, and some CDNs / load balancers dropping the connection outright. It has no effect on QUIC-based protocols (Hysteria2 / TUIC) or NaiveProxy, which is why those three forms do not offer it.",
+      "tlsFragmentHint": "Splits the TLS ClientHello to bypass SNI-based blocking. Try it only when the handshake is reset; it adds latency and some servers may reject it. Not available for Hysteria2, TUIC, or NaiveProxy.",
       "udp": "UDP relay",
       "up": "Upload (Mbps)",
       "user": "Username",

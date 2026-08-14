@@ -16,6 +16,19 @@ describe('日志工具栏折行不变量', () => {
     expect(SCREEN).not.toContain('className="log-tb-sep"');
     expect(CSS).toMatch(/\.log-source-filter\s*\{[^}]*flex-wrap:\s*nowrap/);
   });
+
+  it('诊断操作属于日志级别组，不再作为第三块单独占行', () => {
+    expect(SCREEN).toMatch(
+      /className="log-filter-group log-level-filter"[\s\S]*?log-diagnostic-toggle[\s\S]*?<\/div>\s*<div className="log-filter-group log-source-filter"/,
+    );
+    expect(SCREEN).not.toContain('logs.diagnosticLevel');
+    expect(CSS).not.toMatch(/\.log-diagnostic-toggle\s*\{[^}]*margin-left:\s*auto/);
+  });
+
+  it('底栏把直播、行数与恢复入口组成左侧流状态簇，避开右下 toast', () => {
+    expect(SCREEN).toMatch(/className="log-foot"[\s\S]*?className="log-stream-state"[\s\S]*?className="log-live"[\s\S]*?className="log-count"/);
+    expect(CSS).toMatch(/\.log-foot\s*\{[^}]*justify-content:\s*flex-start/);
+  });
 });
 
 describe('会话诊断模式接线', () => {

@@ -1,17 +1,17 @@
 import type { FieldSpec, FormValues } from './field-spec';
 import type { NodeProto } from './node-spec';
 
-export type WgFormTab = 'basic' | 'routing' | 'advanced';
+export type WgFormGroup = 'basic' | 'routing' | 'advanced';
 
-export const WG_FORM_GROUP_KEYS: Record<WgFormTab, readonly string[]> = {
+export const WG_FORM_GROUP_KEYS: Record<WgFormGroup, readonly string[]> = {
   basic: ['address', 'port', 'privateKey', 'localAddress', 'peerPublicKey', 'preSharedKey'],
   routing: ['allowedIPs', 'reverseMesh', 'allowInternet', 'alwaysRouteSubnets'],
   advanced: ['persistentKeepalive', 'mtu', 'reserved', 'detour'],
 };
 
 /** WireGuard 字段按用户任务分组；字段定义本身仍只有调用方的一份。 */
-export function groupWgFields(fields: FieldSpec[]): Record<WgFormTab, FieldSpec[]> {
-  const inGroup = (tab: WgFormTab, key: string) => WG_FORM_GROUP_KEYS[tab].includes(key);
+export function groupWgFields(fields: FieldSpec[]): Record<WgFormGroup, FieldSpec[]> {
+  const inGroup = (group: WgFormGroup, key: string) => WG_FORM_GROUP_KEYS[group].includes(key);
   return {
     basic: fields.filter((field) => inGroup('basic', field.k)),
     routing: fields.filter((field) => inGroup('routing', field.k)),
@@ -19,9 +19,9 @@ export function groupWgFields(fields: FieldSpec[]): Record<WgFormTab, FieldSpec[
   };
 }
 
-export type TsFormTab = 'basic' | 'routing' | 'advanced';
+export type TsFormGroup = 'basic' | 'routing' | 'advanced';
 
-export const TS_FORM_GROUP_KEYS: Record<TsFormTab, readonly string[]> = {
+export const TS_FORM_GROUP_KEYS: Record<TsFormGroup, readonly string[]> = {
   basic: ['hostname', 'exitNode', 'exitNodeCustom'],
   routing: [
     'reverseMesh',
@@ -44,8 +44,8 @@ export const TS_FORM_GROUP_KEYS: Record<TsFormTab, readonly string[]> = {
 };
 
 /** Tailscale 字段按任务分组；FieldSpec 与保存逻辑仍各自只有一份真值。 */
-export function groupTsFields(fields: FieldSpec[]): Record<TsFormTab, FieldSpec[]> {
-  const inGroup = (tab: TsFormTab, key: string) => TS_FORM_GROUP_KEYS[tab].includes(key);
+export function groupTsFields(fields: FieldSpec[]): Record<TsFormGroup, FieldSpec[]> {
+  const inGroup = (group: TsFormGroup, key: string) => TS_FORM_GROUP_KEYS[group].includes(key);
   return {
     basic: fields.filter((field) => inGroup('basic', field.k)),
     routing: fields.filter((field) => inGroup('routing', field.k)),
@@ -53,17 +53,17 @@ export function groupTsFields(fields: FieldSpec[]): Record<TsFormTab, FieldSpec[
   };
 }
 
-export type WarpFormTab = 'basic' | 'routing' | 'advanced';
+export type WarpFormGroup = 'basic' | 'routing' | 'advanced';
 
-export const WARP_FORM_GROUP_KEYS: Record<WarpFormTab, readonly string[]> = {
+export const WARP_FORM_GROUP_KEYS: Record<WarpFormGroup, readonly string[]> = {
   basic: ['endpoint'],
   routing: ['route', 'allowedIPs', 'reverseMesh'],
   advanced: ['mtu', 'keepalive', 'reserved', 'detour'],
 };
 
-/** WARP 的 WireGuard 字段按任务分组；名称与许可证作为手写基础字段留在同一页签。 */
-export function groupWarpFields(fields: FieldSpec[]): Record<WarpFormTab, FieldSpec[]> {
-  const inGroup = (tab: WarpFormTab, key: string) => WARP_FORM_GROUP_KEYS[tab].includes(key);
+/** WARP 的 WireGuard 字段按任务分组；名称与许可证作为手写基础字段连续展示。 */
+export function groupWarpFields(fields: FieldSpec[]): Record<WarpFormGroup, FieldSpec[]> {
+  const inGroup = (group: WarpFormGroup, key: string) => WARP_FORM_GROUP_KEYS[group].includes(key);
   return {
     basic: fields.filter((field) => inGroup('basic', field.k)),
     routing: fields.filter((field) => inGroup('routing', field.k)),
@@ -75,13 +75,13 @@ export function groupWarpFields(fields: FieldSpec[]): Record<WarpFormTab, FieldS
 export function meshTunnelDraftError(
   proto: NodeProto,
   draft: FormValues
-): { tab: 'basic' | 'routing' | 'advanced'; key: 'required' | 'json' } | null {
+): { group: 'basic' | 'routing' | 'advanced'; key: 'required' | 'json' } | null {
   const present = (key: string) => typeof draft[key] === 'string' && draft[key].trim() !== '';
   if (proto === 'openconnect' && (!present('user') || !present('pwd') || !present('flavor'))) {
-    return { tab: 'basic', key: 'required' };
+    return { group: 'basic', key: 'required' };
   }
   if (proto === 'openvpn-client' && (!present('user') || !present('pwd') || !present('ovpnCa'))) {
-    return { tab: 'basic', key: 'required' };
+    return { group: 'basic', key: 'required' };
   }
   for (const key of ['extraJson', 'ovpnTlsExtraJson']) {
     const raw = draft[key];
@@ -89,10 +89,10 @@ export function meshTunnelDraftError(
     try {
       const parsed: unknown = JSON.parse(raw);
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        return { tab: 'advanced', key: 'json' };
+        return { group: 'advanced', key: 'json' };
       }
     } catch {
-      return { tab: 'advanced', key: 'json' };
+      return { group: 'advanced', key: 'json' };
     }
   }
   return null;

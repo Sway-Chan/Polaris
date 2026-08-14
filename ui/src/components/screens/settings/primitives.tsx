@@ -21,6 +21,9 @@ import { Children, isValidElement } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { Csel, type CselOption } from '../../dialogs/Csel';
+import { InfoIcon } from '../../InfoIcon';
+
+export { InfoIcon } from '../../InfoIcon';
 
 /* ── phead：页头（h1 + sub 描述 + 右侧 acts） ── 原型 .phead L255 */
 export function Phead({
@@ -129,6 +132,7 @@ export function CardSub({
 export function SetRow({
   label,
   desc,
+  tip,
   children,
   className,
   style,
@@ -139,6 +143,8 @@ export function SetRow({
 }: {
   label: ReactNode;
   desc?: ReactNode;
+  /** 复杂解释收进统一信息提示；`desc` 只保留需要常驻的短说明或状态。 */
+  tip?: string;
   children?: ReactNode;
   className?: string;
   style?: CSSProperties;
@@ -152,7 +158,10 @@ export function SetRow({
   return (
     <div id={id} className={cn('set-row', className)} style={rowStyle}>
       <div className="sr-tx">
-        <b>{label}</b>
+        <span className="sr-title">
+          <b>{label}</b>
+          {tip && <InfoIcon tip={tip} />}
+        </span>
         {desc && <div>{desc}</div>}
       </div>
       {children !== undefined && (
@@ -428,18 +437,4 @@ export function ProgressBar({ value, style }: { value: number; style?: CSSProper
 export function Spinner({ className }: { className?: string }) {
   const { t } = useTranslation();
   return <span className={cn('spinner', className)} role="status" aria-label={t('common.loading')} />;
-}
-
-/* ── InfoIcon：圆形信息提示（.info-i） ── 原型 .info-i L1028 */
-export function InfoIcon({ tip }: { tip: string }) {
-  return (
-    // `aria-label` 与 `data-tip` 同文案：前者是这个图标的**无障碍名**（它没有可见文字），
-    // 后者是视觉浮层。不是两套打架——引擎的 `aria-describedby` 是补充说明，替代不了名字。
-    <span className="info-i" tabIndex={0} role="img" aria-label={tip} data-tip={tip}>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
-        <circle cx="12" cy="12" r="9" />
-        <path d="M12 11v5M12 8h.01" />
-      </svg>
-    </span>
-  );
 }

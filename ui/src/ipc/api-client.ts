@@ -120,7 +120,7 @@ export const proxyApi = {
     return invoke(IPC_CHANNELS.KERNEL_PROBE_OUTBOUND, { outbound, isEndpoint });
   },
 
-  /** 用户主动关闭系统代理（TUN 残留提示的「关闭系统代理」一键动作）。 */
+  /** 用户主动清理系统代理残留设置（TUN 残留提示的一键恢复动作）。 */
   async disableSystemProxy(): Promise<{ ok: boolean }> {
     return invoke(IPC_CHANNELS.SYSTEM_PROXY_DISABLE);
   },

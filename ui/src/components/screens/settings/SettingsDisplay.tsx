@@ -111,7 +111,7 @@ export default function SettingsDisplay({ config, update }: SettingsDisplayProps
         </SetRow>
         <SetRow
           label={t('settings.general.rememberWindowSize')}
-          desc={t('settings.general.rememberWindowSizeDesc')}
+          tip={t('settings.general.rememberWindowSizeDesc')}
         >
           <Switch
             checked={config.rememberWindowSize !== false}
@@ -120,7 +120,7 @@ export default function SettingsDisplay({ config, update }: SettingsDisplayProps
         </SetRow>
         <SetRow
           label={t('settings.general.desktopNotifications')}
-          desc={t('settings.general.desktopNotificationsDesc')}
+          tip={t('settings.general.desktopNotificationsDesc')}
         >
           <Switch
             checked={config.desktopNotifications !== false}
@@ -129,7 +129,7 @@ export default function SettingsDisplay({ config, update }: SettingsDisplayProps
         </SetRow>
         <SetRow
           label={t('settings.general.autoLightweightMode')}
-          desc={t('settings.general.autoLightweightModeDesc')}
+          tip={t('settings.general.autoLightweightModeDesc')}
         >
           <Switch
             checked={!!config.autoLightweightMode}
@@ -150,7 +150,7 @@ export default function SettingsDisplay({ config, update }: SettingsDisplayProps
           <SetRow
             id="set-hwaccel"
             label={t('settings.general.hardwareAcceleration')}
-            desc={t('settings.general.hardwareAccelerationDesc')}
+            tip={t('settings.general.hardwareAccelerationDesc')}
           >
             {/* 正向语义：默认 true（开），仅显式 false 才判禁 —— 与后端 graphics_compat 的 `!== false` 同口径，
                 存量配置（缺该键）行为逐字节不变。 */}
@@ -168,7 +168,7 @@ export default function SettingsDisplay({ config, update }: SettingsDisplayProps
         <SetRow
           id="set-window-effects"
           label={t('settings.general.windowEffects')}
-          desc={t(windowEffectsDescKey(os))}
+          tip={t(windowEffectsDescKey(os))}
         >
           <Switch
             checked={config.windowEffects !== false}

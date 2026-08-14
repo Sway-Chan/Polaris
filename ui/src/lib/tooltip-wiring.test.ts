@@ -216,11 +216,14 @@ describe('G10 · DOM 原生 title= 归零', () => {
     expect(offenders, '这些组件把 title 透传到 DOM —— 收 title= 等于绕过本门').toEqual([]);
   });
 
-  /** 透传型组件本身必须仍存在于 primitives —— 名单过期会让上一条恒绿。 */
-  it('透传组件名单未过期（primitives 里逐个还在）', () => {
-    const primitives = get('components/screens/settings/primitives.tsx');
+  /** 透传型组件本身必须仍存在于共享组件层 —— 名单过期会让上一条恒绿。 */
+  it('透传组件名单未过期（共享组件层逐个还在）', () => {
+    const components = [
+      get('components/screens/settings/primitives.tsx'),
+      get('components/InfoIcon.tsx'),
+    ].join('\n');
     for (const name of FORWARDS_TITLE_TO_DOM) {
-      expect(primitives, `${name} 在 primitives.tsx 已不存在，请更新 FORWARDS_TITLE_TO_DOM`).toMatch(
+      expect(components, `${name} 在共享组件层已不存在，请更新 FORWARDS_TITLE_TO_DOM`).toMatch(
         new RegExp(`export function ${name}\\b`),
       );
     }

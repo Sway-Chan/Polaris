@@ -39,9 +39,12 @@
   },
   "proxy": {
     "systemProxyResidualDesc": "TUN 模式下检测到系统代理仍开启（{{proxy}}），它不是 Polaris 设置的，可能导致连接异常。如非必要建议关闭。",
-    "disableSystemProxy": "关闭系统代理",
-    "systemProxyDisabled": "已关闭系统代理",
-    "systemProxyDisableFailed": "关闭系统代理失败"
+    "clearSystemProxy": "清理系统代理",
+    "clear": "清理",
+    "systemProxyCleared": "系统代理已清理",
+    "systemProxyClearFailed": "清理系统代理失败",
+    "clearSystemProxyConfirmTitle": "确认清理系统代理？",
+    "clearSystemProxyConfirmDesc": "将移除 Polaris 检测到的系统代理残留，依赖该代理的网络连接可能会中断。"
   },
   "common": {
     "cancel": "取消",
@@ -140,8 +143,7 @@
     "sourceLabel": "来源",
     "levelAria": "日志显示级别",
     "sourceAria": "日志来源",
-    "diagnosticMode": "诊断模式",
-    "diagnosticLevel": "DEBUG",
+    "diagnosticMode": "诊断",
     "diagnosticTipOff": "仅本次运行临时显示并记录 DEBUG，不修改配置；重启应用后恢复已配置级别。内核自身日志文件的级别不变。",
     "diagnosticTipOn": "诊断模式已开启：应用与内核实时流临时提升到 DEBUG。点击关闭并恢复已配置级别；重启应用也会自动恢复。",
     "diagnosticFailed": "切换诊断模式失败"
@@ -165,7 +167,7 @@
     },
     "fakeIpTun": {
       "title": "TUN 模式",
-      "body": "已为 TUN 模式自动启用 FakeIP（推荐）。可在「设置 → 网络」中关闭。"
+      "body": "已为 TUN 模式自动启用 FakeIP（推荐）。可在「设置 → DNS」中关闭。"
     },
     "helperNotInstalled": {
       "title": "Polaris 未能启动 TUN 模式",
@@ -504,7 +506,7 @@
       "bypassHint": "跳过系统代理的域名 / CIDR。",
       "sharedListBold": "与「TUN · 排除网段」是同一份清单",
       "sharedListRest": "，在任一处编辑都会同时改另一处。",
-      "disableSystemProxyDesc": "清除其它软件遗留的系统代理设置，避免在 TUN 模式下干扰连接",
+      "clearSystemProxyDesc": "移除检测到的残留代理设置",
       "blockQuicDescFull": "对代理节点的 UDP 443 执行 reject，逼浏览器回退 TCP 走代理，防 QUIC 绕过分流 / 泄漏",
       "webrtcLeakDesc": "关闭 / 经代理转发 STUN / 直接 reject STUN。仅 TUN 模式生效",
       "webrtcTunOnlyNote": "仅 TUN 模式生效——在主页把接管方式切到 TUN 后可用",
@@ -523,16 +525,14 @@
       "secretToggleTip": "显示/隐藏",
       "secretRegenerateTip": "重新生成",
       "officialDashboard": "官方面板",
-      "officialDashboardDesc": "在应用内打开 sing-box 面板；内核运行时自动连接",
-      "resolveBeforeDial": "连接前解析域名",
-      "resolveBeforeDialDesc": "由本机先将目标域名解析为 IP，再交给节点；解析失败会导致连接失败，并可能影响节点侧按域名/SNI 分流。"
+      "officialDashboardDesc": "在应用内打开 sing-box 面板；内核运行时自动连接"
     },
     "proxyMode": {
       "confirmTitle": "确认切换代理模式",
       "confirmDesc": "切换接管方式将重启代理以应用，期间会短暂断开当前连接。",
       "confirmBtn": "确认切换",
       "failUpdate": "保存设置失败",
-      "fakeIpAutoEnabled": "已随 TUN 模式自动启用 FakeIP（推荐）。可在 设置 → 网络 中关闭。"
+      "fakeIpAutoEnabled": "已随 TUN 模式自动启用 FakeIP（推荐）。可在 设置 → DNS 中关闭。"
     },
     "advanced": {
       "dnsInvalid": "DNS 地址无法识别（支持 https:// DoH、tls:// DoT、udp:// 或 IP），未保存，请修正",
@@ -804,6 +804,8 @@
       "brandTencent": "腾讯",
       "resolverBlock": "解析器",
       "fakeIpDesc": "回复假 IP 规避 DNS 污染",
+      "resolveBeforeDial": "先解析再连接",
+      "resolveBeforeDialTip": "在本机先解析目标域名，再将 IP 交给节点。它与 FakeIP 独立；解析失败会中止连接，并可能影响节点侧按域名/SNI 分流。",
       "remoteDns": "远程 DNS",
       "remoteDnsDesc": "解析海外域名的上游",
       "domesticDns": "国内 DNS",
@@ -1019,6 +1021,12 @@
     "newTitle": "新建规则",
     "priority": "规则优先级",
     "routingPriority": "分流优先级 · 从左到右，先命中先生效",
+    "chainCustom": "自定义",
+    "chainApp": "应用",
+    "chainMesh": "组网",
+    "chainLan": "局域网",
+    "chainSmart": "智能",
+    "chainDefault": "默认",
     "target": "目标出站",
     "targetBlock": "阻断",
     "targetDefaultProxy": "代理（默认代理）",
@@ -1304,7 +1312,6 @@
     "server": "服务器地址",
     "serverPort": "地址 / 端口",
     "formGroup": {
-      "aria": "配置分组",
       "basic": "基础",
       "transport": "传输",
       "routing": "路由",
@@ -1405,7 +1412,7 @@
       "tlsEngine": "TLS 引擎",
       "tlsEngineHint": "用系统原生 TLS 栈让 ClientHello 指纹更真。仅在对应平台运行时生效，跨平台选错档不会下发。",
       "tlsFragment": "TLS 分片",
-      "tlsFragmentHint": "把 ClientHello 拆成多个 TCP 包，绕过按 SNI 关键字阻断的中间盒。仅在「握手就被重置、换 SNI 能通」时才开；代价是多一次往返、握手变慢，且部分 CDN/负载均衡会因此丢弃连接。QUIC 系（Hysteria2/TUIC）与 NaiveProxy 上不生效，故那三个表单没有此项。",
+      "tlsFragmentHint": "拆分 TLS ClientHello 以绕过按 SNI 阻断。仅在握手被重置时尝试；会增加延迟，且部分服务端可能拒绝。Hysteria2、TUIC 与 NaiveProxy 不适用。",
       "udp": "UDP 中继",
       "up": "上行带宽 (Mbps)",
       "user": "用户名",
