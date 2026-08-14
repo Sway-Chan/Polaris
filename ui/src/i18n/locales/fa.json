@@ -1790,8 +1790,8 @@
     "transportSecurity": "Transport / امنیت",
     "formGroup": {
       "aria": "بخش‌های پیکربندی",
-      "basic": "پایه و احراز هویت",
-      "routing": "مسیریابی و دسترسی",
+      "basic": "پایه",
+      "routing": "مسیریابی",
       "advanced": "پیشرفته"
     },
     "vpnRequired": "فیلدهای الزامی احراز هویت را کامل کنید",

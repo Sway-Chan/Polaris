@@ -1285,9 +1285,9 @@
     "transportSecurity": "传输 / 安全",
     "formGroup": {
       "aria": "配置分组",
-      "basic": "基础与认证",
-      "routing": "路由与接入",
-      "advanced": "高级设置"
+      "basic": "基础",
+      "routing": "路由",
+      "advanced": "高级"
     },
     "vpnRequired": "请补全当前协议的必填认证字段",
     "vpnJsonInvalid": "扩展配置必须是合法的 JSON 对象",

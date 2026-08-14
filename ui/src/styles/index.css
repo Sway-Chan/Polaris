@@ -323,9 +323,10 @@ dialog:focus-visible,
 .dlg:focus,
 .dlg:focus-visible { outline: none; }
 
-/* 统一「添加」菜单下的实际录入表单统一为 620px；接入方式选择器因双列卡片单独使用 700px。
+/* 统一「添加」菜单下的实际录入表单为 540px：单列表单保持紧凑，同时给地址+96px 端口、
+   三段协议页签和长凭据留出可用空间；接入方式选择器因双列卡片单独使用 700px。
    两者都保留 20px 视口边距，避免各弹窗自行写 `min(...,100%)` 后在窄窗贴边。 */
-.dlg.entry-form-dlg{ width:min(620px, calc(100vw - 40px)); }
+.dlg.entry-form-dlg{ width:min(540px, calc(100vw - 40px)); }
 .dlg.access-picker-dlg{ width:min(700px, calc(100vw - 40px)); }
 
 /* 换屏后被程序化聚焦的主标题同理（`AppShell` 的 route 副作用把焦点转到 h1，供读屏宣告换屏）。

@@ -935,7 +935,7 @@ interface FldPoint {
 }
 /**
  * 遍历 ND_SPEC 的协议字段，把传统 {cred, adv} 与长表单的 groups 一起摊成「键 → 槽」。
- * groups 在 620px 弹窗的 tab panel 内，比传统 cred 槽更宽；这里仍按 cred 的 422px 保守量，
+ * groups 在 540px 弹窗的 tab panel 内，比传统 cred 槽更宽；这里仍按 cred 的 422px 保守量，
  * 这样无需为少数协议另开一套更松、也更容易漂移的预算。
  *
  * 槽由 `FieldSpec.t` 决定，与 `FieldRenderer` 的分支一一对应：

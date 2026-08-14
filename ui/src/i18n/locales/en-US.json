@@ -1285,8 +1285,8 @@
     "transportSecurity": "Transport / Security",
     "formGroup": {
       "aria": "Configuration sections",
-      "basic": "Basics & Auth",
-      "routing": "Routing & Access",
+      "basic": "Basic",
+      "routing": "Routing",
       "advanced": "Advanced"
     },
     "vpnRequired": "Complete the required authentication fields for this protocol",

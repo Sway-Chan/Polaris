@@ -1285,9 +1285,9 @@
     "transportSecurity": "傳輸 / 安全",
     "formGroup": {
       "aria": "設定分組",
-      "basic": "基礎與驗證",
-      "routing": "路由與接入",
-      "advanced": "進階設定"
+      "basic": "基礎",
+      "routing": "路由",
+      "advanced": "進階"
     },
     "vpnRequired": "請補齊目前協定的必要驗證欄位",
     "vpnJsonInvalid": "擴充設定必須是有效的 JSON 物件",

@@ -44,7 +44,7 @@ describe('VPN form information architecture', () => {
       .toBeNull();
   });
 
-  it('统一添加菜单下的实际录入表单共用 620px，接入方式选择器单独使用 700px', () => {
+  it('统一添加菜单下的实际录入表单共用 540px，接入方式选择器单独使用 700px', () => {
     for (const name of [
       'NodeDialog.tsx',
       'WgDialog.tsx',
@@ -62,8 +62,30 @@ describe('VPN form information architecture', () => {
       fileURLToPath(new URL('../../styles/index.css', import.meta.url)),
       'utf8',
     );
-    expect(css).toMatch(/\.dlg\.entry-form-dlg\s*\{[^}]*width:min\(620px,\s*calc\(100vw - 40px\)\)/s);
+    expect(css).toMatch(/\.dlg\.entry-form-dlg\s*\{[^}]*width:min\(540px,\s*calc\(100vw - 40px\)\)/s);
     expect(css).toMatch(/\.dlg\.access-picker-dlg\s*\{[^}]*width:min\(700px,\s*calc\(100vw - 40px\)\)/s);
+  });
+
+  it('三段协议页签在紧凑表单中使用短标签', () => {
+    const expected = {
+      'zh-CN': ['基础', '路由', '高级'],
+      'zh-TW': ['基礎', '路由', '進階'],
+      'en-US': ['Basic', 'Routing', 'Advanced'],
+      ru: ['Основное', 'Маршруты', 'Дополнительно'],
+      fa: ['پایه', 'مسیریابی', 'پیشرفته'],
+    } as const;
+
+    for (const [locale, labels] of Object.entries(expected)) {
+      const dict = JSON.parse(
+        readFileSync(
+          fileURLToPath(new URL(`../../i18n/locales/${locale}.json`, import.meta.url)),
+          'utf8',
+        ),
+      ) as unknown;
+      expect(['basic', 'routing', 'advanced'].map((key) =>
+        localeValue(dict, `node.formGroup.${key}`)
+      )).toEqual(labels);
+    }
   });
 
   it('节点页只保留一个全局添加菜单，不在组网列表区重复渲染入口或摘要', () => {
