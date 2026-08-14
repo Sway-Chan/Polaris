@@ -18,8 +18,7 @@ import { api } from '@/ipc';
 import type { ServerConfig } from '@/contracts/types';
 import { Modal } from './Modal';
 import {
-  FormFields,
-  FormSection,
+  FormTabs,
   type FieldSpec,
   type FormValue,
   type FormValues,
@@ -158,12 +157,11 @@ function WgForm({ base }: { base?: ServerConfig }) {
   const [dirty, setDirty] = useState(false);
   const [errName, setErrName] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [revealAdvanced, setRevealAdvanced] = useState(false);
+  const [formTab, setFormTab] = useState('connection');
 
   const setField = (k: string, v: FormValue) => {
     setDraft((d) => ({ ...d, [k]: v }) as WgDraft);
     setDirty(true);
-    if (revealAdvanced) setRevealAdvanced(false);
   };
 
   // 前置代理候选：排除自身与 endpoint 类节点（判据对齐生成侧，见 `detour-options.ts`）。
@@ -210,6 +208,7 @@ function WgForm({ base }: { base?: ServerConfig }) {
         setErrName(true);
       } else {
         setSrc('manual');
+        setFormTab('connection');
         // 文案自述完整（列全了缺哪些字段），不套 title。
         toast.error(t('wg.errRequired'));
       }
@@ -219,7 +218,7 @@ function WgForm({ base }: { base?: ServerConfig }) {
     // （判据与理由见 `wg-logic.ts#reservedInputInvalid`）。回手动填写页，让出错的那个框可见。
     if (reservedInputInvalid(draft.reserved)) {
       setSrc('manual');
-      setRevealAdvanced(true);
+      setFormTab('advanced');
       toast.error(t('wg.errReserved'));
       return;
     }
@@ -364,23 +363,19 @@ function WgForm({ base }: { base?: ServerConfig }) {
       {src === 'manual' && (() => {
         const groups = groupWgFields(fields);
         return (
-          <>
-            <FormFields fields={groups.basic} values={draft} onChange={setField} />
-            <FormSection
-              title={t('node.formGroup.routing')}
-              fields={groups.routing}
-              values={draft}
-              onChange={setField}
-            />
-            <FormSection
-              title={t('node.formGroup.advanced')}
-              fields={groups.advanced}
-              values={draft}
-              onChange={setField}
-              collapsible
-              forceOpen={revealAdvanced}
-            />
-          </>
+          <FormTabs
+            id="wg-form"
+            ariaLabel={t('node.formGroup.aria')}
+            tabs={[
+              { id: 'connection', label: t('node.formGroup.connection'), fields: groups.basic },
+              { id: 'routing', label: t('node.formGroup.routing'), fields: groups.routing },
+              { id: 'advanced', label: t('node.formGroup.advanced'), fields: groups.advanced },
+            ]}
+            active={formTab}
+            onSelect={setFormTab}
+            values={draft}
+            onChange={setField}
+          />
         );
       })()}
     </Modal>

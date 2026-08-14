@@ -2,14 +2,14 @@
  * `runtimeLevelView` 的判据 —— 守的是三条**不变量**，不是显示细节：
  *
  *  1. 读不到绝不回落成某个具体级别；
- *  2. 方向性：核比控件更啰嗦 = 盘上那份多几行，无后果，不报；核更严 = 导出物缺行，报；
+ *  2. 任一方向不同都明示待同步，不把真实滞后吞成「无后果」；
  *  3. 成因二分（暂存未应用 ↔ 核没重启）按**盘上值**判，因为两者补救动作不同。
  *
  * 变异锁（逐条实测转红）见文件末尾清单。
  */
 import { describe, it, expect } from 'vitest';
 
-import { runtimeLevelView } from './runtime-level';
+import { runtimeLevelTone, runtimeLevelView } from './runtime-level';
 
 describe('runtimeLevelView', () => {
   it('首次渲染（还没取回）是 pending，不冒充「读不到」', () => {
@@ -44,10 +44,9 @@ describe('runtimeLevelView', () => {
 });
 
 /**
- * 不变量 2。两个方向的后果不对称：核更严 = 你要的行不会进导出物（有后果）；核更啰嗦 = 盘上多几行
- * （无后果，而「排障收尾把级别调低」是常规动作 ⇒ 照报的话徽标常年亮着，警示被自己稀释）。
+ * 不变量 2。两个方向都是「控件意图尚未进核」：即便核更啰嗦只会多记行，也不能伪装成已同步。
  */
-describe('方向性收敛', () => {
+describe('双向一致性', () => {
   it('核比控件更严（导出的 singbox.log 会缺行）→ 报', () => {
     expect(runtimeLevelView({ level: 'info', reason: null }, 'debug', 'debug')).toEqual({
       kind: 'known',
@@ -56,11 +55,11 @@ describe('方向性收敛', () => {
     });
   });
 
-  it('核比控件更啰嗦（刚把级别调低、核未重启）→ 不报', () => {
+  it('核比控件更啰嗦（刚把级别调低、核未重启）→ 仍报待同步', () => {
     expect(runtimeLevelView({ level: 'debug', reason: null }, 'error', 'error')).toEqual({
       kind: 'known',
       level: 'debug',
-      drift: null,
+      drift: 'coreRestart',
     });
   });
 
@@ -102,11 +101,11 @@ describe('成因分流', () => {
 
 /** 认不出的级别名不得被当成「一致」吞掉 —— 说「不一样」尚可自证，说「一样」是编造。 */
 describe('未知级别名', () => {
-  it('核跑在本仓五档之外的 trace（啰嗦度表里有）→ 按方向正常判', () => {
+  it('核跑在本仓五档之外的 trace 且与控件不同 → 照样报待同步', () => {
     expect(runtimeLevelView({ level: 'trace', reason: null }, 'debug', 'debug')).toEqual({
       kind: 'known',
       level: 'trace',
-      drift: null, // 更啰嗦 ⇒ 无后果
+      drift: 'coreRestart',
     });
   });
 
@@ -119,11 +118,25 @@ describe('未知级别名', () => {
   });
 });
 
+describe('内核级别语义色', () => {
+  it.each([
+    ['debug', 'neutral'],
+    ['trace', 'neutral'],
+    ['info', 'info'],
+    ['warn', 'warn'],
+    ['error', 'error'],
+    ['fatal', 'error'],
+    ['panic', 'error'],
+    ['future-level', 'neutral'],
+  ] as const)('%s → %s', (level, tone) => {
+    expect(runtimeLevelTone(level)).toBe(tone);
+  });
+});
+
 /*
  * 变异锁（逐条实测转红）：
  *  · `level === null` 那支改成 `{ kind:'known', level: shown, drift:null }` → never_falls_back_* 两条红。
- *  · `driftOf` 的 `if (a > b) return null` 删掉（回到「不一致就报」）→「核比控件更啰嗦」+「trace」两条红。
- *  · `driftOf` 的 `if (a > b)` 改成 `if (a < b)`（方向反了）→「核比控件更严」+「核更啰嗦」两条红。
+ *  · `driftOf` 对「核更啰嗦」特判返 null →「核比控件更啰嗦」+「trace」两条红。
  *  · `pendingCause` 恒返 'coreRestart' → 「盘上仍是旧值 → unsaved」红。
  *  · `pendingCause` 的 `savedLevel !== null` 去掉（未水合时当成 unsaved）→ 「盘上值还没水合」红。
  *  · 未知级别名那支改成 `return null` → 「完全认不出的级别名」红。

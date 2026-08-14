@@ -135,6 +135,7 @@
     "follow": "پیمایش خودکار",
     "levelCoreRestartHint": " فیلتر نما فوری اعمال می‌شود؛ سطح فایل هسته پس از راه‌اندازی مجدد هسته.",
     "coreLevelValue": "هسته {{level}}",
+    "coreLevelPending": "هسته {{level}} · در انتظار همگام‌سازی",
     "coreLevelNotRunning": "هسته در حال اجرا نیست",
     "coreLevelUnavailable": "سطح هسته خوانده نمی‌شود",
     "coreLevelHint": "سطح فعلی فایل لاگ هسته. بر خروجی‌ها اثر دارد، نه جریان زنده این صفحه.",
@@ -1819,7 +1820,9 @@
     "server": "آدرس سرور",
     "serverPort": "آدرس / پورت",
     "formGroup": {
+      "aria": "بخش‌های فرم",
       "basic": "پایه",
+      "connection": "اتصال",
       "transport": "انتقال",
       "routing": "مسیریابی",
       "advanced": "پیشرفته"

@@ -861,7 +861,7 @@ const BASE_DLG_W = (() => {
 })();
 const dlgBorderX = px(decl('./components.css', '.dlg', 'border').split(/\s+/)[0]) * 2; // 1*2
 const dlgBodyPadX = padX(dupAgreed('.dlg-body', 'padding')); // 18*2 = 36
-/** S11 渐进式表单内容槽（没有额外横向 padding）= 540 − 1×2 − 18×2 = 502 */
+/** S11 录入表单内容槽（任务页没有额外横向 padding）= 540 − 1×2 − 18×2 = 502 */
 const FLD_AVAIL = ENTRY_DLG_W - dlgBorderX - dlgBodyPadX;
 /** 未使用 entry-form-dlg 的普通弹窗内容槽 = 460 − 1×2 − 18×2 = 422。 */
 const BASE_FLD_AVAIL = BASE_DLG_W - dlgBorderX - dlgBodyPadX;
@@ -905,7 +905,7 @@ type FldSlot = 'LABEL' | 'SWT_LABEL' | 'TIP';
 interface FldPoint {
   key: string;
   slot: FldSlot;
-  /** cred/adv 只保留 codec 字段来源，展示时都在同宽渐进式表单内。 */
+  /** cred/adv 只保留 codec 字段来源，展示时都在同宽录入表单内。 */
   section: 'cred' | 'adv';
   /** 该键至少在一处带「可选」徽标 ⇒ 按带徽标量（取最坏）。 */
   opt: boolean;

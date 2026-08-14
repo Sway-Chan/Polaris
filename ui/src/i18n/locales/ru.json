@@ -135,6 +135,7 @@
     "follow": "Автопрокрутка",
     "levelCoreRestartHint": " Фильтр вида меняется сразу; уровень файла ядра — после его перезапуска.",
     "coreLevelValue": "Ядро {{level}}",
+    "coreLevelPending": "Ядро {{level}} · ожидает синхронизации",
     "coreLevelNotRunning": "Ядро не запущено",
     "coreLevelUnavailable": "Уровень ядра не читается",
     "coreLevelHint": "Текущий уровень файла ядра. Он влияет на экспорт, но не на живой поток.",
@@ -1819,7 +1820,9 @@
     "server": "Адрес сервера",
     "serverPort": "Адрес / порт",
     "formGroup": {
+      "aria": "Разделы формы",
       "basic": "Основное",
+      "connection": "Подключение",
       "transport": "Транспорт",
       "routing": "Маршруты",
       "advanced": "Дополнительно"

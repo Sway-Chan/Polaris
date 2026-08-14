@@ -135,6 +135,7 @@
     "follow": "Auto-scroll",
     "levelCoreRestartHint": " View filtering applies immediately; the core log-file level applies after the core restarts.",
     "coreLevelValue": "Core {{level}}",
+    "coreLevelPending": "Core {{level}} · pending",
     "coreLevelNotRunning": "Core not running",
     "coreLevelUnavailable": "Core level can't be read",
     "coreLevelHint": "The core's current log-file level. It affects exports, not the live stream on this page.",
@@ -1315,7 +1316,9 @@
     "server": "Server address",
     "serverPort": "Address / Port",
     "formGroup": {
+      "aria": "Form sections",
       "basic": "Basic",
+      "connection": "Connection",
       "transport": "Transport",
       "routing": "Routing",
       "advanced": "Advanced"

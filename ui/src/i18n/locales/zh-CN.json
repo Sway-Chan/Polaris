@@ -135,6 +135,7 @@
     "follow": "自动滚动",
     "levelCoreRestartHint": " 页面筛选立即生效；内核日志文件的级别在内核重启后生效。",
     "coreLevelValue": "内核 {{level}}",
+    "coreLevelPending": "内核 {{level}} · 待同步",
     "coreLevelNotRunning": "内核未运行",
     "coreLevelUnavailable": "读不到内核级别",
     "coreLevelHint": "内核当前写文件的实际级别；影响导出内容，不影响本页实时流。",
@@ -1315,7 +1316,9 @@
     "server": "服务器地址",
     "serverPort": "地址 / 端口",
     "formGroup": {
+      "aria": "表单分区",
       "basic": "基础",
+      "connection": "连接",
       "transport": "传输",
       "routing": "路由",
       "advanced": "高级"

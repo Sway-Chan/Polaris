@@ -948,6 +948,36 @@ const ADVANCED_FIELD_KEYS: Partial<Record<NodeProto, readonly string[]>> = {
 };
 
 /**
+ * 需要任务页签的复杂协议。这是信息架构判据，不是「字段数超过 N 就切页」的机械阈值：
+ *
+ * - VLESS/VMess/Trojan/SS 等有独立的连接与高级调优任务；
+ * - Hysteria/TUIC/AnyTLS/SSH/Tor 的低频参数足以构成独立页；
+ * - OpenConnect/OpenVPN 还多一个路由任务页。
+ *
+ * HTTP/Naive/Snell/SOCKS/Custom 保持单页：它们的高级项要么由单一开关才显示、要么只有两三项，
+ * 切页反而会制造「只剩一个框」的空洞面板。调用方会把 basic + transport 合成「连接」，
+ * 避免 UUID 等凭据单独占一页。
+ */
+const TABBED_NODE_PROTOCOLS = new Set<NodeProto>([
+  'vless',
+  'vmess',
+  'trojan',
+  'shadowsocks',
+  'hysteria2',
+  'tuic',
+  'anytls',
+  'hysteria',
+  'tor',
+  'ssh',
+  'openconnect',
+  'openvpn-client',
+]);
+
+export function nodeFormUsesTabs(proto: NodeProto): boolean {
+  return TABBED_NODE_PROTOCOLS.has(proto);
+}
+
+/**
  * 节点表单的统一任务分组：
  * - 普通代理：基础 / 传输（有连接字段时）/ 高级；
  * - OpenConnect、OpenVPN：沿用其明确的基础 / 路由 / 高级模型。

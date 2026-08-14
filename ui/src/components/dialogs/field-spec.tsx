@@ -19,7 +19,7 @@
  * select 选项文案多为专有名词（TCP/xtls-rprx-vision/…）直接字面量；通用自然语言可传点分 i18n key。
  */
 
-import { useState, type ReactNode } from 'react';
+import { useState, type KeyboardEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Fold } from '@/components/Fold';
 import { InfoIcon } from '@/components/InfoIcon';
@@ -357,6 +357,88 @@ export function FormSection({
       <div className="form-field-section-title">{title}</div>
       {body}
     </section>
+  );
+}
+
+export interface FormTabItem {
+  id: string;
+  label: ReactNode;
+  fields: readonly FieldSpec[];
+  /** 归属当前任务页、但不适合放进 FieldSpec 的手写控件/状态块。 */
+  children?: ReactNode;
+}
+
+/**
+ * 接入表单唯一页签原语。只管「此刻看哪个任务页」，不管表单草稿与脏态：
+ * 页签点击只调 `onSelect`，结构上无法误触 `onChange`，因而「只切页→取消」不会弹放弃更改。
+ *
+ * 受控 active 由调用方持有，是为了让校验失败能精确切到出错页；不在本组件内再存第二份状态。
+ */
+export function FormTabs({
+  id,
+  ariaLabel,
+  tabs,
+  active,
+  onSelect,
+  values,
+  onChange,
+}: Pick<FormFieldsProps, 'values' | 'onChange'> & {
+  id: string;
+  ariaLabel: string;
+  tabs: readonly FormTabItem[];
+  active: string;
+  onSelect: (id: string) => void;
+}) {
+  const available = tabs.filter((tab) => tab.fields.length > 0 || tab.children !== undefined);
+  if (available.length === 0) return null;
+  const current = available.find((tab) => tab.id === active) ?? available[0];
+
+  const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowRight') nextIndex = (index + 1) % available.length;
+    else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + available.length) % available.length;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = available.length - 1;
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const next = available[nextIndex];
+    onSelect(next.id);
+    window.requestAnimationFrame(() => document.getElementById(`${id}-tab-${next.id}`)?.focus());
+  };
+
+  return (
+    <>
+      <div className="sub-tabs form-tabs" role="tablist" aria-label={ariaLabel}>
+        {available.map((tab, index) => {
+          const selected = current.id === tab.id;
+          return (
+            <button
+              id={`${id}-tab-${tab.id}`}
+              key={tab.id}
+              type="button"
+              role="tab"
+              className={selected ? 'on' : ''}
+              aria-selected={selected}
+              aria-controls={`${id}-panel`}
+              tabIndex={selected ? 0 : -1}
+              onClick={() => onSelect(tab.id)}
+              onKeyDown={(event) => onTabKeyDown(event, index)}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+      <div
+        id={`${id}-panel`}
+        role="tabpanel"
+        className="form-tab-panel"
+        aria-labelledby={`${id}-tab-${current.id}`}
+      >
+        <FormFields fields={current.fields} values={values} onChange={onChange} />
+        {current.children}
+      </div>
+    </>
   );
 }
 

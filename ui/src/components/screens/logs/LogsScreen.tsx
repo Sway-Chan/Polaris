@@ -56,7 +56,7 @@ import { useLogRedactStore } from '@/store/use-log-redact-store';
 import { useConfirmTwice } from '@/lib/confirm-twice';
 import { redactSensitive, shouldRedactLogs } from '@/domain/privacy';
 import { mergeHydration, maxLogId, type LogRow } from './logs-buffer';
-import { runtimeLevelView } from './runtime-level';
+import { runtimeLevelTone, runtimeLevelView } from './runtime-level';
 import type { LogLevel, RuntimeLogLevel } from '@/contracts/types';
 import { Csel, type CselOption } from '@/components/dialogs/Csel';
 import { InfoIcon } from '@/components/InfoIcon';
@@ -120,6 +120,9 @@ export function LogsScreen() {
   /** 暂停时缓冲的新行（恢复即回填，对齐原型 logPending）；count 单独入 state 供 label 响应式渲染。 */
   const pendingRef = useRef<LogRow[]>([]);
   const [pendingCount, setPendingCount] = useState(0);
+  /** 内核级别读请求的世代号：轮询与生命周期事件并发时，只让最新一次回包落地。 */
+  const runtimeReadSeqRef = useRef(0);
+  const runtimeMountedRef = useRef(false);
   /**
    * 已收下的最大 `_id`（去重游标）。清空日志**不复位**：后端 seq 全局单调、清空也不重置发号器，
    * 复位反而会让清空前的残留批次被当成新行重新收下。
@@ -152,6 +155,24 @@ export function LogsScreen() {
       : runtimeView.kind === 'known' && runtimeView.drift === 'coreRestart'
         ? t('logs.coreLevelDriftRestart')
         : t('logs.coreLevelHint');
+  const runtimeTone =
+    runtimeView.kind === 'known' ? runtimeLevelTone(runtimeView.level) : 'neutral';
+
+  /**
+   * 重读核内级别的单一入口。定时兜底、生命周期事件都走这里，避免各存一份错误处理。
+   * 世代号防止「旧轮询慢回包」覆盖「重启 ready 后的新真值」。
+   */
+  const refreshRuntimeLevel = useCallback(async () => {
+    const seq = ++runtimeReadSeqRef.current;
+    try {
+      const next = await api.logs.runtimeLevel();
+      if (runtimeMountedRef.current && seq === runtimeReadSeqRef.current) {
+        setRuntimeLevel(next);
+      }
+    } catch {
+      /* 非 Tauri（mock）/ IPC 抛错：保持上一份可自证状态，不编一个级别。 */
+    }
+  }, []);
 
   /**
    * 按 `_id` 去重并推进游标：只放行 `_id` 大于已见最大值的行。
@@ -210,37 +231,34 @@ export function LogsScreen() {
     };
   }, []);
 
-  /* ── 核在跑的真实级别：轮询 logs:runtimeLevel（仅本屏挂载期间）──
+  useEffect(() => {
+    runtimeMountedRef.current = true;
+    return () => {
+      runtimeMountedRef.current = false;
+      // 让所有已在飞的请求失效，即使它们在卸载后才回包也不会写 state。
+      runtimeReadSeqRef.current += 1;
+    };
+  }, []);
+
+  /* ── 核在跑的真实级别：事件推送为主，5s 轮询兜底（仅本屏挂载期间）──
    *
    * # 为什么是轮询，而不是「监听某个事件后重取」
    *
-   * 核内级别只在**起核那一刻**定下（生成配置时注入），此后到停核为止不变。能改变它的事件面却很宽：
-   * 起核 / 停核 / 换核 / 任何触发重启的配置改动 / 后台去抖重启 —— 逐个去挂监听，等于把「哪些事件
-   * 蕴含一次重启」这份判断复制到渲染端，漏掉一条，徽标就静默显示上一轮的级别。**一个显示着陈旧真值
-   * 的自证，与它要揭穿的那句谎是同一类东西**，所以这里宁可用最笨、最不会漏的办法。
+   * 核内级别只在**起核那一刻**定下（生成配置时注入）。`event:proxyLifecycle`
+   * 在 ready / stopped / failed 真跃迁点发出，收到即重读，消除「核已重启但徽标还旧」的 0—5s 人为滞后。
    *
-   * 成本可忽略：本屏打开时才跑，一次 loopback 上的 unary（后端带 2s deadline 必 settle）。
-   * 卸载即停（`clearInterval` + `alive` 闸），不留后台轮询。
+   * 5s 轮询仍保留为事件丢失/非标准换核的兜底；本屏卸载即停，不留后台轮询。
    */
   useEffect(() => {
-    let alive = true;
-    const read = () => {
-      api.logs
-        .runtimeLevel()
-        .then((r) => {
-          if (alive) setRuntimeLevel(r);
-        })
-        .catch(() => {
-          /* 非 Tauri（mock）/ IPC 抛错：保持 pending，不编一个级别出来。 */
-        });
-    };
-    read();
-    const timer = window.setInterval(read, RUNTIME_LEVEL_POLL_MS);
+    void refreshRuntimeLevel();
+    const timer = window.setInterval(() => void refreshRuntimeLevel(), RUNTIME_LEVEL_POLL_MS);
     return () => {
-      alive = false;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [refreshRuntimeLevel]);
+
+  /* 内核真跃迁后立即重读；事件只是信号，级别真值仍由 logs:runtimeLevel 回读。 */
+  useEffect(() => api.proxy.onLifecycle(() => void refreshRuntimeLevel()), [refreshRuntimeLevel]);
 
   /* ── 流式订阅：批量追加（follow 时入缓冲，暂停入 pending）── */
   useEffect(() => {
@@ -562,11 +580,13 @@ export function LogsScreen() {
             {/* 这是内核自己的 singbox.log 写盘级别，不是筛选值；诊断模式也不会伪装它已经热切。 */}
             {runtimeView.kind !== 'pending' && (
               <span
-                className={`log-core-lvl ${runtimeView.kind}${runtimeView.kind === 'known' && runtimeView.drift ? ' diverged' : ''}`}
+                className={`log-core-lvl ${runtimeView.kind} tone-${runtimeTone}${runtimeView.kind === 'known' && runtimeView.drift ? ' diverged' : ''}`}
                 data-tip={coreLevelTip}
               >
                 {runtimeView.kind === 'known'
-                  ? t('logs.coreLevelValue', { level: runtimeView.level.toUpperCase() })
+                  ? t(runtimeView.drift ? 'logs.coreLevelPending' : 'logs.coreLevelValue', {
+                      level: runtimeView.level.toUpperCase(),
+                    })
                   : runtimeView.kind === 'notRunning'
                     ? t('logs.coreLevelNotRunning')
                     : t('logs.coreLevelUnavailable')}

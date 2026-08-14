@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { allFields, ND_SPEC, nodeFormGroups, PROTO_OPTIONS } from './node-spec';
+import {
+  allFields,
+  ND_SPEC,
+  nodeFormGroups,
+  nodeFormUsesTabs,
+  PROTO_OPTIONS,
+} from './node-spec';
 import {
   TS_FORM_GROUP_KEYS,
   WG_FORM_GROUP_KEYS,
@@ -104,11 +110,11 @@ describe('统一接入表单的信息架构', () => {
 
   it('统一分组在紧凑表单中使用准确的短标签', () => {
     const expected = {
-      'zh-CN': ['基础', '传输', '路由', '高级'],
-      'zh-TW': ['基礎', '傳輸', '路由', '進階'],
-      'en-US': ['Basic', 'Transport', 'Routing', 'Advanced'],
-      ru: ['Основное', 'Транспорт', 'Маршруты', 'Дополнительно'],
-      fa: ['پایه', 'انتقال', 'مسیریابی', 'پیشرفته'],
+      'zh-CN': ['基础', '连接', '传输', '路由', '高级'],
+      'zh-TW': ['基礎', '連線', '傳輸', '路由', '進階'],
+      'en-US': ['Basic', 'Connection', 'Transport', 'Routing', 'Advanced'],
+      ru: ['Основное', 'Подключение', 'Транспорт', 'Маршруты', 'Дополнительно'],
+      fa: ['پایه', 'اتصال', 'انتقال', 'مسیریابی', 'پیشرفته'],
     } as const;
 
     for (const [locale, labels] of Object.entries(expected)) {
@@ -118,19 +124,55 @@ describe('统一接入表单的信息架构', () => {
           'utf8',
         ),
       ) as unknown;
-      expect(['basic', 'transport', 'routing', 'advanced'].map((key) =>
+      expect(['basic', 'connection', 'transport', 'routing', 'advanced'].map((key) =>
         localeValue(dict, `node.formGroup.${key}`)
       )).toEqual(labels);
     }
   });
 
-  it('协议编辑器使用渐进式分组，不再把一份配置切成互斥页签', () => {
-    for (const name of ['NodeDialog.tsx', 'WgDialog.tsx', 'WarpDialog.tsx', 'TsSettingsDialog.tsx']) {
-      const source = readDialog(name);
-      expect(source, `${name} 仍在使用互斥表单页签`).not.toContain('form-tabs');
-      expect(source, `${name} 缺少统一渐进式分段`).toContain('FormSection');
-      expect(source, `${name} 的高级分组没有折叠`).toContain('collapsible');
+  it('复杂协议切页，轻量协议保持单页，不用字段数动态让页签闪现', () => {
+    for (const protocol of [
+      'vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria2', 'tuic',
+      'anytls', 'hysteria', 'tor', 'ssh', 'openconnect', 'openvpn-client',
+    ] as const) {
+      expect(nodeFormUsesTabs(protocol), protocol).toBe(true);
     }
+    for (const protocol of ['socks', 'http', 'naive', 'snell', 'custom'] as const) {
+      expect(nodeFormUsesTabs(protocol), protocol).toBe(false);
+    }
+  });
+
+  it('协议/WireGuard/Tailscale 复用同一页签原语，WARP 不强造页签', () => {
+    const primitive = readDialog('field-spec.tsx');
+    expect(primitive).toContain('export function FormTabs');
+    expect(primitive).toContain('role="tablist"');
+    expect(primitive).toContain('role="tabpanel"');
+    expect(primitive).toContain("event.key === 'ArrowRight'");
+
+    for (const name of ['NodeDialog.tsx', 'WgDialog.tsx', 'TsSettingsDialog.tsx']) {
+      const source = readDialog(name);
+      expect(source, `${name} 未接入统一 FormTabs`).toContain('<FormTabs');
+      expect(source, `${name} 页签切换不得写表单草稿`).toContain('onSelect={setFormTab}');
+    }
+    const warp = readDialog('WarpDialog.tsx');
+    expect(warp).not.toContain('<FormTabs');
+    expect(warp).toContain('<FormSection');
+    expect(warp).toContain('collapsible');
+  });
+
+  it('基础与传输合并成连接页，校验失败定位到所属页', () => {
+    const node = readDialog('NodeDialog.tsx');
+    expect(node).toMatch(/group\.id === 'basic' \|\| group\.id === 'transport'/);
+    expect(node).toContain("label: t('node.formGroup.connection')");
+    expect(node).toContain("setFormTab(meshError.group === 'basic' ? 'connection' : meshError.group)");
+
+    const wg = readDialog('WgDialog.tsx');
+    expect(wg).toContain("setFormTab('connection')");
+    expect(wg).toContain("setFormTab('advanced')");
+
+    const ts = readDialog('TsSettingsDialog.tsx');
+    expect(ts).toContain("setFormTab('routing')");
+    expect(ts).toContain("setFormTab('advanced')");
   });
 
   it('节点页只保留一个全局添加菜单，不在组网列表区重复渲染入口或摘要', () => {

@@ -12,13 +12,12 @@
  * 还会与你的设置不一致的东西**，而它偏偏是你要发给别人看的那份。徽标的职责因此从「守屏幕」变成
  * 「守导出物」。
  *
- * # 方向性：只有「核记得比你要的少」才报
+ * # 一致性：任一方向不同都要明示
  *
- * 收窄前只要 `核级别 !== 控件级别` 就涂 warn 色。但两个方向的后果不对称：
- *
- *  - 核**更严**（如控件 debug、核 info）⇒ 导出的 `singbox.log` 缺你正要看的那些行。**有后果**。
- *  - 核**更啰嗦**（如控件调回 info、核仍 debug）⇒ 盘上那份多几行。排障收尾把级别调低是常规动作，
- *    于是徽标此后常年亮着 —— 一个恒亮的警示等于没有警示。**无后果，不报**。
+ * 这颗徽标不只是「导出会不会缺行」的警报，也是用户核对「我刚选的级别是否已进核」的
+ * 唯一运行态凭据。因此 INFO → WARN 时核仍在 INFO，即便只是多记了几行，也必须标「待同步」；
+ * 否则界面看起来就是无解释地比下拉选项慢一拍。警示强度由样式层承担（等级底色 + 待同步边框），
+ * 不再靠吞掉某一方向的不一致来降噪。
  *
  * # 为什么「读不到」不能回落成某个级别
  *
@@ -50,7 +49,7 @@
  *
  * # 为什么做成纯函数而不是写在组件里
  *
- * 「不回落」与「方向性」都是**不变量**，不是渲染细节；它们得有能单独变异验证的判据
+ * 「不回落」与「任一方向不同都明示」都是**不变量**，不是渲染细节；它们得有能单独变异验证的判据
  * （见 `runtime-level.test.ts`）。混在 JSX 里只能靠 review 记得。
  */
 
@@ -72,18 +71,24 @@ export type RuntimeLevelView =
   /** 读到了核在跑的级别。`drift` = 非 null 即分叉现形的时刻，取值说明见 [`RuntimeLevelDrift`]。 */
   | { kind: 'known'; level: string; drift: RuntimeLevelDrift | null };
 
-/**
- * 啰嗦度序（越大越啰嗦）。含 `trace` —— 那是 sing-box 有、本仓五档没有的级别，核可能真跑在上面
- * （手改 JSON / 将来扩档），必须能参与比较而不是被当成未知。
- */
-const VERBOSITY: Readonly<Record<string, number>> = {
-  fatal: 0,
-  error: 1,
-  warn: 2,
-  info: 3,
-  debug: 4,
-  trace: 5,
-};
+export type RuntimeLevelTone = 'neutral' | 'info' | 'warn' | 'error';
+
+/** 内核级别→状态标签语义色。七档上游值与本仓五档值在此单点归一。 */
+export function runtimeLevelTone(level: string): RuntimeLevelTone {
+  switch (level.toLowerCase()) {
+    case 'info':
+      return 'info';
+    case 'warn':
+      return 'warn';
+    case 'error':
+    case 'fatal':
+    case 'panic':
+      return 'error';
+    default:
+      // DEBUG / TRACE 以及将来未知档均用中性色；未知不冒充 INFO。
+      return 'neutral';
+  }
+}
 
 /**
  * 把后端回答 + 控件当前显示值 + 盘上值，投影成徽标要呈现的态。
@@ -118,12 +123,5 @@ function driftOf(
   savedLevel: LogLevel | null,
 ): RuntimeLevelDrift | null {
   if (core === shown) return null;
-  const a = VERBOSITY[core];
-  const b = VERBOSITY[shown];
-  // 任一侧的级别名不认识（上游扩了档 / 后端换了拼法）→ 比不出方向。**报，不吞**：
-  // 说「不一样」尚可自证，说「一样」是编造。
-  if (a === undefined || b === undefined) return pendingCause(shown, savedLevel);
-  // 核比控件更啰嗦 ⇒ 盘上那份只是多几行，无后果（见模块头「方向性」）。
-  if (a > b) return null;
   return pendingCause(shown, savedLevel);
 }

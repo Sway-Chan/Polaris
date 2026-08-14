@@ -135,6 +135,7 @@
     "follow": "自動捲動",
     "levelCoreRestartHint": " 頁面篩選立即生效；核心記錄檔層級在核心重啟後生效。",
     "coreLevelValue": "核心 {{level}}",
+    "coreLevelPending": "核心 {{level}} · 待同步",
     "coreLevelNotRunning": "核心未執行",
     "coreLevelUnavailable": "讀不到核心層級",
     "coreLevelHint": "核心目前寫入檔案的實際層級；影響匯出內容，不影響本頁即時串流。",
@@ -1315,7 +1316,9 @@
     "server": "伺服器位址",
     "serverPort": "位址 / 連接埠",
     "formGroup": {
+      "aria": "表單分區",
       "basic": "基礎",
+      "connection": "連線",
       "transport": "傳輸",
       "routing": "路由",
       "advanced": "進階"

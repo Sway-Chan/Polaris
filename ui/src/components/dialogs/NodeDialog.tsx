@@ -35,6 +35,7 @@ import { useDialogStore } from './dialog-store';
 import {
   FormFields,
   FormSection,
+  FormTabs,
   parseNumberField,
   draftFromSpecs,
   type FormValue,
@@ -46,6 +47,7 @@ import {
   isMeshTunnelNodeProtocol,
   meshTunnelNodeProtocols,
   nodeFormGroups,
+  nodeFormUsesTabs,
   protosInGroup,
   defaultPortPlaceholder,
   allFields,
@@ -108,6 +110,7 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
   const [errName, setErrName] = useState(false);
   const [errAddr, setErrAddr] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [formTab, setFormTab] = useState('connection');
   const [revealGroup, setRevealGroup] = useState<NodeFieldGroupId | null>(null);
 
   // C10：custom 协议内核兼容性 probe（`kernel:probeOutbound`）——套 `SubDialog.previewing`/
@@ -131,6 +134,7 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
     setDraft(draftFromSpecs(allFields(next)));
     setDirty(true);
     setProbeResult(null); // 换出 custom 协议后旧探测结果同样失效。
+    setFormTab('connection');
     setRevealGroup(null);
   };
 
@@ -217,7 +221,11 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
 
     const meshError = meshTunnelDraftError(proto, draft);
     if (meshError) {
-      setRevealGroup(meshError.group);
+      if (nodeFormUsesTabs(proto)) {
+        setFormTab(meshError.group === 'basic' ? 'connection' : meshError.group);
+      } else {
+        setRevealGroup(meshError.group);
+      }
       toast.error(
         meshError.key === 'json'
           ? t('node.meshTunnelJsonInvalid')
@@ -295,7 +303,12 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
   };
 
   const groups = nodeFormGroups(proto);
+  const usesTabs = nodeFormUsesTabs(proto);
   const basicFields = groups.find((group) => group.id === 'basic')?.fields ?? [];
+  const connectionFields = groups
+    .filter((group) => group.id === 'basic' || group.id === 'transport')
+    .flatMap((group) => group.fields);
+  const routingFields = groups.find((group) => group.id === 'routing')?.fields ?? [];
   const advancedFields = groups.find((group) => group.id === 'advanced')?.fields ?? [];
   const middleGroups = groups.filter((group) => group.id !== 'basic' && group.id !== 'advanced');
   const groupTitle = (group: NodeFieldGroupId) =>
@@ -427,28 +440,57 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
         )}
       </div>
 
-      {/* 基础字段连续展示；传输/路由是可扫读的语义段，高级项默认折叠。分组不再互斥，
-          避免用户为理解一份配置在页签之间来回切换。 */}
-      <FormFields fields={basicFields} values={draft} onChange={setField} />
-      {middleGroups.map((group) => (
-        <FormSection
-          key={group.id}
-          title={groupTitle(group.id)}
-          fields={group.fields}
+      {/* 复杂协议按任务切页；basic + transport 合并成「连接」，不让 UUID/凭据单独占一页。
+          轻量协议仍保持连续单页 + 高级折叠，避免为了格式统一制造空洞页签。 */}
+      {usesTabs ? (
+        <FormTabs
+          id="node-form"
+          ariaLabel={t('node.formGroup.aria')}
+          tabs={[
+            {
+              id: 'connection',
+              label: t('node.formGroup.connection'),
+              fields: connectionFields,
+            },
+            ...(routingFields.length > 0
+              ? [{ id: 'routing', label: t('node.formGroup.routing'), fields: routingFields }]
+              : []),
+            {
+              id: 'advanced',
+              label: t('node.formGroup.advanced'),
+              fields: advancedFields,
+              children: detourField,
+            },
+          ]}
+          active={formTab}
+          onSelect={setFormTab}
           values={draft}
           onChange={setField}
         />
-      ))}
-      <FormSection
-        title={groupTitle('advanced')}
-        fields={advancedFields}
-        values={draft}
-        onChange={setField}
-        collapsible
-        forceOpen={revealGroup === 'advanced'}
-      >
-        {detourField}
-      </FormSection>
+      ) : (
+        <>
+          <FormFields fields={basicFields} values={draft} onChange={setField} />
+          {middleGroups.map((group) => (
+            <FormSection
+              key={group.id}
+              title={groupTitle(group.id)}
+              fields={group.fields}
+              values={draft}
+              onChange={setField}
+            />
+          ))}
+          <FormSection
+            title={groupTitle('advanced')}
+            fields={advancedFields}
+            values={draft}
+            onChange={setField}
+            collapsible
+            forceOpen={revealGroup === 'advanced'}
+          >
+            {detourField}
+          </FormSection>
+        </>
+      )}
 
       {/* C10：custom 协议内核兼容性 probe——只有 custom 协议的原始 JSON 才需要问「内核认不认识这个
           outbound」，其余代理协议走本仓自建的 builder，协议合法性由表单本身的必填/枚举

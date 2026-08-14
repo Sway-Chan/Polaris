@@ -40,7 +40,17 @@ describe('日志工具栏布局不变量', () => {
     expect(actions).toBeGreaterThan(sourceFilter);
     expect(badge).toBeGreaterThan(actions);
     expect(diagnostic).toBeGreaterThan(badge);
-    expect(SCREEN_CSS).toMatch(/\.log-core-lvl\.known\s*\{[^}]*--flow/);
+    expect(SCREEN).toContain('runtimeLevelTone(runtimeView.level)');
+    expect(SCREEN_CSS).toMatch(/\.log-core-lvl\.tone-info\s*\{[^}]*--flow/);
+    expect(SCREEN_CSS).toMatch(/\.log-core-lvl\.tone-warn\s*\{[^}]*--warn/);
+    expect(SCREEN_CSS).toMatch(/\.log-core-lvl\.tone-error\s*\{[^}]*--err/);
+  });
+
+  it('内核生命周期跃迁立即重读级别，5s 轮询只做兜底', () => {
+    expect(SCREEN).toMatch(/api\.proxy\.onLifecycle\(\(\) => void refreshRuntimeLevel\(\)\)/);
+    expect(SCREEN).toMatch(/setInterval\(\(\) => void refreshRuntimeLevel\(\), RUNTIME_LEVEL_POLL_MS\)/);
+    expect(SCREEN).toContain('runtimeReadSeqRef');
+    expect(SCREEN).toContain("runtimeView.drift ? 'logs.coreLevelPending' : 'logs.coreLevelValue'");
   });
 
   it('底栏把直播、行数与恢复入口组成左侧流状态簇，避开右下 toast', () => {

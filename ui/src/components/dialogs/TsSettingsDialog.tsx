@@ -2,7 +2,7 @@
  * TsSettingsDialog —— Tailscale 设置弹窗（原型 #ts-settings-dialog :2802）。
  *
  * 本层**最长表单**（主机名 / 出口节点选择 / 接入模式 / 子网路由两向 / 高级设置）按
- * 基础连续区 / 路由分段 / 高级折叠渐进展示；footer 固定
+ * 基础 / 路由 / 高级三个稳定任务页展示；footer 固定
  * 验收样本：body 超高时 `.dlg-body` 独立滚动、`.dlg-foot` 常驻（Modal 原语的三段结构自动保证）。
  * 多字段驱动走 D2 FieldSpec 表 + FieldRenderer（switch → .swt-row，select → Csel）。
  *
@@ -31,8 +31,7 @@ import type { TailscaleSettings } from '@/contracts/types';
 import type { TailscaleStatusPeer } from '@/contracts/tailscale-status';
 import { Modal } from './Modal';
 import {
-  FormFields,
-  FormSection,
+  FormTabs,
   type FieldSpec,
   type FormValue,
   type FormValues,
@@ -130,7 +129,7 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
   const [draft, setDraft] = useState<FormValues>(() => initTsDraft(node));
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [revealAdvanced, setRevealAdvanced] = useState(false);
+  const [formTab, setFormTab] = useState('basic');
 
   // 出口候选：拉状态快照（核未跑 / 无节点时为空）。connected=false 时静态提示手动填写。
   // **原样收下全部 peer**，不在这里筛 `exitNodeOption` —— 「没广告出口」与「不在 tailnet 里」
@@ -172,7 +171,6 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
   const setField = (k: string, v: FormValue) => {
     setDraft((d) => ({ ...d, [k]: v }));
     setDirty(true);
-    if (revealAdvanced) setRevealAdvanced(false);
   };
   const groups = groupTsFields([...spec, ...ADV_SPEC]);
 
@@ -204,6 +202,7 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
     // 非法 CIDR 必须前端拦：后端 sanitize 对非法项是**静默丢弃**，不拦就成了「界面收下了、盘上没有」。
     const badCidr = invalidTsCidrs(draft);
     if (badCidr.length) {
+      setFormTab('routing');
       toast.error(t('ts.errCidr', { list: badCidr.join(', ') }));
       return;
     }
@@ -213,7 +212,7 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
     // 拦在这里，光标还在这个输入框旁边，改一下就好了。
     const badControl = invalidControlUrl(draft);
     if (badControl) {
-      setRevealAdvanced(true);
+      setFormTab('advanced');
       toast.error(t('ts.errControlUrl'), t(INVALID_NODE_REASON_KEY[badControl]));
       return;
     }
@@ -317,25 +316,26 @@ function TsSettingsForm({ node }: { node?: ServerConfig }) {
         </div>
       )}
 
-      <FormFields fields={groups.basic} values={draft} onChange={setField} />
-      {connected === false && (
-        <div className="card-sub form-inline-note">
-          {t('ts.exitEmptyHint')}
-        </div>
-      )}
-      <FormSection
-        title={t('node.formGroup.routing')}
-        fields={groups.routing}
+      <FormTabs
+        id="ts-settings-form"
+        ariaLabel={t('node.formGroup.aria')}
+        tabs={[
+          {
+            id: 'basic',
+            label: t('node.formGroup.basic'),
+            fields: groups.basic,
+            children:
+              connected === false ? (
+                <div className="card-sub form-inline-note">{t('ts.exitEmptyHint')}</div>
+              ) : undefined,
+          },
+          { id: 'routing', label: t('node.formGroup.routing'), fields: groups.routing },
+          { id: 'advanced', label: t('node.formGroup.advanced'), fields: groups.advanced },
+        ]}
+        active={formTab}
+        onSelect={setFormTab}
         values={draft}
         onChange={setField}
-      />
-      <FormSection
-        title={t('node.formGroup.advanced')}
-        fields={groups.advanced}
-        values={draft}
-        onChange={setField}
-        collapsible
-        forceOpen={revealAdvanced}
       />
     </Modal>
   );

@@ -324,7 +324,7 @@ dialog:focus-visible,
 .dlg:focus-visible { outline: none; }
 
 /* 统一「添加」菜单下的实际录入表单为 540px：单列表单保持紧凑，同时给地址+96px 端口、
-   渐进式协议分组和长凭据留出可用空间；接入方式选择器因双列卡片单独使用 700px。
+   协议任务分区和长凭据留出可用空间；接入方式选择器因双列卡片单独使用 700px。
    两者都保留 20px 视口边距，避免各弹窗自行写 `min(...,100%)` 后在窄窗贴边。 */
 .dlg.entry-form-dlg{ width:min(540px, calc(100vw - 40px)); }
 .dlg.access-picker-dlg{ width:min(700px, calc(100vw - 40px)); }
@@ -1698,7 +1698,7 @@ body:has(.pending-bar.show) #toast-stack{
 .fld-l-info > span:first-child,
 .field-lbl-info > span:first-child{ min-width:0; }
 
-/* 协议编辑表单采用渐进式分组：基础连续展示，传输/路由用轻分隔，高级才折叠。 */
+/* 紧凑协议与 WARP 保留渐进式分组；复杂协议及组网表单通过统一 FormTabs 切换任务页。 */
 .form-field-section{ margin-top:16px; padding-top:14px; border-top:1px solid hsl(var(--hair)); }
 .form-field-section-title{ margin-bottom:11px; color:hsl(var(--fg-dim)); font-size:11px; font-weight:650; letter-spacing:.04em; }
 .form-field-section-body{ display:flex; flex-direction:column; gap:14px; }
