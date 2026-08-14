@@ -515,12 +515,16 @@ describe('G13-B：每条承诺文案都必须登记并举证', () => {
 
   it('登记为 anchor / anchors 的承诺，所有锚点源码片段真的还在', () => {
     // 变异对照：把 proxy.rs 的 `fn spawn_crash_monitor` 改名 → 本条转红。
-    const gone = REGISTRY.filter(
-      (r) => r.evidence.kind === 'anchor' || r.evidence.kind === 'anchors',
-    ).filter((r) => {
-      const items = r.evidence.kind === 'anchor' ? [r.evidence] : r.evidence.items;
-      return items.some((e) => !readFileSync(join(REPO, e.file), 'utf8').includes(e.needle));
-    }).map((r) => r.snippet);
+    const gone = REGISTRY.flatMap((r) => {
+      const evidence = r.evidence;
+      if (evidence.kind !== 'anchor' && evidence.kind !== 'anchors') return [];
+
+      const items = evidence.kind === 'anchor' ? [evidence] : evidence.items;
+      const missing = items.some(
+        (entry) => !readFileSync(join(REPO, entry.file), 'utf8').includes(entry.needle),
+      );
+      return missing ? [r.snippet] : [];
+    });
     expect(gone, '承诺的兑现锚点消失了 —— 实现被删/改名而文案没跟').toEqual([]);
   });
 
