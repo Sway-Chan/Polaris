@@ -405,14 +405,16 @@
 /* dismiss 是纯图标按钮，收窄内边距使其呈方形（同 .cvb-dismiss）。 */
 .app-update-banner .aub-dismiss{ padding-left:7px; padding-right:7px; }
 
-/* ───── LOGS：「核在跑的真实级别」徽标（LogsScreen `.log-core-lvl`）。
-   左边的级别下拉显示的是**我写下的值**，这颗徽标显示的是**核此刻实际在用的值**
-   ——即核写进 `singbox.log`（两个导出产物里核的那一半）时用的级别。
-   与控件一致（或核只是更啰嗦）时它只是一句安静的确认，故用 --fg-dim + 细描边、不与分段控件抢注意力；
+/* ───── LOGS：「内核写盘级别」状态标签（LogsScreen `.log-core-lvl`）。
+   标签位于诊断操作组，显示核写进 `singbox.log`（两个导出产物里核的那一半）时用的实际级别；
+   它不再夹在级别与来源两个筛选之间。已知态用 flow 色表达“运行态已确认”，而非按级别严重度染色；
    **核记得比你要的少**时（暂存未应用 / 核没重启）转 --warn 语义色 —— 那一刻它是本屏最值得看的一句话。
    反方向不涂色是刻意的：调低级别是排障收尾的常规动作，照涂则徽标常年亮着，警示被自己稀释。
    prototype.css / components.css 是禁区不可改，故同 `.core-ver-banner` 之例，在此补一族独立 class。───── */
-.log-core-lvl{ flex:none; font-size:11px; font-weight:600; letter-spacing:.02em; padding:4px 9px;
+.log-core-lvl{ display:inline-flex; align-items:center; flex:none; min-height:34px; box-sizing:border-box;
+  white-space:nowrap; font-size:11px; font-weight:600; letter-spacing:.02em; padding:4px 9px;
   border:1px solid hsl(var(--line)); border-radius:var(--r-xs); color:hsl(var(--fg-dim));
   background:hsl(var(--surface-2)); cursor:default; }
+.log-core-lvl.known{ border-color:hsl(var(--flow)/0.38); color:hsl(var(--flow-hi)); background:hsl(var(--flow-weak)); }
+.log-core-lvl.unavailable{ border-color:hsl(var(--warn)/0.45); color:hsl(var(--warn)); background:hsl(var(--warn-weak)); }
 .log-core-lvl.diverged{ border-color:hsl(var(--warn)/0.45); color:hsl(var(--warn)); background:hsl(var(--warn-weak)); }

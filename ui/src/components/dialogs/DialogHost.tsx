@@ -59,11 +59,11 @@ function renderDialog(desc: DialogDesc) {
         />
       );
     case 'rule':
-      return <RuleDialog ruleId={desc.ruleId} presetDomain={desc.presetDomain} />;
+      return <RuleDialog ruleId={desc.ruleId} preset={desc.preset} />;
     case 'proc-pick':
       return <ProcPickDialog onPick={desc.onPick} />;
     case 'rule-pick':
-      return <RulePickDialog domain={desc.domain} onPick={desc.onPick} />;
+      return <RulePickDialog subject={desc.subject} onPick={desc.onPick} />;
     case 'app-add':
       return <AppAddDialog />;
     case 'res-catalog':

@@ -25,10 +25,11 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { RuleSubject } from '@/domain/rules';
 import { api } from '@/ipc';
 import { toast } from '@/lib/error-handler';
 import { useAppStore } from '@/store/app-store';
-import { HostRuleMenuItems } from '@/components/host-rule-menu';
+import { RuleSubjectMenuItems } from '@/components/rule-subject-menu';
 import { clampToWrap } from '@/lib/overlay-position';
 import { createTopicSubscription } from '@/lib/topic-subscription';
 import { useConfirmTwice } from '@/lib/confirm-twice';
@@ -39,6 +40,7 @@ import type {
 } from '@/contracts/types';
 import { TOPOLOGY_OTHERS_KEY } from '@/contracts/types';
 import { fmtBytes, fmtDuration, fmtRate, ageFromStart } from '../shared/format';
+import { connectionRuleSubjects } from './connection-rule-subjects';
 
 type ConnView = 'table' | 'top';
 
@@ -165,7 +167,13 @@ export function ConnectionsScreen() {
    * 表一滚两者就错位。fixed 没有这个歧义，代价是滚动时要主动关（下方 effect 一并处理）。
    */
   const menuRef = useRef<HTMLDivElement>(null);
-  const [menu, setMenu] = useState<{ x: number; y: number; row: ConnRow } | null>(null);
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    row: ConnRow;
+    subjects: RuleSubject[];
+    subject: RuleSubject | null;
+  } | null>(null);
   const [menuSize, setMenuSize] = useState({ w: 0, h: 0 });
 
   /** 把 ConnectionsSnapshot 派生为 ConnRow[]（算速率 / 时长），写 rows。 */
@@ -742,8 +750,15 @@ export function ConnectionsScreen() {
                         key={r.entry.id}
                         onContextMenu={(e) => {
                           e.preventDefault();
+                          const subjects = connectionRuleSubjects(r.entry);
                           setMenuSize({ w: 0, h: 0 }); // 换行即重测，别拿上一行的尺寸定位
-                          setMenu({ x: e.clientX, y: e.clientY, row: r });
+                          setMenu({
+                            x: e.clientX,
+                            y: e.clientY,
+                            row: r,
+                            subjects,
+                            subject: subjects[0] ?? null,
+                          });
                         }}
                       >
                         <td className="c-close">
@@ -814,41 +829,49 @@ export function ConnectionsScreen() {
             </table>
           </div>
         </div>
-        {/* 行右键菜单（G4）：复用原型 .ctx-menu/.ctx-i（components.css:251-256），零新增样式。
-            `position:fixed` 覆写类里的 absolute —— 理由见上方 menu state 的注释。 */}
+        {/* 行右键菜单：域名/IP/进程先选一个规则对象，复制、新建、追加三条动作共用该对象。 */}
         {menu && (
           <div
             ref={menuRef}
             className="ctx-menu"
             style={{ position: 'fixed', ...(menuPos ?? { left: 0, top: 0, opacity: 0 }) }}
           >
-            <button
-              type="button"
-              className="ctx-i"
-              onClick={() => void copyText(menu.row.host)}
-              disabled={menu.row.host === '—'}
-            >
-              <svg viewBox="0 0 24 24" width="15" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <path d="M9 9h10v10H9zM5 15V5h10" />
-              </svg>
-              {t('connections.copyHost')}
-            </button>
-            <button
-              type="button"
-              className="ctx-i"
-              onClick={() => void copyText(menu.row.dest)}
-              disabled={menu.row.dest === '—'}
-            >
-              <svg viewBox="0 0 24 24" width="15" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <path d="M9 9h10v10H9zM5 15V5h10" />
-              </svg>
-              {t('connections.copyDest')}
-            </button>
-            {/* 只有像域名/IP 的 host 才给「加规则」——`—` 或纯进程名加进规则是造一条永不命中的死规则。
-                判据与 `topology-layout.ts::isRuleableHost` 同口径（含 `.` 或 `:`）。
-                两项（加入已有 / 新建）与拓扑右键菜单**共用同一个组件**，含排序判据与追加写入腿。 */}
-            {(menu.row.host.includes('.') || menu.row.host.includes(':')) && (
-              <HostRuleMenuItems host={menu.row.host} onDone={() => setMenu(null)} />
+            {menu.subject && (
+              <>
+                <div className="ctx-subject" data-tip={menu.subject.detail || menu.subject.value}>
+                  <div
+                    className="ctx-subject-tabs"
+                    role="group"
+                    aria-label={t('connections.ruleSubject')}
+                  >
+                    {menu.subjects.map((subject) => (
+                      <button
+                        key={subject.kind}
+                        type="button"
+                        className={subject.kind === menu.subject?.kind ? 'on' : undefined}
+                        aria-pressed={subject.kind === menu.subject?.kind}
+                        onClick={() => setMenu((current) => (current ? { ...current, subject } : null))}
+                      >
+                        {t(`connections.ruleSubjects.${subject.kind}`)}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="ctx-subject-value">{menu.subject.value}</span>
+                </div>
+                <button
+                  type="button"
+                  className="ctx-i"
+                  onClick={() => void copyText(menu.subject!.value)}
+                >
+                  <svg viewBox="0 0 24 24" width="15" fill="none" stroke="currentColor" strokeWidth="1.8">
+                    <path d="M9 9h10v10H9zM5 15V5h10" />
+                  </svg>
+                  {t('connections.copySubject', {
+                    type: t(`connections.ruleSubjects.${menu.subject.kind}`),
+                  })}
+                </button>
+                <RuleSubjectMenuItems subject={menu.subject} onDone={() => setMenu(null)} />
+              </>
             )}
             <button
               type="button"

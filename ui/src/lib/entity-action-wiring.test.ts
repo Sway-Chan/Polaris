@@ -213,7 +213,7 @@ const SITES: readonly ActionSite[] = [
     why: 'staged 分流后不可达',
   },
   {
-    file: 'components/host-rule-menu.tsx',
+    file: 'components/rule-subject-menu.tsx',
     callee: 'api.rules.update',
     count: 1,
     route: 'no-staged-only-id',

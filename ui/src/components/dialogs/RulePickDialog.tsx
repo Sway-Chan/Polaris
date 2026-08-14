@@ -1,34 +1,32 @@
 /**
- * RulePickDialog —— 「把这个域名加进**哪一条**已有规则」的选择器。
+ * RulePickDialog —— 「把当前规则对象加进**哪一条**已有规则」的选择器。
  *
  * 形态复用 `ProcPickDialog` 的 `onPick` 回调范式（`dialog-store.ts` 已把它登记为「同
  * `ConfirmPayload.onConfirm` 先例」，不是新造机制），皮肤复用 `.proc-pick-*` 那一套（零新增布局）。
  * 与它的差别只有一处：**单击即选**而不是多选批量提交 —— 一次点击写一条规则，没有「凑够几条再提交」
  * 的语义，摆一个底部「添加 N 项」是给一个不存在的批量动作造按钮。
  *
- * 本组件**只负责选**，写入在唯一的调用方 `components/host-rule-menu.tsx` 里（两个菜单共用那一条腿）。
+ * 本组件**只负责选**，写入在唯一的调用方 `components/rule-subject-menu.tsx` 里。
  * 判据全部在 `rule-append.ts`（node 环境可直测），本文件只做渲染与检索。
  *
  * # 列**全部**规则，不能追加的置灰并说明原因
  *
- * 之前只列「已含域名族条件」的规则 ⇒ 用户的规则若多是 `ruleSet` / `geosite` / `processName`，
- * 这里一条候选都没有，只剩一句说明文字 —— 用户看到的是「这个功能坏了」，而不是「我的规则不合适」。
- * 现在每条规则至少一行：能追加的可点，不能的置灰并在第二行**逐条给原因与出路**（原因分类与判据
+ * 每条规则至少一行；已有兼容条件就追加到该条件，没有兼容条件则在 OR 规则里新开精确条件。
+ * 能追加的可点，不能的置灰并在第二行**逐条给原因与出路**（原因分类与判据
  * 在 `rule-append.ts` 的 `AppendBlock`）。置灰项同样参与检索 —— 搜得到规则名却搜不到规则，
  * 用户会以为规则不存在。
  *
- * 一条规则有多个域名族条件 ⇒ 列成多项，每项显式标出**条件类型**：往 `domainKeyword` 里追加一个
- * 完整主机名是**更窄**的匹配（子串语义），不标类型用户不知道自己拿到了什么。
+ * 域名对象可能对应多个字面量域名条件，因此每项显式标出条件类型；IP 与进程只进入同轴精确条件。
  */
 
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { ruleTypeNameKey, type RuleSubject } from '@/domain/rules';
 import { useEffectiveRules } from '@/store/app-store';
-import { ruleTypeNameKey } from '@/domain/rules';
 import { Modal } from './Modal';
 import { useDialogStore } from './dialog-store';
 import {
-  analyzeDomainCoverage,
+  analyzeRuleCoverage,
   isShadowedTarget,
   matchAppendTargets,
   ruleAppendTargets,
@@ -45,10 +43,10 @@ function RuleIcon() {
 }
 
 export function RulePickDialog({
-  domain,
+  subject,
   onPick,
 }: {
-  domain: string;
+  subject: RuleSubject;
   onPick: (target: RuleAppendTarget) => void;
 }) {
   const { t } = useTranslation();
@@ -57,8 +55,8 @@ export function RulePickDialog({
   const rules = useEffectiveRules();
   const [query, setQuery] = useState('');
 
-  const targets = useMemo(() => sortAppendTargets(ruleAppendTargets(rules, domain)), [rules, domain]);
-  const coverage = useMemo(() => analyzeDomainCoverage(rules, domain), [rules, domain]);
+  const targets = useMemo(() => sortAppendTargets(ruleAppendTargets(rules, subject)), [rules, subject]);
+  const coverage = useMemo(() => analyzeRuleCoverage(rules, subject), [rules, subject]);
   const shown = useMemo(() => matchAppendTargets(targets, query), [targets, query]);
 
   const pick = (target: RuleAppendTarget) => {
@@ -74,7 +72,8 @@ export function RulePickDialog({
         return t('rules.pickWhyAnd');
       case 'valueUnfit':
         return t('rules.pickWhyUnfit', {
-          domain,
+          value: subject.value,
+          type: t(ruleTypeNameKey(subject.type)),
         });
       default:
         return null;
@@ -95,7 +94,8 @@ export function RulePickDialog({
     >
       <div className="card-sub" style={{ marginTop: -4 }}>
         {t('rules.pickHint', {
-          domain,
+          value: subject.value,
+          type: t(ruleTypeNameKey(subject.type)),
         })}
       </div>
 
@@ -175,7 +175,9 @@ export function RulePickDialog({
                 </span>
               </span>
               {target.block === 'contains' && (
-                <span className="pill region">{t('home.domainAlreadyInRule', { domain })}</span>
+                <span className="pill region">
+                  {t('rules.subjectAlreadyInRule', { value: subject.value })}
+                </span>
               )}
               {!target.enabled && (
                 <span className="pill region">{t('rules.pickDisabledTag')}</span>
@@ -186,7 +188,7 @@ export function RulePickDialog({
                 <span
                   className="pill warn"
                   data-tip={t('rules.pickShadowTip', {
-                    domain,
+                    value: subject.value,
                   })}
                 >
                   {t('rules.pickShadowTag')}

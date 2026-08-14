@@ -358,11 +358,11 @@ h1[tabindex='-1']:focus-visible { outline: none; }
   background: hsl(var(--flow) / 0.2);
   color: hsl(var(--flow-hi));
 }
-/* 日志页第一行是一条完整任务链：筛选 → 临时提级 → 导出诊断。级别/来源统一使用 GUI 下拉，
- * 不再靠 5+3 个分段按钮消耗整行宽度；诊断与诊断包固定成组，避免新增功能时继续横向堆按钮。 */
+/* 日志页第一行是一条完整任务链：筛选 → 确认内核运行态 → 临时提级 → 导出诊断。级别/来源统一
+ * 使用 GUI 下拉；内核级别是状态，不占筛选列，与诊断动作固定成组。 */
 .log-tb-primary{
   display:grid;
-  grid-template-columns:minmax(180px,220px) minmax(124px,156px) 1fr;
+  grid-template-columns:repeat(2,minmax(124px,140px)) minmax(0,1fr);
   align-items:end;
   gap:12px;
   padding:12px 16px 13px;
@@ -380,11 +380,11 @@ h1[tabindex='-1']:focus-visible { outline: none; }
   letter-spacing:.04em;
 }
 .log-filter-value{ display:flex; align-items:center; gap:7px; min-width:0; }
-.log-level-select{ flex:1 1 96px; min-width:88px; max-width:116px; }
-.log-source-select{ width:124px; }
+.log-level-select,
+.log-source-select{ width:124px; max-width:100%; }
 .log-diagnostic-actions{
   display:inline-flex;
-  align-items:stretch;
+  align-items:center;
   justify-self:end;
   gap:6px;
   padding:3px;
@@ -421,7 +421,7 @@ h1[tabindex='-1']:focus-visible { outline: none; }
 }
 
 @container mainc (max-width: 620px) {
-  .log-tb-primary{ grid-template-columns:minmax(180px,1fr) 124px; }
+  .log-tb-primary{ grid-template-columns:repeat(2,minmax(124px,1fr)); }
   .log-diagnostic-actions{ grid-column:1 / -1; justify-self:start; }
   .log-tb-main { flex-wrap: wrap; }
   .log-tb-search { flex-basis: 100%; }
@@ -1422,25 +1422,35 @@ body:has(.pending-bar.show) #toast-stack{
 .tray-menu .tray-group-h.tray-grp-t:hover{ background:hsl(var(--surface-2)); color:hsl(var(--fg)); }
 .tray-menu .tray-grp-t .tray-grp-chev{ width:13px; height:13px; }
 
-/* ── 「加入已有规则」两处新皮肤（覆盖层，禁区两文件零改动）────────────────────────────────────
+/* ── 连接规则对象菜单 +「加入已有规则」皮肤（覆盖层，禁区两文件零改动）────────────────────────
  * 全部只用 tokens（`--fg-faint` / `--line` / `--warn` 四档都有值）⇒ 深浅两档自动同步，
  * 不写任何 `@media prefers-color-scheme` / `[data-theme]` 条件规则（写了就必须成对，见
  * style-invariants ⑤；这里根本不需要条件）。
  *
- * 1) `.ctx-note` —— 右键菜单项尾部的次要说明（命中该域名的那条规则名）。`.ctx-i` 本身是 flex 行，
+ * 1) `.ctx-subject` 把“选对象”收成一个紧凑控件，避免把域名/IP/进程各展开成一组重复动作；下方值只
+ *    展示当前对象，长值截断并由全局 tooltip 给全文。
+ * 2) `.ctx-note` —— 右键菜单项尾部的次要说明（先命中该对象的规则名）。`.ctx-i` 本身是 flex 行，
  *    故靠 `margin-left:auto` 右推；封顶 + 省略号防长规则名把菜单撑爆（菜单 min-width 只有 210px）。
- * 2) `.proc-pick-row:disabled` —— 目标已包含该值时那一行不可点。`.proc-pick-row` 基线写死了
+ * 3) `.proc-pick-row:disabled` —— 目标已包含该值时那一行不可点。`.proc-pick-row` 基线写死了
  *    `cursor:pointer` 且 `:hover` 有底色，不复位的话「不可点」在视觉上与可点的完全一样。
  *    选择器带伪类 (0,2,0) 压过基线 (0,1,0)，不依赖导入顺序。
- * 3) 行尾状态标签**复用 `.pill`**（`.pill.region` 中性 / `.pill.warn` 提示），故这里只补一条
+ * 4) 行尾状态标签**复用 `.pill`**（`.pill.region` 中性 / `.pill.warn` 提示），故这里只补一条
  *    `flex:none` —— `.pill` 是 `inline-flex`、无 `flex-shrink:0`，落进 `.proc-pick-row` 这个 flex 行
  *    时会被压扁。不另造 `.rp-tag`：那是把一个已有的 chip 皮肤抄第二遍。
  *    「前面可能先命中」取 `--warn` 而非 `--err`：它是**提示**不是错误（口径同本仓「流量表达轴恒
  *    --warn」那条），且 `--err` 有浅色对比度门管着。
- * 4) 置灰行的第二行现在放的是**不可追加的原因**（整句，不是一个值列表），而 `.pp-path` 基线是
+ * 5) 置灰行的第二行现在放的是**不可追加的原因**（整句，不是一个值列表），而 `.pp-path` 基线是
  *    `white-space:nowrap` + 省略号 —— 不放开换行的话原因会被截成半句，等于没给原因。只放开
  *    `:disabled` 那一档：可点行的第二行仍是「类型: 值, 值…」，那种长列表该继续截断。
  *    纯排版属性、零颜色 ⇒ 与主题两档无关。 */
+.ctx-subject{ margin:2px 3px 5px; padding:5px; border-radius:8px; background:hsl(var(--surface-2)); }
+.ctx-subject-tabs{ display:flex; gap:3px; }
+.ctx-subject-tabs button{ flex:1; min-width:0; padding:4px 7px; border-radius:6px; font-size:11.5px;
+  color:hsl(var(--fg-faint)); }
+.ctx-subject-tabs button:hover{ color:hsl(var(--fg)); background:hsl(var(--surface)); }
+.ctx-subject-tabs button.on{ color:hsl(var(--flow-hi)); background:hsl(var(--flow-weak)); font-weight:600; }
+.ctx-subject-value{ display:block; max-width:240px; margin:5px 3px 1px; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; font:11px var(--mono); color:hsl(var(--fg-dim)); }
 .ctx-i .ctx-note{ margin-left:auto; padding-left:10px; max-width:120px; overflow:hidden;
   text-overflow:ellipsis; white-space:nowrap; font-size:11px; color:hsl(var(--fg-faint)); }
 .proc-pick-row:disabled{ cursor:default; }

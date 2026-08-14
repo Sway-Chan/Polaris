@@ -1,8 +1,8 @@
-//! 托盘单击自定义 HTML 浮层（`.tray-menu` 原型的独立 WebviewWindow 宿主）。
+//! 托盘上下文自定义 HTML 浮层（`.tray-menu` 原型的独立 WebviewWindow 宿主）。
 //!
-//! 替代原生 NSMenu 作为**左键**主交互：托盘左键点击 → 弹出这个独立窗口渲染的自绘浮层
-//! （连接状态卡 + 断开/连接 + 节点切换 + 模式 + 打开主窗 + 退出）。右键原生菜单（显示/退出）
-//! 仍由 `main.rs` 保留作兜底（Linux 左键点击不可靠 / 浮层创建失败时的退出路径）。
+//! macOS/Windows 以它替代原生上下文菜单：托盘右键（macOS 双指辅助点按同样归为右键）→ 弹出这个
+//! 独立窗口渲染的自绘浮层（连接状态卡 + 断开/连接 + 节点切换 + 模式 + 打开主窗 + 退出）；左键直接
+//! 打开主窗口。Linux AppIndicator 不派发可靠点击事件，仍由 `main.rs` 保留完整原生菜单兜底。
 //!
 //! # 窗口形态（对齐 `runtime::update_popup` 的独立 mini 窗模式）
 //!
@@ -16,7 +16,7 @@
 //!
 //! # 生命周期
 //!
-//! setup 内 [`build_overlay`] 预建一次（隐藏）→ 托盘左键 [`on_tray_click`] 定位+显示+聚焦（再点=隐藏）→
+//! setup 内 [`build_overlay`] 预建一次（隐藏）→ 托盘右键 [`toggle_overlay`] 定位+显示+聚焦（再点=隐藏）→
 //! 点窗外/切他 app 收起：Rust `Focused(false)` + DOM `window.blur`→`tray_hide` **双路** dismiss（后者
 //! 经 `initialization_script` 注入，兜 mac 上次级窗 Focused 递送不可靠，见 [`TRAY_BLUR_DISMISS_JS`]）。
 //! 窗口持久存在，React 端一次挂载后靠事件订阅保持状态新鲜。
@@ -41,10 +41,10 @@ use tauri::{
 use crate::i18n::{app_lang, key, t, Lang};
 use crate::response::{ok_void, ApiResponse};
 
-// ── 托盘原生文案（右键兜底菜单 + tooltip）────────────────────────────────────────
+// ── 托盘原生文案（Linux 原生菜单 + 三平台 tooltip）────────────────────────────────
 //
 // 浮层（webview）文案走前端 `labels.ts`（`i18n/auxiliary.ts` 的键查找，`locales/auxiliary/*.json` 的 `tray.*`）；
-// **原生**托盘图标 tooltip 与右键兜底菜单在 Rust 侧构建，前端 i18n 够不着 —— 故本模块经
+// **原生**托盘图标 tooltip 与 Linux 兜底菜单在 Rust 侧构建，前端 i18n 够不着 —— 故本模块经
 // [`crate::i18n`] 读**同一批 `tray.*` 键**：同一个字符串，两个入口想分叉都分叉不了
 // （此前靠一句「文案与浮层逐字一致」的散文约束守着）。语言真值源同为 `config.language`，
 // 见 [`crate::i18n::app_lang`]。
@@ -162,11 +162,11 @@ pub fn tooltip_status_key(state: TrayState) -> &'static str {
     }
 }
 
-// ── 原生兜底菜单文案（A7：Linux 左键不递送时，这是唯一够得着功能面的入口）────────────
+// ── 原生兜底菜单文案（A7：Linux 不递送点击事件时，这是唯一够得着功能面的入口）──────────
 //
-// `main.rs::setup` 里 `set_show_menu_on_left_click(false)` 在 appindicator 下是 **no-op**（gtk 后端没有
-// 这个能力），且本模块头注早已自陈「Linux 左键点击不可靠」——两条叠加 ⇒ Linux 上一旦左键不递送，
-// 用户手里只剩右键原生菜单。它此前只有「显示 / 退出」两项 ⇒ 模式、接管方式、节点、连接开关**全部够不着**。
+// Tauri 的 AppIndicator 后端不支持切换菜单点击键，且明确不派发 Linux `TrayIconEvent` ⇒ Linux 用户
+// 只能依赖桌面宿主展示的原生菜单。
+// 它此前只有「显示 / 退出」两项 ⇒ 模式、接管方式、节点、连接开关**全部够不着**。
 // 故原生菜单必须自带完整功能面（对齐 上游 `TrayManager.ts:392-441` 的 contextMenu 项集）。
 //
 // 菜单项文案由 `main.rs::build_tray_menu` 直接 `i18n::t(lang, key::TRAY_*)` 取；只有下面两个
@@ -417,7 +417,7 @@ const TRAY_WIDTH: f64 = 268.0;
 /// 若紧接着的 Click 事件在此窗口内到达，视为「点击图标关闭」，不再重开（否则闪一下又弹回）。
 const REOPEN_DEBOUNCE_MS: u128 = 300;
 
-/// 浮层运行期状态（app-managed）：记录最近一次隐藏时刻（供 [`on_tray_click`] 去抖）+ 最近一次
+/// 浮层运行期状态（app-managed）：记录最近一次隐藏时刻（供 [`toggle_overlay`] 去抖）+ 最近一次
 /// 托盘图标屏幕矩形（供 [`reposition`] 对齐图标；[`tray_resize`] 改高后重定位也复用它）。
 #[derive(Default)]
 pub struct TrayOverlay {
@@ -492,8 +492,8 @@ fn hide_overlay(app: &AppHandle) {
     remove_click_monitor(app);
 }
 
-/// setup 内预建隐藏的浮层窗。**非致命**：任何失败仅记日志并跳过——托盘左键会回退显示主窗
-/// （[`on_tray_click`] 的 overlay-missing 分支），原生菜单退出路径不受影响。
+/// setup 内预建隐藏的浮层窗。**非致命**：任何失败仅记日志并跳过——右键会回退显示主窗
+/// （[`toggle_overlay`] 的 overlay-missing 分支），Linux 原生菜单 / 应用菜单退出路径不受影响。
 pub fn build_overlay(app: &AppHandle) {
     if app.get_webview_window(TRAY_LABEL).is_some() {
         return; // 已建（幂等）
@@ -523,7 +523,7 @@ pub fn build_overlay(app: &AppHandle) {
     }
     // Linux 恒不透明（透明窗在无合成器/部分 WM 下=黑块或穿透）：卡片 surface 同色实底兜底。
     // 底色按 `config.uiTheme` 折算（B）——此前硬编码深色 surface，浅色用户每次弹浮层都先闪一格深色底
-    // （浮层窗常驻、show 即上屏，webview 重绘在其后）。运行期改主题由 [`on_tray_click`] 的
+    // （浮层窗常驻、show 即上屏，webview 重绘在其后）。运行期改主题由 [`toggle_overlay`] 的
     // `set_background_color` 跟进（浮层不重建，建窗时这一次只管首次）。
     #[cfg(target_os = "linux")]
     {
@@ -536,7 +536,7 @@ pub fn build_overlay(app: &AppHandle) {
         Ok(w) => w,
         Err(e) => {
             log::warn!(
-                "托盘浮层窗创建失败（降级：托盘左键回退显示主窗，退出仍走原生菜单/⌘Q）：{e}"
+                "托盘浮层窗创建失败（降级：右键回退显示主窗，退出仍走 Linux 原生菜单/应用菜单）：{e}"
             );
             return;
         }
@@ -551,11 +551,11 @@ pub fn build_overlay(app: &AppHandle) {
     });
 }
 
-/// 托盘左键点击入口（三平台统一，由 `main.rs` 的 `on_tray_icon_event` 调）。
+/// macOS/Windows 托盘右键入口（由 `main.rs` 的 `on_tray_icon_event` 调）。
 ///
 /// 可见 → 隐藏（toggle off）；不可见 → 定位到托盘所在屏角 + 显示 + 聚焦。
-/// 浮层未建（创建失败）→ 回退显示主窗，保证「点了有反应」。
-pub fn on_tray_click(app: &AppHandle, rect: Option<tauri::Rect>) {
+/// 浮层未建（创建失败）→ 回退显示主窗，保证右键仍有可达功能面。
+pub fn toggle_overlay(app: &AppHandle, rect: Option<tauri::Rect>) {
     let Some(win) = app.get_webview_window(TRAY_LABEL) else {
         crate::show_main_window(app);
         return;
@@ -683,7 +683,7 @@ fn install_click_monitor(app: &AppHandle) {
 
 /// 拆全局鼠标按下监听器（defect#3）。任一收起路径经 [`hide_overlay`] 调用。`removeMonitor:` 必须在**主
 /// 线程**，故经 `run_on_main_thread` 调度（`tray_*` command 在异步 runtime 线程跑；Focused(false)/
-/// on_tray_click/monitor handler 在主线程跑——统一调度都安全）。`take()` 去重，保证同一 monitor 只 remove
+/// toggle_overlay/monitor handler 在主线程跑——统一调度都安全）。`take()` 去重，保证同一 monitor 只 remove
 /// 一次。非 mac 不编译（无此函数）。
 #[cfg(target_os = "macos")]
 fn remove_click_monitor(app: &AppHandle) {
@@ -996,7 +996,7 @@ pub fn tray_quit(app: AppHandle) -> ApiResponse<()> {
 ///     registry 里旧订阅无人退订 → gRPC poller 永续 1s 轮询、`subs` 无界累积 → **内存/CPU 反而不降 = 轻量白做**。
 ///  3. 收起浮层（手动路径从托盘触发；自动 idle 路径浮层未开 = no-op）。
 ///  4. `destroy()` 销毁主窗（**force**：绕过 `CloseRequested` 的 hide-to-tray 拦截，真释放内存）。用户经托盘
-///     左键/dock 唤出时 `show_main_window` 走 `create_main_window` 重建。
+///     macOS/Windows 左键、Linux 原生菜单或 dock 唤出时，`show_main_window` 走 `create_main_window` 重建。
 #[tauri::command]
 pub fn tray_enter_lightweight(app: AppHandle) -> ApiResponse<()> {
     app.state::<crate::LightweightState>()

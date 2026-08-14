@@ -16,6 +16,7 @@
 
 import { create } from 'zustand';
 import type { SystemProcessInfo } from '@/contracts/types';
+import type { RulePreset, RuleSubject } from '@/domain/rules';
 import type { RuleAppendTarget } from './rule-append';
 
 /** 通用确认弹窗载荷（可复用基建：删除确认 / 放弃更改 / 危险操作二次确认）。 */
@@ -74,11 +75,11 @@ export type DialogDesc =
       onWarpDeregister: (node: import('@/contracts/types').ServerConfig) => void;
     }
   // D4：规则编辑 + 进程选择器
-  | { kind: 'rule'; ruleId?: string; presetDomain?: string } // presetDomain：拓扑右键「为其加规则」预填
+  | { kind: 'rule'; ruleId?: string; preset?: RulePreset }
   | { kind: 'proc-pick'; onPick: (procs: SystemProcessInfo[]) => void } // 批量选中回调（原型是多选+底部「添加 N 项」批量提交，非单击即选；调用方闭包写回自身 useState，同 ConfirmPayload.onConfirm 先例）
   // 「加入已有规则…」的目标选择器：单击即选（一次点击写一条规则，没有批量语义），回调同 proc-pick
-  // 先例 —— 写入腿在唯一调用方 `components/host-rule-menu.tsx` 里，弹窗本身只负责选。
-  | { kind: 'rule-pick'; domain: string; onPick: (target: RuleAppendTarget) => void }
+  // 先例 —— 写入腿在唯一调用方 `components/rule-subject-menu.tsx` 里，弹窗本身只负责选。
+  | { kind: 'rule-pick'; subject: RuleSubject; onPick: (target: RuleAppendTarget) => void }
   // D5：自定义应用 + 资源库 + 备份导入
   | { kind: 'app-add' } // 仅新增（自定义应用无编辑态）
   | { kind: 'res-catalog' }

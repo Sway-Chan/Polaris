@@ -27,12 +27,12 @@ const SRC = code(
 );
 
 /**
- * 「加规则」那两项 2026-07-30 起搬进共用组件 `components/host-rule-menu.tsx`（拓扑右键菜单与本页
+ * 「加规则」两项由共用组件 `components/rule-subject-menu.tsx` 承担（拓扑右键菜单与本页
  * 共用同一条腿 + 同一套排序判据，同 `lib/use-rule-delete.ts` 的先例）。守卫跟着搬 —— 留在本文件
  * 里扫 `ConnectionsScreen.tsx` 只会恒绿（那两项已经不在这里了）。
  */
 const MENU_SRC = code(
-  readFileSync(fileURLToPath(new URL('../../host-rule-menu.tsx', import.meta.url)), 'utf8'),
+  readFileSync(fileURLToPath(new URL('../../rule-subject-menu.tsx', import.meta.url)), 'utf8'),
 );
 
 describe('行右键菜单已接线', () => {
@@ -46,7 +46,7 @@ describe('行右键菜单已接线', () => {
     expect(SRC).toContain('onContextMenu={(e) =>');
     const at = SRC.indexOf('onContextMenu={(e) =>');
     expect(SRC.slice(at, at + 200)).toContain('e.preventDefault()');
-    expect(SRC.slice(at, at + 200)).toContain('setMenu({');
+    expect(SRC.slice(at, at + 420)).toContain('setMenu({');
   });
 
   /**
@@ -54,10 +54,10 @@ describe('行右键菜单已接线', () => {
    *
    * 变异对照：把任一 `onClick` 换成空函数 / toast 占位 → 对应那条转红。
    */
-  it('四个动作接到既有实现（复制域名 / 复制 IP / 加规则 / 关闭连接）', () => {
-    expect(SRC).toContain('copyText(menu.row.host)');
-    expect(SRC).toContain('copyText(menu.row.dest)');
-    expect(SRC).toContain('<HostRuleMenuItems host={menu.row.host}');
+  it('对象选择后，复制 / 加规则 / 关闭连接都接到既有实现', () => {
+    expect(SRC).toContain('connectionRuleSubjects(r.entry)');
+    expect(SRC).toContain('copyText(menu.subject!.value)');
+    expect(SRC).toContain('<RuleSubjectMenuItems subject={menu.subject}');
     // 关闭走既有 onClose（乐观移除 + 失败回滚 + 抑制集），不得另写一条裸 close。
     expect(SRC).toContain('void onClose(row)');
   });
@@ -69,9 +69,9 @@ describe('行右键菜单已接线', () => {
    * action 选择，用户拿不到「代理 / 直连」的选择权。把「加入已有」那条摘掉 → 第三条转红。
    */
   it('加规则 = 跳规则页 + 打开预填条件的完整弹窗（腿在共用组件里）', () => {
-    expect(MENU_SRC, '共用组件读空了 —— 下面两条会恒绿').toContain('HostRuleMenuItems');
+    expect(MENU_SRC, '共用组件读空了 —— 下面两条会恒绿').toContain('RuleSubjectMenuItems');
     expect(MENU_SRC).toContain("navigate('rules')");
-    expect(MENU_SRC).toContain("openDialog({ kind: 'rule', presetDomain: host })");
+    expect(MENU_SRC).toContain("openDialog({ kind: 'rule', preset:");
     expect(MENU_SRC).toContain("openDialog({ kind: 'rule-pick'");
   });
 
@@ -91,14 +91,15 @@ describe('行右键菜单已接线', () => {
   });
 
   /**
-   * 复用原型样式类，**零新增 CSS**（`components.css` / `prototype.css` 是禁区，
-   * 端口侧改动一律走 `index.css` 覆盖层；这里连覆盖层都不需要）。
+   * 菜单动作复用原型样式类；对象选择器作为一个紧凑控件存在，不展开成三套重复动作。
    *
    * 变异对照：另起一个 `.conn-ctx` 类名 → 本条转红。
    */
-  it('复用 .ctx-menu / .ctx-i，不新造样式', () => {
+  it('复用 .ctx-menu / .ctx-i，并有单一对象选择器', () => {
     expect(SRC).toContain('className="ctx-menu"');
     expect(SRC).toContain('className="ctx-i"');
     expect(SRC).toContain('className="ctx-i danger"');
+    expect(SRC).toContain('className="ctx-subject-tabs"');
+    expect(SRC.match(/copyText\(/g)).toHaveLength(1); // 当前对象唯一复制动作
   });
 });

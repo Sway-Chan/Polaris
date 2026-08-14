@@ -311,24 +311,20 @@ export const RULE_TYPES: Record<RuleType, RuleTypeDescriptor> = {
 export const DEFAULT_RULE_TYPE: RuleType = 'domain';
 
 /**
- * 「为一个**观测到的主机名**建规则」时用哪个类型 —— 拓扑/连接页右键菜单那一族入口的单一真值。
- *
- * 为什么必须收成一个常量：同一个菜单此前产出**两种**规则类型 —— 「代理 / 直连」直写腿写
- * `domainSuffix`（对齐原型 dnodeMenu 的「为其加规则」语义），而「加入自定义规则」弹窗腿预填的是
- * `DEFAULT_RULE_TYPE`（= `domain`，精确匹配）。同一个菜单、同一次点击意图，两条腿类型不同。
- *
- * 取 `domainSuffix` 而不是 `domain` 的判据：
- *  1. 弹窗腿那个 `domain` **不是一次产品决定**，是「新建空白条件默认给哪个类型」这个常量顺着
- *     `presetDomain` 的路径漏出来的；直写腿的 `domainSuffix` 才是照着原型语义显式选的。
- *  2. 主机名是**完整**主机名（`isRuleableHost` 已排除聚合 sentinel），故 `domainSuffix` 相对
- *     `domain` 只多命中它自己的子域，扩宽面很窄；反过来把直写腿收成 `domain` 则要推翻原型语义。
- *  3. 弹窗腿是**可见可改**的（用户提交前看得到类型下拉），直写腿不是 —— 让可见的那条去迁就
- *     不可见的那条，代价最小。
- *
- * 与 `DEFAULT_RULE_TYPE` 分开而不复用：那个回答「空白条件先给哪一个」，这个回答「拿到一个主机名
- * 该怎么匹配」，两个问题的答案没有理由永远相同。
+ * 规则弹窗的预填值。类型随入口的观测对象显式传入：完整域名只证明该 FQDN，默认精确匹配；
+ * 目的 IP 与进程名则分别使用 `ipCidr` / `processName`。
  */
-export const PRESET_HOST_RULE_TYPE: RuleType = 'domainSuffix';
+export interface RulePreset {
+  readonly type: RuleType;
+  readonly value: string;
+}
+
+/** 连接记录中可直接转为规则条件的观测对象。 */
+export interface RuleSubject extends RulePreset {
+  readonly kind: 'domain' | 'ip' | 'process';
+  /** 仅用于菜单完整值提示（例如进程完整路径），不写入规则。 */
+  readonly detail?: string;
+}
 
 /** 类型 → 分类（**派生自描述符表**，勿另立第二张表）。 */
 export const RULE_TYPE_CATEGORY: Record<RuleType, RuleCategory> = Object.fromEntries(

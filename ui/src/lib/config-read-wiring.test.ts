@@ -460,7 +460,7 @@ const MIRROR_SITES: readonly MirrorSite[] = [
     why: '「加入已有规则」的候选枚举：列的是用户现在这套规则（暂存中新建的也必须能当追加目标），选中后写的仍是整条规则、不按 id 查盘',
   },
   {
-    file: 'components/host-rule-menu.tsx',
+    file: 'components/rule-subject-menu.tsx',
     shape: 'useEffectiveRules()',
     count: 1,
     surface: 'display',

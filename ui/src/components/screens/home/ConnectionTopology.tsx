@@ -18,8 +18,8 @@ import { useTranslation } from 'react-i18next';
 import { useStagedConfigStore } from '@/store/staged-config-store';
 import { useStagingActive } from '@/store/use-staging-active';
 import { editRoute } from '@/lib/staged-config';
-import { PRESET_HOST_RULE_TYPE } from '@/domain/rules';
-import { HostRuleMenuItems } from '@/components/host-rule-menu';
+import { validateRuleValue, type RuleSubject } from '@/domain/rules';
+import { RuleSubjectMenuItems } from '@/components/rule-subject-menu';
 import { api } from '@/ipc';
 import { toast } from '@/lib/error-handler';
 import { cn } from '@/lib/utils';
@@ -41,7 +41,7 @@ const TIP_OFFSET = 12; // tooltip 相对指针偏移
 interface ContextMenuState {
   x: number; // 相对 .sankey-wrap
   y: number;
-  domain: string;
+  value: string;
 }
 
 interface ConnectionTopologyProps {
@@ -154,34 +154,44 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
     };
   }, [menu]);
 
-  const openMenu = useCallback((domain: string, clientX: number, clientY: number) => {
+  const openMenu = useCallback((value: string, clientX: number, clientY: number) => {
     const wrap = wrapRef.current?.getBoundingClientRect();
     if (!wrap) return;
-    setMenu({ x: clientX - wrap.left, y: clientY - wrap.top, domain });
+    setMenu({ x: clientX - wrap.left, y: clientY - wrap.top, value });
   }, []);
 
+  const menuSubject = useMemo<RuleSubject | null>(() => {
+    if (!menu) return null;
+    if (validateRuleValue('ipCidr', menu.value)) {
+      return { kind: 'ip', type: 'ipCidr', value: menu.value };
+    }
+    if (validateRuleValue('domain', menu.value)) {
+      return { kind: 'domain', type: 'domain', value: menu.value };
+    }
+    return null;
+  }, [menu]);
+
   /**
-   * 加域名规则：走 rulesApi.add 单一入口。类型取 `PRESET_HOST_RULE_TYPE`（= 本菜单另一条腿
-   * 「加入自定义规则」预填的同一个类型，判据见该常量头注）。
+   * 快速代理/直连：类型由当前观测对象决定，与“新建规则”弹窗和“加入已有”共用同一对象。
    *
    * `remarks` 必填而非可选：规则列表的标题在无 remarks 时回落成**裸类型名**
-   * （`RuleItem.tsx::ruleTitle`），于是这条腿建出来的规则在列表和 hover 卡上全叫「域名后缀」，
-   * 多条之间完全无法区分 —— 而顺序又直接决定命中优先级。弹窗腿早已把 remarks 设成必填
+   * （`RuleItem.tsx::ruleTitle`），同类型快速规则会完全无法区分，而顺序又直接决定命中优先级。
+   * 弹窗腿早已把 remarks 设成必填
    * （`RuleDialog::handleSubmit`），同一个入口不该两套要求。
    */
-  const addDomainRule = useCallback(
-    async (domain: string, action: 'proxy' | 'direct') => {
+  const addSubjectRule = useCallback(
+    async (subject: RuleSubject, action: 'proxy' | 'direct') => {
       setMenu(null);
       const actionLabel = action === 'proxy' ? t('home.ruleProxy') : t('home.ruleDirect');
       try {
         const rule = {
-          type: PRESET_HOST_RULE_TYPE,
-          values: [domain],
+          type: subject.type,
+          values: [subject.value],
           action,
           enabled: true,
-          remarks: t('home.domainRuleRemarks', {
+          remarks: t('home.ruleRemarks', {
             action: actionLabel,
-            domain,
+            value: subject.value,
           }),
         };
         // 配置暂存闸门（与 NodeDialog 同形）：`customRules` Class B，无副作用 ⇒ 默认腿。
@@ -191,16 +201,16 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
           stage({
             id: `rule:${entityId}`,
             kind: 'rule',
-            label: `${t('rules.newTitle')} ${domain}`,
+            label: `${t('rules.newTitle')} ${subject.value}`,
             entityPath: ['customRules', entityId],
             nextValue: { ...rule, id: entityId },
           });
         } else {
           await api.rules.add(rule);
         }
-        toast.success(t('home.domainRuleAdded', { domain, action: actionLabel }));
+        toast.success(t('home.ruleAdded', { value: subject.value, action: actionLabel }));
       } catch {
-        toast.error(t('home.domainRuleAddFail'));
+        toast.error(t('home.ruleAddFail'));
       }
     },
     [t, stagingEnabled, stage]
@@ -400,17 +410,17 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
         )}
 
         {/* 右键菜单：原型 .ctx-menu/.ctx-i（:1294-1300）+ showCtx 的容器内 clamp（:3770-3771） */}
-        {menu && (
+        {menu && menuSubject && (
           <div ref={menuRef} className="ctx-menu" style={menuPos ?? { left: 0, top: 0, opacity: 0 }}>
             {/* 「加入已有规则…」+「加入自定义规则」两项与连接页共用同一个组件（含排序判据与写入腿）。 */}
-            <HostRuleMenuItems host={menu.domain} onDone={() => setMenu(null)} />
-            <button type="button" className="ctx-i" onClick={() => addDomainRule(menu.domain, 'proxy')}>
+            <RuleSubjectMenuItems subject={menuSubject} onDone={() => setMenu(null)} />
+            <button type="button" className="ctx-i" onClick={() => addSubjectRule(menuSubject, 'proxy')}>
               <svg viewBox="0 0 24 24" width="15" fill="none" stroke="currentColor" strokeWidth="1.8">
                 <path d="M5 12l5 5 9-11" />
               </svg>
               {t('home.ruleProxy')}
             </button>
-            <button type="button" className="ctx-i" onClick={() => addDomainRule(menu.domain, 'direct')}>
+            <button type="button" className="ctx-i" onClick={() => addSubjectRule(menuSubject, 'direct')}>
               <svg viewBox="0 0 24 24" width="15" fill="none" stroke="currentColor" strokeWidth="1.8">
                 <path d="M4 4l16 16M4 20L20 4" />
               </svg>

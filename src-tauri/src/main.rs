@@ -530,18 +530,63 @@ fn wire_tray_icon_sync(
     spawn_poll(TRAY_ICON_POLL);
 }
 
-// ── A7：原生兜底菜单（Linux 左键不递送时唯一够得着功能面的入口）────────────────────
+// ── 托盘交互策略：macOS/Windows 直派点击，Linux 由原生菜单承接 ─────────────────────
 //
-// `set_show_menu_on_left_click(false)` 在 appindicator 下是 **no-op**，且 `tray.rs` 头注自陈「Linux 左键
-// 点击不可靠」——两条叠加 ⇒ 左键一旦不递送，用户手里只剩右键菜单，而它此前只有「显示 / 退出」两项：
-// 连接开关、接管方式、分流策略、设置、检查更新**全部够不着**（浮层里有，但浮层正是靠左键弹出的）。
+// 这不是视觉偏好分支，而是平台能力边界：Tauri 的 tray-icon 在 macOS/Windows 会派发左右键事件；
+// Linux AppIndicator 明确不派发 `TrayIconEvent`，且菜单一旦挂上也不能移除。故把平台差异收敛成一个
+// 策略判据，调用方只消费「主窗口 / 自绘浮层 / 原生菜单」三种既定所有权，不再靠散落的 cfg 和注释猜。
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrayInteractionMode {
+    /// 应用直接接收鼠标事件：左键打开主窗，右键打开自绘浮层。
+    DirectClicks,
+    /// 桌面托盘宿主接管点击并展示原生菜单（Linux AppIndicator）。
+    NativeMenu,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrayClickAction {
+    ShowMain,
+    ToggleOverlay,
+}
+
+#[must_use]
+const fn tray_interaction_mode(platform: Platform) -> TrayInteractionMode {
+    match platform {
+        Platform::Mac | Platform::Win => TrayInteractionMode::DirectClicks,
+        Platform::Linux | Platform::Other => TrayInteractionMode::NativeMenu,
+    }
+}
+
+/// 把 macOS/Windows 托盘鼠标事件归一成产品动作。只在按键抬起时执行，避免一次点击的 down/up 两帧
+/// 各触发一次；Linux/未知平台由原生菜单持有事件，任何偶发派发都忽略，防止原生菜单与自绘浮层叠开。
+#[must_use]
+fn resolve_tray_click_action(
+    platform: Platform,
+    button: tauri::tray::MouseButton,
+    state: tauri::tray::MouseButtonState,
+) -> Option<TrayClickAction> {
+    if tray_interaction_mode(platform) != TrayInteractionMode::DirectClicks
+        || state != tauri::tray::MouseButtonState::Up
+    {
+        return None;
+    }
+    match button {
+        tauri::tray::MouseButton::Left => Some(TrayClickAction::ShowMain),
+        tauri::tray::MouseButton::Right => Some(TrayClickAction::ToggleOverlay),
+        tauri::tray::MouseButton::Middle => None,
+    }
+}
+
+// ── A7：Linux 原生兜底菜单（AppIndicator 不递送点击时唯一够得着功能面的入口）───────────
 //
-// # 为什么不做成 `#[cfg(target_os = "linux")]` 专属
+// AppIndicator 下 `set_show_menu_on_left_click(false)` 是 **no-op**，Tauri 也明确不派发 Linux
+// `TrayIconEvent`；因此 Linux 的稳定入口只有桌面宿主展示的原生菜单。它此前只有「显示 / 退出」两项：
+// 连接开关、接管方式、分流策略、设置、检查更新**全部够不着**。
 //
-// 缺口是 Linux 的，但「按平台各给一套菜单」= 两种形态，而其中**验不了**的那一种恰好就是 Linux
-// （本机是 Linux，但 appindicator 的左键递送与真实桌面环境强相关，仍是真机门）。三平台同一份菜单
-// 反而让我唯一能冒烟的那份 = 出问题的那份。mac/win 上它是右键菜单的增强，与浮层功能重叠但不冲突
-// （上游 三平台本来就只有这一份原生菜单）。
+// macOS/Windows 不再装这棵菜单：右键的唯一所有者是自绘浮层，若同时挂原生菜单，系统会先消费右键并
+// 弹 NSMenu/HMENU，应用即使收到事件也只能得到两个重叠表面。菜单代码仍跨平台可编译和单测，但运行期
+// 仅 [`TrayInteractionMode::NativeMenu`] 会装载。
 
 /// 落到**原生托盘菜单**上的全部输入 —— 菜单幂等重建的比较键（与 [`TrayVisual`] 同款闸门思路）。
 ///
@@ -742,8 +787,8 @@ fn build_tray_menu(
     )
 }
 
-/// 原生托盘菜单的**唯一汇流点**（与 [`reconcile_tray_icon`] 并列，同一批驱动源叫醒）：
-/// 回读 proxy / config 真值 → 模型变了才重建菜单。
+/// Linux 原生托盘菜单的**唯一汇流点**（与 [`reconcile_tray_icon`] 并列，同一批驱动源叫醒）：
+/// 回读 proxy / config 真值 → 模型变了才重建菜单。macOS/Windows 不调用本函数，右键由自绘浮层独占。
 fn reconcile_tray_menu(app: &tauri::AppHandle) {
     let Some(tray) = app.tray_by_id("main") else {
         return; // 托盘整体缺失 → 无菜单可装
@@ -793,10 +838,12 @@ fn reconcile_tray_menu(app: &tauri::AppHandle) {
     });
 }
 
-/// 托盘两个汇流点的统一叫醒入口（图标 + 原生菜单）。两者各自幂等短路，多叫无害。
+/// 托盘汇流点的统一叫醒入口：三平台都刷新图标；仅 Linux 刷新原生菜单。两者各自幂等短路，多叫无害。
 fn reconcile_tray(app: &tauri::AppHandle) {
     reconcile_tray_icon(app);
-    reconcile_tray_menu(app);
+    if tray_interaction_mode(Platform::current()) == TrayInteractionMode::NativeMenu {
+        reconcile_tray_menu(app);
+    }
 }
 
 /// 主进程侧系统通知（`tauri-plugin-notification`）。
@@ -814,7 +861,7 @@ fn notify_user(app: &tauri::AppHandle, title: &str, body: &str) {
     }
 }
 
-/// 原生菜单动作执行（副作用腿）。
+/// Linux 原生菜单动作执行（副作用腿）。
 ///
 /// 业务动作**复用 `commands::*` 里那几个 `#[tauri::command]` 函数本体**，不另写一份：它们同时也是浮层
 /// 与主窗走的那条路径（`proxy_start` 的「只在核真起来了才广播 proxyStarted」、`config_save` 的
@@ -1394,7 +1441,7 @@ fn main() {
             app.manage(LightweightState(AtomicBool::new(false)));
             // Q1-b ④：「本次退出是 app:restart 发起的」，默认 false = 真退出（照落正常退出标记）。
             app.manage(RestartState(AtomicBool::new(false)));
-            // 托盘自绘浮层运行期状态（图标点击去抖：防失焦隐藏与点击重开打架闪烁）。
+            // 托盘运行期状态（自绘浮层去抖 + 轻量重建时的待导航目标；Linux 虽不建浮层仍要后者）。
             app.manage(tray::TrayOverlay::default());
 
             // ── 订阅自动更新调度器（启动补更 8s + 周期巡检 30min + 代理就绪补更）──
@@ -1458,7 +1505,7 @@ fn main() {
             // 建窗全流程（per-platform 窗口铬 / vibrancy·Mica 特效 / 白屏自愈门 / 可见性·关窗事件接线）收在
             // `create_main_window` 一处——供 C16 轻量模式**销毁 webview 后重建**复用（重建与首建逐字节等价）。
             // start_hidden = `--hidden`（argv）或 `config.silentStart`（读原文本，与逃生门同源）：启动即隐藏、
-            // 只驻托盘，靠托盘左键/dock 唤出；托盘缺失时 setup 末尾兜底显示（无锚点则必须显示，见下方分支）。
+            // 只驻托盘，靠托盘主激活/原生菜单/dock 唤出；托盘缺失时 setup 末尾兜底显示（见下方分支）。
             let start_hidden = arg_hidden || config_silent_start(raw_config.as_deref());
             if start_hidden {
                 log::info!(
@@ -1527,7 +1574,7 @@ fn main() {
                 });
             }
 
-            // ── 系统托盘（存在锚点：图标 + 左键弹自绘浮层 + 右键完整原生兜底菜单）──
+            // ── 系统托盘（mac/win：左键主窗 + 右键自绘浮层；Linux：完整原生菜单）──
             // conf.trayIcon 已在 setup 前自动建好**单个**托盘（id "main" / 默认图标 tray-off-black.png=断开态空心星+单斜杠 /
             // iconAsTemplate:true=mac 断开态首帧即走系统自适应反色·Win/Linux 忽略 / tooltip）；
             // 此处取回它挂接点击行为与原生菜单，而非再 build 第二个——Tauri 每次 build 各向 OS 推一枚
@@ -1535,30 +1582,35 @@ fn main() {
             // `tray_present` 决定关窗语义：托盘在 → hide 收纳；托盘缺失 → 关窗即真退出（不留僵尸）。
             let handle = app.handle();
             let tray_present = if let Some(tray) = handle.tray_by_id("main") {
-                use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
+                use tauri::tray::TrayIconEvent;
 
-                // 原生菜单（A7）：项集由 `build_tray_menu` 给全（连接/断开 · 接管方式 · 分流策略 · 打开设置 ·
-                // 检查更新 · 显示 · 退出），装载走 `reconcile_tray_menu` 幂等汇流点，**不在这里直接建一份**
-                // ——那样就会有第二处决定「菜单长什么样」，且 setup 期建的那份永远停在启动瞬间的状态。
-                // 语言/连接态/两个策略档任一变化即重建（触发源见 TRAY_SYNC_EVENTS），故此前注释里
-                // 「启动后改语言不重建、保持旧语言至重启」这条**已不再成立**（浮层与原生菜单现在都 live 跟随）。
-                reconcile_tray_menu(handle);
-                // 左键 = 点击事件（弹浮层），不弹菜单；菜单走右键（mac 默认左键弹菜单，故显式关）。
-                // ⚠️ Linux(appindicator) **不支持该项 = no-op**，且那里左键点击本身不可靠 →
-                // 右键原生菜单才是 Linux 的主交互面，这正是它必须自带完整功能面（A7）的原因。
-                let _ = tray.set_show_menu_on_left_click(false);
-
-                tray.on_menu_event(|app, event| {
-                    if let Some(action) = parse_menu_action(event.id.as_ref()) {
-                        run_menu_action(app, action);
+                match tray_interaction_mode(Platform::current()) {
+                    TrayInteractionMode::NativeMenu => {
+                        // Linux AppIndicator 不派发可靠的左右键事件，完整原生菜单是唯一稳定功能面。
+                        // 菜单树只由 reconcile_tray_menu 构建，状态/语言变化仍走统一汇流点，setup 不另造副本。
+                        reconcile_tray_menu(handle);
+                        tray.on_menu_event(|app, event| {
+                            if let Some(action) = parse_menu_action(event.id.as_ref()) {
+                                run_menu_action(app, action);
+                            }
+                        });
                     }
-                });
+                    TrayInteractionMode::DirectClicks => {
+                        // macOS/Windows 的右键必须只归自绘浮层所有。Tauri 没暴露「禁用右键菜单」开关，
+                        // 但底层在 menu=None 时不会弹 NSMenu/HMENU，右键事件仍照常派发；同时关闭 mac 默认的
+                        // 左键菜单行为。两步都做，避免未来配置误挂菜单后重新抢走事件。
+                        if let Err(e) = tray.set_menu(None::<tauri::menu::Menu<tauri::Wry>>) {
+                            log::warn!("移除非 Linux 托盘原生菜单失败（右键浮层可能被抢占）：{e}");
+                        }
+                        if let Err(e) = tray.set_show_menu_on_left_click(false) {
+                            log::warn!("关闭托盘左键原生菜单失败（主窗口点击可能被抢占）：{e}");
+                        }
+                    }
+                }
 
-                // 左键点击（三平台统一）→ 弹出自绘浮层（替代原生菜单作左键主交互）。
-                // 浮层未建（创建失败）→ on_tray_click 内回退显示主窗，保证「点了有反应」。
-                // 右键仍走上面挂的原生菜单（显示/退出），作 Linux 左键不可靠 + 浮层失败时的兜底。
-                // `rect` = 托盘图标在屏幕上的真实矩形（OS 给）→ 浮层对齐到图标（tray::reposition），
-                // 不再按屏角猜坐标（多屏/缩放/菜单栏高度全部免猜）。
+                // macOS/Windows：左键抬起 → 收起浮层并打开主窗；右键抬起（mac 双指辅助点按同样归为 Right）
+                // → toggle 自绘浮层。Linux 即使某个 host 偶发派发事件，resolve_tray_click_action 也会拒绝，
+                // 避免与原生菜单叠开。`rect` 是图标真实屏幕矩形，只在右键浮层定位时消费。
                 //
                 // 「拖动托盘图标 → 浮层跟隐藏」为何不在此接：`TrayIconEvent` 只有 Click/DoubleClick/Enter/
                 // Move/Leave，**无专门的拖动事件**；Move/Leave 在**普通 hover**（鼠标从图标移到浮层）时也照
@@ -1567,17 +1619,27 @@ fn main() {
                 // Cmd 拖动菜单栏图标时浮层是否失焦」本机（Linux）验不了 → 列入真机待验（见 review-queue）。
                 tray.on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
+                        button,
+                        button_state,
                         rect,
                         ..
                     } = event
                     {
-                        crate::tray::on_tray_click(tray.app_handle(), Some(rect));
+                        match resolve_tray_click_action(Platform::current(), button, button_state) {
+                            Some(TrayClickAction::ShowMain) => {
+                                // 复用浮层「打开主窗口」的同一路径：先 hide overlay，再按白屏健康门呈现/重建主窗。
+                                let _ =
+                                    crate::tray::tray_show_main(tray.app_handle().clone(), None);
+                            }
+                            Some(TrayClickAction::ToggleOverlay) => {
+                                crate::tray::toggle_overlay(tray.app_handle(), Some(rect));
+                            }
+                            None => {}
+                        }
                     }
                 });
 
-                // ── 托盘图标 + 原生菜单随状态刷新（图标四态见 set_tray_state / 菜单见 reconcile_tray_menu）──
+                // ── 托盘图标 + Linux 原生菜单随状态刷新（图标四态见 set_tray_state）──
                 // 全部驱动源收敛到 `reconcile_tray` 这一个叫醒入口（内部两个汇流点各自回读真值 + 幂等短路，
                 // 不信事件携带的布尔）——见 `reconcile_tray_icon` / `wire_tray_icon_sync` 的文档：此前只订
                 // STARTED/STOPPED 并传字面量，崩溃腿（只发 ERROR）与零 emit 腿（restart 失败 / updater 停核 /
@@ -1620,12 +1682,16 @@ fn main() {
                 false
             };
 
-            // 预建托盘自绘浮层窗（隐藏；托盘左键 show）。非致命：失败仅降级
-            // （左键回退显示主窗 + 退出仍走原生菜单/⌘Q），不阻断启动。
-            tray::build_overlay(app.handle());
+            // 仅直派点击的平台预建自绘浮层。Linux 的点击归原生菜单所有，预建一个永远没有 show 入口的
+            // 隐藏 WebView 只会常驻浪费内存。建窗失败非致命：右键降级显示主窗，应用菜单仍可退出。
+            if tray_present
+                && tray_interaction_mode(Platform::current()) == TrayInteractionMode::DirectClicks
+            {
+                tray::build_overlay(app.handle());
+            }
 
             // C15：start_hidden 但托盘缺失（Linux 无 StatusNotifier）→ 无唤出锚点，**必须**显示主窗，否则
-            // 窗口永远隐藏且无处唤起 = 死界面。托盘在则保持隐藏（靠托盘左键/dock 唤出）。窗口可见性 → stats
+            // 窗口永远隐藏且无处唤起 = 死界面。托盘在则保持隐藏（靠主激活/原生菜单/dock 唤出）。窗口可见性 → stats
             // 门控 + 关窗语义的接线已在 `create_main_window::on_window_event`（首建/重建同一处）。
             if start_hidden && !tray_present {
                 log::info!("start_hidden 但托盘缺失 → 显示主窗（无隐藏唤出锚点，否则死界面）");
@@ -1795,8 +1861,8 @@ fn main() {
         // on_window_event + QuitState 决定，未改动；本回调只在**进程级退出请求**时兜安全清理。
         .run(|app_handle, event| match event {
             // macOS：点 dock 图标（NSApplicationDelegate applicationShouldHandleReopen）→ RunEvent::Reopen。
-            // close-to-tray 把主窗 hide 后，dock 重开是 macOS 上从 dock 召回窗口的路径（Win/Linux 靠托盘
-            // 左键点击，见 setup 内 on_tray_icon_event）。show+unminimize+focus 主窗；不改 QuitState，纯显示。
+            // close-to-tray 把主窗 hide 后，dock 重开是 macOS 上从 dock 召回窗口的路径（Windows 靠托盘
+            // 左键，Linux 靠原生菜单「显示」）。show+unminimize+focus 主窗；不改 QuitState，纯显示。
             // Reopen 是 **macOS-only** 的 RunEvent 变体 → cfg 门控该 arm；Linux/Windows 上 cargo check 覆盖
             // 不到它（需 mac 编译验证）。
             #[cfg(target_os = "macos")]
@@ -3380,6 +3446,75 @@ mod tests {
         let mut keys: Vec<TrayVisual> = states.iter().map(|s| vis(*s, true, Lang::ZhCN)).collect();
         keys.dedup();
         assert_eq!(keys.len(), 4, "四态必须产出四个不同的视觉键");
+    }
+
+    // ── 托盘点击所有权：mac/win 直派，Linux/未知平台交给原生菜单 ─────────────────────
+
+    #[test]
+    fn tray_interaction_mode_is_direct_only_on_mac_and_windows() {
+        assert_eq!(
+            tray_interaction_mode(Platform::Mac),
+            TrayInteractionMode::DirectClicks
+        );
+        assert_eq!(
+            tray_interaction_mode(Platform::Win),
+            TrayInteractionMode::DirectClicks
+        );
+        assert_eq!(
+            tray_interaction_mode(Platform::Linux),
+            TrayInteractionMode::NativeMenu
+        );
+        assert_eq!(
+            tray_interaction_mode(Platform::Other),
+            TrayInteractionMode::NativeMenu
+        );
+    }
+
+    #[test]
+    fn direct_tray_clicks_map_left_to_main_and_right_to_overlay() {
+        use tauri::tray::{MouseButton, MouseButtonState};
+
+        for platform in [Platform::Mac, Platform::Win] {
+            assert_eq!(
+                resolve_tray_click_action(platform, MouseButton::Left, MouseButtonState::Up),
+                Some(TrayClickAction::ShowMain),
+                "{platform:?} 左键抬起必须打开主窗口"
+            );
+            assert_eq!(
+                resolve_tray_click_action(platform, MouseButton::Right, MouseButtonState::Up),
+                Some(TrayClickAction::ToggleOverlay),
+                "{platform:?} 右键抬起必须打开自绘浮层"
+            );
+            assert_eq!(
+                resolve_tray_click_action(platform, MouseButton::Middle, MouseButtonState::Up),
+                None,
+                "中键没有产品动作，不得猜测"
+            );
+            for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+                assert_eq!(
+                    resolve_tray_click_action(platform, button, MouseButtonState::Down),
+                    None,
+                    "按下帧不得执行，避免 down/up 重复触发"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_menu_platforms_ignore_all_tray_click_events() {
+        use tauri::tray::{MouseButton, MouseButtonState};
+
+        for platform in [Platform::Linux, Platform::Other] {
+            for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+                for state in [MouseButtonState::Down, MouseButtonState::Up] {
+                    assert_eq!(
+                        resolve_tray_click_action(platform, button, state),
+                        None,
+                        "{platform:?} 点击归原生菜单所有，不得叠开自绘浮层"
+                    );
+                }
+            }
+        }
     }
 
     // ── A7：原生菜单 id ↔ 动作解析（菜单与 handler 之间唯一的契约面）─────────────────

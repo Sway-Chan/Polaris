@@ -7,6 +7,7 @@ const read = (relative: string): string =>
 
 const SCREEN = read('./LogsScreen.tsx');
 const CSS = read('../../../styles/index.css');
+const SCREEN_CSS = read('../../../styles/screens.css');
 
 describe('日志工具栏布局不变量', () => {
   it('级别与来源统一使用 GUI 下拉，不再展开成 5+3 个按钮', () => {
@@ -22,9 +23,24 @@ describe('日志工具栏布局不变量', () => {
     );
     expect(CSS).toMatch(/\.log-tb-primary\s*\{[^}]*display:\s*grid[^}]*grid-template-columns/);
     expect(CSS).toMatch(
-      /grid-template-columns:\s*minmax\(180px,220px\)\s+minmax\(124px,156px\)\s+1fr/,
+      /grid-template-columns:\s*repeat\(2,minmax\(124px,140px\)\)\s+minmax\(0,1fr\)/,
     );
     expect(CSS).not.toMatch(/@container mainc \(max-width: 7\d\dpx\)[\s\S]*?\.log-tb-primary/);
+  });
+
+  it('内核写盘级别属于诊断操作组，不再夹在级别与来源筛选之间', () => {
+    const levelFilter = SCREEN.indexOf('className="log-filter-field log-level-filter"');
+    const sourceFilter = SCREEN.indexOf('className="log-filter-field log-source-filter"');
+    const actions = SCREEN.indexOf('className="log-diagnostic-actions"');
+    const badge = SCREEN.indexOf('className={`log-core-lvl');
+    const diagnostic = SCREEN.indexOf('log-diagnostic-toggle', actions);
+
+    expect(levelFilter).toBeGreaterThan(-1);
+    expect(sourceFilter).toBeGreaterThan(levelFilter);
+    expect(actions).toBeGreaterThan(sourceFilter);
+    expect(badge).toBeGreaterThan(actions);
+    expect(diagnostic).toBeGreaterThan(badge);
+    expect(SCREEN_CSS).toMatch(/\.log-core-lvl\.known\s*\{[^}]*--flow/);
   });
 
   it('底栏把直播、行数与恢复入口组成左侧流状态簇，避开右下 toast', () => {

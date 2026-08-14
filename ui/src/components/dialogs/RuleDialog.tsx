@@ -40,7 +40,6 @@ import {
   RULE_TYPE_IDS,
   RULE_TYPES,
   DEFAULT_RULE_TYPE,
-  PRESET_HOST_RULE_TYPE,
   RULE_CATEGORY_ORDER,
   ruleCategoryLabelKey,
   ruleTypeNameKey,
@@ -51,6 +50,7 @@ import {
   isRuleTypePlatformSupported,
   ruleConditions,
   validateRule,
+  type RulePreset,
 } from '@/domain/rules';
 import {
   computeTestMatch,
@@ -140,7 +140,7 @@ function nodePlatformFromDataOs(): NodeJS.Platform | undefined {
 interface RuleFormProps {
   base?: Rule;
   isEdit: boolean;
-  presetDomain?: string;
+  preset?: RulePreset;
 }
 
 /** footer 左侧「删除此规则」的原地二次确认 key（原型 :4095 `rule-del-dlg`）。 */
@@ -253,7 +253,7 @@ function RuleValuePick({
   );
 }
 
-function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
+function RuleForm({ base, isEdit, preset }: RuleFormProps) {
   const { t } = useTranslation();
   const open = useDialogStore((s) => s.open);
   const close = useDialogStore((s) => s.close);
@@ -279,15 +279,13 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
   // 误判成「不支持设备匹配规则」，比不过滤更糟（把本来能用的功能藏掉）。
   const nodePlatform = useMemo(() => nodePlatformFromDataOs(), []);
 
-  // 同步初始化（R1）：编辑态从 base 预填，preset 预填首条件，新建默认单条件。
-  // preset 腿用 `PRESET_HOST_RULE_TYPE` 而不是 `DEFAULT_RULE_TYPE`：拓扑/连接页那个菜单的另外两条腿
-  // （代理 / 直连直写）用的就是它，同一个菜单不该产出两种规则类型（判据见该常量的头注）。
+  // 同步初始化（R1）：编辑态从 base 预填，入口 preset 显式携带类型和值，新建默认单条件。
   const [conds, setConds] = useState<Cond[]>(() => {
     if (base) {
       const cs = ruleConditions(base).map((c) => ({ t: c.type, v: c.values.join(', ') }));
       return cs.length ? cs : [{ t: DEFAULT_RULE_TYPE, v: '' }];
     }
-    return [{ t: presetDomain ? PRESET_HOST_RULE_TYPE : DEFAULT_RULE_TYPE, v: presetDomain ?? '' }];
+    return [{ t: preset?.type ?? DEFAULT_RULE_TYPE, v: preset?.value ?? '' }];
   });
   // 默认 **or**：`combineMode` 缺省的权威语义就是 or —— 契约 `contracts/types/rules.ts:59`
   // 「'or'(默认，命中任一)」、Rust 生成端 `config-engine/builder/custom_rule_files.rs:273`
@@ -302,7 +300,7 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
     if (base.action === 'block') return 'block';
     return base.targetServerId ? `node:${base.targetServerId}` : 'proxy';
   });
-  const [name, setName] = useState(base?.remarks ?? presetDomain ?? '');
+  const [name, setName] = useState(base?.remarks ?? preset?.value ?? '');
   const [bypassFakeIP, setBypassFakeIP] = useState(base?.bypassFakeIP === true);
   const [test, setTest] = useState('');
 
@@ -1121,12 +1119,13 @@ function RuleForm({ base, isEdit, presetDomain }: RuleFormProps) {
   );
 }
 
-export function RuleDialog({ ruleId, presetDomain }: { ruleId?: string; presetDomain?: string }) {
+export function RuleDialog({ ruleId, preset }: { ruleId?: string; preset?: RulePreset }) {
   // 展示面：编辑基准。读盘的话暂存过的规则再打开会显示改前的旧值。
   const rules = useEffectiveRules();
   const base = ruleId ? rules.find((r) => r.id === ruleId) : undefined;
   // R1：key 绑定 ruleId —— 切换编辑目标 = 重挂 = 同步重新初始化，杜绝挂载后 reset。
-  return <RuleForm key={ruleId ?? 'new'} base={base} isEdit={base != null} presetDomain={presetDomain} />;
+  const formKey = ruleId ?? `new:${preset?.type ?? ''}:${preset?.value ?? ''}`;
+  return <RuleForm key={formKey} base={base} isEdit={base != null} preset={preset} />;
 }
 
 export default RuleDialog;

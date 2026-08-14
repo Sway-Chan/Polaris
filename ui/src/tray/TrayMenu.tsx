@@ -872,7 +872,7 @@ export default function TrayMenu() {
             {/* C16 进入轻量模式（原型 tray L2942）：**销毁主窗 webview 释放内存，保托盘+核活**（≠ close-to-tray
                 的 hide——那只隐藏、renderer 仍活=内存未释放）。R20 用户已裁定「全部接」→ 真接线到后端
                 tray_enter_lightweight（销毁前置 LightweightState 保核 + clear_window 释放 stats 订阅账）。
-                唤出：托盘左键/dock → show_main_window 走 create_main_window 重建主窗。 */}
+                唤出：macOS/Windows 托盘左键、Linux 原生菜单或 dock → show_main_window 重建主窗。 */}
             <button
               className="tray-i"
               onClick={() => void invoke(IPC_CHANNELS.TRAY_ENTER_LIGHTWEIGHT).catch(() => {})}

@@ -409,10 +409,10 @@ const SITES: readonly Site[] = [
     why: 'customRules Class B（拓扑图右键「为其加规则」，纯新增无副作用）',
   },
   {
-    file: 'components/host-rule-menu.tsx',
+    file: 'components/rule-subject-menu.tsx',
     callee: 'api.rules.update(',
     route: 'staged',
-    why: 'customRules Class B；「加入已有规则」追加腿写的是**整条** Rule（appendValueToRule 的返回值，{...base} 起底 + 镜像同步）⇒ 幂等整体替换。拓扑与连接页两个菜单共用本文件这一条腿',
+    why: 'customRules Class B；「加入已有规则」追加腿写的是**整条** Rule（appendSubjectToRule 的返回值，{...base} 起底 + 镜像同步）⇒ 幂等整体替换。拓扑与连接页两个菜单共用本文件这一条腿',
   },
 
   // ── W-d：subscriptions 族 ──

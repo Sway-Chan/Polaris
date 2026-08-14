@@ -22,7 +22,7 @@
  *    全级别）⇒ 本页两侧日志改完即刻跟上。仍需重启内核的只有内核写进自己那份日志文件的级别。
  *  - 会话诊断：后端进程态 `logs:setDiagnostic` 临时把 app sink + sing-box 实时 relay 抬到 DEBUG，
  *    不写 config、不重启核；页面卸载不误关，应用退出后状态自然消失。内核自己写 `singbox.log` 的级别
- *    仍由「内核实跑」徽标如实显示（管理 API 没有 setter，不能伪装成已改变）。
+ *    仍由内核状态标签如实显示（管理 API 没有 setter，不能伪装成已改变）。
  *  - 核在跑的真实级别：api.logs.runtimeLevel（管理 API `GetDefaultLogLevel`）→ `.log-core-lvl` 徽标。
  *    分段控件显示的是**我写下的值**，这颗徽标显示的是**核此刻实际在用的值**。
  *    **它管的是核写自己那份日志文件（`singbox.log`）时用的级别**，也就是「导出日志」「导出诊断包」
@@ -527,8 +527,8 @@ export function LogsScreen() {
       )}
 
       <div className="card log-toolbar">
-        {/* 第一行只放“筛选 + 诊断”这一条任务链：两个筛选用 GUI 下拉压缩宽度，诊断开关与诊断包
-            相邻成组。这样不是把按钮机械塞进同一行，而是让“发现问题 → 临时提级 → 导出证据”连续。 */}
+        {/* 第一行只放“筛选 + 诊断”这一条任务链：两个筛选用 GUI 下拉压缩宽度；内核写盘级别、
+            诊断开关与诊断包相邻成组，让“确认运行态 → 临时提级 → 导出证据”连续。 */}
         <div className="log-tb-primary">
           <div className="log-filter-field log-level-filter">
             <span className="log-filter-label">
@@ -544,19 +544,6 @@ export function LogsScreen() {
                 options={LEVEL_SELECT_OPTIONS}
                 ariaLabel={t('logs.levelAria')}
               />
-              {/* 只描述内核自己的 singbox.log 级别；诊断模式不会伪装这格已经热切。 */}
-              {runtimeView.kind !== 'pending' && (
-                <span
-                  className={`log-core-lvl${runtimeView.kind === 'known' && runtimeView.drift ? ' diverged' : ''}`}
-                  data-tip={coreLevelTip}
-                >
-                  {runtimeView.kind === 'known'
-                    ? t('logs.coreLevelValue', { level: runtimeView.level.toUpperCase() })
-                    : runtimeView.kind === 'notRunning'
-                      ? t('logs.coreLevelNotRunning')
-                      : t('logs.coreLevelUnavailable')}
-                </span>
-              )}
             </div>
           </div>
 
@@ -572,6 +559,19 @@ export function LogsScreen() {
           </div>
 
           <div className="log-diagnostic-actions">
+            {/* 这是内核自己的 singbox.log 写盘级别，不是筛选值；诊断模式也不会伪装它已经热切。 */}
+            {runtimeView.kind !== 'pending' && (
+              <span
+                className={`log-core-lvl ${runtimeView.kind}${runtimeView.kind === 'known' && runtimeView.drift ? ' diverged' : ''}`}
+                data-tip={coreLevelTip}
+              >
+                {runtimeView.kind === 'known'
+                  ? t('logs.coreLevelValue', { level: runtimeView.level.toUpperCase() })
+                  : runtimeView.kind === 'notRunning'
+                    ? t('logs.coreLevelNotRunning')
+                    : t('logs.coreLevelUnavailable')}
+              </span>
+            )}
             <button
               type="button"
               className={`btn ghost sm log-diagnostic-toggle${diagnosticMode ? ' on' : ''}`}
