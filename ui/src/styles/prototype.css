@@ -1106,19 +1106,41 @@ button{ font:inherit; cursor:pointer; color:inherit; border:0; background:none; 
    920px is the value that shipped with the Type+Process columns; the old 748px was derived for the 8-column prototype table,
    so under 10 columns it let nowrap cells squeeze/clip instead of handing the row to .conn-scroll. Single declaration —
    components.css used to repeat this rule with a different value and lost silently (index.css loads prototype.css last). */
-.conn-table{ width:100%; min-width:920px; border-collapse:collapse; font-size:12px; font-variant-numeric:tabular-nums; }
+.conn-table{ width:100%; min-width:920px; display:block; border-collapse:separate; border-spacing:0;
+  font-size:12px; font-variant-numeric:tabular-nums; }
+.conn-table thead, .conn-table tbody{ display:block; }
+.conn-table thead{ position:sticky; top:0; z-index:1; background:hsl(var(--surface-2)); }
+.conn-table tr{ display:grid; width:100%; }
+/*
+ * 行级布局隔离：活动表每秒都会改速率/流量/时长。原生 table auto-layout + sticky th 在
+ * WebKit 中会把任一单元格变化扩大成整表重排/重绘，压测下 graphics surface 持续堆高。
+ * 表语义与 DOM 不变，只把每行变成同一列模板的 grid；数据行各自 paint-contain，单行刷新不再
+ * 污染整张表。两种视图显式列宽的总和都为 920px，与既有横向滚动下限一致，不额外膨胀。
+ */
+.conn-table-active tr{
+  grid-template-columns:28px 52px minmax(130px,1.3fr) minmax(125px,1.15fr) minmax(120px,1fr)
+    minmax(120px,1fr) 100px 80px 65px minmax(100px,1fr);
+}
+.conn-table-closed tr{
+  grid-template-columns:52px minmax(145px,1.25fr) minmax(125px,1.1fr) minmax(125px,1fr)
+    minmax(125px,1fr) 80px 65px 105px minmax(98px,1fr);
+}
+.conn-table .conn-data-row{ min-height:53px; contain:layout paint style; content-visibility:auto;
+  contain-intrinsic-size:auto 53px; }
+.conn-table .conn-empty-row{ grid-template-columns:1fr; }
+.conn-table .conn-empty-row > td{ grid-column:1 / -1; }
 .conn-table th, .conn-table td{ white-space:nowrap; }
-.conn-table .c-close{ width:1px; padding-left:5px; padding-right:2px; }
+.conn-table .c-close{ width:auto; min-width:0; padding-left:5px; padding-right:2px; }
 .conn-table td.c-close{ text-align:center; }
 .conn-table th:nth-child(2), .conn-table td:nth-child(2){ padding-left:2px; }   /* tighten the close↔domain gap */
 .conn-table th{ text-align:left; font-size:10.5px; font-weight:640; letter-spacing:.05em; text-transform:uppercase;
-  color:hsl(var(--fg-faint)); padding:10px 12px; background:hsl(var(--surface-2)); position:sticky; top:0; z-index:1;
+  color:hsl(var(--fg-faint)); padding:10px 12px; background:hsl(var(--surface-2)); position:static; min-width:0;
   box-shadow:inset 0 -1px 0 hsl(var(--hair)); }
 .conn-table th.sortable{ cursor:pointer; user-select:none; }
 .conn-table th.sortable:hover{ color:hsl(var(--fg)); }
 .conn-table th .sort-ar{ opacity:0; margin-left:3px; font-size:9px; }
 .conn-table th.sorted .sort-ar{ opacity:1; color:hsl(var(--flow-hi)); }
-.conn-table td{ padding:10px 12px; border-top:1px solid hsl(var(--hair)); }
+.conn-table td{ min-width:0; overflow:hidden; padding:10px 12px; border-top:1px solid hsl(var(--hair)); }
 .conn-table tr:hover td{ background:hsl(var(--surface-2)/0.5); }
 .conn-host{ font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:150px; }
 .conn-sub{ font-size:10.5px; color:hsl(var(--fg-faint)); font-family:var(--mono); }

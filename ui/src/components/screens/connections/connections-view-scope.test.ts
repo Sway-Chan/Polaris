@@ -22,6 +22,9 @@ const code = (src: string): string =>
 const SRC = code(
   readFileSync(fileURLToPath(new URL('./ConnectionsScreen.tsx', import.meta.url)), 'utf8'),
 );
+const STYLE = code(
+  readFileSync(fileURLToPath(new URL('../../../styles/prototype.css', import.meta.url)), 'utf8'),
+);
 
 describe('工具栏：列表控件不进拓扑，动作不跨生命周期', () => {
   /**
@@ -144,6 +147,9 @@ describe('连接列表内存边界', () => {
     expect(SRC).not.toContain('conn-spacer');
     expect(SRC).not.toContain('bottomSpace');
     expect(SRC).toContain("t('connections.pageStatus'");
+    expect(STYLE).toContain('.conn-table tr{ display:grid;');
+    expect(STYLE).toContain('contain:layout paint style');
+    expect(STYLE).toContain('content-visibility:auto');
   });
 
   it('切离活动视图释放活动行缓存；暂停仍只退订并保留当前视口', () => {

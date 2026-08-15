@@ -757,7 +757,7 @@ export function ConnectionsScreen() {
       <div id="conn-table-view">
         <div className="conn-scroll" ref={tableScrollRef}>
           <div className="conn-list-wrap">
-            <table className={`conn-table${view === 'closed' ? ' conn-table-closed' : ''}`}>
+            <table className={`conn-table conn-table-${view}`}>
               <thead>
                 <tr>
                   {view === 'active' && (
@@ -777,7 +777,7 @@ export function ConnectionsScreen() {
               </thead>
               <tbody id="conn-tbody">
                 {privacyMode || !(view === 'active' ? activeLoaded : closedLoaded) || visibleRows.length === 0 ? (
-                  <tr>
+                  <tr className="conn-empty-row">
                     <td colSpan={view === 'active' ? 10 : 9}>
                       <div className="stub" style={{ border: 0, padding: 30 }}>
                         <h4>
