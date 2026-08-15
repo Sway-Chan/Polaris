@@ -640,12 +640,50 @@ fn schedule_overlay_reclaim(app: &AppHandle) {
             if win.is_visible().unwrap_or(false) {
                 return;
             }
-            match win.destroy() {
+            match destroy_overlay_preserving_tray_residency(&callback_app, &win) {
                 Ok(()) => log::debug!("托盘浮层隐藏超时，已回收 WebView"),
                 Err(e) => log::warn!("托盘浮层 WebView 回收失败：{e}"),
             }
         });
     });
+}
+
+/// 销毁托盘浮层前，若它已是**最后一个原生窗口**且托盘仍在，则武装一次 C16 退出守卫。
+///
+/// Tauri 会把末窗 `destroy()` 折成一次 `RunEvent::ExitRequested`。主窗已进入轻量态后，托盘浮层的
+/// 2 分钟空闲回收正好会成为「销毁末窗」：若只在主窗销毁前武装 [`crate::LightweightState`]，那次守卫
+/// 早已被消费，浮层回收便会把整个应用（连同托盘/代理）一起退出。这里把**每一次有意的末窗回收**都接到
+/// 同一条一次性守卫上；显式退出仍先置 `QuitState`，不会被它拦住。
+///
+/// Polaris 的窗口宿主全部由 `WebviewWindowBuilder` 创建，故按 `webview_windows()` 计数；若还有主窗、更新
+/// 提示或仪表盘，本次销毁不会触发退出，提前置位会留下陈旧守卫，可能误拦后续 OS 退出。
+fn destroy_overlay_preserving_tray_residency(
+    app: &AppHandle,
+    win: &tauri::WebviewWindow,
+) -> tauri::Result<()> {
+    let armed = should_arm_last_overlay_exit_guard(
+        app.webview_windows().len(),
+        app.tray_by_id("main").is_some(),
+    ) && app
+        .state::<crate::LightweightState>()
+        .0
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok();
+
+    let result = win.destroy();
+    // destroy 失败不会产生 ExitRequested；只撤销本函数亲自置的那一位，不能误清别的轻量转场。
+    if result.is_err() && armed {
+        app.state::<crate::LightweightState>()
+            .0
+            .store(false, Ordering::SeqCst);
+    }
+    result
+}
+
+/// [`destroy_overlay_preserving_tray_residency`] 的纯判据，单测锁住“只为末窗 + 托盘在”武装。
+#[must_use]
+fn should_arm_last_overlay_exit_guard(window_count: usize, tray_present: bool) -> bool {
+    window_count == 1 && tray_present
 }
 
 /// 立即销毁浮层（目前仅轻量转场用于提前回收）。它不是托盘回收的 gate；普通隐藏即使从不进入
@@ -655,7 +693,7 @@ fn destroy_overlay(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     remove_click_monitor(app);
     if let Some(win) = app.get_webview_window(TRAY_LABEL) {
-        if let Err(e) = win.destroy() {
+        if let Err(e) = destroy_overlay_preserving_tray_residency(app, &win) {
             log::warn!("托盘浮层 WebView 提前回收失败：{e}");
         }
     }
@@ -1256,6 +1294,8 @@ mod overlay_lifecycle_gate {
     //! 托盘浮层的内存边界是结构性契约：启动期懒创建、普通隐藏独立定时回收、轻量转场提前回收。
     //! 三条缺一条都会让那块独立 WebContent 在用户从未用过或早已收起后继续常驻。
 
+    use super::should_arm_last_overlay_exit_guard;
+
     const TRAY_RS: &str = include_str!("tray.rs");
     const MAIN_RS: &str = include_str!("main.rs");
 
@@ -1292,6 +1332,14 @@ mod overlay_lifecycle_gate {
                 && TRAY_RS.contains("tray_enter_lightweight"),
             "轻量转场应提前回收已存在的托盘浮层，但不得成为唯一回收入口"
         );
+    }
+
+    #[test]
+    fn last_overlay_reclaim_preserves_tray_residency_only_for_the_last_window() {
+        assert!(should_arm_last_overlay_exit_guard(1, true));
+        assert!(!should_arm_last_overlay_exit_guard(0, true));
+        assert!(!should_arm_last_overlay_exit_guard(2, true));
+        assert!(!should_arm_last_overlay_exit_guard(1, false));
     }
 }
 

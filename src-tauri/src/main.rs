@@ -57,10 +57,10 @@ pub struct StartupConfigFlags {
     pub remember_window_size: bool,
 }
 
-/// 轻量模式转场标记（C16，app-managed state）：托盘 / idle「进入轻量模式」**销毁主窗 webview** 前置真。
-/// 若销毁末窗触发 `ExitRequested`（末窗关闭语义），`run` 循环据此**阻止退出 + 跳过停核清理**——轻量模式
-/// 恒不退出、代理连接不中断（对齐 上游 `markLightweightModeTransition`）。`swap(false)` 在 `ExitRequested`
-/// 消费；陈旧置位不阻断真实退出（真退出置 `QuitState` → 守卫 `!QuitState` 落空 → 照常清理退出）。
+/// 轻量驻留的末窗销毁标记（C16，app-managed state）：销毁主 WebView，或主窗已销毁后回收最后一个托盘
+/// WebView 前置真。若末窗 `destroy()` 触发 `ExitRequested`，`run` 循环据此**阻止退出 + 跳过停核清理**——
+/// 轻量模式恒不退出、代理连接不中断（对齐 上游 `markLightweightModeTransition`）。`swap(false)` 在
+/// `ExitRequested` 消费；陈旧置位不阻断真实退出（真退出置 `QuitState` → 守卫 `!QuitState` 落空）。
 struct LightweightState(AtomicBool);
 
 /// 「本次退出是 `app:restart` 发起的」（app-managed state）：[`commands::app_restart`] 在
@@ -1852,11 +1852,10 @@ fn main() {
             // C1：任何退出请求（托盘/菜单「退出」→ app.exit、末窗关闭时托盘缺失 → exit、OS 关机/logout）
             // → 阻塞清理。不 `prevent_exit`（清完照常退出）。安全关键：见 `run_exit_cleanup` 文档。
             //
-            // C16 守卫：轻量模式**销毁主窗** webview 时，若它恰是末窗、触发 spurious ExitRequested，则**必须
-            // 保核**——轻量语义恒不退出、代理连接不中断（对齐 上游）。判据：LightweightState 置位（swap 消费）
-            // 且非显式退出（`!QuitState`）且托盘在（有唤出锚点）→ `prevent_exit` + **跳过停核清理**。陈旧置位
-            // 不阻断真实退出：真退出置 QuitState → `!QuitState` 落空 → 落到清理退出。正常情形托盘浮层窗仍在 →
-            // 销毁主窗非末窗 → 此事件根本不触发，守卫是纯保险（不触发时 swap 只是无害清标记）。
+            // C16 守卫：轻量驻留中有意销毁**末窗**（主 WebView，或主窗已销毁后的空闲托盘 WebView）若触发
+            // spurious ExitRequested，则必须保核——轻量语义恒不退出、代理连接不中断（对齐 上游）。判据：
+            // LightweightState 由销毁方前置真（swap 消费）且非显式退出（`!QuitState`）且托盘在（有唤出锚点）
+            // → `prevent_exit` + **跳过停核清理**。陈旧置位不阻断真实退出：真退出置 QuitState → 落到清理。
             tauri::RunEvent::ExitRequested { api, .. } => {
                 let lightweight = app_handle
                     .state::<LightweightState>()
