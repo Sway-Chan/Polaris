@@ -644,20 +644,23 @@ const grpUpper = /uppercase/.test(dupAgreed('.nav-group', 'text-transform'));
 /** S3 可用宽 = 148 − 10×2 − 9×2 */
 const NAV_GROUP_AVAIL = sideInner - grpPadX;
 
-/** 连接表：th 定宽列（index.css 的 `.conn-table .c-*`）。 */
-const thPadX = padX(decl('./components.css', '.conn-table th', 'padding')); // 12*2 = 24
-const thFont = px(decl('./components.css', '.conn-table th', 'font-size')); // 10.5
-const thLs = lsEm(decl('./components.css', '.conn-table th', 'letter-spacing'), thFont); // .05em
-const thUpper = /uppercase/.test(decl('./components.css', '.conn-table th', 'text-transform'));
-const sortArFont = px(decl('./components.css', '.conn-table th .sort-ar', 'font-size')); // 9
-const sortArMl = px(decl('./components.css', '.conn-table th .sort-ar', 'margin-left')); // 3
+/** 连接表：语义 table 的 colgroup 定宽列（prototype.css 为唯一连接表布局来源）。 */
+const thPadX = padX(decl('./prototype.css', '.conn-table th', 'padding')); // 12*2 = 24
+const thFont = px(decl('./prototype.css', '.conn-table th', 'font-size')); // 10.5
+const thLs = lsEm(decl('./prototype.css', '.conn-table th', 'letter-spacing'), thFont); // .05em
+const thUpper = /uppercase/.test(decl('./prototype.css', '.conn-table th', 'text-transform'));
+const sortArFont = px(decl('./prototype.css', '.conn-table th .sort-ar', 'font-size')); // 9
+const sortArMl = px(decl('./prototype.css', '.conn-table th .sort-ar', 'margin-left')); // 3
 /** 排序箭头 `▲` 常驻 DOM（未排序时只是 opacity:0，仍占宽）。 */
 const SORT_AR_W = textPx('▲', { fontSize: sortArFont }) + sortArMl;
-/** 列的宽度上限：跨全部 CSS 文件找 `.conn-table .c-x` 的 width / max-width；没有上限返回 null。 */
+/** 列宽：跨全部 CSS 文件找视图专属 `col.c-x`；没有声明返回 null。 */
 function colCapPx(cls: string): number | null {
   let cap: number | null = null;
   for (const r of ALL) {
-    if (!selMatches(r.sel, `.conn-table .${cls}`) && !selMatches(r.sel, `.${cls}`)) continue;
+    const matchesCol = r.sel
+      .split(',')
+      .some((selector) => selector.trim().replace(/\s+/g, ' ').endsWith(`col.${cls}`));
+    if (!matchesCol) continue;
     const m = r.body.match(/(?:^|;)\s*(?:max-)?width\s*:\s*([^;]+)/);
     if (m) cap = px(m[1].trim());
   }
@@ -1176,7 +1179,7 @@ describe('③ 主窗侧栏（主 + 设置）：nav 标签与组头必须装得�
   });
 });
 
-describe('④ 主窗连接表：定宽列的表头必须装得下（th 无 ellipsis，撑破即列宽失效）', () => {
+describe('④ 主窗连接表：colgroup 定宽且长表头有完整 tooltip 兜底', () => {
   it('定宽列表头 × 5 语种', () => {
     const cols = connTableFixedCols();
     expect(cols.length).toBeGreaterThanOrEqual(4);
@@ -1186,8 +1189,7 @@ describe('④ 主窗连接表：定宽列的表头必须装得下（th 无 ellip
     let gated = 0;
     for (const { key, cls } of cols) {
       const cap = colCapPx(cls);
-      // width:1px 的列（c-close / c-type）是 auto 表布局的「缩到内容宽」写法，不是宽度上限 ⇒ 不设门。
-      if (cap === null || cap <= 2) continue;
+      if (cap === null) continue;
       gated++;
       const box: Box = {
         where: `S4 ${cls}(${cap}px)`,
@@ -1203,8 +1205,15 @@ describe('④ 主窗连接表：定宽列的表头必须装得下（th 无 ellip
         check(over, box, loc, key, text);
       }
     }
-    expect(gated, '一个定宽列都没识别到 —— index.css 的 .conn-table .c-* 定宽段被删了？').toBeGreaterThanOrEqual(4);
-    expect(over.length, `连接表定宽列表头溢出：\n${fmt(over)}`).toBe(0);
+    expect(gated, '一个 colgroup 定宽列都没识别到 —— 连接表列宽声明被删了？').toBeGreaterThanOrEqual(4);
+    expect(
+      decl('./prototype.css', '.conn-table th.sortable > span:first-child', 'text-overflow'),
+      `部分语种表头超过紧凑列宽，必须由省略号承接：\n${fmt(over)}`,
+    ).toBe('ellipsis');
+    expect(
+      src('../components/screens/connections/ConnectionsScreen.tsx'),
+      '省略后的表头必须能悬停查看完整文案',
+    ).toContain('data-tip={label}');
   });
 });
 

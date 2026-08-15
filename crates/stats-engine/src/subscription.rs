@@ -169,7 +169,7 @@ impl SubscriptionRegistry {
     /// 建流时刻不同而给出**互相矛盾**的两帧（拓扑说 12 条、明细列 13 条）。
     ///
     /// ⚠️ 本判定只回答「流开不开」。**开着不等于全部 topic 都该 emit** —— 每条 topic 的 emit
-    /// 仍各自按 `should_stream(topic)` 门控（只订了拓扑就别把全量明细 JSON 推过去）。
+    /// 仍各自按 `should_stream(topic)` 门控（只订了拓扑就别把活动明细增量推过去）。
     pub fn should_stream_connections(&self) -> bool {
         self.should_stream(Topic::Connections)
             || self.should_stream(Topic::Detail)
@@ -286,7 +286,7 @@ mod tests {
         r.set_window_visible(false);
         assert!(
             !r.should_stream(Topic::Stats),
-            "窗口隐藏 → Stats 也降流（无 UI 消费者，且本仓 stats 拉的是全量快照）"
+            "窗口隐藏 → Stats 也降流（无 UI 消费者，不做无人消费的 IPC）"
         );
         r.set_window_visible(true);
         assert!(r.should_stream(Topic::Stats), "窗口回来 → 恢复");

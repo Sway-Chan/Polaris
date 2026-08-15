@@ -3,7 +3,7 @@
 //! 锚点：
 //! - [`TrafficStats`] = runtime.ts:212 `TrafficStats`（首页速率/累计/活跃连接数）。
 //! - [`ConnectionEntry`] = runtime.ts:94 `ConnectionEntry`（main 裁剪后的单条连接）。
-//! - [`ConnectionsSnapshot`] = runtime.ts:115 `ConnectionsSnapshot`（连接明细快照，detail topic）。
+//! - [`ConnectionsDetailUpdate`] = runtime.ts `ConnectionsDetailUpdate`（活动连接增量，detail topic）。
 //! - [`TOPOLOGY_OTHERS_KEY`] = runtime.ts:122 `'\u0000others'`（Top-N 截断后合并的 sentinel host 名）。
 //! - [`ConnectionsAggregate`] / [`ConnectionAggHost`] / [`ConnectionAggFlow`] / [`ConnectionAggOutbound`]
 //!   = runtime.ts:148/131/125/138（首页拓扑聚合，issue #227）。
@@ -126,10 +126,30 @@ pub struct ConnectionEntry {
     pub start: Option<String>,
 }
 
-/// 连接明细快照（detail topic 订阅载荷）。1:1 `ConnectionsSnapshot`（runtime.ts:115）。
+/// 既有活动连接的累计计数。静态字段仍由 [`ConnectionEntry`] 基线/upsert 承载，常态 UPDATE
+/// 只传这三个小字段，避免每秒重复序列化域名、规则、链路和进程路径。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConnectionsSnapshot {
+pub struct ConnectionCounters {
+    pub id: String,
+    pub upload: u64,
+    pub download: u64,
+}
+
+/// 活动连接 detail topic 增量帧。
+///
+/// `generation` 划分权威数据集（重连/reset/离线清空），`sequence` 在同一代际内严格递增。
+/// reset 帧的 `connections` 是完整基线；常态帧只携带新增/静态字段变化、累计计数和删除 id。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionsDetailUpdate {
+    pub reset: bool,
+    pub generation: u64,
+    pub sequence: u64,
     pub connections: Vec<ConnectionEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub counters: Vec<ConnectionCounters>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_ids: Vec<String>,
     /// 采样时刻 epoch ms。
     pub at: u64,
 }
@@ -415,6 +435,42 @@ mod tests {
         let mut want = ["reset", "connections", "removedIds", "at"];
         want.sort_unstable();
         assert_eq!(got, want, "closed update 的 JSON 键名与 TS 契约不一致");
+    }
+
+    #[test]
+    fn detail_update_json_keys_match_ts_contract() {
+        let v = serde_json::to_value(ConnectionsDetailUpdate {
+            reset: false,
+            generation: 2,
+            sequence: 3,
+            connections: Vec::new(),
+            counters: vec![ConnectionCounters {
+                id: "live".into(),
+                upload: 1,
+                download: 2,
+            }],
+            removed_ids: vec!["gone".into()],
+            at: 4,
+        })
+        .expect("ConnectionsDetailUpdate 应可序列化");
+        let object = v.as_object().expect("detail update 应是 JSON 对象");
+        let mut got: Vec<&str> = object.keys().map(String::as_str).collect();
+        got.sort_unstable();
+        let mut want = [
+            "reset",
+            "generation",
+            "sequence",
+            "connections",
+            "counters",
+            "removedIds",
+            "at",
+        ];
+        want.sort_unstable();
+        assert_eq!(got, want, "detail update 的 JSON 键名与 TS 契约不一致");
+        assert_eq!(
+            object["counters"][0],
+            serde_json::json!({ "id": "live", "upload": 1, "download": 2 })
+        );
     }
 
     /// 重命名后**反序列化仍认得自己写出去的键**（Serialize/Deserialize 对称）。

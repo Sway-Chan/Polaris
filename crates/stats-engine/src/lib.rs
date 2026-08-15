@@ -40,7 +40,7 @@ pub mod types;
 pub use aggregator::{
     aggregate_connections, aggregate_connections_with_topn, aggregate_signature,
     created_at_to_rfc3339, host_name_of, outbound_of, split_host_port, trim_connection,
-    StatsAggregator, MAX_CONN_MAP_SIZE,
+    ConnectionsDetailChange, StatsAggregator, MAX_CONN_MAP_SIZE,
 };
 pub use diagnostic::{
     DiagnosticCounters, StartAttempt, MAX_RESTART_COUNT as DIAG_MAX_RESTART_COUNT,
@@ -62,8 +62,8 @@ pub use stream::{ConnectionEventStream, StatusStream, VecConnectionEventStream, 
 pub use subscription::{SubscriptionRegistry, SubscriptionToken, Topic};
 pub use types::{
     ClosedConnectionEntry, ConnectionAggFlow, ConnectionAggHost, ConnectionAggOutbound,
-    ConnectionEntry, ConnectionEventType, ConnectionMetadata, ConnectionsAggregate,
-    ConnectionsClosedSnapshot, ConnectionsClosedUpdate, ConnectionsSnapshot, SingBoxConnection,
-    SingBoxConnectionEvent, SingBoxConnectionEvents, SingBoxProcessInfo, SingBoxStatus,
-    TrafficStats, TOPOLOGY_OTHERS_KEY, TOPOLOGY_TOP_N,
+    ConnectionCounters, ConnectionEntry, ConnectionEventType, ConnectionMetadata,
+    ConnectionsAggregate, ConnectionsClosedSnapshot, ConnectionsClosedUpdate,
+    ConnectionsDetailUpdate, SingBoxConnection, SingBoxConnectionEvent, SingBoxConnectionEvents,
+    SingBoxProcessInfo, SingBoxStatus, TrafficStats, TOPOLOGY_OTHERS_KEY, TOPOLOGY_TOP_N,
 };

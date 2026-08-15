@@ -21,11 +21,55 @@
 use polaris_config_engine::builder::is_probe_pool_inbound_tag;
 
 use crate::types::{
-    ConnectionAggFlow, ConnectionAggHost, ConnectionAggOutbound, ConnectionEntry,
-    ConnectionEventType, ConnectionMetadata, ConnectionsAggregate, ConnectionsSnapshot,
+    ConnectionAggFlow, ConnectionAggHost, ConnectionAggOutbound, ConnectionCounters,
+    ConnectionEntry, ConnectionEventType, ConnectionMetadata, ConnectionsAggregate,
     SingBoxConnection, SingBoxConnectionEvent, SingBoxConnectionEvents, SingBoxStatus,
     TrafficStats, TOPOLOGY_OTHERS_KEY, TOPOLOGY_TOP_N,
 };
+
+/// 一帧连接事件应用到活动表后的净变化。reset 不携带全量连接；中继仅在真正 emit
+/// reset 基线时调用 [`StatsAggregator::entries`] 克隆一次最终表。
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ConnectionsDetailChange {
+    pub reset: bool,
+    pub upserts: std::collections::HashMap<String, ConnectionEntry>,
+    pub counters: std::collections::HashMap<String, ConnectionCounters>,
+    pub removed_ids: std::collections::HashSet<String>,
+}
+
+impl ConnectionsDetailChange {
+    fn upsert(&mut self, entry: ConnectionEntry) {
+        if self.reset {
+            return;
+        }
+        let id = entry.id.clone();
+        self.removed_ids.remove(&id);
+        self.counters.remove(&id);
+        self.upserts.insert(id, entry);
+    }
+
+    fn update_counters(&mut self, counters: ConnectionCounters) {
+        if self.reset {
+            return;
+        }
+        if let Some(entry) = self.upserts.get_mut(&counters.id) {
+            entry.upload = Some(counters.upload);
+            entry.download = Some(counters.download);
+            return;
+        }
+        self.removed_ids.remove(&counters.id);
+        self.counters.insert(counters.id.clone(), counters);
+    }
+
+    fn remove(&mut self, id: String) {
+        if self.reset {
+            return;
+        }
+        self.upserts.remove(&id);
+        self.counters.remove(&id);
+        self.removed_ids.insert(id);
+    }
+}
 
 /// OOM 安全网（StatsService.ts:24 `MAX_CONN_MAP_SIZE`）：sing-box 系统性漏发 CLOSED（UDP/QUIC NAT 超时回收高发）
 /// 时 connMap 漏删条目单调累积。正常活跃连接数 << 此值；仅异常累积时硬上限驱逐最旧条目兜底防 OOM。
@@ -398,7 +442,7 @@ fn push_escaped(out: &mut String, s: &str) {
 ///
 /// 对应 上游 `StatsService` 的内部状态（不含订阅/重订阅——那部分在 [`crate::subscription`] /
 /// [`crate::resubscribe`]）。帧经 [`StatsAggregator::on_status`] / [`StatsAggregator::on_connection_events`]
-/// 注入；snapshot 经 [`StatsAggregator::snapshot`] / [`StatsAggregator::connections_snapshot`] 取。
+/// 注入；状态经 [`StatsAggregator::snapshot`] / [`StatsAggregator::entries`] 取。
 ///
 /// connMap 用 [`IndexMap`]（保持插入序，支持 LRU：UPDATE 时 delete+set 把活跃条目移到末尾，#167）。
 /// key = 连接 id。
@@ -463,20 +507,10 @@ impl StatsAggregator {
         self.conn_map.get(id)
     }
 
-    /// 当前连接明细快照（对应 getConnectionsSnapshot，StatsService.ts:275）。`at` = 调用时刻 epoch ms。
-    pub fn connections_snapshot(&self, at: u64) -> ConnectionsSnapshot {
-        ConnectionsSnapshot {
-            connections: self.entries(),
-            at,
-        }
-    }
-
     /// 当前连接表的**拓扑投影**（Top-N 聚合）。`at` = 调用时刻 epoch ms。
     ///
-    /// 与 [`connections_snapshot`](Self::connections_snapshot) 是**同一张连接表的两种投影** ——
-    /// 这正是 aggregate 与 detail 能共用一条上游流的根据：两者从不是两份数据，只是同一份
-    /// 的两种看法（一种按 host/出口聚合成计数，一种逐条列出）。轮询时代它们各开一条 poller
-    /// 各拉一次全量表，是纯粹的重复劳动。
+    /// 与 detail 增量是**同一张连接表的两种投影**：前者按 host/出口聚合，后者逐条列出。
+    /// 轮询时代各拉一次全量表是重复劳动。
     pub fn aggregate(&self, at: u64) -> ConnectionsAggregate {
         aggregate_connections_iter(self.conn_map.values(), at, TOPOLOGY_TOP_N)
     }
@@ -546,18 +580,27 @@ impl StatsAggregator {
     /// reset=true → 清空 map 按 events 全量重建；否则增量（NEW 加 / UPDATE 改 / CLOSED 删）。
     /// UPDATE 累加 delta 到既有条目 totals + LRU delete+set；漏收 NEW 时 ev.connection 兜底补建；
     /// NEW 丢弃 closedAt>0（历史环死连接）。末尾 OOM 驱逐超 max_conn_map_size 的最旧条目。
-    /// 物化 connections 明细并更新 snapshot.active_connections = connMap.len。
-    pub fn on_connection_events(&mut self, events: &SingBoxConnectionEvents, at: u64) {
+    /// 返回应用本帧后的净变化；reset 的完整基线延迟到中继实际发送时物化。
+    pub fn on_connection_events(
+        &mut self,
+        events: &SingBoxConnectionEvents,
+        _at: u64,
+    ) -> ConnectionsDetailChange {
+        let mut change = ConnectionsDetailChange {
+            reset: events.reset,
+            ..ConnectionsDetailChange::default()
+        };
         if events.reset {
             self.conn_map.clear();
         }
         for ev in &events.events {
-            self.apply_event(ev);
+            self.apply_event(ev, &mut change);
         }
         // OOM 安全网：超硬上限按插入序（最旧、最可能是漏删死连接）驱逐。
         while self.conn_map.len() > self.max_conn_map_size {
             if let Some(first) = self.conn_map.keys().next().cloned() {
                 self.conn_map.swap_remove(&first);
+                change.remove(first);
             } else {
                 break;
             }
@@ -566,12 +609,11 @@ impl StatsAggregator {
         // 与拓扑 / 明细两个投影同源，故三处恒自洽。
         // （Status 那条腿取 `connectionsIn`，是内核未过滤的口径；两者的分工见 `TrafficStats`。）
         self.snapshot.active_connections = self.conn_map.len() as u32;
-        // **不在此物化明细**：长驻流下帧频 ≫ emit 频率，物化改到取快照时按需做
-        // （理由见 [`Self::entries`]）。
-        let _ = at; // 帧处理不依赖时刻；调用方取快照/聚合时再带 at
+        // **不在此物化完整明细**：常态只返回本帧净变化；reset 基线到真正 emit 时才按需读取。
+        change
     }
 
-    fn apply_event(&mut self, ev: &SingBoxConnectionEvent) {
+    fn apply_event(&mut self, ev: &SingBoxConnectionEvent, change: &mut ConnectionsDetailChange) {
         let id = if !ev.id.is_empty() {
             ev.id.clone()
         } else {
@@ -583,6 +625,7 @@ impl StatsAggregator {
         match ev.kind {
             ConnectionEventType::Closed => {
                 self.conn_map.swap_remove(&id);
+                change.remove(id);
             }
             ConnectionEventType::Update => {
                 // UPDATE 帧只带 delta（connection 通常为 null）→ 累加到既有条目 totals。
@@ -602,13 +645,22 @@ impl StatsAggregator {
                         (updated.download.unwrap_or(0) as i64).saturating_add(ev.downlink_delta)
                             as u64,
                     );
+                    let counters = ConnectionCounters {
+                        id: id.clone(),
+                        upload: updated.upload.unwrap_or(0),
+                        download: updated.download.unwrap_or(0),
+                    };
                     self.conn_map.insert(id, updated);
+                    change.update_counters(counters);
                 } else if let Some(c) = &ev.connection {
                     // 补建腿同样挡探测池：NEW 分支刚把这条探测连接挡在表外，它后续的 UPDATE 必然
                     // 落到「表里没有」这一支——若此处不挡，只要内核在 UPDATE 里带上 connection，
                     // NEW 侧的过滤就被 100% 抵消（不是边角情形，是每条探测连接的必经路径）。
                     if !is_probe_pool_inbound_tag(&c.inbound) {
-                        self.conn_map.insert(id, trim_connection(c));
+                        let mut entry = trim_connection(c);
+                        entry.id.clone_from(&id);
+                        self.conn_map.insert(id, entry.clone());
+                        change.upsert(entry);
                     }
                 }
             }
@@ -628,7 +680,10 @@ impl StatsAggregator {
                 // 会以为这里多了一条——是 上游的既有缺陷，移植目标是功能对等而非缺陷对等。
                 if let Some(c) = &ev.connection {
                     if c.closed_at <= 0 && !is_probe_pool_inbound_tag(&c.inbound) {
-                        self.conn_map.insert(id, trim_connection(c));
+                        let mut entry = trim_connection(c);
+                        entry.id.clone_from(&id);
+                        self.conn_map.insert(id, entry.clone());
+                        change.upsert(entry);
                     }
                 }
             }
@@ -1245,7 +1300,7 @@ mod tests {
     fn oom_evicts_oldest_when_over_max() {
         let mut agg = StatsAggregator::with_max_conn_map_size(2);
         for id in ["c1", "c2", "c3"] {
-            agg.on_connection_events(
+            let change = agg.on_connection_events(
                 &SingBoxConnectionEvents {
                     reset: false,
                     events: vec![SingBoxConnectionEvent {
@@ -1257,6 +1312,13 @@ mod tests {
                 },
                 0,
             );
+            if id == "c3" {
+                assert!(change.upserts.contains_key("c3"));
+                assert!(
+                    change.removed_ids.contains("c1"),
+                    "OOM 驱逐也必须通知 detail 前端移除旧行"
+                );
+            }
         }
         assert_eq!(agg.conn_count(), 2); // 超上限驱逐最旧
                                          // c1（最早插入）被驱逐，剩 c2/c3
@@ -1350,9 +1412,9 @@ mod tests {
     }
 
     #[test]
-    fn connections_snapshot_carries_at() {
+    fn detail_change_sends_static_fields_once_then_counters_and_removal() {
         let mut agg = StatsAggregator::new();
-        agg.on_connection_events(
+        let created = agg.on_connection_events(
             &SingBoxConnectionEvents {
                 reset: false,
                 events: vec![SingBoxConnectionEvent {
@@ -1364,9 +1426,63 @@ mod tests {
             },
             0,
         );
-        let snap = agg.connections_snapshot(42);
-        assert_eq!(snap.at, 42);
-        assert_eq!(snap.connections.len(), 1);
+        assert_eq!(created.upserts.len(), 1);
+        assert!(created.counters.is_empty());
+        assert!(created.removed_ids.is_empty());
+
+        let updated = agg.on_connection_events(
+            &SingBoxConnectionEvents {
+                reset: false,
+                events: vec![SingBoxConnectionEvent {
+                    kind: ConnectionEventType::Update,
+                    id: "c1".into(),
+                    uplink_delta: 5,
+                    downlink_delta: 7,
+                    ..Default::default()
+                }],
+            },
+            0,
+        );
+        assert!(
+            updated.upserts.is_empty(),
+            "既有连接 UPDATE 不应重复静态字段"
+        );
+        assert_eq!(updated.counters["c1"].upload, 5);
+        assert_eq!(updated.counters["c1"].download, 7);
+
+        let closed = agg.on_connection_events(
+            &SingBoxConnectionEvents {
+                reset: false,
+                events: vec![SingBoxConnectionEvent {
+                    kind: ConnectionEventType::Closed,
+                    id: "c1".into(),
+                    ..Default::default()
+                }],
+            },
+            0,
+        );
+        assert_eq!(
+            closed.removed_ids,
+            std::collections::HashSet::from(["c1".into()])
+        );
+        assert_eq!(agg.conn_count(), 0);
+    }
+
+    #[test]
+    fn reset_change_defers_full_baseline_materialization() {
+        let mut agg = StatsAggregator::new();
+        let change = agg.on_connection_events(
+            &SingBoxConnectionEvents {
+                reset: true,
+                events: vec![new_ev("c1"), new_ev("c2")],
+            },
+            0,
+        );
+        assert!(change.reset);
+        assert!(change.upserts.is_empty());
+        assert!(change.counters.is_empty());
+        assert!(change.removed_ids.is_empty());
+        assert_eq!(agg.entries().len(), 2, "完整基线留到实际 emit 时读取");
     }
 
     #[test]
@@ -1677,7 +1793,7 @@ mod tests {
 
     /// 🟡 **CLOSED 立即移除，不设保留窗口**（本仓的口径，刻意与「保留刚断开的连接一段时间」相反）。
     ///
-    /// 判据：轮询时代 `build_detail` / `build_aggregate` 都按 `closed_at <= 0` 过滤，
+    /// 判据：连接入表与拓扑投影都按 `closed_at <= 0` 过滤，
     /// 明细页与拓扑图**从来**只显示活连接。若改成保留 N 秒，会同时得到两个坏结果：
     /// ① 与既有 UI 语义相反（用户切换节点后期望旧连接立刻消失，见 上游「看着像切换未断连」那条注释）；
     /// ② 给连接表引入一个按时间过期的第二套生命周期，而幽灵的有界性本来只靠「不进表」这一条就够了。
@@ -1773,18 +1889,15 @@ mod tests {
             },
             0,
         );
-        let detail = agg.connections_snapshot(42);
+        let detail = agg.entries();
         let topo = agg.aggregate(42);
-        assert_eq!(detail.connections.len(), 3);
+        assert_eq!(detail.len(), 3);
         assert_eq!(
             topo.total as usize,
-            detail.connections.len(),
+            detail.len(),
             "拓扑总数必须等于明细条数 —— 两者是同一张表的两种看法，对不上就说明取了两份数据"
         );
-        assert_eq!(topo.at, detail.at);
-        assert_eq!(
-            agg.snapshot().active_connections as usize,
-            detail.connections.len()
-        );
+        assert_eq!(topo.at, 42);
+        assert_eq!(agg.snapshot().active_connections as usize, detail.len());
     }
 }

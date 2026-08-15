@@ -1102,53 +1102,60 @@ button{ font:inherit; cursor:pointer; color:inherit; border:0; background:none; 
   min-height:38px; padding:7px 2px 0; color:hsl(var(--fg-faint)); font-size:11px; font-variant-numeric:tabular-nums; }
 .conn-pager-actions{ display:flex; align-items:center; gap:6px; }
 .conn-page-btn{ min-height:30px; padding:5px 10px; font-size:11px; }
-/* min-width = horizontal-scroll floor for the 10-column table (close + type/host/dest/rule/chain/speed/traffic/time/process).
-   920px is the value that shipped with the Type+Process columns; the old 748px was derived for the 8-column prototype table,
-   so under 10 columns it let nowrap cells squeeze/clip instead of handing the row to .conn-scroll. Single declaration —
-   components.css used to repeat this rule with a different value and lost silently (index.css loads prototype.css last). */
-.conn-table{ width:100%; min-width:920px; display:block; border-collapse:separate; border-spacing:0;
+/* 两个视图共享原生 table 布局，列宽只由各自 colgroup 控制。920px 是横向滚动下限；
+   窄窗口滚动整表，不再把 table DOM 混成 grid 后压扁单个单元格。 */
+.conn-table{ width:100%; min-width:920px; table-layout:fixed; border-collapse:separate; border-spacing:0;
   font-size:12px; font-variant-numeric:tabular-nums; }
-.conn-table thead, .conn-table tbody{ display:block; }
-.conn-table thead{ position:sticky; top:0; z-index:1; background:hsl(var(--surface-2)); }
-.conn-table tr{ display:grid; width:100%; }
-/*
- * 行级布局隔离：活动表每秒都会改速率/流量/时长。原生 table auto-layout + sticky th 在
- * WebKit 中会把任一单元格变化扩大成整表重排。表语义与 DOM 不变，只把每行变成
- * 同一列模板的 grid，并只做 layout/style containment。不能在这里使用 paint containment 或
- * content-visibility：WebKit 会为快速新增/移除的行留下独立 graphics surface，离页后仍不会及时回收。
- * 两种视图显式列宽的总和都为 920px，与既有横向滚动下限一致，不额外膨胀。
- */
-.conn-table-active tr{
-  grid-template-columns:28px 52px minmax(130px,1.3fr) minmax(125px,1.15fr) minmax(120px,1fr)
-    minmax(120px,1fr) 100px 80px 65px minmax(100px,1fr);
-}
-.conn-table-closed tr{
-  grid-template-columns:52px minmax(145px,1.25fr) minmax(125px,1.1fr) minmax(125px,1fr)
-    minmax(125px,1fr) 80px 65px 105px minmax(98px,1fr);
-}
-.conn-table .conn-data-row{ height:53px; min-height:53px; contain:layout style; }
-.conn-table .conn-empty-row{ grid-template-columns:1fr; }
-.conn-table .conn-empty-row > td{ grid-column:1 / -1; }
+.conn-table-active col.c-close{ width:28px; }
+.conn-table-active col.c-type{ width:54px; }
+.conn-table-active col.c-host{ width:125px; }
+.conn-table-active col.c-dest{ width:110px; }
+.conn-table-active col.c-rule{ width:110px; }
+.conn-table-active col.c-chain{ width:110px; }
+.conn-table-active col.c-rate{ width:120px; }
+.conn-table-active col.c-total{ width:72px; }
+.conn-table-active col.c-time{ width:62px; }
+.conn-table-active col.c-proc{ width:129px; }
+.conn-table-closed col.c-type{ width:54px; }
+.conn-table-closed col.c-host{ width:145px; }
+.conn-table-closed col.c-dest{ width:125px; }
+.conn-table-closed col.c-rule{ width:125px; }
+.conn-table-closed col.c-chain{ width:125px; }
+.conn-table-closed col.c-total{ width:76px; }
+.conn-table-closed col.c-time{ width:64px; }
+.conn-table-closed col.c-ended{ width:105px; }
+.conn-table-closed col.c-proc{ width:101px; }
+.conn-table .conn-data-row{ height:53px; }
 .conn-table th, .conn-table td{ white-space:nowrap; }
-.conn-table .c-close{ width:auto; min-width:0; padding-left:5px; padding-right:2px; }
+.conn-table .c-close{ padding-left:5px; padding-right:2px; }
 .conn-table td.c-close{ text-align:center; }
-.conn-table th:nth-child(2), .conn-table td:nth-child(2){ padding-left:2px; }   /* tighten the close↔domain gap */
+.conn-table .c-type{ padding-left:6px; padding-right:6px; }
 .conn-table th{ text-align:left; font-size:10.5px; font-weight:640; letter-spacing:.05em; text-transform:uppercase;
-  color:hsl(var(--fg-faint)); padding:10px 12px; background:hsl(var(--surface-2)); position:static; min-width:0;
+  color:hsl(var(--fg-faint)); padding:10px 12px; background:hsl(var(--surface-2)); position:sticky; top:0; z-index:1;
   box-shadow:inset 0 -1px 0 hsl(var(--hair)); }
-.conn-table th.sortable{ cursor:pointer; user-select:none; }
+.conn-table th.sortable{ cursor:pointer; user-select:none; overflow:hidden; }
+.conn-table th.sortable > span:first-child{ display:inline-block; max-width:calc(100% - 12px); overflow:hidden;
+  text-overflow:ellipsis; vertical-align:bottom; }
 .conn-table th.sortable:hover{ color:hsl(var(--fg)); }
 .conn-table th .sort-ar{ opacity:0; margin-left:3px; font-size:9px; }
 .conn-table th.sorted .sort-ar{ opacity:1; color:hsl(var(--flow-hi)); }
-.conn-table td{ min-width:0; overflow:hidden; padding:10px 12px; border-top:1px solid hsl(var(--hair)); }
+.conn-table td{ overflow:hidden; padding:10px 12px; border-top:1px solid hsl(var(--hair)); }
 .conn-table tr:hover td{ background:hsl(var(--surface-2)/0.5); }
-.conn-host{ font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:150px; }
+.conn-host{ font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
 .conn-sub{ font-size:10.5px; color:hsl(var(--fg-faint)); font-family:var(--mono); }
 .conn-chain{ font-size:11px; color:hsl(var(--fg-dim)); } .conn-chain b{ color:hsl(var(--flow-hi)); font-weight:600; }
 .conn-rate .d{ color:hsl(var(--dn)); font-weight:600; } .conn-rate .u{ color:hsl(var(--up)); font-weight:600; }
-.conn-x{ color:hsl(var(--fg-faint)); border-radius:5px; } .conn-x:hover{ color:hsl(var(--err)); background:hsl(var(--err-weak)); }
+.conn-clip{ display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; vertical-align:bottom; }
+.conn-proc{ display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  vertical-align:bottom; font-size:11px; color:hsl(var(--fg-dim)); }
+.pill.tcp{ background:hsl(var(--surface-3)); color:hsl(var(--fg-dim)); }
+.pill.udp{ background:transparent; color:hsl(var(--fg-dim)); box-shadow:inset 0 0 0 1px hsl(var(--line)); }
+.conn-x{ color:hsl(var(--fg-faint)); border-radius:5px; border:0; background:none; cursor:pointer;
+  display:grid; place-items:center; padding:2px; }
+.conn-x:hover{ color:hsl(var(--err)); background:hsl(var(--err-weak)); }
 .conn-x:focus-visible{ outline:2px solid hsl(var(--ring)); }
-.conn-list-wrap{ }
+.conn-x svg{ width:15px; height:15px; }
 /* §CN1: never hide columns on narrow — .conn-scroll (overflow:auto) + the table's min-width (920px, declared above) scroll horizontally instead, so every column stays reachable */
 .top-grid{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }
 @container mainc (max-width:720px){ .top-grid{ grid-template-columns:1fr; } }

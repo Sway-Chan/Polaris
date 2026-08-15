@@ -65,7 +65,7 @@
 //! 永不补发——见 `polaris_stats_engine` 的 `reset帧整表替换而非增量叠加`；Status 流的重订阅则
 //! 必须丢掉速率差分基线，理由见 [`StatsAggregator::on_status`]。）
 //!
-//! 收托盘/最小化后两条腿一起停手：两条上游流断开、逐秒全量明细 JSON 归零，
+//! 收托盘/最小化后两条腿一起停手：两条上游流断开、逐秒明细增量与状态 IPC 归零，
 //! 笔电不再为没人看的画面付电。断流期的兜底实况回读恒按 [`PARK_RECHECK_INTERVAL`]，
 //! **不跟随任何 emit 间隔**——隐藏态下高频空转等于把降流的收益吐回去。
 //!
@@ -95,10 +95,11 @@ use polaris_config_engine::builder::is_probe_pool_inbound_tag;
 use polaris_singbox_grpc::{daemon, Endpoint, ReconnectConfig, SingBoxApiClient};
 use polaris_stats_engine::{
     aggregate_connections_with_topn, aggregate_signature, trim_connection, ClosedConnectionEntry,
-    ConnectionEntry, ConnectionEventType, ConnectionsAggregate, ConnectionsClosedSnapshot,
-    ConnectionsClosedUpdate, ConnectionsSnapshot, EmitGate, SingBoxConnection,
-    SingBoxConnectionEvent, SingBoxConnectionEvents, SingBoxProcessInfo, SingBoxStatus,
-    StatsAggregator, SubscriptionRegistry, SubscriptionToken, Topic, TrafficStats, TOPOLOGY_TOP_N,
+    ConnectionCounters, ConnectionEntry, ConnectionEventType, ConnectionsAggregate,
+    ConnectionsClosedSnapshot, ConnectionsClosedUpdate, ConnectionsDetailChange,
+    ConnectionsDetailUpdate, EmitGate, SingBoxConnection, SingBoxConnectionEvent,
+    SingBoxConnectionEvents, SingBoxProcessInfo, SingBoxStatus, StatsAggregator,
+    SubscriptionRegistry, SubscriptionToken, Topic, TrafficStats, TOPOLOGY_TOP_N,
 };
 
 use crate::events::{
@@ -155,12 +156,11 @@ const AGGREGATE_EMIT_MIN_INTERVAL: Duration = Duration::from_millis(250);
 
 /// detail（连接明细）emit 的下限间隔。
 ///
-/// 前身是 detail 那条 poller 的轮询周期（1s）。判据同样只留下与拉取无关的那半条：
-/// detail 是两条投影里**载荷最大**的一条（全量连接明细逐帧下发、不做签名去重，见
-/// [`run_connections_stream`] 里 detail 分支的说明），而明细表是给人逐行读的，1s 已快于人眼扫表的速度。
+/// 前身是 detail 那条 poller 的轮询周期（1s）。现在常态只合并 upsert / 累计计数 / 删除 id，
+/// 但逐连接速率与时长仍没有高于 1Hz 的阅读价值；1s 窗口也能把同一连接的高频 UPDATE 合成一次。
 ///
-/// **比 aggregate 慢一档是刻意的**：同一张连接表，拓扑那条推的是几十个计数，明细那条推的是
-/// 整张表的 JSON。两者共用一条上游流，但没有理由共用一个 emit 频率。
+/// **比 aggregate 慢一档是刻意的**：拓扑关注连接出现/消失，明细还承担逐行计数与速率刷新；
+/// 两者共用一条上游流，但交互节奏不同，没有理由共用一个 emit 频率。
 const DETAIL_EMIT_MIN_INTERVAL: Duration = Duration::from_secs(1);
 
 /// 已结束连接只保留最近 1000 条，对齐 sing-box 重置帧能重放的历史上限。
@@ -257,7 +257,7 @@ struct VisibilityCache {
 /// 1 / 10 / 100 次各一条，此后每 1000 次一条。
 ///
 /// **不能只发第一条**：平台性持续失败时降流门整体退化成「恒可见」（两条上游流永不断开、
-/// 逐秒全量明细 JSON 照发），那条独苗日志早被淹了 —— 于是「降流失效」这件事零可观测。
+/// 无人消费的 IPC 与增量聚合继续运行），那条独苗日志早被淹了 —— 于是「降流失效」这件事零可观测。
 /// 也不能每次都发：两条 relay 各按自己的帧率投递（合计每秒数条），日志被自己刷爆。
 #[must_use]
 const fn should_warn_visibility_failure(streak: u64) -> bool {
@@ -501,6 +501,100 @@ pub(crate) fn probe_main_window_visible(app: &AppHandle) -> Result<bool, String>
 /// 单测在同一个位置注入可翻转 flag 的替身（见测试模块的 `flag_visibility_source`）。
 fn visibility_source(state: Arc<StreamGateState>, app: AppHandle) -> impl Fn() -> bool {
     move || state.cached_window_visible(&app)
+}
+
+/// 活动连接 detail 的 1s 合并窗口。`generation` 标识一份权威连接表，`sequence`
+/// 标识该代内的帧序；reset 基线只在实际 emit 时从聚合器克隆一次最终表。
+#[derive(Debug, Default)]
+struct PendingDetailUpdate {
+    generation: u64,
+    sequence: u64,
+    reset: bool,
+    dirty: bool,
+    upserts: HashMap<String, ConnectionEntry>,
+    counters: HashMap<String, ConnectionCounters>,
+    removed_ids: HashSet<String>,
+}
+
+impl PendingDetailUpdate {
+    /// 开始一份新真相。若上一份 reset 尚未发送，继续合并到同一基线，避免重连首帧
+    /// 再带 reset 时无意义地连续翻代。
+    fn begin_generation(&mut self) {
+        if !self.reset {
+            self.generation = self.generation.wrapping_add(1).max(1);
+            self.sequence = 0;
+        }
+        self.reset = true;
+        self.dirty = true;
+        self.upserts.clear();
+        self.counters.clear();
+        self.removed_ids.clear();
+    }
+
+    fn merge(&mut self, change: ConnectionsDetailChange) {
+        if change.reset {
+            self.begin_generation();
+            return;
+        }
+        self.dirty = true;
+        if self.reset {
+            // 待发 reset 会读取活动表最终状态，已包含本窗口内后续增量。
+            return;
+        }
+        for (id, entry) in change.upserts {
+            self.removed_ids.remove(&id);
+            self.counters.remove(&id);
+            self.upserts.insert(id, entry);
+        }
+        for (id, counters) in change.counters {
+            self.removed_ids.remove(&id);
+            if let Some(entry) = self.upserts.get_mut(&id) {
+                entry.upload = Some(counters.upload);
+                entry.download = Some(counters.download);
+            } else {
+                self.counters.insert(id, counters);
+            }
+        }
+        for id in change.removed_ids {
+            self.upserts.remove(&id);
+            self.counters.remove(&id);
+            self.removed_ids.insert(id);
+        }
+    }
+
+    fn take_update(&mut self, table: &StatsAggregator, at: u64) -> Option<ConnectionsDetailUpdate> {
+        if !self.dirty {
+            return None;
+        }
+        self.sequence = self.sequence.wrapping_add(1).max(1);
+        let mut connections;
+        let mut counters;
+        let mut removed_ids;
+        if self.reset {
+            connections = table.entries();
+            counters = Vec::new();
+            removed_ids = Vec::new();
+        } else {
+            connections = self.upserts.drain().map(|(_, entry)| entry).collect();
+            counters = self.counters.drain().map(|(_, entry)| entry).collect();
+            removed_ids = self.removed_ids.drain().collect();
+            connections.sort_by(|a, b| a.id.cmp(&b.id));
+            counters.sort_by(|a, b| a.id.cmp(&b.id));
+            removed_ids.sort();
+        }
+        let update = ConnectionsDetailUpdate {
+            reset: self.reset,
+            generation: self.generation,
+            sequence: self.sequence,
+            connections,
+            counters,
+            removed_ids,
+            at,
+        };
+        self.reset = false;
+        self.dirty = false;
+        Some(update)
+    }
 }
 
 /// 历史环一批变更。不携带 reset 全量：reset 时由 emit 点在锁内克隆一次最终快照，
@@ -1235,23 +1329,6 @@ fn build_aggregate(conns: &[daemon::Connection], at: u64) -> ConnectionsAggregat
     aggregate_connections_with_topn(&entries, at, TOPOLOGY_TOP_N)
 }
 
-/// 连接快照 → 明细快照（detail topic 载荷）。
-///
-/// 与 [`build_aggregate`] 同源同裁剪（`daemon_conn_to_entry` → [`trim_connection`]），只是不做 Top-N
-/// 聚合、逐条下发。死连接（`closed_at>0`，内核历史环）同样过滤——明细页只展示活跃连接。
-///
-/// relay 的纯数据面核心（无 gRPC / 无 emit），单测直接喂 fixture。
-fn build_detail(conns: &[daemon::Connection], at: u64) -> ConnectionsSnapshot {
-    ConnectionsSnapshot {
-        connections: conns
-            .iter()
-            .filter(|c| c.closed_at <= 0)
-            .map(daemon_conn_to_entry)
-            .collect(),
-        at,
-    }
-}
-
 /// change-driven 去重：聚合内容签名相较上帧变了才返回 `Some(new_sig)`（应 emit）；同签名返回 `None`（去重）。
 ///
 /// issue #227 的核心：载荷与连接总数解耦——连接风暴（大量 UPDATE）但拓扑内容不变时**不推**，
@@ -1363,8 +1440,8 @@ fn read_clash_secret(config: &ConfigManager) -> String {
 ///
 /// # 为什么是一条流、两条 emit
 ///
-/// 拓扑与明细从来不是两份数据，是同一张连接表的两种投影（`StatsAggregator::aggregate` /
-/// `connections_snapshot`）。轮询时代它们各起一条 poller、各拉一次全量表，是纯粹的重复劳动 ——
+/// 拓扑与明细从来不是两份数据，是同一张连接表的两种投影（聚合拓扑 / 增量明细）。
+/// 轮询时代它们各起一条 poller、各拉一次全量表，是纯粹的重复劳动 ——
 /// 而且两次拉取时刻不同，还能给出互相矛盾的两帧（拓扑说 12 条、明细列 13 条）。
 /// 一条流 + 一张表 + 两条各自节流的 emit，既省一半上游成本，又让两个页面**恒定自洽**。
 ///
@@ -1380,7 +1457,7 @@ fn read_clash_secret(config: &ConfigManager) -> String {
 /// # 生命周期（每一轮外循环 = 一条流的一生）
 ///
 /// 1. [`StreamGate::wait_until`] 等门开（无订阅者 / 主窗不可见 → 断流待命，不碰 gRPC）。
-/// 2. 核未运行 → 推一帧离线态（拓扑空聚合 + 明细空快照）让两个页面如实归零，等核回来。
+/// 2. 核未运行 → 推一帧离线态（拓扑空聚合 + 明细空 reset）让两个页面如实归零，等核回来。
 /// 3. 建 h2c 客户端 + 订阅流；**连接表与两条 emit 闸门一并复位** —— 新流的首帧是 `reset=true`
 ///    全量表，旧表在此刻已作废（断流期间断掉的连接不会补发 CLOSED，只有 reset 能清掉它们）。
 /// 4. 内循环消费帧，直到门关 / 核停 / 换端口 → 跳出，drop 流，回到 1。
@@ -1407,9 +1484,11 @@ async fn run_connections_stream(
     let mut agg_emit = EmitGate::new(AGGREGATE_EMIT_MIN_INTERVAL);
     let mut detail_emit = EmitGate::new(DETAIL_EMIT_MIN_INTERVAL);
     let mut closed_emit = EmitGate::new(CLOSED_EMIT_MIN_INTERVAL);
+    let mut detail_pending = PendingDetailUpdate::default();
     let mut closed_pending = PendingClosedUpdate::default();
     let mut last_sig: Option<String> = None;
     let mut offline_sent = false;
+    let mut offline_detail_was_open = false;
 
     while !stop.load(Ordering::Relaxed) {
         // ① 降流门：关着就在这里断流待命。
@@ -1425,9 +1504,22 @@ async fn run_connections_stream(
                 }) {
                     last_sig = Some(sig);
                 }
-                broadcast(&app, EVENT_CONNECTIONS_DETAIL, build_detail(&[], now_ms()));
+                table.reset();
+                detail_pending.begin_generation();
                 offline_sent = true;
             }
+            let detail_open = gate.topic_open(Topic::Detail);
+            if (!detail_open && offline_detail_was_open)
+                || (detail_open && !offline_detail_was_open && !detail_pending.reset)
+            {
+                detail_pending.begin_generation();
+            }
+            if detail_open {
+                if let Some(update) = detail_pending.take_update(&table, now_ms()) {
+                    broadcast(&app, EVENT_CONNECTIONS_DETAIL, update);
+                }
+            }
+            offline_detail_was_open = detail_open;
             tokio::time::sleep(PARK_RECHECK_INTERVAL).await;
             continue;
         }
@@ -1448,11 +1540,14 @@ async fn run_connections_stream(
             .subscribe_connections(CONNECTIONS_STREAM_INTERVAL_NS, ReconnectConfig::default());
         // 新流 = 新的一份真相：旧连接表在此刻作废，等首帧 reset 重建。
         table.reset();
+        detail_pending.begin_generation();
         agg_emit.reset();
         detail_emit.reset();
         closed_emit.reset();
         closed_pending.clear();
         offline_sent = false;
+        offline_detail_was_open = false;
+        let mut detail_was_open = gate.topic_open(Topic::Detail);
         log::debug!("连接流已订阅（port={port}）");
 
         // ④ 流循环。
@@ -1481,7 +1576,8 @@ async fn run_connections_stream(
                             .lock()
                             .map(|mut history| history.apply_events(&events, &table))
                             .unwrap_or(None);
-                        table.on_connection_events(&events, 0);
+                        let detail_change = table.on_connection_events(&events, 0);
+                        detail_pending.merge(detail_change);
                         agg_emit.note_change();
                         detail_emit.note_change();
                         if let Some(change) = closed_change {
@@ -1499,6 +1595,15 @@ async fn run_connections_stream(
 
             // emit：两条投影各按自己的闸门与订阅状态。
             let now = mono_ms(clock);
+            let detail_open = gate.topic_open(Topic::Detail);
+            if detail_open != detail_was_open {
+                // 新的 detail 订阅生命周期没有旧索引，必须从当前活动表 reset，而非半截增量开始。
+                detail_pending.begin_generation();
+                if detail_open {
+                    detail_emit.note_change();
+                }
+                detail_was_open = detail_open;
+            }
             if agg_emit.should_emit(now) {
                 // 该 topic 没订阅者时**照样 mark**：不消费掉这次待推标志的话，`wait_for` 会恒返回
                 // ZERO，select 的定时器分支退化成 0 延迟 → 忙转烧一个 tokio worker。
@@ -1515,14 +1620,12 @@ async fn run_connections_stream(
             }
             if detail_emit.should_emit(now) {
                 if gate.topic_open(Topic::Detail) {
-                    // detail **不做**签名去重：载荷含每条连接的累计字节，只要有流量就逐帧都变，
-                    // 去重恒不命中；且渲染端正是靠相邻两帧的 (at, bytes) 差分算每条连接的实时速率，
-                    // 去重掉「内容相同」的帧会让静默连接的速率停在旧值而非归零。
-                    broadcast(
-                        &app,
-                        EVENT_CONNECTIONS_DETAIL,
-                        table.connections_snapshot(now_ms()),
-                    );
+                    if let Some(update) = detail_pending.take_update(&table, now_ms()) {
+                        broadcast(&app, EVENT_CONNECTIONS_DETAIL, update);
+                    }
+                } else {
+                    // 下一位 detail 订阅者必须先拿完整基线，不能从无人消费期的半截增量开始。
+                    detail_pending.begin_generation();
                 }
                 detail_emit.mark_emitted(now);
             }
@@ -1957,48 +2060,173 @@ mod tests {
         assert!(signature_changed(&agg2, &Some(sig)).is_some());
     }
 
-    // ── detail topic：build_detail 数据面（EVENT_CONNECTIONS_DETAIL 供数）──
+    // ── detail topic：generation/sequence + 1s 增量合并 ──
 
-    /// 明细逐条下发（不聚合），死连接过滤，字段经 trim 裁剪后仍在。
-    /// 打断死连接过滤 → 本测转红；打断 map（返回空 vec）→ 本测转红。
     #[test]
-    fn build_detail_lists_live_connections_and_excludes_dead() {
-        let mut dead = conn("dead", "dead.com", "hk");
-        dead.closed_at = 1_000_000_000;
-        let conns = vec![conn("c0", "a.com", "hk"), conn("c1", "b.com", "us"), dead];
-        let snap = build_detail(&conns, 4_242);
-        assert_eq!(
-            snap.at, 4_242,
-            "采样时刻必须原样带出（渲染端靠它算速率差分）"
+    fn detail_reset_materializes_one_full_baseline() {
+        let mut table = StatsAggregator::new();
+        let change = table.on_connection_events(
+            &SingBoxConnectionEvents {
+                reset: true,
+                events: vec![SingBoxConnectionEvent {
+                    kind: ConnectionEventType::New,
+                    connection: Some(engine_conn("live", 0)),
+                    ..Default::default()
+                }],
+            },
+            0,
         );
-        let ids: Vec<&str> = snap.connections.iter().map(|c| c.id.as_str()).collect();
-        assert_eq!(ids, vec!["c0", "c1"], "逐条下发活跃连接，死连接过滤");
-        let first = &snap.connections[0];
+        let mut pending = PendingDetailUpdate::default();
+        pending.merge(change);
+        let update = pending.take_update(&table, 4_242).expect("reset 基线");
+        assert!(update.reset);
+        assert_eq!(update.generation, 1);
+        assert_eq!(update.sequence, 1);
+        assert_eq!(update.at, 4_242);
+        assert_eq!(update.connections.len(), 1);
+        assert_eq!(update.connections[0].id, "live");
         assert_eq!(
-            first.metadata.as_ref().unwrap().host.as_deref(),
-            Some("a.com"),
-            "明细须带 metadata（明细表的域名列靠它）"
+            update.connections[0]
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.host.as_deref()),
+            Some("live.example")
         );
+        assert!(update.counters.is_empty());
+        assert!(update.removed_ids.is_empty());
     }
 
-    /// 无活跃连接 → 空快照（非 error），明细页据此显示「无活动连接」。
     #[test]
-    fn build_detail_empty_when_no_live_connections() {
-        let mut dead = conn("dead", "dead.com", "hk");
-        dead.closed_at = 1;
-        assert!(build_detail(&[dead], 0).connections.is_empty());
-        assert!(build_detail(&[], 0).connections.is_empty());
+    fn detail_normal_frame_only_sends_counters_and_heartbeat() {
+        let mut table = StatsAggregator::new();
+        let mut pending = PendingDetailUpdate::default();
+        pending.merge(table.on_connection_events(
+            &SingBoxConnectionEvents {
+                reset: true,
+                events: vec![SingBoxConnectionEvent {
+                    kind: ConnectionEventType::New,
+                    connection: Some(engine_conn("live", 0)),
+                    ..Default::default()
+                }],
+            },
+            0,
+        ));
+        pending.take_update(&table, 1).expect("首帧");
+
+        pending.merge(table.on_connection_events(
+            &SingBoxConnectionEvents {
+                reset: false,
+                events: vec![SingBoxConnectionEvent {
+                    kind: ConnectionEventType::Update,
+                    id: "live".to_string(),
+                    uplink_delta: 111,
+                    downlink_delta: 222,
+                    ..Default::default()
+                }],
+            },
+            0,
+        ));
+        let delta = pending.take_update(&table, 2).expect("计数增量");
+        assert!(!delta.reset);
+        assert_eq!(delta.generation, 1);
+        assert_eq!(delta.sequence, 2);
+        assert!(delta.connections.is_empty(), "既有连接不得重复静态字段");
+        assert_eq!(delta.counters.len(), 1);
+        assert_eq!(delta.counters[0].upload, 111);
+        assert_eq!(delta.counters[0].download, 222);
+
+        pending.merge(table.on_connection_events(&SingBoxConnectionEvents::default(), 0));
+        let heartbeat = pending.take_update(&table, 3).expect("空增量心跳");
+        assert_eq!(heartbeat.sequence, 3);
+        assert!(heartbeat.connections.is_empty());
+        assert!(heartbeat.counters.is_empty());
+        assert!(heartbeat.removed_ids.is_empty());
     }
 
-    /// 明细含累计字节 —— 渲染端每条连接的速率/累计列全靠它，丢了则表格恒显 0。
     #[test]
-    fn build_detail_carries_byte_totals() {
-        let mut c = conn("c0", "a.com", "hk");
-        c.uplink_total = 111;
-        c.downlink_total = 222;
-        let snap = build_detail(&[c], 0);
-        assert_eq!(snap.connections[0].upload, Some(111));
-        assert_eq!(snap.connections[0].download, Some(222));
+    fn detail_new_reset_starts_new_generation_and_sequence() {
+        let mut table = StatsAggregator::new();
+        let mut pending = PendingDetailUpdate::default();
+        for id in ["first", "second"] {
+            pending.merge(table.on_connection_events(
+                &SingBoxConnectionEvents {
+                    reset: true,
+                    events: vec![SingBoxConnectionEvent {
+                        kind: ConnectionEventType::New,
+                        connection: Some(engine_conn(id, 0)),
+                        ..Default::default()
+                    }],
+                },
+                0,
+            ));
+            let update = pending.take_update(&table, 0).expect("每代 reset");
+            assert!(update.reset);
+            assert_eq!(update.sequence, 1);
+        }
+        assert_eq!(pending.generation, 2);
+    }
+
+    #[test]
+    fn detail_window_coalesces_new_update_and_close_by_id() {
+        let mut table = StatsAggregator::new();
+        let mut pending = PendingDetailUpdate::default();
+        pending.merge(table.on_connection_events(
+            &SingBoxConnectionEvents {
+                reset: true,
+                events: Vec::new(),
+            },
+            0,
+        ));
+        pending.take_update(&table, 0).expect("空基线");
+
+        pending.merge(table.on_connection_events(
+            &SingBoxConnectionEvents {
+                reset: false,
+                events: vec![SingBoxConnectionEvent {
+                    kind: ConnectionEventType::New,
+                    connection: Some(engine_conn("live", 0)),
+                    ..Default::default()
+                }],
+            },
+            0,
+        ));
+        pending.merge(table.on_connection_events(
+            &SingBoxConnectionEvents {
+                reset: false,
+                events: vec![SingBoxConnectionEvent {
+                    kind: ConnectionEventType::Update,
+                    id: "live".to_string(),
+                    uplink_delta: 9,
+                    downlink_delta: 8,
+                    ..Default::default()
+                }],
+            },
+            0,
+        ));
+        let upsert = pending.take_update(&table, 1).expect("合并后的 upsert");
+        assert_eq!(upsert.connections.len(), 1);
+        assert_eq!(upsert.connections[0].upload, Some(9));
+        assert_eq!(upsert.connections[0].download, Some(8));
+        assert!(
+            upsert.counters.is_empty(),
+            "同窗计数应折进 NEW，不重复传两份"
+        );
+
+        pending.merge(table.on_connection_events(
+            &SingBoxConnectionEvents {
+                reset: false,
+                events: vec![SingBoxConnectionEvent {
+                    kind: ConnectionEventType::Closed,
+                    id: "live".to_string(),
+                    ..Default::default()
+                }],
+            },
+            0,
+        ));
+        let removed = pending.take_update(&table, 2).expect("删除增量");
+        assert_eq!(removed.removed_ids, vec!["live"]);
+        assert!(removed.connections.is_empty());
+        assert!(removed.counters.is_empty());
     }
 
     // ── BUG-P2-1：停核 offline 帧（首页拓扑 / StatusBar 不得停在旧数据）──
@@ -2863,7 +3091,7 @@ mod tests {
 
     /// 🟡 **变异锁：aggregate 的 emit 比 detail 勤，且两者都由 [`EmitGate`] 而非 sleep 决定。**
     ///
-    /// 同一张连接表、同一条上游流，但拓扑推的是几十个计数、明细推的是整张表的 JSON ——
+    /// 同一张连接表、同一条上游流，但拓扑关注连接出现/消失，明细承担逐连接计数与速率刷新 ——
     /// 没有理由共用一个 emit 频率。
     ///
     /// **变异探针**：两个常量调成相等 ⇒ 第一段转红；把 `detail_emit` 也用
@@ -2876,7 +3104,7 @@ mod tests {
     fn aggregate的emit比detail勤() {
         assert!(
             AGGREGATE_EMIT_MIN_INTERVAL < DETAIL_EMIT_MIN_INTERVAL,
-            "拓扑 emit 必须严格勤于明细：前者载荷是几十个计数，后者是整张连接表的 JSON"
+            "拓扑 emit 必须严格勤于明细：前者追求连接变化观感，后者按人眼可读节奏合并逐连接计数"
         );
         let src = include_str!("stats.rs");
         let body =
@@ -2921,7 +3149,7 @@ mod tests {
             body.contains("if gate.topic_open(Topic::Connections) {")
                 && body.contains("if gate.topic_open(Topic::Detail) {")
                 && body.contains("if gate.topic_open(Topic::Closed) {"),
-            "每条投影 emit 前须各自看自己的订阅门（只订了拓扑就别推全量明细 JSON）"
+            "每条投影 emit 前须各自看自己的订阅门（只订了拓扑就别推活动明细增量）"
         );
     }
 

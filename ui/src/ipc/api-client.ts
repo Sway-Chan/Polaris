@@ -602,7 +602,7 @@ import type { StatsTopic } from '../domain/ipc-channels';
 import { STATS_TOPIC_EVENT } from '../domain/ipc-channels';
 import type { TrafficStats } from '../contracts/types';
 import type {
-  ConnectionsSnapshot,
+  ConnectionsDetailUpdate,
   ConnectionsAggregate,
   ConnectionsClosedSnapshot,
   ConnectionsClosedUpdate,
@@ -631,11 +631,11 @@ export const statsApi = {
     return listen<ConnectionsAggregate>(STATS_TOPIC_EVENT.aggregate, listener);
   },
 
-  /** detail topic：连接明细全量快照。 */
+  /** detail topic：活动连接 reset 基线 + 常态增量。 */
   onConnectionsDetail(
-    listener: (data: ConnectionsSnapshot) => void
+    listener: (data: ConnectionsDetailUpdate) => void
   ): () => void {
-    return listen<ConnectionsSnapshot>(STATS_TOPIC_EVENT.detail, listener);
+    return listen<ConnectionsDetailUpdate>(STATS_TOPIC_EVENT.detail, listener);
   },
 
   /** closed topic：独立的已结束连接历史。 */

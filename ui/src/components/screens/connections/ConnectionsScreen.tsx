@@ -10,7 +10,7 @@
  *
  * 功能接 api-client：
  *  - 明细：statsApi.subscribe('detail') + onConnectionsDetail（订阅驱动，进页订/离开退；
- *    后端 relay 消费 sing-box 连接流，按1s 节流下发活动快照）
+ *    后端 relay 消费 sing-box 连接流，按1s 合并下发 reset 基线 / 活动增量）
  *  - 已结束：订阅首帧/reset 为最多 1000 条全量，常态只合并本批新增/淘汰项
  *  - TOP：statsApi.subscribe('aggregate') + onConnectionsAggregate
  *  - 关单条：connectionsApi.close(id)（真调管理 API gRPC CloseConnection）+ 乐观移除（失败回滚）
@@ -37,12 +37,17 @@ import { useConfirmTwice } from '@/lib/confirm-twice';
 import type {
   ClosedConnectionEntry,
   ConnectionEntry,
-  ConnectionsSnapshot,
+  ConnectionsDetailUpdate,
   ConnectionsAggregate,
   ConnectionsClosedUpdate,
 } from '@/contracts/types';
 import { TOPOLOGY_OTHERS_KEY } from '@/contracts/types';
 import { fmtBytes, fmtDuration, fmtRate } from '../shared/format';
+import {
+  applyActiveDetailUpdate,
+  clearActiveDetailState,
+  type ActiveDetailSync,
+} from './active-detail';
 import { applyClosedHistoryUpdate } from './closed-history';
 import { connectionRuleSubjects } from './connection-rule-subjects';
 
@@ -110,8 +115,10 @@ interface ConnRow {
   /** 上下行速率（bytes/s，与上一帧 diff / dt；首帧=0）。 */
   upRate: number;
   dnRate: number;
-  /** 连接时长（秒）。 */
-  age: number;
+  /** 连接建立时刻 epoch ms；无有效时间为 NaN。 */
+  startAt: number;
+  /** 产生本行速率的 detail 序列；不是当前序列时速率按 0 展示。 */
+  rateSequence: number;
   /** 已结束时间 epoch ms；活动连接为 null。 */
   endedAt: number | null;
 }
@@ -208,24 +215,34 @@ function projectConnection(
   entry: ConnectionEntry,
   endedAt: number | null,
   rates: { up: number; down: number },
-  observedAt: number,
+  rateSequence: number,
   cache: Map<string, ConnStaticCacheEntry>,
 ): ConnRow {
   const upload = entry.upload ?? 0;
   const download = entry.download ?? 0;
   const { projection, startAt } = staticProjection(cache, entry);
-  const age = Number.isNaN(startAt)
-    ? 0
-    : Math.max(0, ((endedAt ?? observedAt) - startAt) / 1000);
   return {
     entry,
     ...projection,
     total: upload + download,
     upRate: rates.up,
     dnRate: rates.down,
-    age,
+    startAt,
+    rateSequence,
     endedAt,
   };
+}
+
+function connectionAge(row: ConnRow, observedAt: number): number {
+  return Number.isNaN(row.startAt)
+    ? 0
+    : Math.max(0, ((row.endedAt ?? observedAt) - row.startAt) / 1000);
+}
+
+function connectionRates(row: ConnRow, activeSequence: number): { up: number; down: number } {
+  return row.endedAt === null && row.rateSequence === activeSequence
+    ? { up: row.upRate, down: row.dnRate }
+    : { up: 0, down: 0 };
 }
 
 export function ConnectionsScreen() {
@@ -239,6 +256,7 @@ export function ConnectionsScreen() {
   const [page, setPage] = useState(0);
 
   const [rows, setRows] = useState<ConnRow[]>([]);
+  const [activeClock, setActiveClock] = useState({ at: 0, sequence: 0 });
   const [closedEntries, setClosedEntries] = useState<ClosedConnectionEntry[]>([]);
   const [activeLoaded, setActiveLoaded] = useState(false);
   const [closedLoaded, setClosedLoaded] = useState(false);
@@ -251,16 +269,19 @@ export function ConnectionsScreen() {
     new Map()
   );
   const activeStaticRef = useRef<Map<string, ConnStaticCacheEntry>>(new Map());
+  const activeIndexRef = useRef<Map<string, ConnectionEntry>>(new Map());
+  const activeSyncRef = useRef<ActiveDetailSync>({ generation: null, sequence: 0 });
+  const activeRowRef = useRef<Map<string, { source: ConnectionEntry; row: ConnRow }>>(new Map());
   const closedIndexRef = useRef<Map<string, ClosedConnectionEntry>>(new Map());
   const closedStaticRef = useRef<Map<string, ConnStaticCacheEntry>>(new Map());
   const closedRowRef = useRef<
     Map<string, { source: ClosedConnectionEntry; row: ConnRow }>
   >(new Map());
   /**
-   * 已乐观关闭、等后端快照确认消失的连接 id。
+   * 已乐观关闭、等后端增量确认消失的连接 id。
    *
-   * 光 `setRows(filter)` 挡不住回填：detail 流按1s节流，关闭请求发出时可能已有一帧在途，
-   * 那帧仍含这条连接 → 行「关掉又冒回来」再等一秒才真消失。故记一个抑制集，快照里还带着它就滤掉，
+   * 光 `setRows(filter)` 挡不住回填：detail 流按1s合并，关闭请求发出时可能已有一帧在途，
+   * 那帧仍可能更新这条连接 → 行「关掉又冒回来」再等一秒才真消失。故记一个抑制集，索引里还带着它就滤掉，
    * 直到某一帧里它真没了才把 id 从集里摘掉（自清理，不会无界增长）。
    */
   const closingRef = useRef<Set<string>>(new Set());
@@ -282,15 +303,43 @@ export function ConnectionsScreen() {
   } | null>(null);
   const [menuSize, setMenuSize] = useState({ w: 0, h: 0 });
 
-  /** 把 ConnectionsSnapshot 派生为 ConnRow[]（算速率 / 时长），写 rows。 */
-  const applySnapshot = useCallback((snap: ConnectionsSnapshot) => {
+  /** 应用 generation/sequence 守卫后的活动连接增量，只重建真正变化的行对象。 */
+  const applyDetailUpdate = useCallback((update: ConnectionsDetailUpdate) => {
+    const applied = applyActiveDetailUpdate(
+      activeIndexRef.current,
+      activeSyncRef.current,
+      update,
+    );
+    if (!applied.accepted) return;
+
     const prev = prevRef.current;
     const staticCache = activeStaticRef.current;
-    const now = snap.at || Date.now();
-    // 同一趟投影顺手建 live id 集；此前又对原快照 `.map` 一遍再交给 Set，每秒额外制造一份 N 长数组。
-    const liveIds = new Set<string>();
-    const nextRows: ConnRow[] = snap.connections.map((entry) => {
-      liveIds.add(entry.id);
+    const rowCache = activeRowRef.current;
+    const now = update.at || Date.now();
+    if (applied.reset) {
+      prev.clear();
+      staticCache.clear();
+      rowCache.clear();
+    }
+    for (const id of applied.removedIds) {
+      prev.delete(id);
+      staticCache.delete(id);
+      rowCache.delete(id);
+    }
+
+    const closing = closingRef.current;
+    for (const id of closing) {
+      if (!activeIndexRef.current.has(id)) closing.delete(id);
+    }
+
+    const nextRows: ConnRow[] = [];
+    for (const entry of activeIndexRef.current.values()) {
+      if (closing.has(entry.id)) continue;
+      const cached = rowCache.get(entry.id);
+      if (cached?.source === entry) {
+        nextRows.push(cached.row);
+        continue;
+      }
       const up = entry.upload ?? 0;
       const dn = entry.download ?? 0;
       const p = prev.get(entry.id);
@@ -302,57 +351,45 @@ export function ConnectionsScreen() {
         dnRate = Math.max(0, (dn - p.dn) / dt);
       }
       prev.set(entry.id, { up, dn, at: now });
-      return projectConnection(
+      const row = projectConnection(
         entry,
         null,
         { up: upRate, down: dnRate },
-        now,
+        update.sequence,
         staticCache,
       );
-    });
-    // 清理已断开连接的记账与静态投影，两个 Map 都不随历史增长。
-    for (const id of prev.keys()) {
-      if (!liveIds.has(id)) prev.delete(id);
+      rowCache.set(entry.id, { source: entry, row });
+      nextRows.push(row);
     }
-    for (const id of staticCache.keys()) {
-      if (!liveIds.has(id)) staticCache.delete(id);
-    }
-    // 乐观关闭的抑制集：本帧还带着的继续滤掉；本帧已没有的说明后端真关掉了 → 从集里摘除（自清理）。
-    const closing = closingRef.current;
-    if (closing.size > 0) {
-      for (const id of [...closing]) {
-        if (!liveIds.has(id)) closing.delete(id);
-      }
-    }
-    const visible =
-      closing.size > 0
-        ? nextRows.filter((r) => !closing.has(r.entry.id))
-        : nextRows;
-    setRows(visible);
+    setRows(nextRows);
+    setActiveClock({ at: now, sequence: update.sequence });
     setActiveLoaded(true);
   }, []);
 
   useEffect(() => {
     if (paused || view !== 'active') return;
     prevRef.current.clear();
-    const sub = createTopicSubscription<ConnectionsSnapshot>(
+    const sub = createTopicSubscription<ConnectionsDetailUpdate>(
       {
         onFrame: (cb) => api.stats.onConnectionsDetail(cb),
         subscribe: () => api.stats.subscribe('detail'),
         unsubscribe: () => api.stats.unsubscribe('detail'),
       },
-      applySnapshot
+      applyDetailUpdate
     );
     sub.setWanted(true);
     return () => sub.dispose();
-  }, [paused, view, applySnapshot]);
+  }, [paused, view, applyDetailUpdate]);
 
   useEffect(() => {
     if (view === 'active') return;
     closingRef.current.clear();
     prevRef.current.clear();
     activeStaticRef.current.clear();
+    activeRowRef.current.clear();
+    clearActiveDetailState(activeIndexRef.current, activeSyncRef.current);
     setRows([]);
+    setActiveClock({ at: 0, sequence: 0 });
     setActiveLoaded(false);
   }, [view]);
 
@@ -399,7 +436,7 @@ export function ConnectionsScreen() {
         source.entry,
         endedAt,
         { up: 0, down: 0 },
-        endedAt,
+        0,
         staticCache,
       );
       rowCache.set(id, { source, row });
@@ -455,6 +492,8 @@ export function ConnectionsScreen() {
   );
 
   const listRows = view === 'closed' ? closedRows : rows;
+  const sortAt = sort?.key === 'time' ? activeClock.at : 0;
+  const sortSequence = sort?.key === 'rate' ? activeClock.sequence : 0;
 
   /** 搜索命中 + 排序后的完整列表；分页只限制 DOM，不截断数据与检索范围。 */
   const filteredRows = useMemo(() => {
@@ -473,12 +512,15 @@ export function ConnectionsScreen() {
             return a.rule.localeCompare(b.rule);
           case 'chain':
             return a.chain.localeCompare(b.chain);
-          case 'rate':
-            return a.dnRate + a.upRate - (b.dnRate + b.upRate);
+          case 'rate': {
+            const aRate = connectionRates(a, sortSequence);
+            const bRate = connectionRates(b, sortSequence);
+            return aRate.down + aRate.up - (bRate.down + bRate.up);
+          }
           case 'total':
             return a.total - b.total;
           case 'time':
-            return a.age - b.age;
+            return connectionAge(a, sortAt) - connectionAge(b, sortAt);
           case 'ended':
             return (a.endedAt ?? 0) - (b.endedAt ?? 0);
           case 'proc':
@@ -488,7 +530,7 @@ export function ConnectionsScreen() {
       list = [...list].sort((a, b) => dir * cmp(a, b));
     }
     return list;
-  }, [listRows, matchRow, sort]);
+  }, [listRows, matchRow, sort, sortAt, sortSequence]);
   const pageCount = Math.max(1, Math.ceil(filteredRows.length / CONNECTION_PAGE_SIZE));
   const visiblePage = Math.min(page, pageCount - 1);
   const pageStart = visiblePage * CONNECTION_PAGE_SIZE;
@@ -517,7 +559,7 @@ export function ConnectionsScreen() {
   const closeFailedText = t('connections.closeFailed');
 
   /* 乐观移除：点了叉立刻走人，别让用户对着一行「关不掉的连接」等下一帧（≤1s）。
-   * 入 closingRef 是为了扛住在途快照回填（详见该 ref 的注释）；失败则回滚 —— 暂停态没有后续快照，
+   * 入 closingRef 是为了扛住在途增量回填（详见该 ref 的注释）；失败则回滚 —— 暂停态没有后续帧，
    * 不显式放回去的话那条连接就凭空消失了，用户以为关成功了。 */
   const onClose = useCallback(
     async (row: ConnRow) => {
@@ -535,7 +577,7 @@ export function ConnectionsScreen() {
         setRows((prev) => {
           if (prev.some((r) => r.entry.id === id)) return prev;
           const next = [...prev];
-          // 期间可能又有整帧快照回填过（长度变了）⇒ 夹取到合法区间；取不到原位就落表尾。
+          // 期间可能已有增量改变了列表长度 ⇒ 夹取到合法区间；取不到原位就落表尾。
           next.splice(at < 0 ? next.length : Math.min(at, next.length), 0, row);
           return next;
         });
@@ -606,11 +648,11 @@ export function ConnectionsScreen() {
   /**
    * 批量关闭的抑制集出入口（与单条 `onClose` 同一道防线）。
    *
-   * 少了它，批量关闭后**在途的那一帧快照仍然含这些行** ⇒ 整批「消失 → 闪回 → 再消失」：
+   * 少了它，批量关闭后**在途的那一帧增量仍可能更新这些行** ⇒ 整批「消失 → 闪回 → 再消失」：
    * 后端已经关掉了、渲染端也已按新帧清空，然后 ≤1s 前就发出的那帧把它们全部画回来，
    * 再等一帧才真消失。单条关闭早就入集了，两条批量腿是漏网的（2026-07-28 复审 LOW）。
    *
-   * 成功路径**不需要**显式清：抑制集自清理（`applySnapshot` 里某帧不再含该 id 即摘除）。
+   * 成功路径**不需要**显式清：抑制集在增量索引确认 id 已移除时自清理。
    * 失败路径**必须**显式清 —— 否则那条还活着的连接会被永久滤掉（它每帧都在，自清理永远等不到），
    * 用户侧表现为「关失败了，但这条连接再也看不见」。这与单条 `onClose` 的 `rollback` 同款语义。
    */
@@ -633,8 +675,8 @@ export function ConnectionsScreen() {
   const confirmingClear = armed === CLEAR_CLOSED_KEY;
 
   const onCloseAll = useCallback(async () => {
-    // 「全部关闭」的射程是当前快照里的全部连接（`rows` 而非 `filteredRows`：搜索框有内容时
-    // 这个按钮关的仍是全部）。发请求**之前**入集：请求在飞期间就可能有快照帧回来。
+    // 「全部关闭」的射程是当前索引里的全部连接（`rows` 而非 `filteredRows`：搜索框有内容时
+    // 这个按钮关的仍是全部）。发请求**之前**入集：请求在飞期间就可能有增量帧回来。
     const ids = rows.map((r) => r.entry.id);
     suppressClosing(ids);
     try {
@@ -668,7 +710,7 @@ export function ConnectionsScreen() {
       if (results.every((r) => r?.ok)) {
         toast.success(t('connections.closeFilteredDone', { n }));
       } else {
-        // **只放回失败的那几条**：成功的那些继续被抑制到快照追上为止，否则整批一起闪回。
+        // **只放回失败的那几条**：成功的那些继续被抑制到删除增量追上为止，否则整批一起闪回。
         unsuppressClosing(ids.filter((_, i) => !results[i]?.ok));
         toast.error(closeFailedText);
       }
@@ -710,6 +752,7 @@ export function ConnectionsScreen() {
     <th
       className={`${extraClass ? extraClass + ' ' : ''}sortable${sort?.key === key ? ' sorted' : ''}`}
       onClick={() => onSort(key)}
+      data-tip={label}
     >
       <span>{label}</span>
       <span className="sort-ar">{sort?.key === key ? (sort.dir > 0 ? '▲' : '▼') : '▲'}</span>
@@ -884,13 +927,26 @@ export function ConnectionsScreen() {
         <div className="conn-scroll" ref={tableScrollRef}>
           <div className="conn-list-wrap">
             <table className={`conn-table conn-table-${view}`}>
+              <colgroup>
+                {view === 'active' && <col className="c-close" />}
+                <col className="c-type" />
+                <col className="c-host" />
+                <col className="c-dest" />
+                <col className="c-rule" />
+                <col className="c-chain" />
+                {view === 'active' && <col className="c-rate" />}
+                <col className="c-total" />
+                <col className="c-time" />
+                {view === 'closed' && <col className="c-ended" />}
+                <col className="c-proc" />
+              </colgroup>
               <thead>
                 <tr>
                   {view === 'active' && (
                     <th className="c-close" aria-label={t('connections.close')} />
                   )}
                   {thSortable('type', t('connections.colType'), 'c-type')}
-                  {thSortable('host', t('connections.colHost'))}
+                  {thSortable('host', t('connections.colHost'), 'c-host')}
                   {thSortable('dest', t('connections.colDest'), 'c-dest')}
                   {thSortable('rule', t('connections.colRule'), 'c-rule')}
                   {thSortable('chain', t('connections.colChain'), 'c-chain')}
@@ -925,6 +981,8 @@ export function ConnectionsScreen() {
                   {visibleRows.map((r) => {
                     const blocked = r.chain === 'block';
                     const direct = r.chain === 'direct';
+                    const rates = connectionRates(r, activeClock.sequence);
+                    const age = connectionAge(r, activeClock.at);
                     const cx = blocked
                       ? t('home.routingBlock')
                       : direct
@@ -972,7 +1030,7 @@ export function ConnectionsScreen() {
                             把整表横向撑开、其余列被挤到视口外（陈先生 2026-07-29 真机报）。
                             统一形态：列定宽 + `.conn-clip` 截断 + `data-tip` 悬停浮窗给全文
                             （tooltip 引擎自带停留延迟，与 `.conn-proc` 既有做法同款）。 */}
-                        <td>
+                        <td className="c-host">
                           <div className="conn-host" data-tip={r.host !== '—' ? r.host : undefined}>
                             {r.host}
                           </div>
@@ -1002,11 +1060,11 @@ export function ConnectionsScreen() {
                           </span>
                         </td>
                         {view === 'active' && <td className="conn-rate mono c-rate">
-                          <span className="d">{fmtRate(r.dnRate)}</span>{' '}
-                          <span className="u">{fmtRate(r.upRate)}</span>
+                          <span className="d">{fmtRate(rates.down)}</span>{' '}
+                          <span className="u">{fmtRate(rates.up)}</span>
                         </td>}
                         <td className="mono conn-sub c-total">{fmtBytes(r.total)}</td>
-                        <td className="mono conn-sub c-time">{fmtDuration(r.age)}</td>
+                        <td className="mono conn-sub c-time">{fmtDuration(age)}</td>
                         {view === 'closed' && (
                           <td className="mono conn-sub c-ended">
                             <span data-tip={r.endedAt ? new Date(r.endedAt).toLocaleString() : undefined}>

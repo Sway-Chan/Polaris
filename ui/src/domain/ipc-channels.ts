@@ -226,8 +226,8 @@ export const IPC_CHANNELS = {
   // 取代旧 EVENT_CONNECTIONS_UPDATED（每秒全量 ConnectionEntry[] relay）——连接风暴下渲染端被全量明细拖死（issue #227）。
   // batch3 §3.7：兼作 aggregate topic 的初始帧 + 增量 push 通道（订阅即回缓存帧，之后 seq 变更才推）。
   EVENT_CONNECTIONS_AGGREGATE: 'event:connectionsAggregate',
-  // 连接明细 push（batch3 §3.7）：detail topic 订阅期 worker→main→订阅 renderer 的全量连接快照（取代旧 CONNECTIONS_GET
-  // 按需 pull）。初始帧 + 增量同一通道；仅连接页订阅期流动，无订阅者 worker 不 post（逐级停机）。
+  // 活动连接 detail：reset 帧给 generation 基线，常态只推 upsert/累计计数/删除 id；sequence 拒绝乱序。
+  // 仅连接页活动视图订阅期流动，无订阅者时中继保留下一位订阅者所需的 reset 基线。
   EVENT_CONNECTIONS_DETAIL: 'event:connectionsDetail',
   // 已结束连接独立历史环（最多 1000 条）；仅 closed topic 订阅期推送。
   EVENT_CONNECTIONS_CLOSED: 'event:connectionsClosed',

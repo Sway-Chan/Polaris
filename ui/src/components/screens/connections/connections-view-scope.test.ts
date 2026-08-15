@@ -25,6 +25,12 @@ const SRC = code(
 const STYLE = code(
   readFileSync(fileURLToPath(new URL('../../../styles/prototype.css', import.meta.url)), 'utf8'),
 );
+const LEGACY_STYLES = code(
+  [
+    '../../../styles/components.css',
+    '../../../styles/index.css',
+  ].map((path) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), 'utf8')).join('\n'),
+);
 
 describe('工具栏：列表控件不进拓扑，动作不跨生命周期', () => {
   /**
@@ -91,7 +97,7 @@ describe('detail 订阅腿随明细视图开关', () => {
   /**
    * detail 腿的 gate 必须含 `view`，且 `view` 必须在依赖数组里。
    *
-   * 只有表视图消费它的产物；拓扑视图下继续订阅 = 后端 1s 一帧全量连接快照的序列化 + IPC 全白付。
+   * 只有表视图消费它的产物；拓扑视图下继续订阅 = 后端连接增量与 IPC 全白付。
    * 依赖数组那半条同样关键：只加守卫不加依赖，effect 不会在切视图时重跑，gate 形同虚设。
    *
    * 变异对照：把守卫改回 `if (paused) return;` → 第一条转红；
@@ -147,10 +153,31 @@ describe('连接列表内存边界', () => {
     expect(SRC).not.toContain('conn-spacer');
     expect(SRC).not.toContain('bottomSpace');
     expect(SRC).toContain("t('connections.pageStatus'");
-    expect(STYLE).toContain('.conn-table tr{ display:grid;');
-    expect(STYLE).toContain('contain:layout style');
+    expect(SRC).toContain('<colgroup>');
+    expect(SRC).toContain('<col className="c-type" />');
+    expect(STYLE).toContain('table-layout:fixed');
+    expect(STYLE).toContain('.conn-table-active col.c-type{ width:54px; }');
+    expect(STYLE).toContain('.conn-table-closed col.c-type{ width:54px; }');
+    expect(STYLE).not.toMatch(/\.conn-table tr\s*\{[^}]*display\s*:\s*grid/);
+    expect(STYLE).not.toContain('contain:layout style');
     expect(STYLE).not.toContain('contain:layout paint');
     expect(STYLE).not.toContain('content-visibility:auto');
+    expect(STYLE).not.toMatch(/\.conn-table \.c-type\s*\{[^}]*width\s*:\s*1px/);
+  });
+
+  it('活动/已结束列宽各自完整覆盖 920px，旧样式层不再保留第二套连接表规则', () => {
+    const widths = (view: 'active' | 'closed') => [
+      ...STYLE.matchAll(
+        new RegExp(`\\.conn-table-${view} col\\.c-[\\w-]+\\s*\\{\\s*width:(\\d+)px`, 'g'),
+      ),
+    ].map((match) => Number(match[1]));
+    const active = widths('active');
+    const closed = widths('closed');
+    expect(active).toHaveLength(10);
+    expect(closed).toHaveLength(9);
+    expect(active.reduce((sum, width) => sum + width, 0)).toBe(920);
+    expect(closed.reduce((sum, width) => sum + width, 0)).toBe(920);
+    expect(LEGACY_STYLES).not.toContain('.conn-table');
   });
 
   it('切离活动视图释放活动行缓存；暂停仍只退订并保留当前视口', () => {
@@ -168,5 +195,13 @@ describe('连接列表内存边界', () => {
     expect(SRC).not.toContain('snapshot.connections.map(({ entry, closedAt })');
     expect(SRC).toContain('closedIndexRef.current.clear()');
     expect(SRC).toContain('closedRowRef.current.clear()');
+  });
+
+  it('活动 topic 走代际/序列增量索引，未变行复用对象', () => {
+    expect(SRC).toContain('createTopicSubscription<ConnectionsDetailUpdate>');
+    expect(SRC).toContain('applyActiveDetailUpdate(');
+    expect(SRC).toContain('cached?.source === entry');
+    expect(SRC).toContain('clearActiveDetailState(activeIndexRef.current, activeSyncRef.current)');
+    expect(SRC).not.toContain('snap.connections.map');
   });
 });

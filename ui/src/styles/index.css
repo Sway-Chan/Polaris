@@ -865,21 +865,6 @@ body:has(.pending-bar.show) #toast-stack{
 #sankey-stub{ flex:1 1 auto; min-height:180px; margin:0;
   display:flex; flex-direction:column; align-items:center; justify-content:center; }
 
-/* 连接表：长文本列定宽 + 截断 + 悬停浮窗（陈先生 2026-07-29 真机：「规则列宽度没有限制」）。
- * 域名与进程此前已各自截断，规则/节点链/目标三列**无上限** —— 一条长规则条件或长机场节点名
- * 就把整表横向撑开，其余列被推出视口。这里把四列统一到同一形态：
- *   `<td class="c-*">` 定宽（width+max-width 成对：表格 auto 布局下只给 max-width 仍可能被内容撑破）
- *   → 内层 `.conn-clip` 负责省略号（td 本身做截断在部分 WebKit 下与 border-collapse 打架）
- *   → `data-tip` 给全文，浮窗延迟由 tooltip 引擎统一控制。
- * 速率列同样定宽：`fmtRate` 的输出宽度随量级跳（"0 B/s" ↔ "10.24 MB/s"），不定宽则每帧抖动。 */
-.conn-clip{ display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis;
-  white-space:nowrap; vertical-align:bottom; }
-.conn-table .c-rule{ width:170px; max-width:170px; }
-.conn-table .c-chain{ width:140px; max-width:140px; }
-.conn-table .c-dest{ width:160px; max-width:160px; }
-.conn-table .c-rate{ width:124px; max-width:124px; }
-.conn-table .c-ended{ width:142px; max-width:142px; }
-
 /* 节点卡「再点一次确认切换」的**就地**视觉。整卡是触发面之一，而卡上那颗按钮的 `.confirming` 翻红
  * 只覆盖了按钮那一小块——用户点的往往是卡面本身，没有卡级反馈就等于「点了没反应」。
  * 用描边而非底色：底色会与 `.nd-card.cur`（当前出口）打架，而武装态与当前出口是互斥的两回事。

@@ -146,9 +146,24 @@ export interface ConnectionEntry {
   start?: string; // 连接建立时刻（RFC3339）
 }
 
-/** 连接快照：连接信息页订阅 'detail' topic（batch3 §3.7）——订阅即回初始帧 + worker 每帧 push，仅页面打开且可见时传（无订阅者 → worker 逐级停机），非旧「每秒全量广播给所有窗口」。 */
-export interface ConnectionsSnapshot {
+/** 既有连接的累计计数；常态 detail 帧不重复携带静态字段。 */
+export interface ConnectionCounters {
+  id: string;
+  upload: number;
+  download: number;
+}
+
+/**
+ * 活动连接 detail 增量：reset 帧给完整基线，常态只给 upsert、累计计数和删除 id。
+ * generation 隔离重连/reset 前后的数据集，sequence 拒绝重复或乱序帧。
+ */
+export interface ConnectionsDetailUpdate {
+  reset: boolean;
+  generation: number;
+  sequence: number;
   connections: ConnectionEntry[];
+  counters?: ConnectionCounters[];
+  removedIds?: string[];
   at: number; // 采样时刻 epoch ms
 }
 
