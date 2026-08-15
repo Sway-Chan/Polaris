@@ -82,6 +82,23 @@ describe('use-latency-store：单一真值', () => {
     useLatencyStore.getState().applyLatencyResults({ failed: -1, ok: 86 });
     expect(useLatencyStore.getState().latencyMap).toEqual({ failed: null, ok: 86 });
   });
+
+  it('节点删除后同时裁剪延迟与时间戳，保留节点的结果不动', () => {
+    useLatencyStore.getState().applyLatencyResults({ keep: 42, removed: 88 });
+    const keepStamp = useLatencyStore.getState().testedAt.keep;
+
+    useLatencyStore.getState().retainServerIds(['keep']);
+
+    expect(useLatencyStore.getState().latencyMap).toEqual({ keep: 42 });
+    expect(useLatencyStore.getState().testedAt).toEqual({ keep: keepStamp });
+  });
+
+  it('节点集没有删除项时保持 state 引用，避免 configChanged 触发无效通知', () => {
+    useLatencyStore.getState().applyLatencyResult('keep', 42);
+    const before = useLatencyStore.getState();
+    useLatencyStore.getState().retainServerIds(['keep', 'new-without-result']);
+    expect(useLatencyStore.getState()).toBe(before);
+  });
 });
 
 describe('use-latency-store：陈旧判定的数据基础（契约「陈旧 >30min 半透明」）', () => {

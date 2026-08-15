@@ -20,7 +20,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { IPC_CHANNELS } from './domain/ipc-channels';
 import { useAppStore, useEffectiveConfig } from './store/app-store';
 import type { UnlockDisplayState } from './store/app-store';
-import { subscribeLatencyEvents } from './store/use-latency-store';
+import { subscribeLatencyEvents, useLatencyStore } from './store/use-latency-store';
 import { subscribeSubscriptionProgressEvents } from './store/use-subscription-progress-store';
 import { subscribeSpeedTestProgressToast } from './lib/speedtest-progress-toast';
 import { useSystemProxyLivePolling } from './store/use-system-proxy-live';
@@ -201,6 +201,11 @@ export default function App() {
   const loadConfig = useAppStore((s) => s.loadConfig);
   const refreshProxyStatus = useAppStore((s) => s.refreshProxyStatus);
   const servers = useAppStore((s) => s.servers);
+
+  // 延迟是会话缓存，不该替已删除节点永久占位。配置节点集每次收敛后同步裁剪；保留节点的测量值不动。
+  useEffect(() => {
+    useLatencyStore.getState().retainServerIds(servers.map((server) => server.id));
+  }, [servers]);
 
   // 系统代理**活态**轮询（`system_proxy_get_status`）——**全窗口唯一一处驱动**。
   // 消费方是 StatusBar 与 HomeScreen，两者同屏共存；各起一份轮询会双倍 exec

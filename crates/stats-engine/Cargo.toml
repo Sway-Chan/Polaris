@@ -16,6 +16,6 @@ serde_json.workspace = true
 # config-engine：脱敏的 `looks_like_ip` 复用 `user_config::ip::is_ipv4`（IPv4 形态判定的单一真值）。
 # 勿另写一份——审计 §F 记过「同一判定两份、严格度不一致」的既往事故。workspace 内 path 依赖，
 # 同 mesh / net-stack 的既有形态（config-engine 只依赖 helper-proto+serde，无环、无膨胀）。
-polaris-config-engine = { version = "0.1.0", path = "../config-engine" }
+polaris-config-engine = { version = "1.0.0", path = "../config-engine" }
 
 [dev-dependencies]

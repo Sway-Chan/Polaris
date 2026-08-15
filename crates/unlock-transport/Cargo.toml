@@ -11,7 +11,7 @@ async-trait.workspace = true
 # 需要 `StreamExt::next()` 才能逐 chunk 加停滞看门狗。`futures` 是既有 workspace 依赖
 # （`polaris-unlock` 的并发齐射用它），本 crate 引用它**不给 Cargo.lock 增加任何包**。
 futures.workspace = true
-polaris-unlock = { version = "0.1.0", path = "../unlock" }
+polaris-unlock = { version = "1.0.0", path = "../unlock" }
 tokio = { version = "1.53.0", features = ["time"] }
 # wreq 6 不再 re-export `Url`（改用 `http::Uri` + `IntoUri`），而 `Uri` 没有相对引用解析能力。
 # wreq 自己内部仍用 `url::Url::join` 解 `Location`（`wreq-6.0.0-rc.29/src/client/layer/redirect/future.rs:196`），

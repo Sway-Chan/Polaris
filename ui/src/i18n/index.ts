@@ -14,11 +14,6 @@
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 
-import zhCN from './locales/zh-CN.json';
-import zhTW from './locales/zh-TW.json';
-import enUS from './locales/en-US.json';
-import ru from './locales/ru.json';
-import fa from './locales/fa.json';
 import {
   AUTO_LANGUAGE,
   isRtlLanguage,
@@ -27,23 +22,25 @@ import {
   resolveEffectiveLanguage,
 } from '../domain/language';
 
-const resources = {
-  'zh-CN': {
-    translation: zhCN,
-  },
-  'zh-TW': {
-    translation: zhTW,
-  },
-  'en-US': {
-    translation: enUS,
-  },
-  ru: {
-    translation: ru,
-  },
-  fa: {
-    translation: fa,
-  },
+type TranslationTree = Record<string, unknown>;
+type LocaleModule = { default: TranslationTree };
+
+/**
+ * 语言包按需加载。此前五份 JSON（约 600KB 原文）全部静态 import，任何语言的用户都要在首屏解析
+ * 另外四份永远不用的文案。显式 loader 让 Vite 为每种语言生成独立 chunk；首屏只取当前语言与英文回退。
+ */
+const localeLoaders: Record<string, () => Promise<LocaleModule>> = {
+  'zh-CN': () => import('./locales/zh-CN.json'),
+  'zh-TW': () => import('./locales/zh-TW.json'),
+  'en-US': () => import('./locales/en-US.json'),
+  ru: () => import('./locales/ru.json'),
+  fa: () => import('./locales/fa.json'),
 };
+
+async function loadTranslation(lng: string): Promise<TranslationTree> {
+  const loader = localeLoaders[lng] ?? localeLoaders['en-US'];
+  return (await loader()).default;
+}
 
 /**
  * 读语言「选择」（'auto' 或具体码；空=未设）。
@@ -98,20 +95,39 @@ const effectiveLanguage = resolveEffectiveLanguage(
   getSystemLanguages()
 );
 
-void i18n.use(initReactI18next).init({
-  resources,
-  lng: effectiveLanguage,
-  fallbackLng: 'en-US',
-  interpolation: {
-    escapeValue: false,
-  },
-});
-
 // 同步 <html lang> + <html dir>：初始化按当前语言设置，切换语言时随 languageChanged 更新。
 i18n.on('languageChanged', (lng) => {
   applyDocumentDirection(lng);
 });
-applyDocumentDirection(i18n.language);
+
+async function initializeI18n(): Promise<void> {
+  const languages = [...new Set([effectiveLanguage, 'en-US'])];
+  const translations = await Promise.all(languages.map(loadTranslation));
+  const resources: Record<string, { translation: TranslationTree }> = {};
+  languages.forEach((lng, index) => {
+    resources[lng] = { translation: translations[index] };
+  });
+  await i18n.use(initReactI18next).init({
+    resources,
+    lng: effectiveLanguage,
+    fallbackLng: 'en-US',
+    interpolation: {
+      escapeValue: false,
+    },
+  });
+  applyDocumentDirection(i18n.language);
+}
+
+/** 主入口等待这条 promise 后才 mount React，故动态语言包不会造成回退语言闪屏。 */
+export const i18nReady = initializeI18n();
+
+async function ensureLanguageLoaded(lng: string): Promise<void> {
+  if (i18n.hasResourceBundle(lng, 'translation')) return;
+  const translation = await loadTranslation(lng);
+  i18n.addResourceBundle(lng, 'translation', translation, true, true);
+}
+
+let languageChangeGeneration = 0;
 
 /**
  * 从语言「选择」校正运行期界面语言 —— 即本模块头注承诺的「App 挂载后从 config.language 校正」那一腿。
@@ -136,7 +152,18 @@ export function syncLanguageChoice(choice: string | null | undefined): string {
   // 否则「auto → zh-CN」这类只改选择不改结果的切换在下次冷启动会退回 auto。
   persistLanguageChoice(c);
   const eff = resolveEffectiveLanguage(c, getSystemLanguages());
-  if (i18n.language !== eff) void i18n.changeLanguage(eff);
+  const generation = ++languageChangeGeneration;
+  void i18nReady.then(async () => {
+    await ensureLanguageLoaded(eff);
+    // 连续点语言时，较慢的旧 chunk 不得在较新的选择之后反向覆盖界面。
+    if (generation !== languageChangeGeneration) return;
+    const previous = i18n.language;
+    if (previous !== eff) await i18n.changeLanguage(eff);
+    // 常驻集合封顶为「英文回退 + 当前语言」；切过的旧语言不在会话里只增不减。
+    if (previous !== 'en-US' && previous !== eff) {
+      i18n.removeResourceBundle(previous, 'translation');
+    }
+  });
   return eff;
 }
 

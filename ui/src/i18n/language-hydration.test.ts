@@ -50,12 +50,17 @@ Object.defineProperty(globalThis, 'navigator', {
   configurable: true,
 });
 
-const { syncLanguageChoice, default: i18n } = await import('./index');
+const { syncLanguageChoice, i18nReady, default: i18n } = await import('./index');
+await i18nReady;
 
 const LANGUAGE_STORAGE_KEY = 'polaris.language';
 
-/** i18next 的 `changeLanguage` 是异步的（资源已内联，只需让出一次事件循环）。 */
-const flush = () => new Promise((r) => setTimeout(r, 0));
+/** i18next 的 `changeLanguage` 与按需语言 chunk 都是异步的；轮询到目标值，避免把 chunk I/O 假定成一拍。 */
+async function waitForLanguage(expected: string): Promise<void> {
+  for (let i = 0; i < 200 && i18n.language !== expected; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 
 beforeEach(() => {
   store.clear();
@@ -67,7 +72,7 @@ describe('syncLanguageChoice —— 具体码', () => {
   it('切到具体码时真的改 i18n 运行期语言', async () => {
     await i18n.changeLanguage('en-US');
     expect(syncLanguageChoice('zh-TW')).toBe('zh-TW');
-    await flush();
+    await waitForLanguage('zh-TW');
     expect(i18n.language).toBe('zh-TW');
   });
 
@@ -112,7 +117,7 @@ describe("syncLanguageChoice —— 'auto' 与空值", () => {
   it('有效语言没变但选择变了，选择仍然落盘', async () => {
     sysLangs.value = ['zh-CN'];
     syncLanguageChoice('auto');
-    await flush();
+    await waitForLanguage('zh-CN');
     expect(i18n.language).toBe('zh-CN');
     expect(store.get(LANGUAGE_STORAGE_KEY)).toBe('auto');
 
@@ -124,7 +129,7 @@ describe("syncLanguageChoice —— 'auto' 与空值", () => {
   it('不受支持的码回落系统解析，不会把 i18n 顶成未知语言', async () => {
     sysLangs.value = ['en-GB'];
     expect(syncLanguageChoice('klingon')).toBe('en-US');
-    await flush();
+    await waitForLanguage('en-US');
     expect(i18n.language).toBe('en-US');
   });
 });

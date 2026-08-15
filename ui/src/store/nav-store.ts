@@ -101,7 +101,7 @@ export const useNavStore = create<NavState>((set) => ({
  * 复活——选型理由见 `src-tauri/src/events.rs` 该常量上方与 `tray.rs::normalize_tray_screen`。
  *
  * 两条投递腿，对应主窗的两种状态：
- *  1. **事件腿**：主窗存在（含 close-to-tray 隐藏态）→ 下面的 `listen` 收。
+ *  1. **事件腿**：主窗存在（含启动期隐藏态）→ 下面的 `listen` 收。
  *  2. **首帧种子腿**：主窗已被 C16 轻量模式销毁 → 后端重建它时把目标屏注入
  *     `window.__POLARIS_TRAY_SCREEN__`，事件腿此刻必丢（订阅还没挂上）。
  * 「轻量模式 → 托盘 → 打开设置」是浮层里挨着的两个按钮，不是理论路径，故两条都要有。

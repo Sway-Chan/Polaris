@@ -63,7 +63,7 @@ futures.workspace = true
 window-vibrancy = "0.6"
 tauri-plugin-single-instance = "2.4.3"
 tauri-plugin-window-state = "2"
-polaris-unlock-transport = { version = "0.1.0", path = "../crates/unlock-transport" }
+polaris-unlock-transport = { version = "1.0.0", path = "../crates/unlock-transport" }
 # 已有 `rustls` 的 tokio 适配层（**不是**新 HTTP 客户端：只把 rustls 的同步状态机包成 AsyncRead/Write）。
 # **唯一**消费点：测速 CONNECT 隧道对 https 目标在隧道上做 TLS 握手（`runtime/speedtest_tunnel.rs`）。
 # 为什么复用不掉既有依赖：隧道是一条**已建立**的裸 `TcpStream`，reqwest / wreq 的接口都是「给我 URL

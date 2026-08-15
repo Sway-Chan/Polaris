@@ -363,7 +363,31 @@ function resolveSpec(spec: string, from: string): string | null {
   return null;
 }
 
-/** 从入口模块出发走静态 import 图（含 `export … from`），返回可达文件集。 */
+/** 收集静态 import/export 与字面量动态 `import('…')`。语言包按需分块后，动态边同样是真实依赖边。 */
+function moduleSpecs(sf: ts.SourceFile): string[] {
+  const specs: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
+      specs.push(node.moduleSpecifier.text);
+    } else if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      node.arguments.length === 1 &&
+      ts.isStringLiteral(node.arguments[0])
+    ) {
+      specs.push(node.arguments[0].text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return specs;
+}
+
+/** 从入口模块出发走完整模块依赖图（含动态 chunk 边），返回可达文件集。 */
 function importClosure(entry: string): Set<string> {
   const seen = new Set<string>();
   const queue = [entry];
@@ -375,14 +399,7 @@ function importClosure(entry: string): Set<string> {
     }
     seen.add(file);
     const sf = parse(file);
-    for (const st of sf.statements) {
-      const spec =
-        (ts.isImportDeclaration(st) || ts.isExportDeclaration(st)) &&
-        st.moduleSpecifier &&
-        ts.isStringLiteral(st.moduleSpecifier)
-          ? st.moduleSpecifier.text
-          : null;
-      if (!spec) continue;
+    for (const spec of moduleSpecs(sf)) {
       const abs = resolveSpec(spec, file);
       if (abs && !seen.has(abs)) queue.push(abs);
     }
@@ -404,7 +421,7 @@ describe('G3 每个 webview 入口都必须接得上 locales/（新窗漏接 i18
       const locales = [...closure].filter((f) => /i18n[/\\]locales[/\\].*\.json$/.test(f));
       expect(
         locales.map((f) => rel(f)).sort(),
-        `${html} 这个 webview 的静态 import 图里没有任何 locale 文件 —— 它的文案要么写死、` +
+        `${html} 这个 webview 的模块依赖图里没有任何 locale 文件 —— 它的文案要么写死、` +
           '要么自造了一套翻译。修法：文案入 `i18n/locales/`（辅助窗走 `locales/auxiliary/`），' +
           '经 `i18n/index.ts`（主窗）或 `i18n/auxiliary.ts`（辅助窗）消费。',
       ).not.toEqual([]);

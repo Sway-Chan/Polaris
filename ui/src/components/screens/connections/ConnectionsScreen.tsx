@@ -180,7 +180,10 @@ export function ConnectionsScreen() {
   const applySnapshot = useCallback((snap: ConnectionsSnapshot) => {
     const prev = prevRef.current;
     const now = snap.at || Date.now();
+    // 同一趟投影顺手建 live id 集；此前又对原快照 `.map` 一遍再交给 Set，每秒额外制造一份 N 长数组。
+    const liveIds = new Set<string>();
     const nextRows: ConnRow[] = snap.connections.map((entry) => {
+      liveIds.add(entry.id);
       const up = entry.upload ?? 0;
       const dn = entry.download ?? 0;
       const host =
@@ -228,7 +231,6 @@ export function ConnectionsScreen() {
       };
     });
     // 清理已断开连接的记账
-    const liveIds = new Set(snap.connections.map((c) => c.id));
     for (const id of prev.keys()) {
       if (!liveIds.has(id)) prev.delete(id);
     }

@@ -58,6 +58,8 @@ interface LatencyState {
   applyLatencyResult: (serverId: string, latency: number | null) => void;
   /** 批量合并（invoke 返回值兜底同步：事件丢失时补齐）。**合并不替换** —— 未在本批的节点保留历史值。 */
   applyLatencyResults: (results: Record<string, number | null>) => void;
+  /** 配置节点集变化后驱逐已删除节点；两个 map 同键裁剪，避免长会话反复订阅/删除后只增不减。 */
+  retainServerIds: (serverIds: readonly string[]) => void;
 }
 
 /**
@@ -90,6 +92,23 @@ export const useLatencyStore = create<LatencyState>((set) => ({
         normalized[id] = normalizeLatencyResult(latency);
       }
       return { latencyMap: { ...s.latencyMap, ...normalized }, testedAt: stamps };
+    }),
+  retainServerIds: (serverIds) =>
+    set((s) => {
+      const keep = new Set(serverIds);
+      const latencyMap: Record<string, number | null> = {};
+      const testedAt: Record<string, number> = {};
+      let removed = false;
+      for (const [id, latency] of Object.entries(s.latencyMap)) {
+        if (keep.has(id)) latencyMap[id] = latency;
+        else removed = true;
+      }
+      for (const [id, at] of Object.entries(s.testedAt)) {
+        if (keep.has(id)) testedAt[id] = at;
+        else removed = true;
+      }
+      // 返回原 state 保持引用稳定：节点集未删项是常态，不为一次 configChanged 制造全树通知。
+      return removed ? { latencyMap, testedAt } : s;
     }),
 }));
 

@@ -134,6 +134,11 @@ export default function TrayMenu() {
   // 测速结果（ALL-NODES 视图延迟徽标）：读全局 store。托盘窗与主窗**不共享 JS 堆** ⇒ 这是本窗
   // 独立的 store 实例，靠各自订阅同一后端事件流收敛到同一真值（事件向全部窗口广播）。
   const latencies = useLatencyStore((s) => s.latencyMap);
+
+  // 托盘是独立 JS 堆；即使它通常会在隐藏超时后被整体回收，显示期间也与主窗遵循同一缓存边界。
+  useEffect(() => {
+    useLatencyStore.getState().retainServerIds(servers.map((server) => server.id));
+  }, [servers]);
   // 按延迟排序偏好：持久化 + 同源 localStorage 共享（use-node-sort-store.ts 顶部注释），
   // 托盘直接读本 store —— 无需后端排序 command（纯渲染端视图偏好，同源 webview 天然共享）。
   const sortByLatency = useNodeSortStore((s) => s.sortByLatency);
@@ -869,9 +874,9 @@ export default function TrayMenu() {
               </svg>
               <span>{t('tray.lockNow')}</span>
             </button>
-            {/* C16 进入轻量模式（原型 tray L2942）：**销毁主窗 webview 释放内存，保托盘+核活**（≠ close-to-tray
-                的 hide——那只隐藏、renderer 仍活=内存未释放）。R20 用户已裁定「全部接」→ 真接线到后端
-                tray_enter_lightweight（销毁前置 LightweightState 保核 + clear_window 释放 stats 订阅账）。
+            {/* C16 进入轻量模式（原型 tray L2942）：**销毁主窗 webview 释放内存，保托盘+核活**。
+                当前与主窗关闭按钮共用同一后端腿；本项保留为“主窗仍开着时立即释放”的显式入口。
+                tray_enter_lightweight 在销毁前置 LightweightState 保核 + clear_window 释放 stats 订阅账。
                 唤出：macOS/Windows 托盘左键、Linux 原生菜单或 dock → show_main_window 重建主窗。 */}
             <button
               className="tray-i"

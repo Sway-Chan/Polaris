@@ -620,7 +620,7 @@ jobs:
       # crates/updater/src/github.rs::find_suitable_update_asset（macOS 分支）按资产名是否含
       # `mac-arm64` / `mac-x64` 选包，**匹配不到直接返回 None**（2026-07-21 起取消「任意 .dmg」
       # 回落：分架构后回落 = 给用户发另一架构的包，arm64 包在 Intel 上根本执行不了）。
-      # Tauri 默认 dmg 名是 `Polaris_0.1.0_aarch64.dmg` / `Polaris_0.1.0_x64.dmg`，**都不含**上述 tag
+      # Tauri 默认 dmg 名是 `Polaris_{version}_aarch64.dmg` / `Polaris_{version}_x64.dmg`，**都不含**上述 tag
       # （`_x64` ≠ `mac-x64`）⇒ 若不改名，双架构 release 里两个 dmg 谁都匹配不上，两个架构的用户
       # 全部**静默收不到更新**。universal 时代只有一个 dmg 故无所谓，分架构后这条契约变成硬要求。
       - name: Tag macOS dmg with arch
@@ -660,7 +660,7 @@ jobs:
       # 等于往 release 塞一份 ~127MB 重复物，且名字暗示它才是默认版。
       #
       # 🔴 命名契约（crates/updater/src/github.rs:293-296）：Windows 侧选包要求
-      #    「`.exe` 且名含 `win`（大小写敏感）」。Tauri NSIS 默认名是 `Polaris_0.1.0_x64-setup.exe`
+      #    「`.exe` 且名含 `win`（大小写敏感）」。Tauri NSIS 默认名是 `Polaris_{version}_x64-setup.exe`
       #    （nsis/mod.rs 的 `{product}_{version}_{arch}-setup.exe` + arch 映射 x86_64→`x64`），
       #    **不含 `win`** ⇒ find_suitable_update_asset 恒返回 None ⇒ Windows 用户永远收不到更新且静默。
       #    故在此处（与 mac 改名步同一手法、同一处立契约）把 bootstrapper 改名带上 `win`。

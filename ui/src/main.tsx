@@ -23,8 +23,7 @@ import App from './App';
 import ErrorBoundary from './components/ErrorBoundary';
 import { disableNativeContextMenu } from './lib/native-context-menu';
 import './styles/index.css';
-// i18n 副作用导入：import 即初始化（注册 react-i18next + 设 <html lang/dir>）。
-import './i18n';
+import { i18nReady } from './i18n';
 
 /** 尽力上报，绝不因上报失败再抛（错误处理器自己抛错 = 错误风暴）。 */
 function reportSafely(level: 'error' | 'warn', message: string): void {
@@ -94,15 +93,19 @@ disableNativeContextMenu();
 
 const rootEl = document.getElementById('root');
 if (rootEl) {
-  try {
-    ReactDOM.createRoot(rootEl).render(
-      <React.StrictMode>
-        <ErrorBoundary>
-          <App />
-        </ErrorBoundary>
-      </React.StrictMode>
-    );
-  } catch (err) {
-    injectStaticFailureDom(rootEl, err);
-  }
+  void i18nReady
+    .then(() => {
+      try {
+        ReactDOM.createRoot(rootEl).render(
+          <React.StrictMode>
+            <ErrorBoundary>
+              <App />
+            </ErrorBoundary>
+          </React.StrictMode>
+        );
+      } catch (err) {
+        injectStaticFailureDom(rootEl, err);
+      }
+    })
+    .catch((err: unknown) => injectStaticFailureDom(rootEl, err));
 }

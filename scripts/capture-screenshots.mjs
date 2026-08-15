@@ -72,7 +72,7 @@ const STUB = {
   proxy_get_status: { running: true, mode: 'smart', uptimeMs: 4_512_000 },
   config_get_privacy_mode: false,
   system_proxy_get_status: { enabled: false },
-  app_get_version: '0.1.0',
+  app_get_version: '1.0.0',
 };
 
 // nav 用**可见文案**定位（侧栏是 `<button class="nav-item"><span>{译文}</span></button>`，

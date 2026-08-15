@@ -150,7 +150,7 @@ export default function SettingsAbout() {
 
         <h2>Polaris</h2>
         <div className="ver">
-          v{info?.appVersion ?? '0.1.0-alpha'}
+          {info?.appVersion ? `v${info.appVersion}` : '—'}
           {info?.singBoxVersion ? ` · sing-box ${info.singBoxVersion}` : ''}
         </div>
 

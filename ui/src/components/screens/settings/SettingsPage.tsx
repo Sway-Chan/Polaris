@@ -13,19 +13,22 @@
  * 本组件只渲染 main 内容区 + 子页路由；侧栏切换在 AppShell 层处理。
  */
 
+import { lazy, Suspense, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavStore } from '@/store/nav-store';
 import { Spinner } from './primitives';
 import { useConfig } from './useConfig';
-import SettingsGeneral from './SettingsGeneral';
-import SettingsDisplay from './SettingsDisplay';
-import SettingsNetwork from './SettingsNetwork';
-import SettingsDns from './SettingsDns';
-import SettingsTun from './SettingsTun';
-import SettingsUpdate from './SettingsUpdate';
-import SettingsBackup from './SettingsBackup';
-import SettingsHelper from './SettingsHelper';
-import SettingsAbout from './SettingsAbout';
+
+// 设置页也按真实功能边界分块；“进入设置”不再同时加载更新、备份、Helper 等九套表单逻辑。
+const SettingsGeneral = lazy(() => import('./SettingsGeneral'));
+const SettingsDisplay = lazy(() => import('./SettingsDisplay'));
+const SettingsNetwork = lazy(() => import('./SettingsNetwork'));
+const SettingsDns = lazy(() => import('./SettingsDns'));
+const SettingsTun = lazy(() => import('./SettingsTun'));
+const SettingsUpdate = lazy(() => import('./SettingsUpdate'));
+const SettingsBackup = lazy(() => import('./SettingsBackup'));
+const SettingsHelper = lazy(() => import('./SettingsHelper'));
+const SettingsAbout = lazy(() => import('./SettingsAbout'));
 
 export function SettingsPage() {
   const { t } = useTranslation();
@@ -59,28 +62,39 @@ export function SettingsPage() {
   }
 
   // 9 子页统一接 { config, update }；各自按需补子 store（如 update/helper 状态）。
+  let page: ReactNode;
   switch (settingsScreen) {
     case 'general':
-      return <SettingsGeneral config={config} update={update} />;
+      page = <SettingsGeneral config={config} update={update} />;
+      break;
     case 'display':
-      return <SettingsDisplay config={config} update={update} />;
+      page = <SettingsDisplay config={config} update={update} />;
+      break;
     case 'network':
-      return <SettingsNetwork config={config} update={update} />;
+      page = <SettingsNetwork config={config} update={update} />;
+      break;
     case 'dns':
-      return <SettingsDns config={config} update={update} />;
+      page = <SettingsDns config={config} update={update} />;
+      break;
     case 'tun':
-      return <SettingsTun config={config} update={update} />;
+      page = <SettingsTun config={config} update={update} />;
+      break;
     case 'update':
-      return <SettingsUpdate config={config} update={update} />;
+      page = <SettingsUpdate config={config} update={update} />;
+      break;
     case 'backup':
-      return <SettingsBackup config={config} />;
+      page = <SettingsBackup config={config} />;
+      break;
     case 'helper':
-      return <SettingsHelper />;
+      page = <SettingsHelper />;
+      break;
     case 'about':
-      return <SettingsAbout />;
+      page = <SettingsAbout />;
+      break;
     default:
-      return <SettingsGeneral config={config} update={update} />;
+      page = <SettingsGeneral config={config} update={update} />;
   }
+  return <Suspense fallback={<section className="screen" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spinner /></section>}>{page}</Suspense>;
 }
 
 export default SettingsPage;

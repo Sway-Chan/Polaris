@@ -16,10 +16,11 @@
 //!
 //! # 生命周期
 //!
-//! setup 内 [`build_overlay`] 预建一次（隐藏）→ 托盘右键 [`toggle_overlay`] 定位+显示+聚焦（再点=隐藏）→
+//! 首次托盘右键时 [`build_overlay`] 按需创建 → [`toggle_overlay`] 定位+显示+聚焦（再点=隐藏）→
 //! 点窗外/切他 app 收起：Rust `Focused(false)` + DOM `window.blur`→`tray_hide` **双路** dismiss（后者
 //! 经 `initialization_script` 注入，兜 mac 上次级窗 Focused 递送不可靠，见 [`TRAY_BLUR_DISMISS_JS`]）。
-//! 窗口持久存在，React 端一次挂载后靠事件订阅保持状态新鲜。
+//! 隐藏超过 [`TRAY_IDLE_RECLAIM_SECS`] 后自动销毁 WebView；再次右键透明重建。它不承载编辑草稿，
+//! 生命周期与主窗口的轻量模式设置完全解耦。
 //!
 //! # 与主进程的契约（新增 4 个 command，均薄封装，供浮层 React 端 invoke）
 //!
@@ -28,9 +29,9 @@
 //! - [`tray_show_main`]：显示主窗（打开主窗口/在主窗口管理）——复用 `crate::show_main_window`。
 //! - [`tray_quit`]：置 `QuitState` + `app.exit(0)`——与 `main.rs` 托盘/菜单「退出」路径逐字节相同。
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tauri::{
@@ -417,6 +418,10 @@ const TRAY_WIDTH: f64 = 268.0;
 /// 若紧接着的 Click 事件在此窗口内到达，视为「点击图标关闭」，不再重开（否则闪一下又弹回）。
 const REOPEN_DEBOUNCE_MS: u128 = 300;
 
+/// 托盘浮层隐藏后的自动回收时限。浮层无编辑草稿，属于可重建缓存；固定策略比暴露设置项更可靠，
+/// 也避免用户为了理解一个实现细节再承担一枚开关。主窗轻量模式仍走自己的用户配置与 idle 判据。
+const TRAY_IDLE_RECLAIM_SECS: u64 = 120;
+
 /// 浮层运行期状态（app-managed）：记录最近一次隐藏时刻（供 [`toggle_overlay`] 去抖）+ 最近一次
 /// 托盘图标屏幕矩形（供 [`reposition`] 对齐图标；[`tray_resize`] 改高后重定位也复用它）。
 #[derive(Default)]
@@ -427,6 +432,8 @@ pub struct TrayOverlay {
     /// `create_main_window` 重建时注入首帧脚本（事件腿此刻必丢，见 [`tray_show_main`]）。
     /// `'static` 串 = [`normalize_tray_screen`] 的白名单产物。
     pending_screen: Mutex<Option<&'static str>>,
+    /// 隐藏回收任务代次：每次 show/hide/destroy 都递增，过期任务只在代次仍匹配时销毁窗口。
+    reclaim_generation: AtomicU64,
     /// mac 全局鼠标按下监听器（NSEvent global monitor）句柄的**原始指针地址**（defect#3）。存 `usize`
     /// 而非 `Retained<AnyObject>`：后者 `!Send`，进不了 Tauri app-managed state（要求 `Send + Sync`）；
     /// monitor 仅在主线程 add/remove，跨线程只传指针地址是安全的。`None` = 未装。
@@ -484,19 +491,23 @@ fn recently_hidden(app: &AppHandle) -> bool {
 /// （Focused(false) / 点图标 toggle / tray_hide / tray_show_main / tray_enter_lightweight / 全局 monitor
 /// handler）都走此函数，保证 monitor 与浮层可见性同生命周期（show 装、任一 hide 拆），不泄漏。
 fn hide_overlay(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window(TRAY_LABEL) {
+    let should_reclaim = app.get_webview_window(TRAY_LABEL).is_some_and(|w| {
+        let was_visible = w.is_visible().unwrap_or(false);
         let _ = w.hide();
-    }
+        was_visible
+    });
     mark_hidden(app);
     #[cfg(target_os = "macos")]
     remove_click_monitor(app);
+    if should_reclaim {
+        schedule_overlay_reclaim(app);
+    }
 }
 
-/// setup 内预建隐藏的浮层窗。**非致命**：任何失败仅记日志并跳过——右键会回退显示主窗
-/// （[`toggle_overlay`] 的 overlay-missing 分支），Linux 原生菜单 / 应用菜单退出路径不受影响。
-pub fn build_overlay(app: &AppHandle) {
-    if app.get_webview_window(TRAY_LABEL).is_some() {
-        return; // 已建（幂等）
+/// 按需取得浮层窗：已有则复用，否则在首次右键时创建。**非致命**：失败返回 `None`，调用方回退主窗。
+fn build_overlay(app: &AppHandle) -> Option<tauri::WebviewWindow> {
+    if let Some(win) = app.get_webview_window(TRAY_LABEL) {
+        return Some(win); // 已建（幂等）
     }
 
     let mut builder = WebviewWindowBuilder::new(app, TRAY_LABEL, WebviewUrl::App(TRAY_PAGE.into()))
@@ -538,7 +549,7 @@ pub fn build_overlay(app: &AppHandle) {
             log::warn!(
                 "托盘浮层窗创建失败（降级：右键回退显示主窗，退出仍走 Linux 原生菜单/应用菜单）：{e}"
             );
-            return;
+            return None;
         }
     };
 
@@ -549,6 +560,7 @@ pub fn build_overlay(app: &AppHandle) {
             hide_overlay(&app_handle);
         }
     });
+    Some(win)
 }
 
 /// macOS/Windows 托盘右键入口（由 `main.rs` 的 `on_tray_icon_event` 调）。
@@ -556,7 +568,7 @@ pub fn build_overlay(app: &AppHandle) {
 /// 可见 → 隐藏（toggle off）；不可见 → 定位到托盘所在屏角 + 显示 + 聚焦。
 /// 浮层未建（创建失败）→ 回退显示主窗，保证右键仍有可达功能面。
 pub fn toggle_overlay(app: &AppHandle, rect: Option<tauri::Rect>) {
-    let Some(win) = app.get_webview_window(TRAY_LABEL) else {
+    let Some(win) = build_overlay(app) else {
         crate::show_main_window(app);
         return;
     };
@@ -578,6 +590,7 @@ pub fn toggle_overlay(app: &AppHandle, rect: Option<tauri::Rect>) {
     if recently_hidden(app) {
         return;
     }
+    invalidate_overlay_reclaim(app);
     // ── 定位顺序（修「弹窗贴屏幕最左 x≈0、离菜单栏很远」）──
     // `reposition` 依赖 `current_monitor()`/`outer_size()`，而这些对**尚未 realize（从未 show 过）的
     // 隐藏窗**可能返 None/失效，且 `set_position` 对隐藏窗在部分平台不生效 → 弹窗落在 OS 默认位置
@@ -594,6 +607,60 @@ pub fn toggle_overlay(app: &AppHandle, rect: Option<tauri::Rect>) {
     let _ = win.show();
     reposition(&win);
     focus_overlay(&win);
+}
+
+/// 使所有已排队的隐藏回收任务失效。Relaxed 足够：代次只承担去重，不承载其他内存可见性。
+fn invalidate_overlay_reclaim(app: &AppHandle) -> u64 {
+    app.try_state::<TrayOverlay>()
+        .map(|state| state.reclaim_generation.fetch_add(1, Ordering::Relaxed) + 1)
+        .unwrap_or(0)
+}
+
+/// 隐藏后延迟回收托盘 WebView。任务到点后回主线程复核「代次未变化 + 仍隐藏」才销毁；期间任何
+/// reopen/hide/destroy 都会换代，因此不会出现旧计时器把刚打开的菜单关掉。
+fn schedule_overlay_reclaim(app: &AppHandle) {
+    let generation = invalidate_overlay_reclaim(app);
+    if generation == 0 {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(TRAY_IDLE_RECLAIM_SECS)).await;
+        let callback_app = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let is_current = callback_app
+                .try_state::<TrayOverlay>()
+                .is_some_and(|state| {
+                    state.reclaim_generation.load(Ordering::Relaxed) == generation
+                });
+            if !is_current {
+                return;
+            }
+            let Some(win) = callback_app.get_webview_window(TRAY_LABEL) else {
+                return;
+            };
+            if win.is_visible().unwrap_or(false) {
+                return;
+            }
+            match win.destroy() {
+                Ok(()) => log::debug!("托盘浮层隐藏超时，已回收 WebView"),
+                Err(e) => log::warn!("托盘浮层 WebView 回收失败：{e}"),
+            }
+        });
+    });
+}
+
+/// 立即销毁浮层（目前仅轻量转场用于提前回收）。它不是托盘回收的 gate；普通隐藏即使从不进入
+/// 轻量模式，也会由 [`schedule_overlay_reclaim`] 独立回收。
+fn destroy_overlay(app: &AppHandle) {
+    invalidate_overlay_reclaim(app);
+    #[cfg(target_os = "macos")]
+    remove_click_monitor(app);
+    if let Some(win) = app.get_webview_window(TRAY_LABEL) {
+        if let Err(e) = win.destroy() {
+            log::warn!("托盘浮层 WebView 提前回收失败：{e}");
+        }
+    }
 }
 
 /// 让浮层窗真正成为 **key window**，使「点窗外 → resignKey → `WindowEvent::Focused(false)`」可靠触发（收起）。
@@ -994,7 +1061,7 @@ pub fn tray_quit(app: AppHandle) -> ApiResponse<()> {
 ///  1. 置 `LightweightState`：万一销毁末窗触发 `ExitRequested`，`main.rs` 守卫据此**保核 + 阻退**（轻量恒不停核）。
 ///  2. `clear_window("main")` 释放 stats 订阅账：webview 销毁**不**触发 `on_page_load`（reload 才有），不清账则
 ///     registry 里旧订阅无人退订 → gRPC poller 永续 1s 轮询、`subs` 无界累积 → **内存/CPU 反而不降 = 轻量白做**。
-///  3. 收起浮层（手动路径从托盘触发；自动 idle 路径浮层未开 = no-op）。
+///  3. 收起并提前销毁浮层；它本身另有独立隐藏回收计时，这里只是轻量转场顺手立即释放。
 ///  4. `destroy()` 销毁主窗（**force**：绕过 `CloseRequested` 的 hide-to-tray 拦截，真释放内存）。用户经托盘
 ///     macOS/Windows 左键、Linux 原生菜单或 dock 唤出时，`show_main_window` 走 `create_main_window` 重建。
 #[tauri::command]
@@ -1006,6 +1073,7 @@ pub fn tray_enter_lightweight(app: AppHandle) -> ApiResponse<()> {
         rt.stats().clear_window("main");
     }
     hide_overlay(&app);
+    destroy_overlay(&app);
     if let Some(win) = app.get_webview_window("main") {
         match win.destroy() {
             Ok(()) => crate::set_macos_dock_visible(&app, false),
@@ -1181,6 +1249,41 @@ mod autosave_name_gate {
             line.contains("\"NSStatusItem\""),
             "objc2-app-kit 没开 NSStatusItem feature —— `setAutosaveName` 那条腿在 mac 上编不过，\
              而本机看不到。当前行：{line}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod overlay_lifecycle_gate {
+    //! 托盘浮层的内存边界是结构性契约：启动期懒创建、普通隐藏独立定时回收、轻量转场提前回收。
+    //! 三条缺一条都会让那块独立 WebContent 在用户从未用过或早已收起后继续常驻。
+
+    const TRAY_RS: &str = include_str!("tray.rs");
+    const MAIN_RS: &str = include_str!("main.rs");
+
+    #[test]
+    fn overlay_is_lazy_not_built_during_setup() {
+        assert!(
+            !MAIN_RS.contains("tray::build_overlay("),
+            "启动 setup 不得预建托盘 WebView；首次右键由 toggle_overlay 按需创建"
+        );
+        assert!(
+            TRAY_RS.contains("let Some(win) = build_overlay(app) else"),
+            "toggle_overlay 必须承担按需创建与失败降级"
+        );
+    }
+
+    #[test]
+    fn hidden_reclaim_is_independent_from_main_lightweight_setting() {
+        assert!(
+            TRAY_RS.contains("schedule_overlay_reclaim(app);")
+                && TRAY_RS.contains("TRAY_IDLE_RECLAIM_SECS"),
+            "普通 hide 必须自行排程回收，不能只靠主窗轻量模式顺带清理"
+        );
+        assert!(
+            TRAY_RS.contains("destroy_overlay(&app);")
+                && TRAY_RS.contains("tray_enter_lightweight"),
+            "轻量转场应提前回收已存在的托盘浮层，但不得成为唯一回收入口"
         );
     }
 }

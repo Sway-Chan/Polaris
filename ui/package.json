@@ -1,7 +1,7 @@
 {
   "name": "polaris-ui",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "description": "Polaris 前端（React + Zustand + Vite + Tailwind，Conduit/Aurora 设计系统）",
   "scripts": {

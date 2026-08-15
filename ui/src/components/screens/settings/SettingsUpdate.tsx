@@ -168,7 +168,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
      （见 `destructive-confirm-wiring.test.ts` T3 头注：需成段解释的确认不退役）。 */
   const { armed, confirmTwice } = useConfirmTwice();
 
-  // 拉取应用版本（真值源，替换原先硬编码的 v0.1.0-alpha 字面量）
+  // 拉取应用版本：运行时包元数据是唯一真值，加载失败时不伪造版本号。
   useEffect(() => {
     void versionApi.getInfo().then(setAppVersionInfo).catch(() => undefined);
   }, []);
@@ -561,7 +561,10 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
             <div className="core-ver">
               <Dot variant="ok" />
               <div style={{ flex: 1 }}>
-                <b>Polaris</b> <span className="cv-tag">v{appVersionInfo?.appVersion ?? '0.1.0-alpha'}</span>
+                <b>Polaris</b>{' '}
+                <span className="cv-tag">
+                  {appVersionInfo?.appVersion ? `v${appVersionInfo.appVersion}` : '—'}
+                </span>
                 <CardSub>{t('settings.update.upToDate')}</CardSub>
               </div>
               {/* 检查 / 下载 / 安装**三段均已接线**（`update_check` → `update_download` → `update_install`，

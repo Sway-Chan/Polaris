@@ -36,7 +36,7 @@ use crate::runtime::AppRuntime;
 use crate::window_health::{MountGateEvent, WindowHealth};
 
 /// 退出意图标记（app-managed state）：托盘「退出」/ Cmd·Ctrl+Q 置真后，`CloseRequested` 放行窗口真关闭；
-/// 未置真时关窗 = hide 到托盘（托盘在）或真退出（托盘缺失）。`app.exit` 走 ExitRequested 不经 `CloseRequested`，
+/// 未置真时关窗 = 销毁主窗进入轻量驻留（托盘在）或真退出（托盘缺失）。`app.exit` 走 ExitRequested 不经 `CloseRequested`，
 /// 该标记保证任何**经窗口关闭**的退出路径都不被 `prevent_close` 卡住（含显式退出收尾与未来路径）。
 struct QuitState(AtomicBool);
 
@@ -149,8 +149,8 @@ fn config_remember_window_size(raw: Option<&str>) -> bool {
 enum CloseAction {
     /// 放行真关闭（显式退出进行中）。
     AllowClose,
-    /// prevent_close + hide 到托盘。
-    HideToTray,
+    /// prevent_close + 销毁主窗 WebView，保留托盘与内核。
+    EnterLightweight,
     /// 真退出进程。
     QuitApp,
 }
@@ -160,16 +160,17 @@ enum CloseAction {
 ///
 /// 语义：
 /// - `quitting` → `AllowClose`：显式退出（托盘「退出」/ ⌘Q）进行中，绝不 hide，否则退不掉。
-/// - `minimize_to_tray && tray_present` → `HideToTray`：用户要收纳，且有唤出锚点。
+/// - `minimize_to_tray && tray_present` → `EnterLightweight`：用户明确关闭主窗后销毁 renderer，
+///   保托盘与内核；与“最小化”只缩起窗口的语义分开，也不依赖自动轻量开关。
 /// - `minimize_to_tray && !tray_present` → `QuitApp`：用户虽要收纳，但托盘整体缺失（Linux 无
-///   StatusNotifier）→ hide 后无处唤出 = 僵尸进程，只能真退出。
+///   StatusNotifier）→ 销毁后无处唤出 = 僵尸进程，只能真退出。
 /// - `!minimize_to_tray` → `QuitApp`：用户明确选了「退出应用」，托盘在不在都退。
 fn resolve_close_action(quitting: bool, tray_present: bool, minimize_to_tray: bool) -> CloseAction {
     if quitting {
         return CloseAction::AllowClose;
     }
     if minimize_to_tray && tray_present {
-        return CloseAction::HideToTray;
+        return CloseAction::EnterLightweight;
     }
     CloseAction::QuitApp
 }
@@ -187,7 +188,8 @@ fn config_minimize_to_tray(app: &tauri::AppHandle) -> bool {
 ///
 /// 真值一律由 stats 侧回读窗口实况（`is_visible() && !is_minimized()`）派生，本函数只是「显隐可能
 /// 刚变」的**即时触发器**：变了即唤醒 park 中的三条 poller，恢复不等整拍。
-/// 三个写入点：`WindowEvent::Focused`、收托盘 `hide()` 之后、[`show_main_window`] 的 `show()` 之后。
+/// 两个主动写入点：`WindowEvent::Focused` 与 [`show_main_window`] 的 `show()` 之后；显式关窗现在直接
+/// 销毁主 WebView并由 `tray_enter_lightweight` 清订阅，不再需要 `hide()` 后单独刷新。
 /// 运行时未装配（启动早期）→ no-op。
 fn refresh_stats_visibility(app: &tauri::AppHandle) {
     if let Some(rt) = app.try_state::<AppRuntime>() {
@@ -208,7 +210,7 @@ pub(crate) fn set_macos_dock_visible(_app: &tauri::AppHandle, _visible: bool) {}
 
 /// 把**已存在**的主窗真正推上屏：unminimize + show + focus。
 ///
-/// 失败静默——窗可能已析构，非致命。unminimize 先行：窗若被最小化后再 hide 到托盘，只 show 不够，
+/// 失败静默——窗可能已析构，非致命。unminimize 先行：窗若只被最小化而仍存在，只 show 不够，
 /// 得先出最小化态才会真正可见（dock/任务栏重开路径尤其需要）；未最小化时 unminimize 是 no-op。
 ///
 /// **只负责「呈现」，绝不建窗**（建窗归 [`show_main_window`]）：本函数还被 `window_health` 的兑现腿
@@ -241,7 +243,7 @@ fn show_main_window(app: &tauri::AppHandle) {
         }
     } else {
         // C16 轻量模式已**销毁**主窗 webview（`get_webview_window` 返 None）→ 重建（可见）。所有 per-window
-        // 装配（特效 / 白屏自愈门 / close-to-tray 事件）都在 `create_main_window` 一处，故重建与首建等价。
+        // 装配（特效 / 白屏自愈门 / 关闭进轻量事件）都在 `create_main_window` 一处，故重建与首建等价。
         // 失败仅记日志（托盘 / 核仍在，用户可重试唤出）；`start_hidden=false`——用户显式唤出即要可见。
         if let Err(e) = create_main_window(app, false) {
             log::error!("主窗重建失败（轻量模式返回）：{e}");
@@ -980,7 +982,7 @@ fn run_menu_action(app: &tauri::AppHandle, action: MenuAction) {
 ///
 /// **两处调用**：① `setup` 首次建窗；② `show_main_window` 在 **C16 轻量模式销毁 webview** 后 `get_webview_window("main")`
 /// 返 None 时**重建**。故所有 per-window 装配必须收在**这一处**——重建才与首建逐字节等价（否则重建窗少了
-/// close-to-tray / 白屏自愈 / 主题跟随，成半残窗）。`on_page_load` / 图标 scheme / 托盘监听是 app 级（builder /
+/// 关闭进轻量 / 白屏自愈 / 主题跟随，成半残窗）。`on_page_load` / 图标 scheme / 托盘监听是 app 级（builder /
 /// setup 一次装），不在此、重建自动覆盖同 `label=="main"`。
 ///
 /// `start_hidden`：true → 建成**隐藏**窗（`--hidden` / `silentStart`；托盘作唤出锚点）。重建路径恒传 false
@@ -1184,19 +1186,12 @@ fn create_main_window(
             match resolve_close_action(quitting, tray_present, config_minimize_to_tray(&app_handle))
             {
                 CloseAction::AllowClose => {}
-                CloseAction::HideToTray => {
+                CloseAction::EnterLightweight => {
                     api.prevent_close();
-                    if let Some(w) = app_handle.get_webview_window("main") {
-                        match w.hide() {
-                            Ok(()) => {
-                                set_macos_dock_visible(&app_handle, false);
-                                // 显隐写入点：收托盘不发 `Focused`（窗本就可能已失焦）→ 这里主动刷一次门，
-                                // 三条 poller 立刻停手，不必等各自的 1s 兜底拍。
-                                refresh_stats_visibility(&app_handle);
-                            }
-                            Err(e) => log::warn!("主窗收进托盘失败（保持 Dock 可见，非致命）：{e}"),
-                        }
-                    }
+                    // 明确点“关闭”与最小化分流：前者进入轻量驻留，后者仍只 minimize。暂存层已经
+                    // 持久化到 localStorage，可跨 WebView 重建恢复；正在编辑但尚未提交的弹窗草稿按
+                    // 关闭窗口语义丢弃。自动轻量开关只控制 idle 触发，不控制本条显式关闭腿。
+                    let _ = crate::tray::tray_enter_lightweight(app_handle.clone());
                 }
                 CloseAction::QuitApp => {
                     // 置 QuitState 再退：这条腿现在也会在**托盘在**时触发（用户选了「退出应用」），
@@ -1682,13 +1677,9 @@ fn main() {
                 false
             };
 
-            // 仅直派点击的平台预建自绘浮层。Linux 的点击归原生菜单所有，预建一个永远没有 show 入口的
-            // 隐藏 WebView 只会常驻浪费内存。建窗失败非致命：右键降级显示主窗，应用菜单仍可退出。
-            if tray_present
-                && tray_interaction_mode(Platform::current()) == TrayInteractionMode::DirectClicks
-            {
-                tray::build_overlay(app.handle());
-            }
+            // 自绘浮层不在启动期预建：首次右键由 `toggle_overlay` 按需创建，隐藏 2 分钟后自行回收。
+            // Linux 的点击归原生菜单所有，不会创建这块 WebView；macOS/Windows 因而也不再为一个尚未
+            // 用过的菜单常驻 renderer 内存。建窗失败仍由 toggle 腿降级显示主窗。
 
             // C15：start_hidden 但托盘缺失（Linux 无 StatusNotifier）→ 无唤出锚点，**必须**显示主窗，否则
             // 窗口永远隐藏且无处唤起 = 死界面。托盘在则保持隐藏（靠主激活/原生菜单/dock 唤出）。窗口可见性 → stats
@@ -1861,8 +1852,8 @@ fn main() {
         // on_window_event + QuitState 决定，未改动；本回调只在**进程级退出请求**时兜安全清理。
         .run(|app_handle, event| match event {
             // macOS：点 dock 图标（NSApplicationDelegate applicationShouldHandleReopen）→ RunEvent::Reopen。
-            // close-to-tray 把主窗 hide 后，dock 重开是 macOS 上从 dock 召回窗口的路径（Windows 靠托盘
-            // 左键，Linux 靠原生菜单「显示」）。show+unminimize+focus 主窗；不改 QuitState，纯显示。
+            // 主窗关闭进入轻量驻留后，dock 重开是 macOS 上召回/重建窗口的路径（Windows 靠托盘
+            // 左键，Linux 靠原生菜单「显示」）。show_main_window 会按存在性选择呈现或重建。
             // Reopen 是 **macOS-only** 的 RunEvent 变体 → cfg 门控该 arm；Linux/Windows 上 cargo check 覆盖
             // 不到它（需 mac 编译验证）。
             #[cfg(target_os = "macos")]
@@ -2151,13 +2142,13 @@ mod tests {
     }
 
     #[test]
-    fn close_action_hides_only_when_wanted_and_tray_present() {
-        // 用户选「收进托盘」+ 托盘在 → 唯一 hide 的组合。
+    fn close_action_enters_lightweight_only_when_wanted_and_tray_present() {
+        // 用户选「收进托盘」+ 托盘在 → 唯一销毁 renderer、保核驻托盘的组合。
         assert_eq!(
             resolve_close_action(false, true, true),
-            CloseAction::HideToTray
+            CloseAction::EnterLightweight
         );
-        // 想收纳但托盘缺失 → hide 即僵尸，改真退出。
+        // 想收纳但托盘缺失 → 销毁即僵尸，改真退出。
         assert_eq!(
             resolve_close_action(false, false, true),
             CloseAction::QuitApp

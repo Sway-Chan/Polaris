@@ -219,13 +219,27 @@ pub fn aggregate_connections_with_topn(
     at: u64,
     top_n: usize,
 ) -> ConnectionsAggregate {
+    aggregate_connections_iter(conns.iter(), at, top_n)
+}
+
+/// 从借用迭代器聚合连接，避免拓扑刷新前先克隆整张连接表。
+///
+/// 公共函数继续接收 slice 以保持 API 稳定；长驻流内部直接把 `IndexMap::values()` 交给这里，
+/// 因而拓扑每 250ms 刷新时只分配 Top-N 聚合结果，不再额外复制每条连接的字符串与 metadata。
+fn aggregate_connections_iter<'a>(
+    conns: impl IntoIterator<Item = &'a ConnectionEntry>,
+    at: u64,
+    top_n: usize,
+) -> ConnectionsAggregate {
     use std::collections::BTreeMap;
 
     // host_name -> (count, outbound -> count)。BTreeMap 保证遍历序确定（便于稳定排序）。
     let mut host_map: BTreeMap<String, HostAgg> = BTreeMap::new();
     let mut outbound_totals: BTreeMap<String, u32> = BTreeMap::new();
+    let mut total = 0u32;
 
     for c in conns {
+        total = total.saturating_add(1);
         let ob = outbound_of(c);
         *outbound_totals.entry(ob.clone()).or_insert(0) += 1;
         let name = host_name_of(c);
@@ -285,7 +299,7 @@ pub fn aggregate_connections_with_topn(
     outbounds.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
 
     ConnectionsAggregate {
-        total: conns.len() as u32,
+        total,
         hosts,
         outbounds,
         at,
@@ -390,7 +404,8 @@ fn push_escaped(out: &mut String, s: &str) {
 /// key = 连接 id。
 pub struct StatsAggregator {
     snapshot: TrafficStats,
-    conn_map: indexmap::IndexMap<String, SingBoxConnection>,
+    /// 连接事件只在入表时裁剪一次；不保留 gRPC 原始对象中 UI/拓扑永远不会读取的字段。
+    conn_map: indexmap::IndexMap<String, ConnectionEntry>,
     /// max conn map size（OOM 安全网，默认 [`MAX_CONN_MAP_SIZE`]；测试可注入小值）。
     max_conn_map_size: usize,
     /// 速率差分基线：`(上一帧 at_ms, 该帧 uplink_total, 该帧 downlink_total)`。
@@ -437,10 +452,10 @@ impl StatsAggregator {
     ///
     /// 长驻流下这个等式**不再成立** —— 帧由内核的事件速率决定（连接风暴时远高于 emit 频率，
     /// 见 [`crate::emit_gate`]），而 emit 有下限间隔。收帧即物化 = 为一堆根本不会被推出去的
-    /// 中间态各做一次 O(n) 的 `trim_connection` + 整表分配。故改成**按需物化**：帧只维护
-    /// `conn_map`（O(1)/事件），闸门放行时才付这次 O(n)。
+    /// 中间态各做一次 O(n) 的整表分配。当前 map 已在 NEW/补建时裁剪为明细契约，故这里只在
+    /// detail 真正要 emit 时克隆；aggregate 走借用迭代器，完全不克隆整表。
     pub fn entries(&self) -> Vec<ConnectionEntry> {
-        self.conn_map.values().map(trim_connection).collect()
+        self.conn_map.values().cloned().collect()
     }
 
     /// 当前连接明细快照（对应 getConnectionsSnapshot，StatsService.ts:275）。`at` = 调用时刻 epoch ms。
@@ -458,7 +473,7 @@ impl StatsAggregator {
     /// 的两种看法（一种按 host/出口聚合成计数，一种逐条列出）。轮询时代它们各开一条 poller
     /// 各拉一次全量表，是纯粹的重复劳动。
     pub fn aggregate(&self, at: u64) -> ConnectionsAggregate {
-        aggregate_connections(&self.entries(), at)
+        aggregate_connections_iter(self.conn_map.values(), at, TOPOLOGY_TOP_N)
     }
 
     /// 归零 snapshot + 清空 connMap + **丢掉速率差分基线**（stop / resubscribe 重连窗口，
@@ -575,16 +590,20 @@ impl StatsAggregator {
                     // 长驻流下 `+` 一旦溢出，debug 构建直接 panic 掉整条 relay 任务 ——
                     // 流断了、连接页空了，而根因是一个算术溢出，日志里什么都没有。
                     // 内核异常/协议漂移送来一个畸形 delta 不该有这种放大倍数。
-                    updated.uplink_total = updated.uplink_total.saturating_add(ev.uplink_delta);
-                    updated.downlink_total =
-                        updated.downlink_total.saturating_add(ev.downlink_delta);
+                    updated.upload = Some(
+                        (updated.upload.unwrap_or(0) as i64).saturating_add(ev.uplink_delta) as u64,
+                    );
+                    updated.download = Some(
+                        (updated.download.unwrap_or(0) as i64).saturating_add(ev.downlink_delta)
+                            as u64,
+                    );
                     self.conn_map.insert(id, updated);
                 } else if let Some(c) = &ev.connection {
                     // 补建腿同样挡探测池：NEW 分支刚把这条探测连接挡在表外，它后续的 UPDATE 必然
                     // 落到「表里没有」这一支——若此处不挡，只要内核在 UPDATE 里带上 connection，
                     // NEW 侧的过滤就被 100% 抵消（不是边角情形，是每条探测连接的必经路径）。
                     if !is_probe_pool_inbound_tag(&c.inbound) {
-                        self.conn_map.insert(id, c.clone());
+                        self.conn_map.insert(id, trim_connection(c));
                     }
                 }
             }
@@ -604,7 +623,7 @@ impl StatsAggregator {
                 // 会以为这里多了一条——是 上游的既有缺陷，移植目标是功能对等而非缺陷对等。
                 if let Some(c) = &ev.connection {
                     if c.closed_at <= 0 && !is_probe_pool_inbound_tag(&c.inbound) {
-                        self.conn_map.insert(id, c.clone());
+                        self.conn_map.insert(id, trim_connection(c));
                     }
                 }
             }
