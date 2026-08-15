@@ -230,7 +230,7 @@ fn present_main_window(app: &tauri::AppHandle) {
     refresh_stats_visibility(app);
 }
 
-/// 唤出主窗（托盘点击 / 托盘「显示」菜单 / macOS dock 重开 共用）。
+/// 唤出主窗（托盘浮层的明确入口 / Linux 托盘「显示」菜单 / macOS dock 重开 共用）。
 ///
 /// 上屏时机交 [`window_health::show_timing`] 判：窗在且内容已就绪 → 立刻呈现（常态，零延迟）；
 /// 窗在但当前文档还没 mount 成功（启动期 / webview 崩溃后 Tauri 内置 reload 在途）→ **不把空窗推给
@@ -540,16 +540,10 @@ fn wire_tray_icon_sync(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TrayInteractionMode {
-    /// 应用直接接收鼠标事件：左键打开主窗，右键打开自绘浮层。
+    /// 应用直接接收鼠标事件：左/右键都切换自绘浮层。
     DirectClicks,
     /// 桌面托盘宿主接管点击并展示原生菜单（Linux AppIndicator）。
     NativeMenu,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TrayClickAction {
-    ShowMain,
-    ToggleOverlay,
 }
 
 #[must_use]
@@ -560,24 +554,24 @@ const fn tray_interaction_mode(platform: Platform) -> TrayInteractionMode {
     }
 }
 
-/// 把 macOS/Windows 托盘鼠标事件归一成产品动作。只在按键抬起时执行，避免一次点击的 down/up 两帧
-/// 各触发一次；Linux/未知平台由原生菜单持有事件，任何偶发派发都忽略，防止原生菜单与自绘浮层叠开。
+/// macOS/Windows 的左/右键是否应切换托盘浮层。只在按键抬起时执行，
+/// 避免一次点击的 down/up 两帧各触发一次；macOS 双指辅助点按由系统归为 Right，与左键同语义。
+/// Linux/未知平台由原生菜单持有事件，任何偶发派发都忽略，防止两个菜单叠开。
 #[must_use]
-fn resolve_tray_click_action(
+fn tray_click_toggles_overlay(
     platform: Platform,
     button: tauri::tray::MouseButton,
     state: tauri::tray::MouseButtonState,
-) -> Option<TrayClickAction> {
+) -> bool {
     if tray_interaction_mode(platform) != TrayInteractionMode::DirectClicks
         || state != tauri::tray::MouseButtonState::Up
     {
-        return None;
+        return false;
     }
-    match button {
-        tauri::tray::MouseButton::Left => Some(TrayClickAction::ShowMain),
-        tauri::tray::MouseButton::Right => Some(TrayClickAction::ToggleOverlay),
-        tauri::tray::MouseButton::Middle => None,
-    }
+    matches!(
+        button,
+        tauri::tray::MouseButton::Left | tauri::tray::MouseButton::Right
+    )
 }
 
 // ── A7：Linux 原生兜底菜单（AppIndicator 不递送点击时唯一够得着功能面的入口）───────────
@@ -1080,7 +1074,7 @@ fn create_main_window(
             .traffic_light_position(tauri::LogicalPosition::new(13.0, 18.0));
     }
     // C15/C16：start_hidden（--hidden / silentStart / 轻量前的隐藏建窗）→ 建成隐藏窗，覆盖 conf 的可见默认。
-    // 靠托盘/dock 唤出（`show_main_window`）；托盘缺失时 setup 末尾兜底显示（见 setup 无锚点分支）。
+    // 靠托盘浮层的明确入口/Dock 唤出（`show_main_window`）；托盘缺失时 setup 末尾兜底显示（见 setup 无锚点分支）。
     //
     // **非 start_hidden 也一律建成隐藏窗**（门武装时）：conf 未声明 `visible` ⇒ 默认 true ⇒ 此前
     // `builder.build()` 返回那一刻窗口就在屏上，而 webview 那时才刚开始加载文档、解析 bundle、挂 React
@@ -1500,11 +1494,11 @@ fn main() {
             // 建窗全流程（per-platform 窗口铬 / vibrancy·Mica 特效 / 白屏自愈门 / 可见性·关窗事件接线）收在
             // `create_main_window` 一处——供 C16 轻量模式**销毁 webview 后重建**复用（重建与首建逐字节等价）。
             // start_hidden = `--hidden`（argv）或 `config.silentStart`（读原文本，与逃生门同源）：启动即隐藏、
-            // 只驻托盘，靠托盘主激活/原生菜单/dock 唤出；托盘缺失时 setup 末尾兜底显示（见下方分支）。
+            // 只驻托盘，靠托盘浮层明确入口/原生菜单/Dock 唤出；托盘缺失时 setup 末尾兜底显示（见下方分支）。
             let start_hidden = arg_hidden || config_silent_start(raw_config.as_deref());
             if start_hidden {
                 log::info!(
-                    "start_hidden 启动（--hidden 或 silentStart）：主窗建成隐藏，靠托盘/dock 唤出"
+                    "start_hidden 启动（--hidden 或 silentStart）：主窗建成隐藏，靠托盘浮层入口/Dock 唤出"
                 );
             }
             create_main_window(app.handle(), start_hidden)?;
@@ -1569,7 +1563,7 @@ fn main() {
                 });
             }
 
-            // ── 系统托盘（mac/win：左键主窗 + 右键自绘浮层；Linux：完整原生菜单）──
+            // ── 系统托盘（mac/win：左/右键统一切换自绘浮层；Linux：完整原生菜单）──
             // conf.trayIcon 已在 setup 前自动建好**单个**托盘（id "main" / 默认图标 tray-off-black.png=断开态空心星+单斜杠 /
             // iconAsTemplate:true=mac 断开态首帧即走系统自适应反色·Win/Linux 忽略 / tooltip）；
             // 此处取回它挂接点击行为与原生菜单，而非再 build 第二个——Tauri 每次 build 各向 OS 推一枚
@@ -1591,21 +1585,22 @@ fn main() {
                         });
                     }
                     TrayInteractionMode::DirectClicks => {
-                        // macOS/Windows 的右键必须只归自绘浮层所有。Tauri 没暴露「禁用右键菜单」开关，
+                        // macOS/Windows 的左/右键必须只归自绘浮层所有。Tauri 没暴露「禁用右键菜单」开关，
                         // 但底层在 menu=None 时不会弹 NSMenu/HMENU，右键事件仍照常派发；同时关闭 mac 默认的
                         // 左键菜单行为。两步都做，避免未来配置误挂菜单后重新抢走事件。
                         if let Err(e) = tray.set_menu(None::<tauri::menu::Menu<tauri::Wry>>) {
-                            log::warn!("移除非 Linux 托盘原生菜单失败（右键浮层可能被抢占）：{e}");
+                            log::warn!("移除非 Linux 托盘原生菜单失败（自绘浮层可能被抢占）：{e}");
                         }
                         if let Err(e) = tray.set_show_menu_on_left_click(false) {
-                            log::warn!("关闭托盘左键原生菜单失败（主窗口点击可能被抢占）：{e}");
+                            log::warn!("关闭托盘左键原生菜单失败（自绘浮层点击可能被抢占）：{e}");
                         }
                     }
                 }
 
-                // macOS/Windows：左键抬起 → 收起浮层并打开主窗；右键抬起（mac 双指辅助点按同样归为 Right）
-                // → toggle 自绘浮层。Linux 即使某个 host 偶发派发事件，resolve_tray_click_action 也会拒绝，
-                // 避免与原生菜单叠开。`rect` 是图标真实屏幕矩形，只在右键浮层定位时消费。
+                // macOS/Windows：左键、右键（mac 双指辅助点按同样归为 Right）抬起都
+                // toggle 自绘浮层，不再把托盘图标点击解读为突然唤出主窗。主窗只由浮层里的明确入口唤出。
+                // Linux 即使某个 host 偶发派发事件，判定也会拒绝，避免与原生菜单叠开。
+                // `rect` 是图标真实屏幕矩形，用于浮层定位。
                 //
                 // 「拖动托盘图标 → 浮层跟隐藏」为何不在此接：`TrayIconEvent` 只有 Click/DoubleClick/Enter/
                 // Move/Leave，**无专门的拖动事件**；Move/Leave 在**普通 hover**（鼠标从图标移到浮层）时也照
@@ -1620,16 +1615,12 @@ fn main() {
                         ..
                     } = event
                     {
-                        match resolve_tray_click_action(Platform::current(), button, button_state) {
-                            Some(TrayClickAction::ShowMain) => {
-                                // 复用浮层「打开主窗口」的同一路径：先 hide overlay，再按白屏健康门呈现/重建主窗。
-                                let _ =
-                                    crate::tray::tray_show_main(tray.app_handle().clone(), None);
-                            }
-                            Some(TrayClickAction::ToggleOverlay) => {
-                                crate::tray::toggle_overlay(tray.app_handle(), Some(rect));
-                            }
-                            None => {}
+                        if tray_click_toggles_overlay(
+                            Platform::current(),
+                            button,
+                            button_state,
+                        ) {
+                            crate::tray::toggle_overlay(tray.app_handle(), Some(rect));
                         }
                     }
                 });
@@ -1677,9 +1668,9 @@ fn main() {
                 false
             };
 
-            // 自绘浮层不在启动期预建：首次右键由 `toggle_overlay` 按需创建，隐藏 2 分钟后自行回收。
+            // 自绘浮层不在启动期预建：首次托盘点击由 `toggle_overlay` 按需创建，隐藏 2 分钟后自行回收。
             // Linux 的点击归原生菜单所有，不会创建这块 WebView；macOS/Windows 因而也不再为一个尚未
-            // 用过的菜单常驻 renderer 内存。建窗失败仍由 toggle 腿降级显示主窗。
+            // 用过的菜单常驻 renderer 内存。建窗失败只记日志，不曲解用户意图为显示主窗。
 
             // C15：start_hidden 但托盘缺失（Linux 无 StatusNotifier）→ 无唤出锚点，**必须**显示主窗，否则
             // 窗口永远隐藏且无处唤起 = 死界面。托盘在则保持隐藏（靠主激活/原生菜单/dock 唤出）。窗口可见性 → stats
@@ -1852,8 +1843,8 @@ fn main() {
         // on_window_event + QuitState 决定，未改动；本回调只在**进程级退出请求**时兜安全清理。
         .run(|app_handle, event| match event {
             // macOS：点 dock 图标（NSApplicationDelegate applicationShouldHandleReopen）→ RunEvent::Reopen。
-            // 主窗关闭进入轻量驻留后，dock 重开是 macOS 上召回/重建窗口的路径（Windows 靠托盘
-            // 左键，Linux 靠原生菜单「显示」）。show_main_window 会按存在性选择呈现或重建。
+            // 主窗关闭进入轻量驻留后，Dock 重开是 macOS 上召回/重建窗口的路径；Windows 靠任务栏
+            // 或托盘浮层的明确入口，Linux 靠原生菜单「显示」。show_main_window 会按存在性选择呈现或重建。
             // Reopen 是 **macOS-only** 的 RunEvent 变体 → cfg 门控该 arm；Linux/Windows 上 cargo check 覆盖
             // 不到它（需 mac 编译验证）。
             #[cfg(target_os = "macos")]
@@ -3462,29 +3453,25 @@ mod tests {
     }
 
     #[test]
-    fn direct_tray_clicks_map_left_to_main_and_right_to_overlay() {
+    fn direct_tray_clicks_toggle_overlay_for_left_and_right() {
         use tauri::tray::{MouseButton, MouseButtonState};
 
         for platform in [Platform::Mac, Platform::Win] {
-            assert_eq!(
-                resolve_tray_click_action(platform, MouseButton::Left, MouseButtonState::Up),
-                Some(TrayClickAction::ShowMain),
-                "{platform:?} 左键抬起必须打开主窗口"
+            assert!(
+                tray_click_toggles_overlay(platform, MouseButton::Left, MouseButtonState::Up),
+                "{platform:?} 左键抬起必须切换自绘浮层"
             );
-            assert_eq!(
-                resolve_tray_click_action(platform, MouseButton::Right, MouseButtonState::Up),
-                Some(TrayClickAction::ToggleOverlay),
-                "{platform:?} 右键抬起必须打开自绘浮层"
+            assert!(
+                tray_click_toggles_overlay(platform, MouseButton::Right, MouseButtonState::Up),
+                "{platform:?} 右键抬起必须切换自绘浮层"
             );
-            assert_eq!(
-                resolve_tray_click_action(platform, MouseButton::Middle, MouseButtonState::Up),
-                None,
+            assert!(
+                !tray_click_toggles_overlay(platform, MouseButton::Middle, MouseButtonState::Up),
                 "中键没有产品动作，不得猜测"
             );
             for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
-                assert_eq!(
-                    resolve_tray_click_action(platform, button, MouseButtonState::Down),
-                    None,
+                assert!(
+                    !tray_click_toggles_overlay(platform, button, MouseButtonState::Down),
                     "按下帧不得执行，避免 down/up 重复触发"
                 );
             }
@@ -3498,9 +3485,8 @@ mod tests {
         for platform in [Platform::Linux, Platform::Other] {
             for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
                 for state in [MouseButtonState::Down, MouseButtonState::Up] {
-                    assert_eq!(
-                        resolve_tray_click_action(platform, button, state),
-                        None,
+                    assert!(
+                        !tray_click_toggles_overlay(platform, button, state),
                         "{platform:?} 点击归原生菜单所有，不得叠开自绘浮层"
                     );
                 }

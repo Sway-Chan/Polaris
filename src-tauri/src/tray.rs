@@ -1,8 +1,8 @@
 //! 托盘上下文自定义 HTML 浮层（`.tray-menu` 原型的独立 WebviewWindow 宿主）。
 //!
-//! macOS/Windows 以它替代原生上下文菜单：托盘右键（macOS 双指辅助点按同样归为右键）→ 弹出这个
-//! 独立窗口渲染的自绘浮层（连接状态卡 + 断开/连接 + 节点切换 + 模式 + 打开主窗 + 退出）；左键直接
-//! 打开主窗口。Linux AppIndicator 不派发可靠点击事件，仍由 `main.rs` 保留完整原生菜单兜底。
+//! macOS/Windows 以它替代原生上下文菜单：托盘左键或右键（macOS 双指辅助点按归为右键）都弹出/收起这个
+//! 独立窗口渲染的自绘浮层（连接状态卡 + 断开/连接 + 节点切换 + 模式 + 打开主窗 + 退出）。
+//! 主窗只由浮层内的明确入口唤出。Linux AppIndicator 不派发可靠点击事件，仍由 `main.rs` 保留完整原生菜单兜底。
 //!
 //! # 窗口形态（对齐 `runtime::update_popup` 的独立 mini 窗模式）
 //!
@@ -16,10 +16,10 @@
 //!
 //! # 生命周期
 //!
-//! 首次托盘右键时 [`build_overlay`] 按需创建 → [`toggle_overlay`] 定位+显示+聚焦（再点=隐藏）→
+//! 首次托盘点击时 [`build_overlay`] 按需创建 → [`toggle_overlay`] 定位+显示+聚焦（再点=隐藏）→
 //! 点窗外/切他 app 收起：Rust `Focused(false)` + DOM `window.blur`→`tray_hide` **双路** dismiss（后者
 //! 经 `initialization_script` 注入，兜 mac 上次级窗 Focused 递送不可靠，见 [`TRAY_BLUR_DISMISS_JS`]）。
-//! 隐藏超过 [`TRAY_IDLE_RECLAIM_SECS`] 后自动销毁 WebView；再次右键透明重建。它不承载编辑草稿，
+//! 隐藏超过 [`TRAY_IDLE_RECLAIM_SECS`] 后自动销毁 WebView；再次点击透明重建。它不承载编辑草稿，
 //! 生命周期与主窗口的轻量模式设置完全解耦。
 //!
 //! # 与主进程的契约（新增 4 个 command，均薄封装，供浮层 React 端 invoke）
@@ -504,7 +504,8 @@ fn hide_overlay(app: &AppHandle) {
     }
 }
 
-/// 按需取得浮层窗：已有则复用，否则在首次右键时创建。**非致命**：失败返回 `None`，调用方回退主窗。
+/// 按需取得浮层窗：已有则复用，否则在首次托盘点击时创建。**非致命**：失败返回 `None`，
+/// 不自作主张唤出主窗；用户仍可从 Dock/任务栏进入主窗。
 fn build_overlay(app: &AppHandle) -> Option<tauri::WebviewWindow> {
     if let Some(win) = app.get_webview_window(TRAY_LABEL) {
         return Some(win); // 已建（幂等）
@@ -546,9 +547,7 @@ fn build_overlay(app: &AppHandle) -> Option<tauri::WebviewWindow> {
     let win = match builder.build() {
         Ok(w) => w,
         Err(e) => {
-            log::warn!(
-                "托盘浮层窗创建失败（降级：右键回退显示主窗，退出仍走 Linux 原生菜单/应用菜单）：{e}"
-            );
+            log::warn!("托盘浮层窗创建失败（主窗仍可从 Dock/任务栏唤出）：{e}");
             return None;
         }
     };
@@ -563,13 +562,12 @@ fn build_overlay(app: &AppHandle) -> Option<tauri::WebviewWindow> {
     Some(win)
 }
 
-/// macOS/Windows 托盘右键入口（由 `main.rs` 的 `on_tray_icon_event` 调）。
+/// macOS/Windows 托盘左/右键入口（由 `main.rs` 的 `on_tray_icon_event` 调）。
 ///
 /// 可见 → 隐藏（toggle off）；不可见 → 定位到托盘所在屏角 + 显示 + 聚焦。
-/// 浮层未建（创建失败）→ 回退显示主窗，保证右键仍有可达功能面。
+/// 浮层创建失败 → 本次点击 no-op；不把「托盘菜单」意图突然放大成主窗。
 pub fn toggle_overlay(app: &AppHandle, rect: Option<tauri::Rect>) {
     let Some(win) = build_overlay(app) else {
-        crate::show_main_window(app);
         return;
     };
     // 先记锚点（图标屏幕矩形）：即便本次是「点击关闭」，下次开也有最新锚点；tray_resize 改高后重定位同样复用。
@@ -1063,7 +1061,7 @@ pub fn tray_quit(app: AppHandle) -> ApiResponse<()> {
 ///     registry 里旧订阅无人退订 → gRPC poller 永续 1s 轮询、`subs` 无界累积 → **内存/CPU 反而不降 = 轻量白做**。
 ///  3. 收起并提前销毁浮层；它本身另有独立隐藏回收计时，这里只是轻量转场顺手立即释放。
 ///  4. `destroy()` 销毁主窗（**force**：绕过 `CloseRequested` 的 hide-to-tray 拦截，真释放内存）。用户经托盘
-///     macOS/Windows 左键、Linux 原生菜单或 dock 唤出时，`show_main_window` 走 `create_main_window` 重建。
+///     浮层内明确入口、Linux 原生菜单或 Dock/任务栏唤出时，`show_main_window` 走 `create_main_window` 重建。
 #[tauri::command]
 pub fn tray_enter_lightweight(app: AppHandle) -> ApiResponse<()> {
     app.state::<crate::LightweightState>()
@@ -1265,11 +1263,20 @@ mod overlay_lifecycle_gate {
     fn overlay_is_lazy_not_built_during_setup() {
         assert!(
             !MAIN_RS.contains("tray::build_overlay("),
-            "启动 setup 不得预建托盘 WebView；首次右键由 toggle_overlay 按需创建"
+            "启动 setup 不得预建托盘 WebView；首次托盘点击由 toggle_overlay 按需创建"
         );
         assert!(
             TRAY_RS.contains("let Some(win) = build_overlay(app) else"),
-            "toggle_overlay 必须承担按需创建与失败降级"
+            "toggle_overlay 必须承担按需创建，创建失败时不得突然唤出主窗"
+        );
+        let toggle_body = TRAY_RS
+            .split_once("pub fn toggle_overlay")
+            .and_then(|(_, rest)| rest.split_once("fn invalidate_overlay_reclaim"))
+            .map(|(body, _)| body)
+            .expect("must isolate toggle_overlay source");
+        assert!(
+            !toggle_body.contains("show_main_window"),
+            "托盘浮层创建失败时应保持 no-op，不得回退打开主窗"
         );
     }
 
