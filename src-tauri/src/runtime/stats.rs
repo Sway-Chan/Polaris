@@ -705,9 +705,10 @@ impl PendingClosedUpdate {
 /// 已结束连接的独立有界历史环。
 ///
 /// 活跃表收到 CLOSED 后会立即删行；历史不能塞回那张表，否则拓扑、活动数和关闭动作都会被幽灵记录
-/// 污染。这里最多保留 1000 条，按结束时间新到旧排列。`cutoff_ns` 是用户清空时的水位：连接流重订后
-/// 首帧会重放 sing-box 自己的历史环，水位确保已清过的旧记录不会重新出现。`generation`
-/// 只在用户清空时递增，用来作废 relay 中已积累但还未 emit 的旧增量。
+/// 污染。这里最多保留 1000 条，按结束时间新到旧排列。连接流重订时 sing-box 的 reset 只重放它自己的
+/// 短历史环，不能拿这份不完整重放覆盖 Polaris 已积累的 1000 条会话历史；reset 因此按 ID 合并并向
+/// 前端重发完整基线。`cutoff_ns` 是用户清空时的水位，确保已清过的旧记录不会借重放重新出现。
+/// `generation` 只在用户清空时递增，用来作废 relay 中已积累但还未 emit 的旧增量。
 #[derive(Debug, Default)]
 struct ClosedHistory {
     entries: Vec<ClosedConnectionEntry>,
@@ -757,9 +758,6 @@ impl ClosedHistory {
             return None;
         }
 
-        if events.reset {
-            self.entries.clear();
-        }
         let mut changed_ids = HashSet::new();
         let mut initially_present = HashMap::new();
 
@@ -1823,7 +1821,7 @@ mod tests {
     }
 
     #[test]
-    fn closed_history_is_newest_first_and_capped_to_singbox_replay_limit() {
+    fn closed_history_is_newest_first_and_capped_to_history_limit() {
         let events = SingBoxConnectionEvents {
             reset: true,
             events: (1..=1_002)
@@ -1842,6 +1840,49 @@ mod tests {
         assert_eq!(history.entries.len(), MAX_CLOSED_HISTORY);
         assert_eq!(history.entries.first().unwrap().closed_at, 1_002);
         assert_eq!(history.entries.last().unwrap().closed_at, 3);
+    }
+
+    #[test]
+    fn short_reset_replay_preserves_accumulated_session_history() {
+        let mut history = ClosedHistory::default();
+        let initial = SingBoxConnectionEvents {
+            reset: true,
+            events: (1..=MAX_CLOSED_HISTORY)
+                .map(|n| SingBoxConnectionEvent {
+                    kind: ConnectionEventType::New,
+                    connection: Some(engine_conn(&format!("c{n}"), n as i64)),
+                    ..Default::default()
+                })
+                .collect(),
+        };
+        history
+            .apply_events(&initial, &StatsAggregator::new())
+            .expect("首帧 reset 必须产生完整基线");
+
+        // 流重订时内核只重放自己的短历史环。它是“当前流的基线”，不是
+        // “Polaris 本会话诊断历史的完整真值”，不能把此前 1000 条清成 2 条。
+        let short_replay = SingBoxConnectionEvents {
+            reset: true,
+            events: vec![
+                SingBoxConnectionEvent {
+                    kind: ConnectionEventType::New,
+                    connection: Some(engine_conn("c1000", 1_000)),
+                    ..Default::default()
+                },
+                SingBoxConnectionEvent {
+                    kind: ConnectionEventType::New,
+                    connection: Some(engine_conn("c1001", 1_001)),
+                    ..Default::default()
+                },
+            ],
+        };
+        assert!(matches!(
+            history.apply_events(&short_replay, &StatsAggregator::new()),
+            Some(ClosedHistoryChange::Reset { .. })
+        ));
+        assert_eq!(history.entries.len(), MAX_CLOSED_HISTORY);
+        assert_eq!(history.entries.first().unwrap().entry.id, "c1001");
+        assert_eq!(history.entries.last().unwrap().entry.id, "c2");
     }
 
     #[test]
