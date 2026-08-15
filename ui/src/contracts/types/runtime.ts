@@ -164,6 +164,17 @@ export interface ConnectionsClosedSnapshot {
   at: number;
 }
 
+/**
+ * 已结束历史事件：首帧/reset 帧是完整快照，常态帧只含本批 upsert 和淘汰 id。
+ * 前端在本地维护最多 1000 条，避免每新结束一条就重复传输/投影全部历史。
+ */
+export interface ConnectionsClosedUpdate {
+  reset: boolean;
+  connections: ClosedConnectionEntry[];
+  removedIds?: string[];
+  at: number;
+}
+
 /** 拓扑「其它」分组的 sentinel host 名（聚合 Top-N 截断后剩余的合并条目）。渲染端 topology-layout 见此值 →
  *  替换为 i18n 文案 t('home.others')。用控制字符前缀确保绝不与真实 host/IP/rule 名冲突。 */
 export const TOPOLOGY_OTHERS_KEY = '\u0000others';

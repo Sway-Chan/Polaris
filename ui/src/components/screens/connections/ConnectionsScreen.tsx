@@ -10,7 +10,8 @@
  *
  * 功能接 api-client：
  *  - 明细：statsApi.subscribe('detail') + onConnectionsDetail（订阅驱动，进页订/离开退；
- *    后端 relay 见 runtime/stats.rs `run_detail_poller`——1s 轮询管理 API 连接快照逐帧下发）
+ *    后端 relay 消费 sing-box 连接流，按1s 节流下发活动快照）
+ *  - 已结束：订阅首帧/reset 为最多 1000 条全量，常态只合并本批新增/淘汰项
  *  - TOP：statsApi.subscribe('aggregate') + onConnectionsAggregate
  *  - 关单条：connectionsApi.close(id)（真调管理 API gRPC CloseConnection）+ 乐观移除（失败回滚）
  *  - 关全部：connectionsApi.closeAll()（真调 CloseAllConnections）
@@ -34,13 +35,15 @@ import { clampToWrap } from '@/lib/overlay-position';
 import { createTopicSubscription } from '@/lib/topic-subscription';
 import { useConfirmTwice } from '@/lib/confirm-twice';
 import type {
+  ClosedConnectionEntry,
   ConnectionEntry,
   ConnectionsSnapshot,
   ConnectionsAggregate,
-  ConnectionsClosedSnapshot,
+  ConnectionsClosedUpdate,
 } from '@/contracts/types';
 import { TOPOLOGY_OTHERS_KEY } from '@/contracts/types';
 import { fmtBytes, fmtDuration, fmtRate } from '../shared/format';
+import { applyClosedHistoryUpdate } from './closed-history';
 import { connectionRuleSubjects } from './connection-rule-subjects';
 
 type ConnView = 'top' | 'active' | 'closed';
@@ -113,39 +116,110 @@ interface ConnRow {
   endedAt: number | null;
 }
 
+/** 每秒会变的速率/时长不入缓存；只复用协议、目标、规则、链路和进程等静态派生字符串。 */
+interface ConnStaticProjection {
+  host: string;
+  dest: string;
+  rule: string;
+  chain: string;
+  l4: string;
+  l4Title: string;
+  udp: boolean;
+  procName: string;
+  procFull: string;
+}
+
+interface ConnStaticCacheEntry {
+  host?: string;
+  destinationIP?: string;
+  destinationPort?: string;
+  network?: string;
+  inboundType?: string;
+  processPath?: string;
+  rule: string;
+  rulePayload?: string;
+  chain?: string;
+  start?: string;
+  startAt: number;
+  projection: ConnStaticProjection;
+}
+
+function staticProjection(
+  cache: Map<string, ConnStaticCacheEntry>,
+  entry: ConnectionEntry,
+): ConnStaticCacheEntry {
+  const metadata = entry.metadata;
+  const chain = entry.chains?.[0];
+  const cached = cache.get(entry.id);
+  if (
+    cached !== undefined &&
+    cached.host === metadata?.host &&
+    cached.destinationIP === metadata?.destinationIP &&
+    cached.destinationPort === metadata?.destinationPort &&
+    cached.network === metadata?.network &&
+    cached.inboundType === metadata?.type &&
+    cached.processPath === metadata?.processPath &&
+    cached.rule === entry.rule &&
+    cached.rulePayload === entry.rulePayload &&
+    cached.chain === chain &&
+    cached.start === entry.start
+  ) {
+    return cached;
+  }
+
+  const destinationIP = metadata?.destinationIP;
+  const network = metadata?.network ?? '';
+  const procFull = metadata?.processPath ?? '';
+  const l4Parts = [metadata?.network, metadata?.type].filter(Boolean);
+  const projection: ConnStaticProjection = {
+    host: metadata?.host || destinationIP || '—',
+    dest: destinationIP
+      ? `${destinationIP}${metadata?.destinationPort ? `:${metadata.destinationPort}` : ''}`
+      : '—',
+    rule: entry.rule
+      ? `${entry.rule}${entry.rulePayload ? ` ${entry.rulePayload}` : ''}`
+      : '—',
+    chain: chain ?? '—',
+    l4: metadata?.network || metadata?.type || '—',
+    l4Title: l4Parts.length ? l4Parts.join('/') : '—',
+    udp: network.toLowerCase() === 'udp',
+    procName: procFull ? procFull.split(/[/\\]/).pop() || procFull : '—',
+    procFull,
+  };
+  const result: ConnStaticCacheEntry = {
+    host: metadata?.host,
+    destinationIP,
+    destinationPort: metadata?.destinationPort,
+    network: metadata?.network,
+    inboundType: metadata?.type,
+    processPath: metadata?.processPath,
+    rule: entry.rule,
+    rulePayload: entry.rulePayload,
+    chain,
+    start: entry.start,
+    startAt: entry.start ? Date.parse(entry.start) : Number.NaN,
+    projection,
+  };
+  cache.set(entry.id, result);
+  return result;
+}
+
 function projectConnection(
   entry: ConnectionEntry,
   endedAt: number | null,
   rates: { up: number; down: number },
+  observedAt: number,
+  cache: Map<string, ConnStaticCacheEntry>,
 ): ConnRow {
   const upload = entry.upload ?? 0;
   const download = entry.download ?? 0;
-  const host = entry.metadata?.host || entry.metadata?.destinationIP || '—';
-  const dest = entry.metadata?.destinationIP
-    ? `${entry.metadata.destinationIP}${
-        entry.metadata.destinationPort ? `:${entry.metadata.destinationPort}` : ''
-      }`
-    : '—';
-  const network = (entry.metadata?.network || '').toLowerCase();
-  const l4Parts = [entry.metadata?.network, entry.metadata?.type].filter(Boolean);
-  const procFull = entry.metadata?.processPath || '';
-  const startAt = entry.start ? Date.parse(entry.start) : Number.NaN;
+  const { projection, startAt } = staticProjection(cache, entry);
   const age = Number.isNaN(startAt)
     ? 0
-    : Math.max(0, ((endedAt ?? Date.now()) - startAt) / 1000);
+    : Math.max(0, ((endedAt ?? observedAt) - startAt) / 1000);
   return {
     entry,
-    host,
-    dest,
-    rule: entry.rule
-      ? `${entry.rule}${entry.rulePayload ? ` ${entry.rulePayload}` : ''}`
-      : '—',
-    chain: entry.chains?.[0] ?? '—',
-    l4: entry.metadata?.network || entry.metadata?.type || '—',
-    l4Title: l4Parts.length ? l4Parts.join('/') : '—',
-    udp: network === 'udp',
-    procName: procFull ? procFull.split(/[/\\]/).pop() || procFull : '—',
-    procFull,
+    ...projection,
     total: upload + download,
     upRate: rates.up,
     dnRate: rates.down,
@@ -165,7 +239,7 @@ export function ConnectionsScreen() {
   const [page, setPage] = useState(0);
 
   const [rows, setRows] = useState<ConnRow[]>([]);
-  const [closedRows, setClosedRows] = useState<ConnRow[]>([]);
+  const [closedEntries, setClosedEntries] = useState<ClosedConnectionEntry[]>([]);
   const [activeLoaded, setActiveLoaded] = useState(false);
   const [closedLoaded, setClosedLoaded] = useState(false);
   const [aggregate, setAggregate] = useState<ConnectionsAggregate | null>(null);
@@ -176,10 +250,16 @@ export function ConnectionsScreen() {
   const prevRef = useRef<Map<string, { up: number; dn: number; at: number }>>(
     new Map()
   );
+  const activeStaticRef = useRef<Map<string, ConnStaticCacheEntry>>(new Map());
+  const closedIndexRef = useRef<Map<string, ClosedConnectionEntry>>(new Map());
+  const closedStaticRef = useRef<Map<string, ConnStaticCacheEntry>>(new Map());
+  const closedRowRef = useRef<
+    Map<string, { source: ClosedConnectionEntry; row: ConnRow }>
+  >(new Map());
   /**
    * 已乐观关闭、等后端快照确认消失的连接 id。
    *
-   * 光 `setRows(filter)` 挡不住回填：detail 轮询 1s 一帧，关闭请求发出时可能已有一帧在途，
+   * 光 `setRows(filter)` 挡不住回填：detail 流按1s节流，关闭请求发出时可能已有一帧在途，
    * 那帧仍含这条连接 → 行「关掉又冒回来」再等一秒才真消失。故记一个抑制集，快照里还带着它就滤掉，
    * 直到某一帧里它真没了才把 id 从集里摘掉（自清理，不会无界增长）。
    */
@@ -205,6 +285,7 @@ export function ConnectionsScreen() {
   /** 把 ConnectionsSnapshot 派生为 ConnRow[]（算速率 / 时长），写 rows。 */
   const applySnapshot = useCallback((snap: ConnectionsSnapshot) => {
     const prev = prevRef.current;
+    const staticCache = activeStaticRef.current;
     const now = snap.at || Date.now();
     // 同一趟投影顺手建 live id 集；此前又对原快照 `.map` 一遍再交给 Set，每秒额外制造一份 N 长数组。
     const liveIds = new Set<string>();
@@ -221,11 +302,20 @@ export function ConnectionsScreen() {
         dnRate = Math.max(0, (dn - p.dn) / dt);
       }
       prev.set(entry.id, { up, dn, at: now });
-      return projectConnection(entry, null, { up: upRate, down: dnRate });
+      return projectConnection(
+        entry,
+        null,
+        { up: upRate, down: dnRate },
+        now,
+        staticCache,
+      );
     });
-    // 清理已断开连接的记账
+    // 清理已断开连接的记账与静态投影，两个 Map 都不随历史增长。
     for (const id of prev.keys()) {
       if (!liveIds.has(id)) prev.delete(id);
+    }
+    for (const id of staticCache.keys()) {
+      if (!liveIds.has(id)) staticCache.delete(id);
     }
     // 乐观关闭的抑制集：本帧还带着的继续滤掉；本帧已没有的说明后端真关掉了 → 从集里摘除（自清理）。
     const closing = closingRef.current;
@@ -260,6 +350,8 @@ export function ConnectionsScreen() {
   useEffect(() => {
     if (view === 'active') return;
     closingRef.current.clear();
+    prevRef.current.clear();
+    activeStaticRef.current.clear();
     setRows([]);
     setActiveLoaded(false);
   }, [view]);
@@ -267,29 +359,60 @@ export function ConnectionsScreen() {
   useEffect(() => {
     if (view !== 'closed') return;
     setClosedLoaded(false);
-    const sub = createTopicSubscription<ConnectionsClosedSnapshot>(
+    const sub = createTopicSubscription<ConnectionsClosedUpdate>(
       {
         onFrame: (cb) => api.stats.onConnectionsClosed(cb),
         subscribe: () => api.stats.subscribe('closed'),
         unsubscribe: () => api.stats.unsubscribe('closed'),
       },
-      (snapshot) => {
-        setClosedRows(
-          snapshot.connections.map(({ entry, closedAt }) => {
-            const endedAt = Math.max(0, closedAt / 1_000_000);
-            return projectConnection(entry, endedAt, { up: 0, down: 0 });
-          }),
-        );
+      (update) => {
+        setClosedEntries(applyClosedHistoryUpdate(closedIndexRef.current, update));
         setClosedLoaded(true);
       },
     );
     sub.setWanted(true);
     return () => {
       sub.dispose();
-      setClosedRows([]);
+      closedIndexRef.current.clear();
+      closedStaticRef.current.clear();
+      closedRowRef.current.clear();
+      setClosedEntries([]);
       setClosedLoaded(false);
     };
   }, [view]);
+
+  /**
+   * CLOSED 增量合并后，未变条目保持 `source` 引用，因此整个 ConnRow 也可以复用。
+   * 常态新增一条只创建一个行对象，不再每秒重建其余 999 条。
+   */
+  const closedRows = useMemo(() => {
+    const rowCache = closedRowRef.current;
+    const staticCache = closedStaticRef.current;
+    const liveIds = new Set<string>();
+    const next = closedEntries.map((source) => {
+      const id = source.entry.id;
+      liveIds.add(id);
+      const cached = rowCache.get(id);
+      if (cached?.source === source) return cached.row;
+      const endedAt = Math.max(0, source.closedAt / 1_000_000);
+      const row = projectConnection(
+        source.entry,
+        endedAt,
+        { up: 0, down: 0 },
+        endedAt,
+        staticCache,
+      );
+      rowCache.set(id, { source, row });
+      return row;
+    });
+    for (const id of rowCache.keys()) {
+      if (!liveIds.has(id)) {
+        rowCache.delete(id);
+        staticCache.delete(id);
+      }
+    }
+    return next;
+  }, [closedEntries]);
 
   /* ── TOP 聚合订阅（切到 top 视图才订，table 视图退订省流）──
    * 同 detail 腿走状态机。这条腿原先连 detail 腿那个 `cancelled` 守卫都没有：tab 连点时 cleanup 跑在
@@ -532,7 +655,7 @@ export function ConnectionsScreen() {
   /** 关闭当前筛选命中的全部连接（原型 #conn-close-filtered :2012；仅搜索命中时可用，非「全部关闭」）。 */
   const onCloseFiltered = useCallback(async () => {
     // 用 filteredRows 而非 visibleRows：这个按钮的语义是「关闭筛选命中的**全部**连接」，
-    // 视口虚拟化只改变 DOM 行数，不得把动作偷偷降级成「只关当前挂载的几十条」。
+    // 分页只改变 DOM 行数，不得把动作偷偷降级成「只关当前页的几十条」。
     const n = filteredRows.length;
     // fan-out **之前**批量入抑制集（同 onCloseAll，理由见 suppressClosing）。
     const ids = filteredRows.map((r) => r.entry.id);
@@ -560,7 +683,10 @@ export function ConnectionsScreen() {
   const onClearClosed = useCallback(async () => {
     try {
       const snapshot = await api.stats.clearClosed();
-      setClosedRows([]);
+      closedIndexRef.current.clear();
+      closedStaticRef.current.clear();
+      closedRowRef.current.clear();
+      setClosedEntries([]);
       setClosedLoaded(true);
       if (snapshot.connections.length === 0) {
         toast.success(t('connections.closedCleared'));

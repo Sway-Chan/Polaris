@@ -90,6 +90,7 @@ export type {
   ConnectionsSnapshot,
   ClosedConnectionEntry,
   ConnectionsClosedSnapshot,
+  ConnectionsClosedUpdate,
   ConnectionsAggregate,
   ConnectionAggHost,
   ConnectionAggOutbound,

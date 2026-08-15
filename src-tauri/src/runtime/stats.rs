@@ -82,6 +82,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -95,9 +96,9 @@ use polaris_singbox_grpc::{daemon, Endpoint, ReconnectConfig, SingBoxApiClient};
 use polaris_stats_engine::{
     aggregate_connections_with_topn, aggregate_signature, trim_connection, ClosedConnectionEntry,
     ConnectionEntry, ConnectionEventType, ConnectionsAggregate, ConnectionsClosedSnapshot,
-    ConnectionsSnapshot, EmitGate, SingBoxConnection, SingBoxConnectionEvent,
-    SingBoxConnectionEvents, SingBoxProcessInfo, SingBoxStatus, StatsAggregator,
-    SubscriptionRegistry, SubscriptionToken, Topic, TrafficStats, TOPOLOGY_TOP_N,
+    ConnectionsClosedUpdate, ConnectionsSnapshot, EmitGate, SingBoxConnection,
+    SingBoxConnectionEvent, SingBoxConnectionEvents, SingBoxProcessInfo, SingBoxStatus,
+    StatsAggregator, SubscriptionRegistry, SubscriptionToken, Topic, TrafficStats, TOPOLOGY_TOP_N,
 };
 
 use crate::events::{
@@ -166,7 +167,8 @@ const DETAIL_EMIT_MIN_INTERVAL: Duration = Duration::from_secs(1);
 /// 再高只在本进程期间有效，连接流重订后无法补回，反而会制造不一致。
 const MAX_CLOSED_HISTORY: usize = 1_000;
 
-/// 已结束历史的全量快照最多每秒推一次；连接风暴时合并 CLOSED，避免 N 次断连复制 N 次千行 JSON。
+/// 已结束历史最多每秒推一次；连接风暴时合并 CLOSED 增量。
+/// 只有订阅首帧 / 内核 reset / 用户清空才传全量，常态不再复制千行 JSON。
 const CLOSED_EMIT_MIN_INTERVAL: Duration = Duration::from_secs(1);
 
 /// `SubscribeConnections` 请求里的 `interval`（纳秒）—— **只管服务端 UPDATE 帧的节奏**。
@@ -501,15 +503,122 @@ fn visibility_source(state: Arc<StreamGateState>, app: AppHandle) -> impl Fn() -
     move || state.cached_window_visible(&app)
 }
 
+/// 历史环一批变更。不携带 reset 全量：reset 时由 emit 点在锁内克隆一次最终快照，
+/// 正常 CLOSED 只携带本批 upsert / 淘汰 id。
+#[derive(Debug, PartialEq, Eq)]
+enum ClosedHistoryChange {
+    Reset {
+        generation: u64,
+    },
+    Delta {
+        generation: u64,
+        connections: Vec<ClosedConnectionEntry>,
+        removed_ids: Vec<String>,
+    },
+}
+
+impl ClosedHistoryChange {
+    fn generation(&self) -> u64 {
+        match self {
+            Self::Reset { generation } | Self::Delta { generation, .. } => *generation,
+        }
+    }
+}
+
+/// 1s emit 窗口内的 CLOSED 增量合并器。同 id 只保留最后一次 upsert；如果期间
+/// 出现 reset，当前窗口直接升格为全量首帧，不再维护注定会被覆盖的细粒度差集。
+#[derive(Debug, Default)]
+struct PendingClosedUpdate {
+    generation: Option<u64>,
+    reset: bool,
+    upserts: HashMap<String, ClosedConnectionEntry>,
+    removed_ids: HashSet<String>,
+}
+
+impl PendingClosedUpdate {
+    fn clear(&mut self) {
+        self.generation = None;
+        self.reset = false;
+        self.upserts.clear();
+        self.removed_ids.clear();
+    }
+
+    fn merge(&mut self, change: ClosedHistoryChange) {
+        let generation = change.generation();
+        if self.generation != Some(generation) {
+            self.clear();
+            self.generation = Some(generation);
+        }
+        match change {
+            ClosedHistoryChange::Reset { .. } => {
+                self.reset = true;
+                self.upserts.clear();
+                self.removed_ids.clear();
+            }
+            ClosedHistoryChange::Delta {
+                connections,
+                removed_ids,
+                ..
+            } if !self.reset => {
+                for entry in connections {
+                    let id = entry.entry.id.clone();
+                    self.removed_ids.remove(&id);
+                    self.upserts.insert(id, entry);
+                }
+                for id in removed_ids {
+                    self.upserts.remove(&id);
+                    self.removed_ids.insert(id);
+                }
+            }
+            ClosedHistoryChange::Delta { .. } => {
+                // reset 帧在 emit 时读历史环的最终状态，已自带这些后续变更。
+            }
+        }
+    }
+
+    /// 把累积变更物化成一帧并清空当前窗口。用户在窗口中途清空时
+    /// `generation` 会改变；这时必须丢掉清空前的在途增量，不能把旧记录再灌回前端。
+    fn take_update(&mut self, history: &ClosedHistory, at: u64) -> Option<ConnectionsClosedUpdate> {
+        let generation = self.generation?;
+        if generation != history.generation {
+            self.clear();
+            return None;
+        }
+        let update = if self.reset {
+            ConnectionsClosedUpdate {
+                reset: true,
+                connections: history.entries.clone(),
+                removed_ids: Vec::new(),
+                at,
+            }
+        } else {
+            let mut connections: Vec<_> = self.upserts.drain().map(|(_, entry)| entry).collect();
+            connections.sort_by_key(|entry| std::cmp::Reverse(entry.closed_at));
+            let mut removed_ids: Vec<_> = self.removed_ids.drain().collect();
+            removed_ids.sort();
+            ConnectionsClosedUpdate {
+                reset: false,
+                connections,
+                removed_ids,
+                at,
+            }
+        };
+        self.clear();
+        Some(update)
+    }
+}
+
 /// 已结束连接的独立有界历史环。
 ///
 /// 活跃表收到 CLOSED 后会立即删行；历史不能塞回那张表，否则拓扑、活动数和关闭动作都会被幽灵记录
 /// 污染。这里最多保留 1000 条，按结束时间新到旧排列。`cutoff_ns` 是用户清空时的水位：连接流重订后
-/// 首帧会重放 sing-box 自己的历史环，水位确保已清过的旧记录不会重新出现。
+/// 首帧会重放 sing-box 自己的历史环，水位确保已清过的旧记录不会重新出现。`generation`
+/// 只在用户清空时递增，用来作废 relay 中已积累但还未 emit 的旧增量。
 #[derive(Debug, Default)]
 struct ClosedHistory {
     entries: Vec<ClosedConnectionEntry>,
     cutoff_ns: i64,
+    generation: u64,
 }
 
 impl ClosedHistory {
@@ -520,14 +629,28 @@ impl ClosedHistory {
         }
     }
 
+    fn update_snapshot(&self, at: u64) -> ConnectionsClosedUpdate {
+        ConnectionsClosedUpdate {
+            reset: true,
+            connections: self.entries.clone(),
+            removed_ids: Vec::new(),
+            at,
+        }
+    }
+
     fn clear(&mut self, cutoff_ns: i64) {
         self.entries.clear();
         self.cutoff_ns = self.cutoff_ns.max(cutoff_ns);
+        self.generation = self.generation.wrapping_add(1);
     }
 
     /// 在活跃聚合器消费本帧前提取关闭记录，这样 CLOSED 缺少完整 connection 时仍能用活动表兜底。
-    /// 返回历史内容是否发生变化。
-    fn apply_events(&mut self, events: &SingBoxConnectionEvents, active: &StatsAggregator) -> bool {
+    /// 正常帧只返回真正变更的 upsert / 淘汰 id；reset 帧返回 reset 标记，不在这里克隆全表。
+    fn apply_events(
+        &mut self,
+        events: &SingBoxConnectionEvents,
+        active: &StatsAggregator,
+    ) -> Option<ClosedHistoryChange> {
         let has_closed_event = events.events.iter().any(|event| {
             event.kind == ConnectionEventType::Closed
                 || event.closed_at > 0
@@ -537,13 +660,14 @@ impl ClosedHistory {
                     .is_some_and(|connection| connection.closed_at > 0)
         });
         if !events.reset && !has_closed_event {
-            return false;
+            return None;
         }
 
-        let before = self.entries.clone();
         if events.reset {
             self.entries.clear();
         }
+        let mut changed_ids = HashSet::new();
+        let mut initially_present = HashMap::new();
 
         for event in &events.events {
             let payload_closed_at = event
@@ -576,15 +700,63 @@ impl ClosedHistory {
                 continue;
             }
 
-            self.entries.retain(|old| old.entry.id != entry.id);
-            self.entries
-                .push(ClosedConnectionEntry { entry, closed_at });
+            let next = ClosedConnectionEntry { entry, closed_at };
+            let id = next.entry.id.clone();
+            let old_at = self.entries.iter().position(|old| old.entry.id == id);
+            if old_at.is_some_and(|at| self.entries[at] == next) {
+                continue;
+            }
+            if !events.reset {
+                initially_present
+                    .entry(id.clone())
+                    .or_insert(old_at.is_some());
+                changed_ids.insert(id.clone());
+            }
+            if let Some(at) = old_at {
+                self.entries.remove(at);
+            }
+            self.entries.push(next);
         }
 
         self.entries
             .sort_by_key(|entry| std::cmp::Reverse(entry.closed_at));
-        self.entries.truncate(MAX_CLOSED_HISTORY);
-        self.entries != before
+
+        if events.reset {
+            self.entries.truncate(MAX_CLOSED_HISTORY);
+            return Some(ClosedHistoryChange::Reset {
+                generation: self.generation,
+            });
+        }
+
+        let evicted = if self.entries.len() > MAX_CLOSED_HISTORY {
+            self.entries.split_off(MAX_CLOSED_HISTORY)
+        } else {
+            Vec::new()
+        };
+        let mut removed_ids = Vec::new();
+        for entry in evicted {
+            let id = entry.entry.id;
+            let was_present = initially_present.remove(&id).unwrap_or(true);
+            changed_ids.remove(&id);
+            if was_present {
+                removed_ids.push(id);
+            }
+        }
+        let connections: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|entry| changed_ids.contains(&entry.entry.id))
+            .cloned()
+            .collect();
+        if connections.is_empty() && removed_ids.is_empty() {
+            return None;
+        }
+        removed_ids.sort();
+        Some(ClosedHistoryChange::Delta {
+            generation: self.generation,
+            connections,
+            removed_ids,
+        })
     }
 }
 
@@ -677,7 +849,7 @@ impl StatsRelay {
             broadcast(
                 app,
                 EVENT_CONNECTIONS_CLOSED,
-                self.closed_snapshot(now_ms()),
+                self.closed_update_snapshot(now_ms()),
             );
         }
     }
@@ -788,12 +960,14 @@ impl StatsRelay {
         }
     }
 
-    fn closed_snapshot(&self, at: u64) -> ConnectionsClosedSnapshot {
+    fn closed_update_snapshot(&self, at: u64) -> ConnectionsClosedUpdate {
         self.closed_history
             .lock()
-            .map(|history| history.snapshot(at))
-            .unwrap_or(ConnectionsClosedSnapshot {
+            .map(|history| history.update_snapshot(at))
+            .unwrap_or(ConnectionsClosedUpdate {
+                reset: true,
                 connections: Vec::new(),
+                removed_ids: Vec::new(),
                 at,
             })
     }
@@ -1233,6 +1407,7 @@ async fn run_connections_stream(
     let mut agg_emit = EmitGate::new(AGGREGATE_EMIT_MIN_INTERVAL);
     let mut detail_emit = EmitGate::new(DETAIL_EMIT_MIN_INTERVAL);
     let mut closed_emit = EmitGate::new(CLOSED_EMIT_MIN_INTERVAL);
+    let mut closed_pending = PendingClosedUpdate::default();
     let mut last_sig: Option<String> = None;
     let mut offline_sent = false;
 
@@ -1276,6 +1451,7 @@ async fn run_connections_stream(
         agg_emit.reset();
         detail_emit.reset();
         closed_emit.reset();
+        closed_pending.clear();
         offline_sent = false;
         log::debug!("连接流已订阅（port={port}）");
 
@@ -1301,14 +1477,15 @@ async fn run_connections_stream(
                 frame = stream.recv() => match frame {
                     Some(ev) => {
                         let events = daemon_events_to_engine(&ev);
-                        let closed_changed = closed_history
+                        let closed_change = closed_history
                             .lock()
                             .map(|mut history| history.apply_events(&events, &table))
-                            .unwrap_or(false);
+                            .unwrap_or(None);
                         table.on_connection_events(&events, 0);
                         agg_emit.note_change();
                         detail_emit.note_change();
-                        if closed_changed {
+                        if let Some(change) = closed_change {
+                            closed_pending.merge(change);
                             closed_emit.note_change();
                         }
                     }
@@ -1352,8 +1529,13 @@ async fn run_connections_stream(
             if closed_emit.should_emit(now) {
                 if gate.topic_open(Topic::Closed) {
                     if let Ok(history) = closed_history.lock() {
-                        broadcast(&app, EVENT_CONNECTIONS_CLOSED, history.snapshot(now_ms()));
+                        if let Some(update) = closed_pending.take_update(&history, now_ms()) {
+                            broadcast(&app, EVENT_CONNECTIONS_CLOSED, update);
+                        }
                     }
+                } else {
+                    // 无消费者时丢掉在途增量；未来订阅会立即收到一帧 reset 全量。
+                    closed_pending.clear();
                 }
                 closed_emit.mark_emitted(now);
             }
@@ -1550,7 +1732,10 @@ mod tests {
                 .collect(),
         };
         let mut history = ClosedHistory::default();
-        assert!(history.apply_events(&events, &StatsAggregator::new()));
+        assert!(matches!(
+            history.apply_events(&events, &StatsAggregator::new()),
+            Some(ClosedHistoryChange::Reset { .. })
+        ));
         assert_eq!(history.entries.len(), MAX_CLOSED_HISTORY);
         assert_eq!(history.entries.first().unwrap().closed_at, 1_002);
         assert_eq!(history.entries.last().unwrap().closed_at, 3);
@@ -1575,7 +1760,10 @@ mod tests {
                 },
             ],
         };
-        assert!(history.apply_events(&events, &StatsAggregator::new()));
+        assert!(matches!(
+            history.apply_events(&events, &StatsAggregator::new()),
+            Some(ClosedHistoryChange::Reset { .. })
+        ));
         assert_eq!(history.entries.len(), 1);
         assert_eq!(history.entries[0].entry.id, "new");
     }
@@ -1604,13 +1792,83 @@ mod tests {
             }],
         };
         let mut history = ClosedHistory::default();
-        assert!(history.apply_events(&closed, &active));
+        assert!(matches!(
+            history.apply_events(&closed, &active),
+            Some(ClosedHistoryChange::Delta { .. })
+        ));
         assert_eq!(history.entries[0].entry.id, "live");
         active.on_connection_events(&closed, 0);
         assert_eq!(
             active.conn_count(),
             0,
             "活动表仍按 CLOSED 删除，不被历史污染"
+        );
+    }
+
+    #[test]
+    fn closed_history_delta_only_carries_touched_and_evicted_entries() {
+        let mut history = ClosedHistory::default();
+        let reset = SingBoxConnectionEvents {
+            reset: true,
+            events: (1..=MAX_CLOSED_HISTORY)
+                .map(|n| SingBoxConnectionEvent {
+                    kind: ConnectionEventType::New,
+                    connection: Some(engine_conn(&format!("c{n}"), n as i64)),
+                    ..Default::default()
+                })
+                .collect(),
+        };
+        history
+            .apply_events(&reset, &StatsAggregator::new())
+            .expect("reset 必须产生首帧");
+
+        let delta = SingBoxConnectionEvents {
+            reset: false,
+            events: vec![SingBoxConnectionEvent {
+                kind: ConnectionEventType::Closed,
+                connection: Some(engine_conn("c1001", 1_001)),
+                ..Default::default()
+            }],
+        };
+        let change = history
+            .apply_events(&delta, &StatsAggregator::new())
+            .expect("新 CLOSED 必须产生增量");
+        let ClosedHistoryChange::Delta {
+            connections,
+            removed_ids,
+            ..
+        } = change
+        else {
+            panic!("常态 CLOSED 不应升格为 reset");
+        };
+        assert_eq!(connections.len(), 1, "不得夹带其余 999 条历史");
+        assert_eq!(connections[0].entry.id, "c1001");
+        assert_eq!(removed_ids, vec!["c1"]);
+
+        let same = history.apply_events(&delta, &StatsAggregator::new());
+        assert!(same.is_none(), "完全相同的重放不应制造空增量");
+    }
+
+    #[test]
+    fn clear_generation_discards_pending_pre_clear_delta() {
+        let mut history = ClosedHistory::default();
+        let event = SingBoxConnectionEvents {
+            reset: false,
+            events: vec![SingBoxConnectionEvent {
+                kind: ConnectionEventType::Closed,
+                connection: Some(engine_conn("old", 10)),
+                ..Default::default()
+            }],
+        };
+        let change = history
+            .apply_events(&event, &StatsAggregator::new())
+            .expect("前置增量");
+        let mut pending = PendingClosedUpdate::default();
+        pending.merge(change);
+        history.clear(20);
+        assert!(
+            pending.take_update(&history, 30).is_none(),
+            "清空前的在途增量不得在清空后 emit"
         );
     }
 

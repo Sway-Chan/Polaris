@@ -143,11 +143,30 @@ pub struct ClosedConnectionEntry {
     pub closed_at: i64,
 }
 
-/// 已结束连接历史快照（closed topic 订阅载荷）。
+/// 已结束连接历史全量快照（命令式读取 / 清空返回值）。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionsClosedSnapshot {
     /// 最新结束的连接在前；生产者负责有界保存。
     pub connections: Vec<ClosedConnectionEntry>,
+    /// 采样时刻 epoch ms。
+    pub at: u64,
+}
+
+/// 已结束连接的 closed topic 推送帧。订阅首帧 / 内核 reset / 用户清空用 `reset=true`
+/// 下发完整有界快照；常态只下发本批 upsert 与被上限淘汰的 id。
+///
+/// 这个类型与 [`ConnectionsClosedSnapshot`] 分开：后者是命令式“读当前全量”的
+/// 返回值，本类型是长驻事件管道，不应因新结束一条就重复序列化全部 1000 条。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionsClosedUpdate {
+    /// true = `connections` 取代前端全部历史；false = 按 id upsert。
+    pub reset: bool,
+    /// reset 帧是完整快照；增量帧只含新增/变更条目。
+    pub connections: Vec<ClosedConnectionEntry>,
+    /// 由于 1000 条上限或同步校正而需从前端移除的连接 id。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_ids: Vec<String>,
     /// 采样时刻 epoch ms。
     pub at: u64,
 }
@@ -375,6 +394,27 @@ mod tests {
         ];
         want.sort_unstable();
         assert_eq!(got, want, "TrafficStats 的 JSON 键名与 TS 契约不一致");
+    }
+
+    #[test]
+    fn closed_update_json_keys_match_ts_contract() {
+        let v = serde_json::to_value(ConnectionsClosedUpdate {
+            reset: false,
+            connections: Vec::new(),
+            removed_ids: vec!["gone".into()],
+            at: 1,
+        })
+        .expect("ConnectionsClosedUpdate 应可序列化");
+        let mut got: Vec<&str> = v
+            .as_object()
+            .expect("closed update 应是 JSON 对象")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        got.sort_unstable();
+        let mut want = ["reset", "connections", "removedIds", "at"];
+        want.sort_unstable();
+        assert_eq!(got, want, "closed update 的 JSON 键名与 TS 契约不一致");
     }
 
     /// 重命名后**反序列化仍认得自己写出去的键**（Serialize/Deserialize 对称）。

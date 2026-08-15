@@ -605,6 +605,7 @@ import type {
   ConnectionsSnapshot,
   ConnectionsAggregate,
   ConnectionsClosedSnapshot,
+  ConnectionsClosedUpdate,
 } from '../contracts/types';
 
 export const statsApi = {
@@ -639,9 +640,9 @@ export const statsApi = {
 
   /** closed topic：独立的已结束连接历史。 */
   onConnectionsClosed(
-    listener: (data: ConnectionsClosedSnapshot) => void
+    listener: (data: ConnectionsClosedUpdate) => void
   ): () => void {
-    return listen<ConnectionsClosedSnapshot>(STATS_TOPIC_EVENT.closed, listener);
+    return listen<ConnectionsClosedUpdate>(STATS_TOPIC_EVENT.closed, listener);
   },
 
   /** 清空已结束历史并设置重放水位。 */

@@ -13,7 +13,7 @@ use tauri::{AppHandle, State, WebviewWindow};
 use crate::events::{broadcast, channel::EVENT_CONNECTIONS_CLOSED};
 use crate::response::{ok_void, ApiResponse};
 use crate::runtime::AppRuntime;
-use polaris_stats_engine::ConnectionsClosedSnapshot;
+use polaris_stats_engine::{ConnectionsClosedSnapshot, ConnectionsClosedUpdate};
 
 /// 上游 `STATS_SUBSCRIBE`：订阅某 topic（main 挂订阅 + 即回初始帧）。
 ///
@@ -53,6 +53,15 @@ pub fn stats_closed_clear(
     state: State<'_, AppRuntime>,
 ) -> ApiResponse<ConnectionsClosedSnapshot> {
     let snapshot = state.stats().clear_closed_history();
-    broadcast(&app, EVENT_CONNECTIONS_CLOSED, snapshot.clone());
+    broadcast(
+        &app,
+        EVENT_CONNECTIONS_CLOSED,
+        ConnectionsClosedUpdate {
+            reset: true,
+            connections: Vec::new(),
+            removed_ids: Vec::new(),
+            at: snapshot.at,
+        },
+    );
     ApiResponse::ok(snapshot)
 }

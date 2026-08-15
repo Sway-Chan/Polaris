@@ -63,7 +63,7 @@ pub use subscription::{SubscriptionRegistry, SubscriptionToken, Topic};
 pub use types::{
     ClosedConnectionEntry, ConnectionAggFlow, ConnectionAggHost, ConnectionAggOutbound,
     ConnectionEntry, ConnectionEventType, ConnectionMetadata, ConnectionsAggregate,
-    ConnectionsClosedSnapshot, ConnectionsSnapshot, SingBoxConnection, SingBoxConnectionEvent,
-    SingBoxConnectionEvents, SingBoxProcessInfo, SingBoxStatus, TrafficStats, TOPOLOGY_OTHERS_KEY,
-    TOPOLOGY_TOP_N,
+    ConnectionsClosedSnapshot, ConnectionsClosedUpdate, ConnectionsSnapshot, SingBoxConnection,
+    SingBoxConnectionEvent, SingBoxConnectionEvents, SingBoxProcessInfo, SingBoxStatus,
+    TrafficStats, TOPOLOGY_OTHERS_KEY, TOPOLOGY_TOP_N,
 };

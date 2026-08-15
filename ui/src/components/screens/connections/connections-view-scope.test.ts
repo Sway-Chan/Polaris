@@ -160,4 +160,13 @@ describe('连接列表内存边界', () => {
     const effect = SRC.slice(SRC.lastIndexOf('useEffect(', at), SRC.indexOf(']);', at));
     expect(effect).not.toContain('setRows([])');
   });
+
+  it('已结束 topic 走有界增量索引，未变行不重建', () => {
+    expect(SRC).toContain('createTopicSubscription<ConnectionsClosedUpdate>');
+    expect(SRC).toContain('applyClosedHistoryUpdate(closedIndexRef.current, update)');
+    expect(SRC).toContain('cached?.source === source');
+    expect(SRC).not.toContain('snapshot.connections.map(({ entry, closedAt })');
+    expect(SRC).toContain('closedIndexRef.current.clear()');
+    expect(SRC).toContain('closedRowRef.current.clear()');
+  });
 });
