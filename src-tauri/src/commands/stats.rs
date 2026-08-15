@@ -1,7 +1,7 @@
 //! stats 订阅类 command（上游 `stats-subscription-handlers.ts`）。
 //!
 //! 映射 channel：
-//! - `stats:subscribe` → [`stats_subscribe`]（topic = stats | aggregate | detail）
+//! - `stats:subscribe` → [`stats_subscribe`]（topic = stats | aggregate | detail | closed）
 //! - `stats:unsubscribe` → [`stats_unsubscribe`]
 //!
 //! Polaris 按 webContents.sender 记账；Tauri 按 webview label（window label）记账。
@@ -10,8 +10,10 @@
 
 use tauri::{AppHandle, State, WebviewWindow};
 
+use crate::events::{broadcast, channel::EVENT_CONNECTIONS_CLOSED};
 use crate::response::{ok_void, ApiResponse};
 use crate::runtime::AppRuntime;
+use polaris_stats_engine::ConnectionsClosedSnapshot;
 
 /// 上游 `STATS_SUBSCRIBE`：订阅某 topic（main 挂订阅 + 即回初始帧）。
 ///
@@ -42,4 +44,15 @@ pub fn stats_unsubscribe(
 ) -> ApiResponse<()> {
     state.stats().unsubscribe(window.label(), &topic);
     ok_void()
+}
+
+/// 清空独立的已结束连接历史。水位由 runtime 记录，后续 gRPC reset 不会把已清的旧历史重新灌回。
+#[tauri::command]
+pub fn stats_closed_clear(
+    app: AppHandle,
+    state: State<'_, AppRuntime>,
+) -> ApiResponse<ConnectionsClosedSnapshot> {
+    let snapshot = state.stats().clear_closed_history();
+    broadcast(&app, EVENT_CONNECTIONS_CLOSED, snapshot.clone());
+    ApiResponse::ok(snapshot)
 }

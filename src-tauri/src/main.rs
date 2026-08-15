@@ -1764,6 +1764,7 @@ fn main() {
             // ── stats 订阅（stats:subscribe/unsubscribe）──
             stats_subscribe,
             stats_unsubscribe,
+            stats_closed_clear,
             // ── 系统能力（system:listProcesses）──
             system_list_processes,
             // ── helper（helper:getStatus/install/uninstall）──

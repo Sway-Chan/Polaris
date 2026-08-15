@@ -152,6 +152,18 @@ export interface ConnectionsSnapshot {
   at: number; // 采样时刻 epoch ms
 }
 
+/** 已结束连接；closedAt 为 sing-box UnixNano。 */
+export interface ClosedConnectionEntry {
+  entry: ConnectionEntry;
+  closedAt: number;
+}
+
+/** 已结束连接历史快照：最新在前，后端最多保留 1000 条。 */
+export interface ConnectionsClosedSnapshot {
+  connections: ClosedConnectionEntry[];
+  at: number;
+}
+
 /** 拓扑「其它」分组的 sentinel host 名（聚合 Top-N 截断后剩余的合并条目）。渲染端 topology-layout 见此值 →
  *  替换为 i18n 文案 t('home.others')。用控制字符前缀确保绝不与真实 host/IP/rule 名冲突。 */
 export const TOPOLOGY_OTHERS_KEY = '\u0000others';

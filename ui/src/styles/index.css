@@ -878,6 +878,11 @@ body:has(.pending-bar.show) #toast-stack{
 .conn-table .c-chain{ width:140px; max-width:140px; }
 .conn-table .c-dest{ width:160px; max-width:160px; }
 .conn-table .c-rate{ width:124px; max-width:124px; }
+.conn-table .c-ended{ width:142px; max-width:142px; }
+/* 活动/已结束表采用固定行高虚拟化：DOM 中只保留视口附近约几十行，spacer 恢复完整滚动高度。 */
+.conn-table .conn-data-row{ height:53px; }
+.conn-table .conn-spacer td{ padding:0; border:0; background:transparent; }
+.conn-table .conn-spacer:hover td{ background:transparent; }
 
 /* 节点卡「再点一次确认切换」的**就地**视觉。整卡是触发面之一，而卡上那颗按钮的 `.confirming` 翻红
  * 只覆盖了按钮那一小块——用户点的往往是卡面本身，没有卡级反馈就等于「点了没反应」。

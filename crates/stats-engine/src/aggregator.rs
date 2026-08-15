@@ -458,6 +458,11 @@ impl StatsAggregator {
         self.conn_map.values().cloned().collect()
     }
 
+    /// 按 id 借用活动连接。CLOSED 帧若省略完整 payload，已结束历史可在删表前用它补齐最终展示字段。
+    pub fn entry(&self, id: &str) -> Option<&ConnectionEntry> {
+        self.conn_map.get(id)
+    }
+
     /// 当前连接明细快照（对应 getConnectionsSnapshot，StatsService.ts:275）。`at` = 调用时刻 epoch ms。
     pub fn connections_snapshot(&self, at: u64) -> ConnectionsSnapshot {
         ConnectionsSnapshot {

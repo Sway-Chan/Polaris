@@ -1,9 +1,8 @@
 /**
- * 连接页「哪些东西只属于明细视图」的守卫 —— 工具栏三个控件 + detail 订阅腿。
+ * 连接页三视图作用域守卫 —— 共用列表控件、活动动作、已结束动作与各自订阅腿。
  *
- * 两件事同源：搜索 / 暂停 / 关闭全部只作用于明细表，而 detail 那条 1s 全量连接快照的产物
- * （`rows` / `filteredRows` / `total`）也只有明细表消费。默认视图改成拓扑之后，前者是「进页第一眼全是
- * 空按钮」，后者是「每进一次连接页白付一份序列化 + IPC」。故一并 gate 在 `view === 'table'`。
+ * 搜索只属于活动/已结束列表；暂停与关闭只属于活动连接；清空只属于已结束历史。detail 数据也只在
+ * 活动视图消费。默认拓扑下这些控件与数据链必须全部卸载。
  *
  * 为什么是源码结构守卫：本仓 vitest 是 node 环境、全仓无组件渲染测试
  * （见 `connections-context-menu.test.ts` 头注）。条件渲染与 effect 的 gate 都是 JSX / 依赖数组层的
@@ -24,42 +23,50 @@ const SRC = code(
   readFileSync(fileURLToPath(new URL('./ConnectionsScreen.tsx', import.meta.url)), 'utf8'),
 );
 
-describe('工具栏：只属于明细表的控件不进拓扑视图', () => {
+describe('工具栏：列表控件不进拓扑，动作不跨生命周期', () => {
   /**
-   * 搜索框 / 暂停 / 关闭全部三个必须落在 `view === 'table'` 的条件渲染**之内**。
+   * 搜索框必须落在列表 gate 内，活动动作与历史动作还要各自落在更窄的生命周期 gate 内。
    *
    * 断在 `.conn-toolbar` 片段内，免得被页面别处的同名条件（如 `#conn-table-view` 的 `hidden`）带偏；
    * 用 id / 回调锚点而不是文案 key —— 换文案不误伤，挪出 gate 必红。
    *
-   * 变异对照：删掉 `{view === 'table' && (` 这一层（三个恒渲染）→ 转红；
-   * 把其中任一个挪到 gate 外面 → 转红；把条件改成 `view === 'top'` → 转红。
+   * 变异对照：删掉列表 gate，或把任一动作挪进错误生命周期 → 转红。
    *
    * 抓不到的：CSS 层面把它们又显示回来（本仓 `.conn-toolbar` 无此类规则）、
    * 以及「渲染了但看不见」这类视觉问题——那要真机。
    */
-  it('搜索 / 暂停 / 关闭全部包在 view === table 的条件渲染里', () => {
+  it('搜索属于两种列表，活动关闭与历史清空各归各位', () => {
     const start = SRC.indexOf('className="conn-toolbar"');
     expect(start).toBeGreaterThan(-1);
     const toolbar = SRC.slice(start, SRC.indexOf('id="conn-table-view"', start));
 
-    const guard = toolbar.indexOf("{view === 'table' && (");
-    expect(guard, '工具栏里没有 view === table 的条件渲染').toBeGreaterThan(-1);
+    const guard = toolbar.indexOf("{(view === 'active' || view === 'closed') && (");
+    expect(guard, '工具栏里没有列表视图条件渲染').toBeGreaterThan(-1);
     const fragOpen = toolbar.indexOf('<>', guard);
     const fragClose = toolbar.indexOf('</>', guard);
     expect(fragOpen).toBeGreaterThan(guard);
     expect(fragClose).toBeGreaterThan(fragOpen);
 
-    for (const [what, anchor] of [
-      ['搜索框', 'id="conn-search"'],
-      ['暂停按钮', 'id="conn-pause-btn"'],
-      ['关闭全部', 'CLOSE_ALL_KEY, () => void onCloseAll()'],
-      ['关闭筛选命中', 'CLOSE_FILTERED_KEY, () => void onCloseFiltered()'],
-    ] as const) {
+    for (const [what, anchor] of [['搜索框', 'id="conn-search"']] as const) {
       const at = toolbar.indexOf(anchor);
       expect(at, `${what} 不在工具栏里`).toBeGreaterThan(-1);
-      expect(at, `${what} 落在 view === table 的 gate 之外`).toBeGreaterThan(fragOpen);
-      expect(at, `${what} 落在 view === table 的 gate 之外`).toBeLessThan(fragClose);
+      expect(at, `${what} 落在列表 gate 之外`).toBeGreaterThan(fragOpen);
+      expect(at, `${what} 落在列表 gate 之外`).toBeLessThan(fragClose);
     }
+    const active = toolbar.indexOf("{view === 'active' && <>", guard);
+    const closed = toolbar.indexOf("{view === 'closed' &&", guard);
+    expect(active).toBeGreaterThan(guard);
+    expect(closed).toBeGreaterThan(active);
+    for (const anchor of [
+      'id="conn-pause-btn"',
+      'CLOSE_ALL_KEY, () => void onCloseAll()',
+      'CLOSE_FILTERED_KEY, () => void onCloseFiltered()',
+    ]) {
+      const at = toolbar.indexOf(anchor);
+      expect(at).toBeGreaterThan(active);
+      expect(at).toBeLessThan(closed);
+    }
+    expect(toolbar.indexOf('CLEAR_CLOSED_KEY, () => void onClearClosed()')).toBeGreaterThan(closed);
   });
 
   /**
@@ -70,9 +77,10 @@ describe('工具栏：只属于明细表的控件不进拓扑视图', () => {
   it('视图 tab 本身不受 gate 影响', () => {
     const start = SRC.indexOf('className="conn-toolbar"');
     const toolbar = SRC.slice(start, SRC.indexOf('id="conn-table-view"', start));
-    const guard = toolbar.indexOf("{view === 'table' && (");
+    const guard = toolbar.indexOf("{(view === 'active' || view === 'closed') && (");
     expect(toolbar.indexOf("setView('top')")).toBeLessThan(guard);
-    expect(toolbar.indexOf("setView('table')")).toBeLessThan(guard);
+    expect(toolbar.indexOf("setView('active')")).toBeLessThan(guard);
+    expect(toolbar.indexOf("setView('closed')")).toBeLessThan(guard);
   });
 });
 
@@ -86,12 +94,12 @@ describe('detail 订阅腿随明细视图开关', () => {
    * 变异对照：把守卫改回 `if (paused) return;` → 第一条转红；
    * 依赖数组去掉 `view`（留守卫）→ 第二条转红。
    */
-  it('gate = paused + view === table，且 view 在依赖数组里', () => {
+  it('gate = paused + view === active，且 view 在依赖数组里', () => {
     const at = SRC.indexOf("api.stats.subscribe('detail')");
     expect(at).toBeGreaterThan(-1);
     const head = SRC.slice(SRC.lastIndexOf('useEffect(', at), at);
     expect(head).toContain('paused');
-    expect(head, "detail 腿没有 gate 在 view === 'table'").toContain("view !== 'table'");
+    expect(head, "detail 腿没有 gate 在 view === 'active'").toContain("view !== 'active'");
 
     const deps = SRC.slice(SRC.indexOf('}, [', at), SRC.indexOf(']);', at) + 3);
     expect(deps, 'view 不在 detail effect 的依赖数组里').toContain('view');
@@ -117,10 +125,31 @@ describe('detail 订阅腿随明细视图开关', () => {
    *
    * 变异对照：在 effect 的 cleanup（或切视图处）加 `setRows([])` → 本条转红。
    */
-  it('退订时不清空行缓存', () => {
+  it('暂停退订不清行，切走由独立生命周期 effect 释放缓存', () => {
     const at = SRC.indexOf("api.stats.subscribe('detail')");
     const tail = SRC.slice(at, SRC.indexOf(']);', at));
     expect(tail).not.toContain('setRows([])');
     expect(tail).toContain('sub.dispose()');
+    expect(SRC).toContain("if (view === 'active') return;");
+    expect(SRC).toContain('setRows([])');
+  });
+});
+
+describe('连接列表内存边界', () => {
+  it('列表按视图条件挂载且行由固定行高虚拟化，不再 hidden 保留整表 DOM', () => {
+    expect(SRC).toContain("(view === 'active' || view === 'closed') && (");
+    expect(SRC).not.toMatch(/id="conn-table-view"\s+hidden=/);
+    expect(SRC).toContain('useVirtualRows(filteredRows.length, view)');
+    expect(SRC).toContain('filteredRows.slice(virtual.start, virtual.end)');
+    expect(SRC).toContain('style={{ height: virtual.topSpace }}');
+    expect(SRC).toContain('style={{ height: virtual.bottomSpace }}');
+  });
+
+  it('切离活动视图释放活动行缓存；暂停仍只退订并保留当前视口', () => {
+    expect(SRC).toContain("if (view === 'active') return;");
+    expect(SRC).toContain('setRows([])');
+    const at = SRC.indexOf("api.stats.subscribe('detail')");
+    const effect = SRC.slice(SRC.lastIndexOf('useEffect(', at), SRC.indexOf(']);', at));
+    expect(effect).not.toContain('setRows([])');
   });
 });

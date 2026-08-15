@@ -61,8 +61,9 @@ pub use resubscribe::{
 pub use stream::{ConnectionEventStream, StatusStream, VecConnectionEventStream, VecStatusStream};
 pub use subscription::{SubscriptionRegistry, SubscriptionToken, Topic};
 pub use types::{
-    ConnectionAggFlow, ConnectionAggHost, ConnectionAggOutbound, ConnectionEntry,
-    ConnectionEventType, ConnectionMetadata, ConnectionsAggregate, ConnectionsSnapshot,
-    SingBoxConnection, SingBoxConnectionEvent, SingBoxConnectionEvents, SingBoxProcessInfo,
-    SingBoxStatus, TrafficStats, TOPOLOGY_OTHERS_KEY, TOPOLOGY_TOP_N,
+    ClosedConnectionEntry, ConnectionAggFlow, ConnectionAggHost, ConnectionAggOutbound,
+    ConnectionEntry, ConnectionEventType, ConnectionMetadata, ConnectionsAggregate,
+    ConnectionsClosedSnapshot, ConnectionsSnapshot, SingBoxConnection, SingBoxConnectionEvent,
+    SingBoxConnectionEvents, SingBoxProcessInfo, SingBoxStatus, TrafficStats, TOPOLOGY_OTHERS_KEY,
+    TOPOLOGY_TOP_N,
 };

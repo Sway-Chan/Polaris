@@ -225,6 +225,13 @@ interface ImplOnlyRow {
 
 const IMPL_ONLY: readonly ImplOnlyRow[] = [
   {
+    key: 'conn-clear-closed',
+    file: 'components/screens/connections/ConnectionsScreen.tsx',
+    why:
+      '清空已结束连接历史会永久丢失当前会话内最多 1000 条诊断记录，且清空水位会阻止上游重放恢复，' +
+      '属于不可撤销的数据删除，因此保留二次确认。',
+  },
+  {
     key: 'node-use',
     file: 'components/screens/nodes/NodesScreen.tsx',
     why:

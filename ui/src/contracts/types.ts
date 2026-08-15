@@ -88,6 +88,8 @@ export type {
   InvalidNodeInfo,
   ConnectionEntry,
   ConnectionsSnapshot,
+  ClosedConnectionEntry,
+  ConnectionsClosedSnapshot,
   ConnectionsAggregate,
   ConnectionAggHost,
   ConnectionAggOutbound,

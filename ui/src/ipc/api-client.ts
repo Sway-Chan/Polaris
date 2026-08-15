@@ -604,10 +604,11 @@ import type { TrafficStats } from '../contracts/types';
 import type {
   ConnectionsSnapshot,
   ConnectionsAggregate,
+  ConnectionsClosedSnapshot,
 } from '../contracts/types';
 
 export const statsApi = {
-  /** 订阅某 topic（stats|aggregate|detail）：后端挂订阅 + 即回初始帧。 */
+  /** 订阅某 topic（stats|aggregate|detail|closed）：后端挂订阅 + 即回初始帧。 */
   async subscribe(topic: StatsTopic): Promise<void> {
     return invoke(IPC_CHANNELS.STATS_SUBSCRIBE, { topic });
   },
@@ -634,6 +635,18 @@ export const statsApi = {
     listener: (data: ConnectionsSnapshot) => void
   ): () => void {
     return listen<ConnectionsSnapshot>(STATS_TOPIC_EVENT.detail, listener);
+  },
+
+  /** closed topic：独立的已结束连接历史。 */
+  onConnectionsClosed(
+    listener: (data: ConnectionsClosedSnapshot) => void
+  ): () => void {
+    return listen<ConnectionsClosedSnapshot>(STATS_TOPIC_EVENT.closed, listener);
+  },
+
+  /** 清空已结束历史并设置重放水位。 */
+  async clearClosed(): Promise<ConnectionsClosedSnapshot> {
+    return invoke(IPC_CHANNELS.STATS_CLOSED_CLEAR);
   },
 };
 

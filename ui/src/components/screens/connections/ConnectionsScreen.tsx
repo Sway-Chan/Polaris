@@ -4,7 +4,7 @@
  *
  * 结构对齐原型：
  *  - .phead（标题）
- *  - .conn-toolbar（明细/TOP tab + 搜索 + 暂停 + 关闭全部）
+ *  - .conn-toolbar（拓扑/活动/已结束 + 当前列表工具）
  *  - #conn-table-view（.conn-scroll > .conn-list-wrap > table.conn-table：域名/目标/规则/出站链/上下行/累计/时长 + 关闭列，横向滚动）
  *  - #conn-top-view（Top-N 域名 + 出站分布，.top-grid）
  *
@@ -16,11 +16,11 @@
  *  - 关全部：connectionsApi.closeAll()（真调 CloseAllConnections）
  *  - 暂停：**退订**冻结（不是只冻渲染）——暂停即 unsubscribe('detail')，后端据订阅集降 worker demand，
  *    整条 1s 轮询 + 逐帧序列化链路停机；恢复即重订，下一帧（≤1s）回填。
- *    **切到拓扑视图是同一次退订**：detail 腿同时 gate 在 `view === 'table'`（它的产物只有表视图消费）。
+ *    **切到其它视图是同一次退订**：活动列表不再消费明细帧时，整条数据链立即停机。
  *    故工具栏里只作用于明细表的三个控件（搜索 / 暂停 / 关闭全部）在拓扑视图下一并隐掉，
  *    判据见 `.conn-toolbar` 处注释。
  *  - 排序：全部 9 个数据列本地可排序（rate/total 需前帧 diff 算速率）
- *  - 截断：过滤 + 排序**之后**取前 500 行渲染（数千连接时全量 .map 撑爆 DOM）
+ *  - 虚拟化：活动与已结束列表只挂载视口附近的行；切走即卸载整张表 DOM
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -37,16 +37,18 @@ import type {
   ConnectionEntry,
   ConnectionsSnapshot,
   ConnectionsAggregate,
+  ConnectionsClosedSnapshot,
 } from '@/contracts/types';
 import { TOPOLOGY_OTHERS_KEY } from '@/contracts/types';
-import { fmtBytes, fmtDuration, fmtRate, ageFromStart } from '../shared/format';
+import { fmtBytes, fmtDuration, fmtRate } from '../shared/format';
 import { connectionRuleSubjects } from './connection-rule-subjects';
 
-type ConnView = 'table' | 'top';
+type ConnView = 'top' | 'active' | 'closed';
 
 /** 本屏两个原地二次确认项（原型 :4113 `conn-close-all` / :4114 `conn-close-filtered`）。 */
 const CLOSE_ALL_KEY = 'conn-close-all';
 const CLOSE_FILTERED_KEY = 'conn-close-filtered';
+const CLEAR_CLOSED_KEY = 'conn-clear-closed';
 /**
  * 可排序列键 —— 表内**每个数据列**都在列（close 是操作列，不参与）。
  *
@@ -63,16 +65,12 @@ type SortKey =
   | 'rate'
   | 'total'
   | 'time'
+  | 'ended'
   | 'proc';
 
-/**
- * 单帧最多渲染的行数（对齐 上游 `MAX_VISIBLE_ROWS`，connections-table.tsx:317）。
- *
- * TUN / BT 场景下活动连接可达数千，全量 `.map` 出的 DOM 行每秒重渲一次直接拖垮主线程。
- * `<table>` 语义下真虚拟化要破坏表结构、收益有限，故取「截断 + 明示提示 + 引导用搜索缩小」这一务实解。
- * **截断发生在过滤与排序之后**：先截再排会让「按流量排序」只在随机的前 500 条里排，排序结果是错的。
- */
-const MAX_VISIBLE_ROWS = 500;
+/** 固定行高虚拟化：只创建视口 + 少量缓冲行，避免 WebKit 为数千单元格保留大块 graphics surface。 */
+const CONNECTION_ROW_HEIGHT = 53;
+const CONNECTION_ROW_OVERSCAN = 8;
 /**
  * TOP 视图展示条数（原型 seg2 :2026，默认 10）。
  *
@@ -108,42 +106,101 @@ interface ConnRow {
   dnRate: number;
   /** 连接时长（秒）。 */
   age: number;
+  /** 已结束时间 epoch ms；活动连接为 null。 */
+  endedAt: number | null;
+}
+
+function useVirtualRows(count: number, resetKey: string) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [viewport, setViewport] = useState({ top: 0, height: 480 });
+
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const update = () =>
+      setViewport({ top: element.scrollTop, height: element.clientHeight || 480 });
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [resetKey]);
+
+  const start = Math.max(
+    0,
+    Math.floor(viewport.top / CONNECTION_ROW_HEIGHT) - CONNECTION_ROW_OVERSCAN,
+  );
+  const end = Math.min(
+    count,
+    Math.ceil((viewport.top + viewport.height) / CONNECTION_ROW_HEIGHT) +
+      CONNECTION_ROW_OVERSCAN,
+  );
+  return {
+    scrollRef,
+    start,
+    end,
+    topSpace: start * CONNECTION_ROW_HEIGHT,
+    bottomSpace: Math.max(0, (count - end) * CONNECTION_ROW_HEIGHT),
+    onScroll: () => {
+      const element = scrollRef.current;
+      if (element) setViewport({ top: element.scrollTop, height: element.clientHeight || 480 });
+    },
+  };
+}
+
+function projectConnection(
+  entry: ConnectionEntry,
+  endedAt: number | null,
+  rates: { up: number; down: number },
+): ConnRow {
+  const upload = entry.upload ?? 0;
+  const download = entry.download ?? 0;
+  const host = entry.metadata?.host || entry.metadata?.destinationIP || '—';
+  const dest = entry.metadata?.destinationIP
+    ? `${entry.metadata.destinationIP}${
+        entry.metadata.destinationPort ? `:${entry.metadata.destinationPort}` : ''
+      }`
+    : '—';
+  const network = (entry.metadata?.network || '').toLowerCase();
+  const l4Parts = [entry.metadata?.network, entry.metadata?.type].filter(Boolean);
+  const procFull = entry.metadata?.processPath || '';
+  const startAt = entry.start ? Date.parse(entry.start) : Number.NaN;
+  const age = Number.isNaN(startAt)
+    ? 0
+    : Math.max(0, ((endedAt ?? Date.now()) - startAt) / 1000);
+  return {
+    entry,
+    host,
+    dest,
+    rule: entry.rule
+      ? `${entry.rule}${entry.rulePayload ? ` ${entry.rulePayload}` : ''}`
+      : '—',
+    chain: entry.chains?.[0] ?? '—',
+    l4: entry.metadata?.network || entry.metadata?.type || '—',
+    l4Title: l4Parts.length ? l4Parts.join('/') : '—',
+    udp: network === 'udp',
+    procName: procFull ? procFull.split(/[/\\]/).pop() || procFull : '—',
+    procFull,
+    total: upload + download,
+    upRate: rates.up,
+    dnRate: rates.down,
+    age,
+    endedAt,
+  };
 }
 
 export function ConnectionsScreen() {
   const { t } = useTranslation();
   const privacyMode = useAppStore((s) => s.privacyMode);
 
-  /**
-   * 进页默认视图 = 拓扑（tab 顺序亦为「拓扑 | 明细」）。
-   *
-   * 订阅影响仅一侧：aggregate 腿 gate 在 `view === 'top'`，故默认拓扑 ⇒ 进页即订 aggregate。
-   * 不空屏的依据在后端：`run_aggregate_poller` 的首拍不 sleep（`PollGate::next_tick` 的 `ticked`
-   * 分支），且它的内容签名去重状态 `last_sig` 是 poller 任务的局部量 —— 上一屏（Home 拓扑）离开时
-   * 订阅计数归零、poller 停机，本页订阅重新起一个 ⇒ `last_sig` 从 None 开始，首个聚合必推。
-   *
-   * detail 腿**同样** gate 在 view（`view === 'table'`）：它的产物 `rows` / `filteredRows` / `total`
-   * 只有表视图消费，拓扑视图下让那条 1s 全量连接快照继续跑 = 每进一次连接页白付一份后端序列化 +
-   * IPC + 前端 diff。两条腿各订各的视图，同一时刻只有一条在跑。
-   */
   const [view, setView] = useState<ConnView>('top');
-  /**
-   * 搜索词 / 暂停态：切到拓扑视图时**保留**（控件隐掉，state 不清）。
-   *
-   * 判据是「控件与它的效果同进同出」——两者都只作用于明细表，随明细表一起消失、一起回来：
-   * 切回明细时搜索框带着原来的词回来、暂停按钮带着「继续」字样回来，**不存在「效果还在但控件不见了」
-   * 这种看不见的残留态**。反过来切走即清才是问题：那等于用一次 tab 点击悄悄丢掉用户输入
-   * （不可撤销），也让「切走再切回」变成一个隐藏的重置手势。
-   *
-   * `paused` 在拓扑视图下不再有「无法恢复订阅」的隐患 —— detail 腿本就 gate 在 `view === 'table'`，
-   * 拓扑视图下无论暂停与否都是退订态，那里没有可恢复的东西。
-   */
   const [search, setSearch] = useState('');
   const [paused, setPaused] = useState(false);
   const [sort, setSort] = useState<SortState | null>(null);
 
   const [rows, setRows] = useState<ConnRow[]>([]);
-  const [total, setTotal] = useState(0);
+  const [closedRows, setClosedRows] = useState<ConnRow[]>([]);
+  const [activeLoaded, setActiveLoaded] = useState(false);
+  const [closedLoaded, setClosedLoaded] = useState(false);
   const [aggregate, setAggregate] = useState<ConnectionsAggregate | null>(null);
   const [topN, setTopN] = useState<number>(10);
 
@@ -173,6 +230,7 @@ export function ConnectionsScreen() {
     row: ConnRow;
     subjects: RuleSubject[];
     subject: RuleSubject | null;
+    closable: boolean;
   } | null>(null);
   const [menuSize, setMenuSize] = useState({ w: 0, h: 0 });
 
@@ -186,24 +244,6 @@ export function ConnectionsScreen() {
       liveIds.add(entry.id);
       const up = entry.upload ?? 0;
       const dn = entry.download ?? 0;
-      const host =
-        entry.metadata?.host || entry.metadata?.destinationIP || '—';
-      const dest =
-        entry.metadata?.destinationIP
-          ? `${entry.metadata.destinationIP}${
-              entry.metadata.destinationPort
-                ? ':' + entry.metadata.destinationPort
-                : ''
-            }`
-          : '—';
-      const chain = entry.chains?.[0] ?? '—';
-      // L4 类型（对齐 上游 typeOf：network 优先，回落 inbound type）+ 进程名（processPath basename）。
-      const network = (entry.metadata?.network || '').toLowerCase();
-      const l4Parts = [entry.metadata?.network, entry.metadata?.type].filter(Boolean);
-      const l4Title = l4Parts.length ? l4Parts.join('/') : '—';
-      const l4 = entry.metadata?.network || entry.metadata?.type || '—';
-      const procFull = entry.metadata?.processPath || '';
-      const procName = procFull ? procFull.split(/[/\\]/).pop() || procFull : '—';
       const p = prev.get(entry.id);
       let upRate = 0;
       let dnRate = 0;
@@ -213,22 +253,7 @@ export function ConnectionsScreen() {
         dnRate = Math.max(0, (dn - p.dn) / dt);
       }
       prev.set(entry.id, { up, dn, at: now });
-      return {
-        entry,
-        host,
-        dest,
-        rule: entry.rule ? `${entry.rule}${entry.rulePayload ? ' ' + entry.rulePayload : ''}` : '—',
-        chain,
-        l4,
-        l4Title,
-        udp: network === 'udp',
-        procName,
-        procFull,
-        total: up + dn,
-        upRate,
-        dnRate,
-        age: ageFromStart(entry.start) ?? 0,
-      };
+      return projectConnection(entry, null, { up: upRate, down: dnRate });
     });
     // 清理已断开连接的记账
     for (const id of prev.keys()) {
@@ -246,50 +271,11 @@ export function ConnectionsScreen() {
         ? nextRows.filter((r) => !closing.has(r.entry.id))
         : nextRows;
     setRows(visible);
-    // total 取**过滤后**的条数：空表文案据它区分「暂无活动连接」与「没有匹配的连接」，
-    // 若用原始快照长度，关掉最后一条连接的那一秒会误显示成「没有匹配的连接」。
-    setTotal(visible.length);
+    setActiveLoaded(true);
   }, []);
 
-  /* ── 明细订阅：**表视图**订，切走 / 暂停即退订（不是只冻渲染）──
-   *
-   * gate 是两维：`view === 'table'` 且未暂停。加 view 这一维的理由是它的产物只有表视图消费
-   * （`rows` / `filteredRows` / `total`），拓扑视图下继续跑就是每进一次连接页白付一份全量快照的
-   * 序列化 + IPC + 前端 diff。两维是同一件事的两个开关，走同一条退订腿。
-   *
-   * **切走时不清 `rows`**（切回来先看到旧表，下一帧覆盖）：
-   *  - 一致性：暂停走的就是同一条退订腿，而暂停的语义**恰恰是**「把表冻住给我看」——同一个动作
-   *    两种缓存策略会让「暂停」与「切走」变成两套语义。
-   *  - 陈旧窗口很短：后端 `run_detail_poller` 首拍不 sleep（`PollGate::next_tick` 的 `ticked` 分支），
-   *    重订后首帧一趟 IPC 就回来，不是等满 1s。
-   *  - 反面更糟：清空后那一小段里表是空的，而空表文案写着「暂无活动连接」——那是一句**假话**
-   *    （连接一直在），比短暂陈旧更误导，还多一次闪动。
-   *
-   * 但速率记账 `prevRef` **必须清**（见下），否则回来第一帧的速率 = 字节差 / 离开时长。
-   *
-   * 契约是「退订冻结 / 重订恢复」：后端 stats 订阅集是 worker demand 的源，退订 → 1s 轮询管理 API +
-   * 逐帧序列化 relay 整条链路停机。只冻前端渲染的话，数千连接的快照照样每秒序列化 + 过 IPC，
-   * 「暂停」省的只有一次 setState —— 用户按暂停正是因为机器被这条链路拖住了。
-   *
-   * 退订期间没有帧可缓存，故不留「暂停帧」缓冲：恢复即重订，下一帧（≤1s）自然回填。
-   *
-   * 生命周期交给 `createTopicSubscription`（与首页拓扑腿同一份状态机）。**它守的第一条不变式正是
-   * 本页「进页面要等一下才出连接」的成因**：后端 `run_detail_poller` 的首拍不 sleep
-   * （`PollGate::next_tick` 的 `ticked` 分支），订阅一落地就发首帧；而监听若挂在 `subscribe()` 的
-   * `.then()` 里，要多等「invoke 应答回 JS」+「`plugin:event|listen` 再往返一次」两趟才注册得上，
-   * 那一帧必然打在没有监听的窗口上被丢掉 → 白等一整拍（1s）才见第一屏数据。
-   * 换成状态机后 `plugin:event|listen` 的 invoke 排在 `stats_subscribe` **之前**投递，
-   * 同一条 IPC 通道按序处理 ⇒ 首帧必被收到，这个窗口是被关掉而不是被收窄。
-   *
-   * 暂停/恢复走「整条 dispose + 重建」而非 `setWanted(false)`：dispose **当场摘监听**，
-   * 而 `setWanted(false)` 只发退订、监听照旧挂着 —— 后端要等这趟 IPC 落地才停推，那期间的帧仍会
-   * 落到表上，用户按下暂停后还能看见表再跳一两次。 */
   useEffect(() => {
-    if (paused || view !== 'table') return;
-    /* 清速率记账：退订期没有帧，回来后首帧与退订前那帧的 dt = 整个离开/暂停时长，算出来的是
-       「跨越空窗的平均速率」——既不是当前速率也不是历史速率。清掉即让首帧显 0，下一帧（≤1s）起
-       恢复真实速率。放在**订阅这一侧**而非按钮回调里：清空的前提是「刚重新订上」，暂停恢复与
-       切回明细是同一件事，让唯一的订阅点负责，就不会有第二条腿忘了清。 */
+    if (paused || view !== 'active') return;
     prevRef.current.clear();
     const sub = createTopicSubscription<ConnectionsSnapshot>(
       {
@@ -302,6 +288,40 @@ export function ConnectionsScreen() {
     sub.setWanted(true);
     return () => sub.dispose();
   }, [paused, view, applySnapshot]);
+
+  useEffect(() => {
+    if (view === 'active') return;
+    closingRef.current.clear();
+    setRows([]);
+    setActiveLoaded(false);
+  }, [view]);
+
+  useEffect(() => {
+    if (view !== 'closed') return;
+    setClosedLoaded(false);
+    const sub = createTopicSubscription<ConnectionsClosedSnapshot>(
+      {
+        onFrame: (cb) => api.stats.onConnectionsClosed(cb),
+        subscribe: () => api.stats.subscribe('closed'),
+        unsubscribe: () => api.stats.unsubscribe('closed'),
+      },
+      (snapshot) => {
+        setClosedRows(
+          snapshot.connections.map(({ entry, closedAt }) => {
+            const endedAt = Math.max(0, closedAt / 1_000_000);
+            return projectConnection(entry, endedAt, { up: 0, down: 0 });
+          }),
+        );
+        setClosedLoaded(true);
+      },
+    );
+    sub.setWanted(true);
+    return () => {
+      sub.dispose();
+      setClosedRows([]);
+      setClosedLoaded(false);
+    };
+  }, [view]);
 
   /* ── TOP 聚合订阅（切到 top 视图才订，table 视图退订省流）──
    * 同 detail 腿走状态机。这条腿原先连 detail 腿那个 `cancelled` 守卫都没有：tab 连点时 cleanup 跑在
@@ -321,6 +341,11 @@ export function ConnectionsScreen() {
     return () => sub.dispose();
   }, [view]);
 
+  useEffect(() => {
+    setSort(null);
+    setMenu(null);
+  }, [view]);
+
   /* ── 暂停切换 ──
    * 只翻标志位；速率记账的清空归订阅腿（恢复订阅时清，见该 effect 内注释）——切回明细视图也是一次
    * 重订阅，两条路径共用同一处清空，不必各写一份。 */
@@ -338,9 +363,11 @@ export function ConnectionsScreen() {
     [q]
   );
 
-  /** 搜索命中 + 排序后的**完整**列表（未截断）。截断只作用于渲染，不作用于计数与批量关闭。 */
+  const listRows = view === 'closed' ? closedRows : rows;
+
+  /** 搜索命中 + 排序后的完整列表；DOM 由视口虚拟化控制，不截断数据与检索范围。 */
   const filteredRows = useMemo(() => {
-    let list = rows.filter(matchRow);
+    let list = listRows.filter(matchRow);
     if (sort) {
       const { key, dir } = sort;
       const cmp = (a: ConnRow, b: ConnRow): number => {
@@ -361,6 +388,8 @@ export function ConnectionsScreen() {
             return a.total - b.total;
           case 'time':
             return a.age - b.age;
+          case 'ended':
+            return (a.endedAt ?? 0) - (b.endedAt ?? 0);
           case 'proc':
             return a.procName.localeCompare(b.procName);
         }
@@ -368,16 +397,9 @@ export function ConnectionsScreen() {
       list = [...list].sort((a, b) => dir * cmp(a, b));
     }
     return list;
-  }, [rows, matchRow, sort]);
-
-  /** 实际渲染的行：过滤 + 排序**之后**截前 500（顺序颠倒会让排序只在随机子集内成立）。 */
-  const visibleRows = useMemo(
-    () =>
-      filteredRows.length > MAX_VISIBLE_ROWS
-        ? filteredRows.slice(0, MAX_VISIBLE_ROWS)
-        : filteredRows,
-    [filteredRows],
-  );
+  }, [listRows, matchRow, sort]);
+  const virtual = useVirtualRows(filteredRows.length, view);
+  const visibleRows = filteredRows.slice(virtual.start, virtual.end);
 
   /* ── 关单条 / 关全部 ──
    * 后端 connections_close / connections_close_all 已真接管理 API gRPC（commands/proxy.rs:151-188），
@@ -502,6 +524,7 @@ export function ConnectionsScreen() {
   const { armed, confirmTwice } = useConfirmTwice();
   const confirmingAll = armed === CLOSE_ALL_KEY;
   const confirmingFiltered = armed === CLOSE_FILTERED_KEY;
+  const confirmingClear = armed === CLEAR_CLOSED_KEY;
 
   const onCloseAll = useCallback(async () => {
     // 「全部关闭」的射程是当前快照里的全部连接（`rows` 而非 `filteredRows`：搜索框有内容时
@@ -526,7 +549,7 @@ export function ConnectionsScreen() {
   /** 关闭当前筛选命中的全部连接（原型 #conn-close-filtered :2012；仅搜索命中时可用，非「全部关闭」）。 */
   const onCloseFiltered = useCallback(async () => {
     // 用 filteredRows 而非 visibleRows：这个按钮的语义是「关闭筛选命中的**全部**连接」，
-    // 500 行截断是渲染上限，不该把它偷偷降级成「关掉看得见的那 500 条」。
+    // 视口虚拟化只改变 DOM 行数，不得把动作偷偷降级成「只关当前挂载的几十条」。
     const n = filteredRows.length;
     // fan-out **之前**批量入抑制集（同 onCloseAll，理由见 suppressClosing）。
     const ids = filteredRows.map((r) => r.entry.id);
@@ -550,6 +573,22 @@ export function ConnectionsScreen() {
       toast.error(closeFailedText, err instanceof Error ? err.message : undefined);
     }
   }, [filteredRows, suppressClosing, unsuppressClosing, closeFailedText, t]);
+
+  const onClearClosed = useCallback(async () => {
+    try {
+      const snapshot = await api.stats.clearClosed();
+      setClosedRows([]);
+      setClosedLoaded(true);
+      if (snapshot.connections.length === 0) {
+        toast.success(t('connections.closedCleared'));
+      }
+    } catch (error) {
+      toast.error(
+        t('connections.clearClosedFailed'),
+        error instanceof Error ? error.message : undefined,
+      );
+    }
+  }, [t]);
 
   const onSort = useCallback((key: SortKey) => {
     setSort((s) => {
@@ -595,7 +634,7 @@ export function ConnectionsScreen() {
       </div>
 
       <div className="conn-toolbar">
-        {/* TOP 拓扑 / 明细 tab（拓扑在前且为默认视图，见 `view` 初值注释） */}
+        {/* 三个视图对应三种真实生命周期；列表页切走即卸载 DOM 与退订。 */}
         <div className="sub-tabs" role="tablist" aria-label={t('connections.active')} style={{ marginBottom: 0 }}>
           <button
             className={view === 'top' ? 'on' : ''}
@@ -606,29 +645,37 @@ export function ConnectionsScreen() {
             <span>{t('home.connectionTopology')}</span>
           </button>
           <button
-            className={view === 'table' ? 'on' : ''}
+            className={view === 'active' ? 'on' : ''}
             role="tab"
-            aria-selected={view === 'table'}
-            onClick={() => setView('table')}
+            aria-selected={view === 'active'}
+            onClick={() => setView('active')}
           >
-            <span>{t('connections.detailTab')}</span>
+            <span>{t('connections.activeTab')}</span>
+          </button>
+          <button
+            className={view === 'closed' ? 'on' : ''}
+            role="tab"
+            aria-selected={view === 'closed'}
+            onClick={() => setView('closed')}
+          >
+            <span>{t('connections.closedTab')}</span>
           </button>
         </div>
 
         {/*
           工具栏后半段：搜索 / 暂停 / 关闭筛选命中 / 全部关闭 —— **四个都只作用于明细表**，
-          故整体 gate 在 `view === 'table'`，拓扑视图下不渲染。
+          故整体 gate 在列表视图，拓扑视图下不渲染。
           （默认视图改成拓扑之后它们成了进页第一眼，而在那个视图里全是空按钮：搜索过滤的是表的行、
           暂停控制的是表的订阅腿、两颗关闭按钮的射程都来自表的 `rows`/`filteredRows`。）
 
           为什么是条件渲染而不是 `hidden`：搜索框是 `<label>` 且带内联 `display:flex`，
           内联样式压过 UA 表的 `[hidden]{display:none}` —— 挂 `hidden` 它照样显示。
-          `#conn-close-filtered` 原先自带的 `view === 'table' &&` 一并去掉（被本 gate 覆盖，
+          `#conn-close-filtered` 的显隐由活动视图统一控制，
           留着是同一条件的两处副本）。
 
           搜索词与暂停态**不随隐藏清空**，判据见 `search`/`paused` 声明处。
         */}
-        {view === 'table' && (
+        {(view === 'active' || view === 'closed') && (
           <>
             {/* 搜索 */}
             <label className="input" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 11px', cursor: 'text' }}>
@@ -646,7 +693,7 @@ export function ConnectionsScreen() {
               />
             </label>
 
-            {/* 暂停（原型 #conn-pause-btn :2011——图标恒为暂停条，仅文案 暂停⇄继续 切换，不换成播放三角） */}
+            {view === 'active' && <>
             <button className="btn ghost" id="conn-pause-btn" onClick={togglePause}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                 <rect x="6" y="5" width="4" height="14" rx="1" />
@@ -696,50 +743,82 @@ export function ConnectionsScreen() {
                 {confirmingAll ? t('connections.confirm') : t('connections.closeAll')}
               </span>
             </button>
+            </>}
+            {view === 'closed' && closedRows.length > 0 && (
+              <button
+                className={`btn ghost${confirmingClear ? ' confirming' : ''}`}
+                style={{ color: 'hsl(var(--err))' }}
+                onClick={() => confirmTwice(CLEAR_CLOSED_KEY, () => void onClearClosed())}
+                data-tip={
+                  confirmingClear
+                    ? t('connections.confirmClearClosed')
+                    : t('connections.clearClosedTitle')
+                }
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5" />
+                </svg>
+                <span>
+                  {confirmingClear
+                    ? t('connections.confirmClearClosed')
+                    : t('connections.clearClosed')}
+                </span>
+              </button>
+            )}
           </>
         )}
       </div>
 
-      {/* 明细表视图 */}
-      <div id="conn-table-view" hidden={view !== 'table'}>
-        <div className="conn-scroll">
+      {/* 活动 / 已结束列表只在当前视图挂载，切走即释放整张表的 DOM 与 graphics surface。 */}
+      {(view === 'active' || view === 'closed') && (
+      <div id="conn-table-view">
+        <div className="conn-scroll" ref={virtual.scrollRef} onScroll={virtual.onScroll}>
           <div className="conn-list-wrap">
-            <table className="conn-table">
+            <table className={`conn-table${view === 'closed' ? ' conn-table-closed' : ''}`}>
               <thead>
                 <tr>
-                  <th className="c-close" aria-label={t('connections.close')} />
-                  {/* Type(L4) 首数据列 + Process 末列——对齐 上游 连接表（原型缺此二列，按功能 oracle 补）。
-                      close 之外每个数据列都可排序（契约的 8 列 + Polaris 多出的 Process）。 */}
+                  {view === 'active' && (
+                    <th className="c-close" aria-label={t('connections.close')} />
+                  )}
                   {thSortable('type', t('connections.colType'), 'c-type')}
                   {thSortable('host', t('connections.colHost'))}
                   {thSortable('dest', t('connections.colDest'), 'c-dest')}
                   {thSortable('rule', t('connections.colRule'), 'c-rule')}
                   {thSortable('chain', t('connections.colChain'), 'c-chain')}
-                  {thSortable('rate', t('connections.colSpeed'), 'c-rate')}
+                  {view === 'active' && thSortable('rate', t('connections.colSpeed'), 'c-rate')}
                   {thSortable('total', t('connections.colTraffic'), 'c-total')}
                   {thSortable('time', t('connections.colTime'), 'c-time')}
+                  {view === 'closed' && thSortable('ended', t('connections.colEnded'), 'c-ended')}
                   {thSortable('proc', t('connections.colProcess'), 'c-proc')}
                 </tr>
               </thead>
               <tbody id="conn-tbody">
-                {/* 隐私态整表隐藏：只留「隐私模式下不可用」占位——host/dest/sourceIP 全不渲染（完整脱敏，
-                    对齐 privacyHidden 文案）。此前仅 hidden sourceIP、host/dest 仍露 = 不完整，已补。 */}
-                {privacyMode || visibleRows.length === 0 ? (
+                {privacyMode || !(view === 'active' ? activeLoaded : closedLoaded) || visibleRows.length === 0 ? (
                   <tr>
-                    <td colSpan={10}>
+                    <td colSpan={view === 'active' ? 10 : 9}>
                       <div className="stub" style={{ border: 0, padding: 30 }}>
                         <h4>
                           {privacyMode
                             ? t('connections.privacyHidden')
-                            : total === 0
-                              ? t('connections.noActive')
+                            : !(view === 'active' ? activeLoaded : closedLoaded)
+                              ? t('connections.loading')
+                              : listRows.length === 0
+                                ? view === 'active'
+                                  ? t('connections.noActive')
+                                  : t('connections.noClosed')
                               : t('connections.noMatch')}
                         </h4>
                       </div>
                     </td>
                   </tr>
                 ) : (
-                  visibleRows.map((r) => {
+                  <>
+                  {virtual.topSpace > 0 && (
+                    <tr className="conn-spacer" aria-hidden="true">
+                      <td colSpan={view === 'active' ? 10 : 9} style={{ height: virtual.topSpace }} />
+                    </tr>
+                  )}
+                  {visibleRows.map((r) => {
                     const blocked = r.chain === 'block';
                     const direct = r.chain === 'direct';
                     const cx = blocked
@@ -749,6 +828,7 @@ export function ConnectionsScreen() {
                         : r.chain;
                     return (
                       <tr
+                        className="conn-data-row"
                         key={r.entry.id}
                         onContextMenu={(e) => {
                           e.preventDefault();
@@ -760,9 +840,11 @@ export function ConnectionsScreen() {
                             row: r,
                             subjects,
                             subject: subjects[0] ?? null,
+                            closable: view === 'active',
                           });
                         }}
                       >
+                        {view === 'active' && (
                         <td className="c-close">
                           <button
                             className="conn-x"
@@ -775,6 +857,7 @@ export function ConnectionsScreen() {
                             </svg>
                           </button>
                         </td>
+                        )}
                         <td className="c-type">
                           <span className={`pill ${r.udp ? 'udp' : 'tcp'}`} data-tip={r.l4Title}>
                             {r.l4}
@@ -814,18 +897,40 @@ export function ConnectionsScreen() {
                             )}
                           </span>
                         </td>
-                        <td className="conn-rate mono c-rate">
+                        {view === 'active' && <td className="conn-rate mono c-rate">
                           <span className="d">{fmtRate(r.dnRate)}</span>{' '}
                           <span className="u">{fmtRate(r.upRate)}</span>
-                        </td>
+                        </td>}
                         <td className="mono conn-sub c-total">{fmtBytes(r.total)}</td>
                         <td className="mono conn-sub c-time">{fmtDuration(r.age)}</td>
+                        {view === 'closed' && (
+                          <td className="mono conn-sub c-ended">
+                            <span data-tip={r.endedAt ? new Date(r.endedAt).toLocaleString() : undefined}>
+                              {r.endedAt
+                                ? new Date(r.endedAt).toLocaleString(undefined, {
+                                    month: '2-digit',
+                                    day: '2-digit',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                    second: '2-digit',
+                                  })
+                                : '—'}
+                            </span>
+                          </td>
+                        )}
                         <td className="c-proc">
                           <span className="conn-proc" data-tip={r.procFull || undefined}>{r.procName}</span>
                         </td>
                       </tr>
                     );
                   })
+                  }
+                  {virtual.bottomSpace > 0 && (
+                    <tr className="conn-spacer" aria-hidden="true">
+                      <td colSpan={view === 'active' ? 10 : 9} style={{ height: virtual.bottomSpace }} />
+                    </tr>
+                  )}
+                  </>
                 )}
               </tbody>
             </table>
@@ -875,7 +980,7 @@ export function ConnectionsScreen() {
                 <RuleSubjectMenuItems subject={menu.subject} onDone={() => setMenu(null)} />
               </>
             )}
-            <button
+            {menu.closable && <button
               type="button"
               className="ctx-i danger"
               onClick={() => {
@@ -888,50 +993,14 @@ export function ConnectionsScreen() {
                 <path d="M5 5l14 14M19 5L5 19" />
               </svg>
               {t('connections.close')}
-            </button>
-          </div>
-        )}
-        {/* 500 行截断提示：常驻滚动区**外**（卡底），不然它自己也被滚走 = 用户永远看不到「还有几千条没显示」。
-            隐私态整表不渲染 → 不提。 */}
-        {!privacyMode && filteredRows.length > MAX_VISIBLE_ROWS && (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              flex: 'none',
-              marginTop: 8,
-              fontSize: 11.5,
-              color: 'hsl(var(--warn))',
-            }}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              width="14"
-              height="14"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.9"
-              style={{ flex: 'none' }}
-            >
-              <path
-                d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-            <span>
-              {t('connections.rowsTruncated', {
-                shown: MAX_VISIBLE_ROWS,
-                total: filteredRows.length,
-              })}
-            </span>
+            </button>}
           </div>
         )}
       </div>
+      )}
 
       {/* TOP 拓扑视图 */}
-      <div id="conn-top-view" hidden={view !== 'top'}>
+      {view === 'top' && <div id="conn-top-view">
         {/* 条数选择器**收进卡片标题行**（陈先生 2026-07-30：「展示前 5 10 15 域名 / 出站 应该在同一行，
             展示前 / 域名 / 出站 这些可以不用显示，只显示数量」）。
             原先它独占一行 `.conn-toolbar`，带两句纯复述的文字：「展示前」与下方卡片里的「前 N」pill 同义，
@@ -1014,7 +1083,7 @@ export function ConnectionsScreen() {
             </div>
           </div>
         </div>
-      </div>
+      </div>}
     </section>
   );
 }

@@ -4,13 +4,13 @@
 //! 且 connections 流的开关经 `setConnectionsStreamEnabled`（窗口隐藏/无消费者 → cancel 上游 SubscribeConnections）。
 //! 本 crate 把它拆成可单测的注册表：
 //!
-//! - [`Topic`]：stats / connections / detail 三条流的订阅分轨（对齐 stats-worker 的 stats/aggregate/detail 三类 post）。
+//! - [`Topic`]：stats / connections / detail / closed 四条投影的订阅分轨。
 //! - [`SubscriptionRegistry`]：记录每个 [`Topic`] 的活跃订阅者集合 + 窗口可见性；判定「是否应保持该 topic 的上游流」。
 //!
 //! 降流语义（维度7 #实测：无订阅者 / 无可见窗口时断流省资源）：
 //! - [`SubscriptionRegistry::should_stream`]：某 topic 的活跃订阅者数 > 0 **且**（窗口可见 **或** 该 topic 不受可见性门控）
 //!   才返回 true。无订阅者 → false → 上游 cancel 流。
-//! - **三条 topic 口径一致**（[`Topic::gated_by_visibility`] 恒 true）：无可见窗口 = 无 UI 消费者 → 全部降流。
+//! - **全部 topic 口径一致**（[`Topic::gated_by_visibility`] 恒 true）：无可见窗口 = 无 UI 消费者 → 全部降流。
 //!   Stats 曾经是例外（"恒需、不门控"），该例外已随其前提一并作废——理由见 [`Topic::gated_by_visibility`]
 //!   的「为什么与 上游 表面形态不同」，**不是**漂移。
 //!
@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 
-/// 订阅分轨（对齐 stats-worker 的三类 post）。
+/// 订阅分轨。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Topic {
     /// Status 流（流量速率/累计，首页流量条 + StatusBar）。
@@ -27,12 +27,14 @@ pub enum Topic {
     Connections,
     /// 连接明细（连接信息页 detail topic）。
     Detail,
+    /// 已结束连接历史（连接信息页 closed topic）。
+    Closed,
 }
 
 impl Topic {
     /// 该 topic 是否受窗口可见性门控（true = 无可见窗口时应降流）。
     ///
-    /// **三条 topic 同一口径，恒 true**：无可见窗口 = 无 UI 消费者，任何一条 topic 的帧都无人消费。
+    /// **全部 topic 同一口径，恒 true**：无可见窗口 = 无 UI 消费者，任何一条 topic 的帧都无人消费。
     /// 刻意不按 topic 分叉——分叉过一次（Stats 曾恒需），理由已随下述前提一并失效。
     ///
     /// # 为什么与 上游的表面形态不同（审计请读完再判漂移）
@@ -78,7 +80,7 @@ pub struct SubscriptionRegistry {
     topics: HashMap<Topic, HashMap<SubscriptionToken, String>>,
     /// 窗口是否可见（无可见窗口 = 无 UI 消费者）。
     ///
-    /// 默认 **true = fail-open**：三条 topic 现在都受可见性门控，缺省若取 false 就等于「还没人告诉我
+    /// 默认 **true = fail-open**：全部 topic 都受可见性门控，缺省若取 false 就等于「还没人告诉我
     /// 窗口状态」时先把 UI 饿死一拍。调用方（poller）在第一拍即按窗口实况回写真值，故乐观缺省不会
     /// 让隐藏态漏降流，只是把「不确定」的那一瞬倒向不伤 UI 的一侧。
     window_visible: bool,
@@ -143,7 +145,7 @@ impl SubscriptionRegistry {
     /// 判定指定 topic 的上游流是否应保持（true = 订阅上游，false = cancel 降流）。
     ///
     /// 降流语义（维度7）：活跃订阅者数 > 0 **且**（窗口可见 **或** 该 topic 不受可见性门控）。
-    /// 三条 topic 口径一致（[`Topic::gated_by_visibility`] 恒 true）→ 实际等价于「有订阅者 且 窗口可见」。
+    /// 全部 topic 口径一致（[`Topic::gated_by_visibility`] 恒 true）→ 实际等价于「有订阅者 且 窗口可见」。
     ///
     /// 门控项刻意保留 `topic.gated_by_visibility()` 这一跳而非内联成常量：它是契约的显式落点，
     /// 「哪些 topic 受可见性门控」的答案（连同它为何是全部）写在那个方法的文档里，改口径改那一处。
@@ -159,18 +161,19 @@ impl SubscriptionRegistry {
 
     /// 判定**连接流**（`SubscribeConnections` 长驻流）是否应保持。
     ///
-    /// [`Topic::Connections`]（首页拓扑）与 [`Topic::Detail`]（连接明细）是**同一张连接表的两种
-    /// 投影**（见 `StatsAggregator::aggregate` / `connections_snapshot`），共用**一条**上游流 ⇒
-    /// 任一有需求即保持，两条都没需求才降流。
+    /// [`Topic::Connections`]（首页拓扑）、[`Topic::Detail`]（活动明细）与 [`Topic::Closed`]
+    /// （已结束历史）来自同一条连接事件流，共用**一条**上游流 ⇒ 任一有需求即保持，全部没需求才降流。
     ///
-    /// 为什么不让两条 topic 各开一条流：那是轮询时代的形状（各拉各的全量表），在长驻流下会变成
+    /// 为什么不让三个 topic 各开一条流：那是轮询时代的形状，在长驻流下会变成
     /// 两份完全相同的事件流 + 两张各自维护的连接表 —— 上游成本翻倍，且两张表还可能因为
     /// 建流时刻不同而给出**互相矛盾**的两帧（拓扑说 12 条、明细列 13 条）。
     ///
-    /// ⚠️ 本判定只回答「流开不开」。**开着不等于两条 topic 都该 emit** —— 每条 topic 的 emit
+    /// ⚠️ 本判定只回答「流开不开」。**开着不等于全部 topic 都该 emit** —— 每条 topic 的 emit
     /// 仍各自按 `should_stream(topic)` 门控（只订了拓扑就别把全量明细 JSON 推过去）。
     pub fn should_stream_connections(&self) -> bool {
-        self.should_stream(Topic::Connections) || self.should_stream(Topic::Detail)
+        self.should_stream(Topic::Connections)
+            || self.should_stream(Topic::Detail)
+            || self.should_stream(Topic::Closed)
     }
 
     /// 清空某 topic 的全部订阅（stream 断开 / 上层销毁时）。
@@ -192,12 +195,12 @@ impl SubscriptionRegistry {
 mod tests {
     use super::*;
 
-    /// 🔴 **连接流的 demand = 两条投影的并集**（aggregate 或 detail 任一有需求即保持）。
+    /// 🔴 **连接流的 demand = 三个投影的并集**（aggregate / detail / closed 任一有需求即保持）。
     ///
     /// **变异探针**：`should_stream_connections` 改成只看 `Topic::Connections` ⇒ 「只开着连接页、
     /// 首页拓扑没订阅」时流不开，连接明细页永远空白 ⇒ 转红；改成 `&&` ⇒ 两条都得订阅才开流 ⇒ 转红。
     #[test]
-    fn 连接流demand是两条投影的并集() {
+    fn 连接流demand是三个投影的并集() {
         let mut r = SubscriptionRegistry::new();
         assert!(!r.should_stream_connections(), "都没订阅 → 不开流");
 
@@ -207,9 +210,13 @@ mod tests {
 
         let t_detail = r.subscribe(Topic::Detail, "main");
         assert!(r.should_stream_connections(), "只订明细 → 也得开流");
+        r.unsubscribe(Topic::Detail, t_detail);
+
+        let t_closed = r.subscribe(Topic::Closed, "main");
+        assert!(r.should_stream_connections(), "只订已结束历史 → 也得开流");
+        r.unsubscribe(Topic::Closed, t_closed);
 
         // Stats 是另一条腿（走 Status/轮询），不该把连接流拉起来
-        r.unsubscribe(Topic::Detail, t_detail);
         r.subscribe(Topic::Stats, "main");
         assert!(
             !r.should_stream_connections(),
@@ -330,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn 降流_窗口隐藏时三条topic门控口径一致() {
+    fn 降流_窗口隐藏时全部topic门控口径一致() {
         // ★ 契约测试（口径一致）：本条是 `Topic::gated_by_visibility` 恒 true 的锁。
         //
         // 前身是 `降流_窗口隐藏取消connections保持stats`，断言「隐藏时 connections 降流但 stats 不降」的
@@ -340,7 +347,12 @@ mod tests {
         //
         // 任何一条 topic 再被单独开成「隐藏也流」→ 本测转红。
         let mut r = SubscriptionRegistry::new();
-        for t in [Topic::Stats, Topic::Connections, Topic::Detail] {
+        for t in [
+            Topic::Stats,
+            Topic::Connections,
+            Topic::Detail,
+            Topic::Closed,
+        ] {
             r.subscribe(t, "win1");
             assert!(r.should_stream(t), "{t:?}：可见 + 有订阅 → 应保持流");
             assert!(
@@ -349,15 +361,25 @@ mod tests {
             );
         }
         r.set_window_visible(false);
-        for t in [Topic::Stats, Topic::Connections, Topic::Detail] {
+        for t in [
+            Topic::Stats,
+            Topic::Connections,
+            Topic::Detail,
+            Topic::Closed,
+        ] {
             assert!(
                 !r.should_stream(t),
-                "{t:?}：窗口隐藏 → 必须降流（无可见窗口 = 无 UI 消费者，三条 topic 同一口径）"
+                "{t:?}：窗口隐藏 → 必须降流（无可见窗口 = 无 UI 消费者，全部 topic 同一口径）"
             );
         }
         r.set_window_visible(true);
-        for t in [Topic::Stats, Topic::Connections, Topic::Detail] {
-            assert!(r.should_stream(t), "{t:?}：窗口回来 → 三条一起恢复");
+        for t in [
+            Topic::Stats,
+            Topic::Connections,
+            Topic::Detail,
+            Topic::Closed,
+        ] {
+            assert!(r.should_stream(t), "{t:?}：窗口回来 → 全部一起恢复");
         }
     }
 

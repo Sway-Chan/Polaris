@@ -133,8 +133,9 @@ export const IPC_CHANNELS = {
   AUTO_START_GET_STATUS: 'auto_start_get_status',
 
   // 统计信息（batch3 §3.7：订阅驱动数据面。renderer 按 topic 声明订阅，main 据订阅集派生 worker demand + 精确 relay）
-  STATS_SUBSCRIBE: 'stats_subscribe', // 订阅某 topic（stats|aggregate|detail）：main 挂订阅 + 即回初始帧（合并旧 GET 初值路径）
+  STATS_SUBSCRIBE: 'stats_subscribe', // 订阅某 topic（stats|aggregate|detail|closed）
   STATS_UNSUBSCRIBE: 'stats_unsubscribe', // 退订某 topic（unmount/窗口隐藏/暂停）：无订阅者 → worker 逐级停机
+  STATS_CLOSED_CLEAR: 'stats_closed_clear', // 清空独立的已结束连接历史
   CONNECTIONS_CLOSE: 'connections_close', // 关单条连接（main 经 9090 DELETE /connections/{id}）
   CONNECTIONS_CLOSE_ALL: 'connections_close_all', // 关全部连接（main 经 9090 DELETE /connections，触发 ResetNetwork）
 
@@ -228,6 +229,8 @@ export const IPC_CHANNELS = {
   // 连接明细 push（batch3 §3.7）：detail topic 订阅期 worker→main→订阅 renderer 的全量连接快照（取代旧 CONNECTIONS_GET
   // 按需 pull）。初始帧 + 增量同一通道；仅连接页订阅期流动，无订阅者 worker 不 post（逐级停机）。
   EVENT_CONNECTIONS_DETAIL: 'event:connectionsDetail',
+  // 已结束连接独立历史环（最多 1000 条）；仅 closed topic 订阅期推送。
+  EVENT_CONNECTIONS_CLOSED: 'event:connectionsClosed',
   // 托盘「打开设置」的**窄**跨窗导航通道（A1）。⚠️ 不是已删除的通用路由 `navigate` 的复活：
   // 值域由 Rust 侧白名单 `tray::normalize_tray_screen` 钉死（当前仅 'settings'）、单播主窗、
   // 唯一发射点是 `tray_show_main` 与托盘原生菜单的「打开设置」。消费点在 `store/nav-store.ts`。
@@ -302,7 +305,7 @@ export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];
  * stats 订阅 topic（batch3 §3.7 订阅驱动数据面）：renderer 按 topic 精确声明订阅，main 据订阅集派生 worker
  * demand（aggregate|detail → 上游 Connections 流；detail → 跨进程明细）并只 relay 给对应 topic 的订阅者。
  */
-export type StatsTopic = 'stats' | 'aggregate' | 'detail';
+export type StatsTopic = 'stats' | 'aggregate' | 'detail' | 'closed';
 
 /**
  * topic → 事件推送通道（订阅即回的初始帧 + 后续增量 push 共用同一通道）。主/渲两侧订阅与 relay 的单一真值，
@@ -312,4 +315,5 @@ export const STATS_TOPIC_EVENT: Record<StatsTopic, IpcChannel> = {
   stats: IPC_CHANNELS.EVENT_STATS_UPDATED,
   aggregate: IPC_CHANNELS.EVENT_CONNECTIONS_AGGREGATE,
   detail: IPC_CHANNELS.EVENT_CONNECTIONS_DETAIL,
+  closed: IPC_CHANNELS.EVENT_CONNECTIONS_CLOSED,
 };

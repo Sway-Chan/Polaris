@@ -134,6 +134,24 @@ pub struct ConnectionsSnapshot {
     pub at: u64,
 }
 
+/// 已结束连接。与活跃连接表分轨保存，避免历史记录重新进入 `conn_map` 污染活动数与拓扑。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClosedConnectionEntry {
+    pub entry: ConnectionEntry,
+    /// 连接结束时刻，sing-box UnixNano。
+    pub closed_at: i64,
+}
+
+/// 已结束连接历史快照（closed topic 订阅载荷）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionsClosedSnapshot {
+    /// 最新结束的连接在前；生产者负责有界保存。
+    pub connections: Vec<ClosedConnectionEntry>,
+    /// 采样时刻 epoch ms。
+    pub at: u64,
+}
+
 /// 拓扑「其它」分组 sentinel（runtime.ts:122 `'\u0000others'`）。
 ///
 /// 用控制字符前缀确保绝不与真实 host/IP/rule 名冲突。渲染端 topology-layout 见此值 → 替换为

@@ -131,6 +131,7 @@ describe('T2：端口三件套的 topic 必须自洽（事件名 / 订 / 退三�
     ['stats', 'onStatsUpdated'],
     ['aggregate', 'onConnectionsAggregate'],
     ['detail', 'onConnectionsDetail'],
+    ['closed', 'onConnectionsClosed'],
   ];
 
   it('每个端口字面量的 onFrame / subscribe / unsubscribe 指向同一个 topic', () => {

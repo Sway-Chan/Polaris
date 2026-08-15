@@ -1,5 +1,5 @@
 /**
- * 连接页两个 tab 的**顺序**与**默认视图**守卫（真机反馈：应为「拓扑 | 明细」，默认拓扑）。
+ * 连接页三个生命周期视图的顺序与默认值守卫。
  *
  * 为什么是源码结构守卫：本仓 vitest 是 node 环境、全仓无组件渲染测试
  * （见 `connections-context-menu.test.ts` 头注）。tab 顺序与初值都是 JSX/字面量层的事实，
@@ -28,17 +28,20 @@ describe('连接页视图 tab', () => {
    *
    * 变异对照：把两个 `<button>` 换回原顺序（明细在前）→ 本条转红。
    */
-  it('tab 顺序 = 拓扑 → 明细', () => {
+  it('tab 顺序 = 拓扑 → 活动 → 已结束', () => {
     const start = SRC.indexOf('role="tablist"');
     expect(start).toBeGreaterThan(-1);
     const end = SRC.indexOf('</div>', start);
     const tablist = SRC.slice(start, end);
 
     const top = tablist.indexOf("setView('top')");
-    const table = tablist.indexOf("setView('table')");
+    const active = tablist.indexOf("setView('active')");
+    const closed = tablist.indexOf("setView('closed')");
     expect(top).toBeGreaterThan(-1);
-    expect(table).toBeGreaterThan(-1);
-    expect(top).toBeLessThan(table);
+    expect(active).toBeGreaterThan(-1);
+    expect(closed).toBeGreaterThan(-1);
+    expect(top).toBeLessThan(active);
+    expect(active).toBeLessThan(closed);
   });
 
   /**

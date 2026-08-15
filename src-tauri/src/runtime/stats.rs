@@ -4,27 +4,26 @@
 //! `StatsService.ts` / `StatsWorkerHost` 的 connections 长驻流 + change-driven 签名去重（issue #227
 //! 把「连接风暴」挡在 main 侧：载荷与连接总数解耦，只在聚合内容真变时才推一帧）。
 //!
-//! renderer 按 topic（stats | aggregate | detail）声明订阅 → main 据订阅集派生 worker demand
+//! renderer 按 topic（stats | aggregate | detail | closed）声明订阅 → main 据订阅集派生 worker demand
 //! + 精确 relay 给订阅者。订阅即回初始帧（合并旧 GET 初值路径）。
 //!
-//! # 连接数据面：一条长驻流 + 两种投影（aggregate 拓扑 / detail 明细）
+//! # 连接数据面：一条长驻流 + 三种投影（aggregate 拓扑 / detail 活动 / closed 已结束）
 //!
-//! `EVENT_CONNECTIONS_AGGREGATE` 与 `EVENT_CONNECTIONS_DETAIL` 由**同一条**
+//! 三个连接事件通道由**同一条**
 //! `SubscribeConnections` 长驻流供数（[`run_connections_stream`]）：流帧维护一张
-//! [`StatsAggregator`] 连接表，拓扑与明细只是这张表的两种投影 —— 故两个页面恒定自洽，
-//! 上游也只订一次。
+//! [`StatsAggregator`] 活动连接表；CLOSED 在删表前另存入有界历史环。三种视图同源且互不污染，
+//! 上游只订一次。
 //!
 //! **此前是两条各自轮询的 poller**（每 250ms / 1s 各拉一次 `first_connection_snapshot` 全量表）。
 //! 换流的判据：内核对 NEW/CLOSED 本就是事件驱动即时推送
 //! （`daemon/started_service.go:752` 的 `case event := <-subscription`，只有 UPDATE 走 ticker）——
 //! 轮询等于把一个推送接口当轮询接口用，既白等半拍，又每拍重付一次含 ≤1000 条死连接的全量表。
 //!
-//! 帧到达 → 更新连接表（O(1)/事件）→ 两条 [`polaris_stats_engine::EmitGate`] 各自按
-//! [`AGGREGATE_EMIT_MIN_INTERVAL`] / [`DETAIL_EMIT_MIN_INTERVAL`] 合并节流 → emit。
+//! 帧到达 → 更新活动表与历史环（O(1)/事件）→ 三条 [`polaris_stats_engine::EmitGate`] 各自合并节流。
 //! aggregate 另有**签名去重**（`aggregate_signature`，同内容不推，issue #227）；detail 不去重
 //! （渲染端靠相邻两帧差分算每条连接的速率，理由见 [`run_connections_stream`]）。
 //!
-//! 生命周期：订阅时起（单例幂等）、**两条投影都**退订/窗口关闭时停（stop flag + abort，不泄漏后台任务）；
+//! 生命周期：订阅时起（单例幂等）、**三个连接投影都**退订/窗口关闭时停；
 //! 核未运行时**不碰 gRPC**（推一帧离线态后等核起）。
 //!
 //! # 流量数据面：`SubscribeStatus` 长驻流（stats topic）
@@ -57,7 +56,7 @@
 //! # 降流门（维度7：无 UI 消费者时不拉取、不 emit）
 //!
 //! 契约的另一条腿：数据面需求 **不只**由订阅集派生，还乘上窗口可见性
-//! （[`SubscriptionRegistry::should_stream`]；三条 topic 口径一致，均受可见性门控——Stats 曾是例外，
+//! （[`SubscriptionRegistry::should_stream`]；全部 topic 口径一致，均受可见性门控——Stats 曾是例外，
 //! 该例外为何作废见 `polaris_stats_engine::Topic::gated_by_visibility` 的文档）。
 //!
 //! 两条腿现在**同一种机制**（[`StreamGate::wait_until`]）：判定为假 → **drop 流**，门再开时重订阅。
@@ -91,17 +90,22 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager};
 use tokio::sync::watch;
 
+use polaris_config_engine::builder::is_probe_pool_inbound_tag;
 use polaris_singbox_grpc::{daemon, Endpoint, ReconnectConfig, SingBoxApiClient};
 use polaris_stats_engine::{
-    aggregate_connections_with_topn, aggregate_signature, trim_connection, ConnectionEntry,
-    ConnectionEventType, ConnectionsAggregate, ConnectionsSnapshot, EmitGate, SingBoxConnection,
-    SingBoxConnectionEvent, SingBoxConnectionEvents, SingBoxProcessInfo, SingBoxStatus,
-    StatsAggregator, SubscriptionRegistry, SubscriptionToken, Topic, TrafficStats, TOPOLOGY_TOP_N,
+    aggregate_connections_with_topn, aggregate_signature, trim_connection, ClosedConnectionEntry,
+    ConnectionEntry, ConnectionEventType, ConnectionsAggregate, ConnectionsClosedSnapshot,
+    ConnectionsSnapshot, EmitGate, SingBoxConnection, SingBoxConnectionEvent,
+    SingBoxConnectionEvents, SingBoxProcessInfo, SingBoxStatus, StatsAggregator,
+    SubscriptionRegistry, SubscriptionToken, Topic, TrafficStats, TOPOLOGY_TOP_N,
 };
 
 use crate::events::{
     broadcast,
-    channel::{EVENT_CONNECTIONS_AGGREGATE, EVENT_CONNECTIONS_DETAIL, EVENT_STATS_UPDATED},
+    channel::{
+        EVENT_CONNECTIONS_AGGREGATE, EVENT_CONNECTIONS_CLOSED, EVENT_CONNECTIONS_DETAIL,
+        EVENT_STATS_UPDATED,
+    },
 };
 use crate::runtime::config::ConfigManager;
 use crate::runtime::proxy::ProxyRuntime;
@@ -157,6 +161,13 @@ const AGGREGATE_EMIT_MIN_INTERVAL: Duration = Duration::from_millis(250);
 /// **比 aggregate 慢一档是刻意的**：同一张连接表，拓扑那条推的是几十个计数，明细那条推的是
 /// 整张表的 JSON。两者共用一条上游流，但没有理由共用一个 emit 频率。
 const DETAIL_EMIT_MIN_INTERVAL: Duration = Duration::from_secs(1);
+
+/// 已结束连接只保留最近 1000 条，对齐 sing-box 重置帧能重放的历史上限。
+/// 再高只在本进程期间有效，连接流重订后无法补回，反而会制造不一致。
+const MAX_CLOSED_HISTORY: usize = 1_000;
+
+/// 已结束历史的全量快照最多每秒推一次；连接风暴时合并 CLOSED，避免 N 次断连复制 N 次千行 JSON。
+const CLOSED_EMIT_MIN_INTERVAL: Duration = Duration::from_secs(1);
 
 /// `SubscribeConnections` 请求里的 `interval`（纳秒）—— **只管服务端 UPDATE 帧的节奏**。
 ///
@@ -384,8 +395,7 @@ struct StreamGate {
     epoch: watch::Receiver<u64>,
     /// 本条流的**需求判据**。两条流的需求面不同，判定本体都在
     /// [`polaris_stats_engine::SubscriptionRegistry`] 里：
-    /// - 连接流 = `should_stream_connections()`（aggregate ∪ detail —— 同一张连接表的两种投影，
-    ///   共用一条上游流）；
+    /// - 连接流 = `should_stream_connections()`（aggregate ∪ detail ∪ closed，共用一条上游流）；
     /// - Status 流 = `should_stream(Topic::Stats)`。
     ///
     /// 存函数指针而非 `Topic`：连接流的需求本就不是单个 topic，写成 `Topic` 会逼着把那条并集
@@ -394,7 +404,7 @@ struct StreamGate {
 }
 
 impl StreamGate {
-    /// 连接长驻流的门（需求 = aggregate ∪ detail）。
+    /// 连接长驻流的门（需求 = aggregate ∪ detail ∪ closed）。
     fn connections(state: Arc<StreamGateState>) -> Self {
         Self {
             epoch: state.epoch.subscribe(),
@@ -491,6 +501,93 @@ fn visibility_source(state: Arc<StreamGateState>, app: AppHandle) -> impl Fn() -
     move || state.cached_window_visible(&app)
 }
 
+/// 已结束连接的独立有界历史环。
+///
+/// 活跃表收到 CLOSED 后会立即删行；历史不能塞回那张表，否则拓扑、活动数和关闭动作都会被幽灵记录
+/// 污染。这里最多保留 1000 条，按结束时间新到旧排列。`cutoff_ns` 是用户清空时的水位：连接流重订后
+/// 首帧会重放 sing-box 自己的历史环，水位确保已清过的旧记录不会重新出现。
+#[derive(Debug, Default)]
+struct ClosedHistory {
+    entries: Vec<ClosedConnectionEntry>,
+    cutoff_ns: i64,
+}
+
+impl ClosedHistory {
+    fn snapshot(&self, at: u64) -> ConnectionsClosedSnapshot {
+        ConnectionsClosedSnapshot {
+            connections: self.entries.clone(),
+            at,
+        }
+    }
+
+    fn clear(&mut self, cutoff_ns: i64) {
+        self.entries.clear();
+        self.cutoff_ns = self.cutoff_ns.max(cutoff_ns);
+    }
+
+    /// 在活跃聚合器消费本帧前提取关闭记录，这样 CLOSED 缺少完整 connection 时仍能用活动表兜底。
+    /// 返回历史内容是否发生变化。
+    fn apply_events(&mut self, events: &SingBoxConnectionEvents, active: &StatsAggregator) -> bool {
+        let has_closed_event = events.events.iter().any(|event| {
+            event.kind == ConnectionEventType::Closed
+                || event.closed_at > 0
+                || event
+                    .connection
+                    .as_ref()
+                    .is_some_and(|connection| connection.closed_at > 0)
+        });
+        if !events.reset && !has_closed_event {
+            return false;
+        }
+
+        let before = self.entries.clone();
+        if events.reset {
+            self.entries.clear();
+        }
+
+        for event in &events.events {
+            let payload_closed_at = event
+                .connection
+                .as_ref()
+                .map_or(0, |connection| connection.closed_at);
+            let reported_closed_at = event.closed_at.max(payload_closed_at);
+            let closed_at = if reported_closed_at > 0 {
+                reported_closed_at
+            } else if event.kind == ConnectionEventType::Closed {
+                now_ns()
+            } else {
+                0
+            };
+            let is_closed = event.kind == ConnectionEventType::Closed || closed_at > 0;
+            if !is_closed || closed_at <= self.cutoff_ns {
+                continue;
+            }
+
+            let entry = event
+                .connection
+                .as_ref()
+                .filter(|connection| !is_probe_pool_inbound_tag(&connection.inbound))
+                .map(trim_connection)
+                .or_else(|| active.entry(&event.id).cloned());
+            let Some(entry) = entry else {
+                continue;
+            };
+            if entry.id.is_empty() {
+                continue;
+            }
+
+            self.entries.retain(|old| old.entry.id != entry.id);
+            self.entries
+                .push(ClosedConnectionEntry { entry, closed_at });
+        }
+
+        self.entries
+            .sort_by_key(|entry| std::cmp::Reverse(entry.closed_at));
+        self.entries.truncate(MAX_CLOSED_HISTORY);
+        self.entries != before
+    }
+}
+
 /// stats 运行时（`State`-managed，单实例）。
 pub struct StatsRelay {
     /// 降流门态（订阅注册表 + 门变更信号）；与两条 relay `Arc` 共享。
@@ -498,10 +595,12 @@ pub struct StatsRelay {
     /// 每窗口订阅记账（key = window label + topic，value = Subscription）。
     /// Polaris 按 webContents.sender 记账；Tauri 按 webview label 记账（窗口关闭时清理）。
     subs: Mutex<Vec<(String, Topic, SubscriptionToken)>>,
-    /// 连接长驻流 relay（`Some` = 在跑）。**aggregate 与 detail 共用这一条**
-    /// （两者是同一张连接表的两种投影，见 [`run_connections_stream`]）——
+    /// 连接长驻流 relay（`Some` = 在跑）。**aggregate / detail / closed 共用这一条**
+    /// （三者来自同一事件流，见 [`run_connections_stream`]）——
     /// 此前是两个各自轮询的独立槽位。
     connections: Mutex<Option<AggregatePoller>>,
+    /// 已结束连接独立历史环；命令清空与连接流写入共享。
+    closed_history: Arc<Mutex<ClosedHistory>>,
     /// stats topic（上下行速率 + 累计 + 连接数）的 `SubscribeStatus` 长驻流 relay（`Some` = 在跑）。
     stats_poller: Mutex<Option<AggregatePoller>>,
 }
@@ -518,6 +617,7 @@ impl StatsRelay {
             gate: Arc::new(StreamGateState::new()),
             subs: Mutex::new(Vec::new()),
             connections: Mutex::new(None),
+            closed_history: Arc::new(Mutex::new(ClosedHistory::default())),
             stats_poller: Mutex::new(None),
         }
     }
@@ -563,15 +663,22 @@ impl StatsRelay {
         // 订阅集变了 → 唤醒该 topic 已在跑但正断流待命的 relay（无订阅时停在门上的那条腿）。
         self.gate.bump();
         // 数据面 relay（订阅即起，内部按核起停自适应）：
-        // - aggregate（拓扑）与 detail（明细）→ **同一条** `SubscribeConnections` 长驻流（两种投影，
+        // - aggregate（拓扑）、detail（活动）、closed（已结束）→ **同一条**连接长驻流，
         //   见 [`run_connections_stream`]）；
         // - stats → `SubscribeStatus` 长驻流（EVENT_STATS_UPDATED，见 [`run_stats_stream`]）。
-        // 三条 topic 必须全覆盖：漏一条即该 topic 的订阅者永不收帧（连接信息页明细 tab 恒空的根因）。
+        // 全部 topic 必须覆盖：漏一条即对应视图永不收帧。
         match topic {
-            Topic::Connections | Topic::Detail => {
+            Topic::Connections | Topic::Detail | Topic::Closed => {
                 self.ensure_connections_stream(app, proxy, config)
             }
             Topic::Stats => self.ensure_stats_stream(app, proxy, config),
+        }
+        if topic == Topic::Closed {
+            broadcast(
+                app,
+                EVENT_CONNECTIONS_CLOSED,
+                self.closed_snapshot(now_ms()),
+            );
         }
     }
 
@@ -600,8 +707,8 @@ impl StatsRelay {
             }
             self.gate.bump(); // 订阅集变了 → 门重判（下一拍即降流，不空转）
         }
-        // 连接流是两条 topic 共用的：**两条都归零**才停（只退订拓扑而明细还开着 → 流必须留着）。
-        if matches!(topic, Topic::Connections | Topic::Detail)
+        // 连接流由三个 topic 共用：**三个都归零**才停。
+        if matches!(topic, Topic::Connections | Topic::Detail | Topic::Closed)
             && self.connections_subscriber_count() == 0
         {
             self.stop_connections_stream();
@@ -664,15 +771,45 @@ impl StatsRelay {
         self.gate.cached_window_visible(app)
     }
 
-    /// 连接流的活跃订阅者数 = **两条投影之和**（aggregate + detail）。
+    /// 清空已结束历史并设置重放水位，返回应立即广播给当前页面的空快照。
+    pub fn clear_closed_history(&self) -> ConnectionsClosedSnapshot {
+        match self.closed_history.lock() {
+            Ok(mut history) => {
+                history.clear(now_ns());
+                history.snapshot(now_ms())
+            }
+            Err(error) => {
+                log::warn!("已结束连接历史 lock: {error}");
+                ConnectionsClosedSnapshot {
+                    connections: Vec::new(),
+                    at: now_ms(),
+                }
+            }
+        }
+    }
+
+    fn closed_snapshot(&self, at: u64) -> ConnectionsClosedSnapshot {
+        self.closed_history
+            .lock()
+            .map(|history| history.snapshot(at))
+            .unwrap_or(ConnectionsClosedSnapshot {
+                connections: Vec::new(),
+                at,
+            })
+    }
+
+    /// 连接流的活跃订阅者数 = **三个投影之和**（aggregate + detail + closed）。
     ///
-    /// 求和而非取 max/任一：停机判据是「归零才停」，而两条 topic 各自的计数都可能为 0
-    /// 却仍有另一条在用。写成和，`== 0` 就恰好是「两条都没人要了」。
+    /// 求和而非取 max/任一：`== 0` 恰好表达三个投影都没人消费。
     fn connections_subscriber_count(&self) -> usize {
         self.gate
             .registry
             .lock()
-            .map(|r| r.subscriber_count(Topic::Connections) + r.subscriber_count(Topic::Detail))
+            .map(|r| {
+                r.subscriber_count(Topic::Connections)
+                    + r.subscriber_count(Topic::Detail)
+                    + r.subscriber_count(Topic::Closed)
+            })
             .unwrap_or(0)
     }
 
@@ -700,6 +837,7 @@ impl StatsRelay {
             config,
             stop.clone(),
             StreamGate::connections(self.gate.clone()),
+            self.closed_history.clone(),
         ));
         *slot = Some(AggregatePoller { stop, handle });
         log::debug!("连接流 relay 已启动");
@@ -821,12 +959,13 @@ fn accepts_stats_subscription(label: &str) -> bool {
     label == MAIN_WINDOW_LABEL
 }
 
-/// topic 字面量校验（上游 `isStatsTopic`）：只接受 stats | aggregate | detail。
+/// topic 字面量校验：只接受 stats | aggregate | detail | closed。
 fn parse_topic(s: &str) -> Option<Topic> {
     match s {
         "stats" => Some(Topic::Stats),
         "aggregate" => Some(Topic::Connections),
         "detail" => Some(Topic::Detail),
+        "closed" => Some(Topic::Closed),
         _ => None,
     }
 }
@@ -1025,6 +1164,14 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// 当前 epoch 纳秒。只用作「清空已结束历史」的重放水位及缺失 closedAt 的保守回落。
+fn now_ns() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_nanos()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
 /// currentConfig.clashApiSecret（对齐 proxy.rs `management_api()` 的读法）。
 fn read_clash_secret(config: &ConfigManager) -> String {
     config
@@ -1076,6 +1223,7 @@ async fn run_connections_stream(
     config: Arc<ConfigManager>,
     stop: Arc<AtomicBool>,
     mut gate: StreamGate,
+    closed_history: Arc<Mutex<ClosedHistory>>,
 ) {
     let visible = visibility_source(gate.state.clone(), app.clone());
     // 节流用**单调**时钟，不是 `now_ms()`（墙钟）：NTP 校时会让墙钟跳变，往前跳一小时 =
@@ -1084,6 +1232,7 @@ async fn run_connections_stream(
     let mut table = StatsAggregator::new();
     let mut agg_emit = EmitGate::new(AGGREGATE_EMIT_MIN_INTERVAL);
     let mut detail_emit = EmitGate::new(DETAIL_EMIT_MIN_INTERVAL);
+    let mut closed_emit = EmitGate::new(CLOSED_EMIT_MIN_INTERVAL);
     let mut last_sig: Option<String> = None;
     let mut offline_sent = false;
 
@@ -1126,6 +1275,7 @@ async fn run_connections_stream(
         table.reset();
         agg_emit.reset();
         detail_emit.reset();
+        closed_emit.reset();
         offline_sent = false;
         log::debug!("连接流已订阅（port={port}）");
 
@@ -1137,18 +1287,30 @@ async fn run_connections_stream(
             // 下次该醒的时刻：两条 emit 的到期时间与核状态复核周期取最小。
             // 两条都无待推变更（空闲）→ 只剩兜底复核，不设无谓定时器。
             let now = mono_ms(clock);
-            let due = [agg_emit.wait_for(now), detail_emit.wait_for(now)]
-                .into_iter()
-                .flatten()
-                .min()
-                .map_or(PARK_RECHECK_INTERVAL, |d| d.min(PARK_RECHECK_INTERVAL));
+            let due = [
+                agg_emit.wait_for(now),
+                detail_emit.wait_for(now),
+                closed_emit.wait_for(now),
+            ]
+            .into_iter()
+            .flatten()
+            .min()
+            .map_or(PARK_RECHECK_INTERVAL, |d| d.min(PARK_RECHECK_INTERVAL));
 
             tokio::select! {
                 frame = stream.recv() => match frame {
                     Some(ev) => {
-                        table.on_connection_events(&daemon_events_to_engine(&ev), 0);
+                        let events = daemon_events_to_engine(&ev);
+                        let closed_changed = closed_history
+                            .lock()
+                            .map(|mut history| history.apply_events(&events, &table))
+                            .unwrap_or(false);
+                        table.on_connection_events(&events, 0);
                         agg_emit.note_change();
                         detail_emit.note_change();
+                        if closed_changed {
+                            closed_emit.note_change();
+                        }
                     }
                     // ReconnectingStream 正常语义下不返 None；真返了说明它内部终止 → 重建。
                     None => break,
@@ -1186,6 +1348,14 @@ async fn run_connections_stream(
                     );
                 }
                 detail_emit.mark_emitted(now);
+            }
+            if closed_emit.should_emit(now) {
+                if gate.topic_open(Topic::Closed) {
+                    if let Ok(history) = closed_history.lock() {
+                        broadcast(&app, EVENT_CONNECTIONS_CLOSED, history.snapshot(now_ms()));
+                    }
+                }
+                closed_emit.mark_emitted(now);
             }
 
             // 核停 / 换端口（换核、重启动态口）→ 断流重来。ReconnectingStream 自己发现不了这两件事。
@@ -1355,6 +1525,93 @@ mod tests {
             rule: "final".to_string(),
             ..Default::default()
         }
+    }
+
+    fn engine_conn(id: &str, closed_at: i64) -> SingBoxConnection {
+        SingBoxConnection {
+            id: id.to_string(),
+            domain: format!("{id}.example"),
+            chain_list: vec!["hk".to_string()],
+            closed_at,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn closed_history_is_newest_first_and_capped_to_singbox_replay_limit() {
+        let events = SingBoxConnectionEvents {
+            reset: true,
+            events: (1..=1_002)
+                .map(|n| SingBoxConnectionEvent {
+                    kind: ConnectionEventType::New,
+                    connection: Some(engine_conn(&format!("c{n}"), n)),
+                    ..Default::default()
+                })
+                .collect(),
+        };
+        let mut history = ClosedHistory::default();
+        assert!(history.apply_events(&events, &StatsAggregator::new()));
+        assert_eq!(history.entries.len(), MAX_CLOSED_HISTORY);
+        assert_eq!(history.entries.first().unwrap().closed_at, 1_002);
+        assert_eq!(history.entries.last().unwrap().closed_at, 3);
+    }
+
+    #[test]
+    fn clearing_closed_history_blocks_old_reset_replay_but_keeps_new_closes() {
+        let mut history = ClosedHistory::default();
+        history.clear(500);
+        let events = SingBoxConnectionEvents {
+            reset: true,
+            events: vec![
+                SingBoxConnectionEvent {
+                    kind: ConnectionEventType::New,
+                    connection: Some(engine_conn("old", 499)),
+                    ..Default::default()
+                },
+                SingBoxConnectionEvent {
+                    kind: ConnectionEventType::New,
+                    connection: Some(engine_conn("new", 501)),
+                    ..Default::default()
+                },
+            ],
+        };
+        assert!(history.apply_events(&events, &StatsAggregator::new()));
+        assert_eq!(history.entries.len(), 1);
+        assert_eq!(history.entries[0].entry.id, "new");
+    }
+
+    #[test]
+    fn closed_event_without_payload_uses_active_entry_before_removal() {
+        let mut active = StatsAggregator::new();
+        active.on_connection_events(
+            &SingBoxConnectionEvents {
+                reset: false,
+                events: vec![SingBoxConnectionEvent {
+                    kind: ConnectionEventType::New,
+                    connection: Some(engine_conn("live", 0)),
+                    ..Default::default()
+                }],
+            },
+            0,
+        );
+        let closed = SingBoxConnectionEvents {
+            reset: false,
+            events: vec![SingBoxConnectionEvent {
+                kind: ConnectionEventType::Closed,
+                id: "live".to_string(),
+                closed_at: 700,
+                ..Default::default()
+            }],
+        };
+        let mut history = ClosedHistory::default();
+        assert!(history.apply_events(&closed, &active));
+        assert_eq!(history.entries[0].entry.id, "live");
+        active.on_connection_events(&closed, 0);
+        assert_eq!(
+            active.conn_count(),
+            0,
+            "活动表仍按 CLOSED 删除，不被历史污染"
+        );
     }
 
     #[test]
@@ -1598,11 +1855,12 @@ mod tests {
     #[test]
     fn clear_window_drops_all_subs_and_stops_pollers() {
         let relay = StatsRelay::new();
-        // 模拟旧 JS 上下文的三条 topic 订阅（经真实记账路径入账）。
+        // 模拟旧 JS 上下文的全部 topic 订阅（经真实记账路径入账）。
         for (topic, slot) in [
             (Topic::Connections, &relay.connections),
             (Topic::Stats, &relay.stats_poller),
-            (Topic::Detail, &relay.connections), // aggregate 与 detail 共用连接流槽位
+            (Topic::Detail, &relay.connections),
+            (Topic::Closed, &relay.connections),
         ] {
             let token = relay.gate.registry.lock().unwrap().subscribe(topic, "main");
             relay
@@ -1614,8 +1872,8 @@ mod tests {
         }
         assert_eq!(
             relay.connections_subscriber_count(),
-            2,
-            "连接流的计数是两条投影之和"
+            3,
+            "连接流的计数是三个投影之和"
         );
 
         relay.clear_window("main");
@@ -1668,6 +1926,7 @@ mod tests {
         assert_eq!(parse_topic("aggregate"), Some(Topic::Connections));
         assert_eq!(parse_topic("stats"), Some(Topic::Stats));
         assert_eq!(parse_topic("detail"), Some(Topic::Detail));
+        assert_eq!(parse_topic("closed"), Some(Topic::Closed));
         assert_eq!(parse_topic("bogus"), None);
     }
 
@@ -1719,14 +1978,14 @@ mod tests {
 
     /// 🔴 **TOCTOU 闸门 + 共用槽位：任一条投影还有订阅者，连接流就不许停。**
     ///
-    /// 取代了原来分列的 `stop_aggregate_poller_*` / `stop_detail_poller_*` 两条 —— 两条 topic
+    /// 取代了原来分列的 poller —— 三个 topic
     /// 现在共用一条流一个槽位，分开测反而测不到真正的新风险：**只退订其中一条时误停整条流**
     /// （现象是关掉首页拓扑后连接明细页跟着冻住，反之亦然）。
     ///
     /// **变异探针**：`connections_subscriber_count` 改成只数一条 topic ⇒ 转红；
     /// `stop_connections_stream` 里锁内那次复查删掉 ⇒ 第一段断言转红。
     #[test]
-    fn stop_connections_stream_keeps_running_while_either_projection_remains() {
+    fn stop_connections_stream_keeps_running_while_any_projection_remains() {
         let relay = StatsRelay::new();
         *relay.connections.lock().unwrap() = Some(dummy_poller());
         let t_agg = relay
@@ -1741,12 +2000,18 @@ mod tests {
             .lock()
             .unwrap()
             .subscribe(Topic::Detail, "w1");
-        assert_eq!(relay.connections_subscriber_count(), 2);
+        let t_closed = relay
+            .gate
+            .registry
+            .lock()
+            .unwrap()
+            .subscribe(Topic::Closed, "w1");
+        assert_eq!(relay.connections_subscriber_count(), 3);
 
         relay.stop_connections_stream();
         assert!(
             relay.connections.lock().unwrap().is_some(),
-            "两条投影都还订着 → 闸门必须拦住 stop"
+            "三个投影都还订着 → 闸门必须拦住 stop"
         );
 
         // 只退订拓扑：明细还在看 → 流必须留着
@@ -1762,7 +2027,7 @@ mod tests {
             "只退订拓扑、明细仍订着 → 绝不能停整条流（否则连接明细页冻住）"
         );
 
-        // 最后一条也退订 → 正常停
+        // 活动明细退订，已结束历史仍在看 → 流仍须保留
         relay
             .gate
             .registry
@@ -1770,9 +2035,19 @@ mod tests {
             .unwrap()
             .unsubscribe(Topic::Detail, t_detail);
         relay.stop_connections_stream();
+        assert!(relay.connections.lock().unwrap().is_some());
+
+        // 最后一条也退订 → 正常停
+        relay
+            .gate
+            .registry
+            .lock()
+            .unwrap()
+            .unsubscribe(Topic::Closed, t_closed);
+        relay.stop_connections_stream();
         assert!(
             relay.connections.lock().unwrap().is_none(),
-            "两条投影都无订阅 → 正常停流"
+            "三个投影都无订阅 → 正常停流"
         );
     }
 
@@ -1904,7 +2179,7 @@ mod tests {
     // ══════════════════════════════════════════════════════════════════════════
     // 降流门（维度7）：两条长驻流都过 `should_stream`（订阅集 × 可见性）
     //
-    // 被测对象是两条 relay 真正调用的那个点 —— `StreamGate::wait_until`。三条 topic 现在只有
+    // 被测对象是两条 relay 真正调用的那个点 —— `StreamGate::wait_until`。全部 topic 只有
     // 一种降流机制（drop 流），故门测试只有这一套夹具；`PollGate`（轮询时代的「park 一拍」）
     // 随 stats 换流一并删除，继续拿它测就是在测一个生产里已不存在的形状。
     //
@@ -1920,7 +2195,7 @@ mod tests {
 
     use std::sync::atomic::AtomicBool as GateFlag;
 
-    /// 连接长驻流的门夹具（需求 = aggregate ∪ detail）。
+    /// 连接长驻流的门夹具（需求 = aggregate ∪ detail ∪ closed）。
     ///
     /// 必须走生产同一个构造器：测试自己拼 `StreamGate { .. }` 就等于给测试造了一条与生产
     /// 无关的判据，门测试会全部失去判据。
@@ -1960,10 +2235,9 @@ mod tests {
         move || flag.load(Ordering::Relaxed)
     }
 
-    /// 可见性 false + 有订阅 → **三条 topic 全部**断流（不收、不 emit）。
+    /// 可见性 false + 有订阅 → **全部 topic**断流（不收、不 emit）。
     ///
-    /// 覆盖面含 Stats：三条 topic 门控口径一致后，隐藏态下一条 gRPC 都不该剩。契约本体的锁在
-    /// `polaris_stats_engine` 的 `降流_窗口隐藏时三条topic门控口径一致`，本条锁的是**消费侧**真按它断流。
+    /// 覆盖面含 Stats：门控口径一致后，隐藏态下一条 gRPC 都不该剩。
     #[tokio::test(start_paused = true)]
     async fn park_gated_topic_when_window_hidden() {
         // stats（Status 流）：门关 = 流不该开着。
@@ -1982,8 +2256,8 @@ mod tests {
         )
         .await;
 
-        // aggregate / detail（连接流）：门关 = 流不该开着。
-        for topic in [Topic::Connections, Topic::Detail] {
+        // aggregate / detail / closed（连接流）：门关 = 流不该开着。
+        for topic in [Topic::Connections, Topic::Detail, Topic::Closed] {
             let (state, mut gate, visible) = test_stream_gate();
             state.registry.lock().unwrap().subscribe(topic, "main");
             visible.store(false, Ordering::Relaxed);
@@ -2014,13 +2288,13 @@ mod tests {
             &mut sgate,
             true,
             &visible,
-            "拓扑与明细都没订阅者 → 连接流必须保持断开",
+            "三个连接视图都没订阅者 → 连接流必须保持断开",
         )
         .await;
     }
 
     /// 退订到零 → 原本放行的门必须翻成 park（订阅集是门的另一条腿）。
-    /// 🔴 **两条投影都退订才断流；只退订一条时流必须留着。**
+    /// 🔴 **三个投影都退订才断流；任一仍在看时流必须留着。**
     ///
     /// **变异探针**：`should_stream_connections` 改成 `&&`（或 `stop_connections_stream` 的
     /// 计数改成只看一条 topic）⇒ 「关掉首页但连接页还开着」时流被停掉 ⇒ 转红。
@@ -2037,6 +2311,11 @@ mod tests {
             .lock()
             .unwrap()
             .subscribe(Topic::Detail, "main");
+        let t_closed = state
+            .registry
+            .lock()
+            .unwrap()
+            .subscribe(Topic::Closed, "main");
         let src = flag_visibility_source(visible.clone());
         tokio::time::timeout(Duration::from_secs(5), gate.wait_until(true, &src))
             .await
@@ -2052,7 +2331,21 @@ mod tests {
             &mut gate,
             false,
             &visible,
-            "只退订拓扑、明细仍订着 → 连接流绝不能断（两条投影共用一条流）",
+            "只退订拓扑、活动与已结束仍订着 → 连接流绝不能断",
+        )
+        .await;
+
+        // 活动明细也退订，已结束历史仍在看 → 继续保持
+        state
+            .registry
+            .lock()
+            .unwrap()
+            .unsubscribe(Topic::Detail, t_detail);
+        assert_gate_holds(
+            &mut gate,
+            false,
+            &visible,
+            "已结束历史仍订着 → 连接流绝不能断",
         )
         .await;
 
@@ -2061,7 +2354,7 @@ mod tests {
             .registry
             .lock()
             .unwrap()
-            .unsubscribe(Topic::Detail, t_detail);
+            .unsubscribe(Topic::Closed, t_closed);
         let src = flag_visibility_source(visible.clone());
         tokio::time::timeout(Duration::from_secs(5), gate.wait_until(false, &src))
             .await
@@ -2130,25 +2423,26 @@ mod tests {
         .await;
     }
 
-    /// ★ 契约测试（口径一致 · 消费侧）：三条 topic 在同一可见性下**同进同退**。
+    /// ★ 契约测试（口径一致 · 消费侧）：全部 topic 在同一可见性下**同进同退**。
     ///
     /// 前身是 `stats_topic_不受可见性门控`，断言「Stats 隐藏也放行」。该差异化语义已作废
     /// （理由见 `polaris_stats_engine::Topic::gated_by_visibility`：上游的 status 不门控是
     /// worker demand 握手载体，Polaris 没有 worker、没有该握手；而 上游 广播侧
     /// `StatsService.ts:312` / `StatsWorkerHost.ts:217` 本来就按可见性门控 stats）。
     ///
-    /// 本条不是「再测一遍 `park_*`」：它把三条 topic 放在**同一次可见性翻转**下逐条比对，
+    /// 本条不是「再测一遍 `park_*`」：它把全部 topic 放在**同一次可见性翻转**下逐条比对，
     /// 任何一条被单独开成「隐藏也流」或「可见也不流」都转红。
     ///
-    /// **本批 stats 也换成了长驻流，三条 topic 于是共用同一种机制**（drop 流 + 恢复时重订阅）；
+    /// 所有 topic 共用同一种机制（drop 流 + 恢复时重订阅）；
     /// 契约本身（隐藏即停、恢复即刻）逐条不变。
     #[tokio::test(start_paused = true)]
-    async fn 三topic门控口径一致() {
+    async fn 全部topic门控口径一致() {
         type Fixture = fn() -> (Arc<StreamGateState>, StreamGate, Arc<GateFlag>);
         for (topic, mk) in [
             (Topic::Stats, test_stats_gate as Fixture),
             (Topic::Connections, test_stream_gate as Fixture),
             (Topic::Detail, test_stream_gate as Fixture),
+            (Topic::Closed, test_stream_gate as Fixture),
         ] {
             let (state, mut gate, visible) = mk();
             state.registry.lock().unwrap().subscribe(topic, "main");
@@ -2336,7 +2630,7 @@ mod tests {
         );
     }
 
-    /// 🔴 **变异锁：两条投影的 emit 都过闸门，且 emit 后必须 `mark_emitted`。**
+    /// 🔴 **变异锁：三个连接投影的 emit 都过闸门，且 emit 后必须 `mark_emitted`。**
     ///
     /// `mark_emitted` 漏掉会有一个很隐蔽的后果：闸门的 `pending` 永不清零 → `wait_for` 恒返回
     /// `ZERO` → select 的定时器分支退化成 `sleep(0)` → **忙转烧掉一个 tokio worker**，
@@ -2351,10 +2645,13 @@ mod tests {
         for probe in [
             "agg_emit.should_emit(now)",
             "detail_emit.should_emit(now)",
+            "closed_emit.should_emit(now)",
             "agg_emit.mark_emitted(now)",
             "detail_emit.mark_emitted(now)",
+            "closed_emit.mark_emitted(now)",
             "agg_emit.note_change()",
             "detail_emit.note_change()",
+            "closed_emit.note_change()",
         ] {
             assert!(
                 body.contains(probe),
@@ -2364,7 +2661,8 @@ mod tests {
         // 闸门必须在**门关的 topic** 上也 mark（否则 pending 永不清 → 忙转）。
         assert!(
             body.contains("if gate.topic_open(Topic::Connections) {")
-                && body.contains("if gate.topic_open(Topic::Detail) {"),
+                && body.contains("if gate.topic_open(Topic::Detail) {")
+                && body.contains("if gate.topic_open(Topic::Closed) {"),
             "每条投影 emit 前须各自看自己的订阅门（只订了拓扑就别推全量明细 JSON）"
         );
     }

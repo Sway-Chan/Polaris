@@ -93,6 +93,7 @@ pub mod channel {
     pub const EVENT_STATS_UPDATED: &str = "event:statsUpdated";
     pub const EVENT_CONNECTIONS_AGGREGATE: &str = "event:connectionsAggregate";
     pub const EVENT_CONNECTIONS_DETAIL: &str = "event:connectionsDetail";
+    pub const EVENT_CONNECTIONS_CLOSED: &str = "event:connectionsClosed";
 
     // 隐私模式
     pub const EVENT_ENTER_PRIVACY_MODE: &str = "event:enterPrivacyMode";
