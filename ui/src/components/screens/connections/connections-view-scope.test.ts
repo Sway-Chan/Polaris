@@ -148,8 +148,9 @@ describe('连接列表内存边界', () => {
     expect(SRC).not.toContain('bottomSpace');
     expect(SRC).toContain("t('connections.pageStatus'");
     expect(STYLE).toContain('.conn-table tr{ display:grid;');
-    expect(STYLE).toContain('contain:layout paint style');
-    expect(STYLE).toContain('content-visibility:auto');
+    expect(STYLE).toContain('contain:layout style');
+    expect(STYLE).not.toContain('contain:layout paint');
+    expect(STYLE).not.toContain('content-visibility:auto');
   });
 
   it('切离活动视图释放活动行缓存；暂停仍只退订并保留当前视口', () => {

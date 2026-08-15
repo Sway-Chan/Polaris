@@ -1113,9 +1113,10 @@ button{ font:inherit; cursor:pointer; color:inherit; border:0; background:none; 
 .conn-table tr{ display:grid; width:100%; }
 /*
  * 行级布局隔离：活动表每秒都会改速率/流量/时长。原生 table auto-layout + sticky th 在
- * WebKit 中会把任一单元格变化扩大成整表重排/重绘，压测下 graphics surface 持续堆高。
- * 表语义与 DOM 不变，只把每行变成同一列模板的 grid；数据行各自 paint-contain，单行刷新不再
- * 污染整张表。两种视图显式列宽的总和都为 920px，与既有横向滚动下限一致，不额外膨胀。
+ * WebKit 中会把任一单元格变化扩大成整表重排。表语义与 DOM 不变，只把每行变成
+ * 同一列模板的 grid，并只做 layout/style containment。不能在这里使用 paint containment 或
+ * content-visibility：WebKit 会为快速新增/移除的行留下独立 graphics surface，离页后仍不会及时回收。
+ * 两种视图显式列宽的总和都为 920px，与既有横向滚动下限一致，不额外膨胀。
  */
 .conn-table-active tr{
   grid-template-columns:28px 52px minmax(130px,1.3fr) minmax(125px,1.15fr) minmax(120px,1fr)
@@ -1125,8 +1126,7 @@ button{ font:inherit; cursor:pointer; color:inherit; border:0; background:none; 
   grid-template-columns:52px minmax(145px,1.25fr) minmax(125px,1.1fr) minmax(125px,1fr)
     minmax(125px,1fr) 80px 65px 105px minmax(98px,1fr);
 }
-.conn-table .conn-data-row{ min-height:53px; contain:layout paint style; content-visibility:auto;
-  contain-intrinsic-size:auto 53px; }
+.conn-table .conn-data-row{ height:53px; min-height:53px; contain:layout style; }
 .conn-table .conn-empty-row{ grid-template-columns:1fr; }
 .conn-table .conn-empty-row > td{ grid-column:1 / -1; }
 .conn-table th, .conn-table td{ white-space:nowrap; }
