@@ -189,20 +189,28 @@ export function FieldRenderer({ spec, value, onChange }: FieldRendererProps) {
     );
   }
 
-  const labelEl = (
-    <label className="fld-l fld-l-info" htmlFor={fid}>
+  const labelContents = (
+    <>
       <span>{label}</span>
       {spec.opt && <span className="fld-opt"> {t('common.optional')}</span>}
       {spec.hint && <InfoIcon tip={t(spec.hint)} />}
+    </>
+  );
+  const labelEl = (
+    <label className="fld-l fld-l-info" htmlFor={fid}>
+      {labelContents}
     </label>
   );
+  // 自定义下拉已经有一整块可见 button 触发器。若这里也用 label[for]，浏览器会把点击标题或
+  // InfoIcon 转发成 button.click()，凭空扩出一块不可见触发区；输入框仍保留上面的 label 聚焦语义。
+  const selectLabelEl = <div className="fld-l fld-l-info">{labelContents}</div>;
 
   if (spec.t === 'select') {
     // 传 value：当前值落在选项集外时并入选项，避免「一碰下拉就被迫改值」（见 toCselOptions 注释）。
     const opts = toCselOptions(spec.options, value, t);
     return (
       <div className="fld">
-        {labelEl}
+        {selectLabelEl}
         <Csel
           id={fid}
           ariaLabel={label}

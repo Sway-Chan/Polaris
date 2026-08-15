@@ -1437,7 +1437,7 @@
       "torArgsHint": "以空白分隔，逐個傳給 tor 行程",
       "meshRoutes": "內網段（CIDR，每行一個）",
       "meshRoutesHint": "每行一個經此節點強制路由的子網；留空不啟用強制路由。OpenConnect/OpenVPN 的路由會在連線後下發，無法自動預填。",
-      "flavor": "廠商方言",
+      "flavor": "廠商",
       "authGroup": "認證群組",
       "token": "權杖",
       "mtu": "MTU",

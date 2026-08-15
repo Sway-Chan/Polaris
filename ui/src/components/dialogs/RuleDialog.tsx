@@ -1064,9 +1064,9 @@ function RuleForm({ base, isEdit, preset }: RuleFormProps) {
 
       {/* 目标出站 */}
       <div className="fld">
-        <label className="fld-l" htmlFor="rule-target">
+        <div className="fld-l">
           {t('rules.target')}
-        </label>
+        </div>
         <Csel
           id="rule-target"
           ariaLabel={t('rules.target')}

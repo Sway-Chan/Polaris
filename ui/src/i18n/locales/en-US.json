@@ -1437,7 +1437,7 @@
       "torArgsHint": "Space-separated, passed through to the tor process",
       "meshRoutes": "Intranet routes (CIDR, one per line)",
       "meshRoutesHint": "One subnet per line for forced routing through this node. Leave empty to disable forced subnet routing. OpenConnect/OpenVPN routes arrive after connection and cannot be filled automatically.",
-      "flavor": "Vendor dialect",
+      "flavor": "Vendor",
       "authGroup": "Auth group",
       "token": "Token",
       "mtu": "MTU",

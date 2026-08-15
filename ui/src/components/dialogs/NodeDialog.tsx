@@ -322,10 +322,10 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
 
   const detourField = (
     <div className="fld">
-      <label className="fld-l fld-l-info" htmlFor="nd-detour">
+      <div className="fld-l fld-l-info">
         <span>{t('node.chainVia')}</span>
         <InfoIcon tip={t('node.chainHint')} />
-      </label>
+      </div>
       <Csel
         id="nd-detour"
         ariaLabel={t('node.chainVia')}
@@ -370,9 +370,9 @@ function NodeForm({ base, isEdit, servers, initialProto }: NodeFormProps) {
     >
       {/* 协议 */}
       <div className="fld">
-        <label className="fld-l" htmlFor="nd-proto">
+        <div className="fld-l">
           {t('node.protocol')}
-        </label>
+        </div>
         <Csel
           id="nd-proto"
           ariaLabel={t('node.protocol')}

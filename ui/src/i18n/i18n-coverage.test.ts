@@ -661,16 +661,19 @@ describe('G5c FieldRenderer 每个字段类型都把 hint 收进统一信息提�
     });
   }
 
-  it('select：渲染不了（Csel 要 DOM），改判它仍复用挂有 InfoIcon 的 labelEl', () => {
+  it('select：渲染不了（Csel 要 DOM），改判非交互标题仍复用挂有 InfoIcon 的标签内容', () => {
     // 先钉住「渲染不了」这个前提本身 —— 哪天 Csel 不再无条件用 document 了，这条会红，
     // 提示把 select 挪回上面的真渲染那一组（否则本条会永远停在弱判据上，没人再回来看）。
     expect(() => html({ t: 'select', options: [['a', 'A']], hint: HINT_KEY })).toThrow(/document/);
     const branch = FIELD_SPEC_SRC.match(/if \(spec\.t === 'select'\) \{[\s\S]*?\n  \}/);
     if (!branch) throw new Error('field-spec.tsx 里读不到 select 分支 —— 渲染器改写法了？');
-    expect(branch[0], 'select 分支没渲染共享 labelEl').toContain('{labelEl}');
-    const labelDef = FIELD_SPEC_SRC.match(/const labelEl = \([\s\S]*?\n  \);/);
-    if (!labelDef) throw new Error('field-spec.tsx 里读不到共享 labelEl —— 渲染器改写法了？');
-    expect(labelDef[0], '共享标签没有按 spec.hint 挂 InfoIcon').toMatch(
+    expect(branch[0], 'select 分支没渲染非交互标题').toContain('{selectLabelEl}');
+    const selectLabelDef = FIELD_SPEC_SRC.match(/const selectLabelEl = [^;]+;/);
+    if (!selectLabelDef) throw new Error('field-spec.tsx 里读不到 selectLabelEl —— 渲染器改写法了？');
+    expect(selectLabelDef[0], 'select 标题没有复用统一标签内容').toContain('{labelContents}');
+    const labelContentsDef = FIELD_SPEC_SRC.match(/const labelContents = \([\s\S]*?\n  \);/);
+    if (!labelContentsDef) throw new Error('field-spec.tsx 里读不到 labelContents —— 渲染器改写法了？');
+    expect(labelContentsDef[0], '共享标签内容没有按 spec.hint 挂 InfoIcon').toMatch(
       /spec\.hint\s*&&\s*<InfoIcon tip=\{t\(spec\.hint\)\}/,
     );
     expect(FIELD_SPEC_SRC, '字段说明不应回退成控件下方常驻 hint').not.toContain('const hintEl');

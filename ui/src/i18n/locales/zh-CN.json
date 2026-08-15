@@ -1437,7 +1437,7 @@
       "torArgsHint": "空格分隔，逐个传给 tor 进程",
       "meshRoutes": "内网段（CIDR，每行一个）",
       "meshRoutesHint": "每行一个经此节点强制路由的子网；留空不启用强制路由。OpenConnect/OpenVPN 的路由在连接后下发，无法自动预填。",
-      "flavor": "厂商方言",
+      "flavor": "厂商",
       "authGroup": "认证组",
       "token": "令牌",
       "mtu": "MTU",

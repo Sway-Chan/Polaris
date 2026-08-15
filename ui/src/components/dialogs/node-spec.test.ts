@@ -109,7 +109,7 @@ describe('协议下拉的分组与顺序', () => {
     expect(protosInGroup('common')).toContain('naive');
   });
 
-  it('OpenConnect 协议名保持简洁，厂商方言只在表单内选择', () => {
+  it('OpenConnect 协议名保持简洁，厂商只在表单内选择', () => {
     expect(new Map(PROTO_OPTIONS).get('openconnect')).toBe('OpenConnect');
   });
 

@@ -583,9 +583,9 @@ export function AppAddDialog() {
             />
           </div>
           <div>
-            <label className="fld-l" htmlFor="aad-cat">
+            <div className="fld-l">
               {t('appAdd.category')}
-            </label>
+            </div>
             <Csel
               id="aad-cat"
               ariaLabel={t('appAdd.category')}

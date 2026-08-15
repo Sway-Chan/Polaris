@@ -174,9 +174,9 @@ export function ResUrlDialog() {
       </div>
 
       <div className="fld">
-        <label className="fld-l" htmlFor="res-cat">
+        <div className="fld-l">
           {t('resources.urlDlgCatLabel')}
-        </label>
+        </div>
         <Csel
           id="res-cat"
           ariaLabel={t('resources.urlDlgCatLabel')}
