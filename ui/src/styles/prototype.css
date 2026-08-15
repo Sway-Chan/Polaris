@@ -1098,6 +1098,10 @@ button{ font:inherit; cursor:pointer; color:inherit; border:0; background:none; 
 #conn-table-view[hidden], #conn-top-view[hidden]{ display:none; }
 .conn-toolbar, #s-connections > .phead{ flex:none; }
 .conn-scroll{ overflow:auto; border:1px solid hsl(var(--line)); border-radius:var(--r); flex:1; min-height:130px; }
+.conn-pager{ display:flex; align-items:center; justify-content:space-between; gap:12px; flex:none;
+  min-height:38px; padding:7px 2px 0; color:hsl(var(--fg-faint)); font-size:11px; font-variant-numeric:tabular-nums; }
+.conn-pager-actions{ display:flex; align-items:center; gap:6px; }
+.conn-page-btn{ min-height:30px; padding:5px 10px; font-size:11px; }
 /* min-width = horizontal-scroll floor for the 10-column table (close + type/host/dest/rule/chain/speed/traffic/time/process).
    920px is the value that shipped with the Type+Process columns; the old 748px was derived for the 8-column prototype table,
    so under 10 columns it let nowrap cells squeeze/clip instead of handing the row to .conn-scroll. Single declaration —

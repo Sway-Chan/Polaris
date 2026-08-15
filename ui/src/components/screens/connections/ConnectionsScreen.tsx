@@ -20,7 +20,7 @@
  *    故工具栏里只作用于明细表的三个控件（搜索 / 暂停 / 关闭全部）在拓扑视图下一并隐掉，
  *    判据见 `.conn-toolbar` 处注释。
  *  - 排序：全部 9 个数据列本地可排序（rate/total 需前帧 diff 算速率）
- *  - 虚拟化：活动与已结束列表只挂载视口附近的行；切走即卸载整张表 DOM
+ *  - 分页：搜索与排序始终覆盖全量数据，每页最多挂载 50 行；切走即卸载整张表 DOM
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -68,9 +68,12 @@ type SortKey =
   | 'ended'
   | 'proc';
 
-/** 固定行高虚拟化：只创建视口 + 少量缓冲行，避免 WebKit 为数千单元格保留大块 graphics surface。 */
-const CONNECTION_ROW_HEIGHT = 53;
-const CONNECTION_ROW_OVERSCAN = 8;
+/**
+ * 每页上限。不用「超长占位行 + 虚拟滚动」：WebKit 会按整个 table 滚动面维持
+ * graphics surface，即使 DOM 只有十几行，1000 条历史的占位高度仍可把图形驻留推到数百 MiB。
+ * 50 行约为 5 个视口，连续浏览不至于过碎；搜索/排序仍先作用于全部 1000 条数据。
+ */
+const CONNECTION_PAGE_SIZE = 50;
 /**
  * TOP 视图展示条数（原型 seg2 :2026，默认 10）。
  *
@@ -108,43 +111,6 @@ interface ConnRow {
   age: number;
   /** 已结束时间 epoch ms；活动连接为 null。 */
   endedAt: number | null;
-}
-
-function useVirtualRows(count: number, resetKey: string) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [viewport, setViewport] = useState({ top: 0, height: 480 });
-
-  useLayoutEffect(() => {
-    const element = scrollRef.current;
-    if (!element) return;
-    const update = () =>
-      setViewport({ top: element.scrollTop, height: element.clientHeight || 480 });
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [resetKey]);
-
-  const start = Math.max(
-    0,
-    Math.floor(viewport.top / CONNECTION_ROW_HEIGHT) - CONNECTION_ROW_OVERSCAN,
-  );
-  const end = Math.min(
-    count,
-    Math.ceil((viewport.top + viewport.height) / CONNECTION_ROW_HEIGHT) +
-      CONNECTION_ROW_OVERSCAN,
-  );
-  return {
-    scrollRef,
-    start,
-    end,
-    topSpace: start * CONNECTION_ROW_HEIGHT,
-    bottomSpace: Math.max(0, (count - end) * CONNECTION_ROW_HEIGHT),
-    onScroll: () => {
-      const element = scrollRef.current;
-      if (element) setViewport({ top: element.scrollTop, height: element.clientHeight || 480 });
-    },
-  };
 }
 
 function projectConnection(
@@ -196,6 +162,7 @@ export function ConnectionsScreen() {
   const [search, setSearch] = useState('');
   const [paused, setPaused] = useState(false);
   const [sort, setSort] = useState<SortState | null>(null);
+  const [page, setPage] = useState(0);
 
   const [rows, setRows] = useState<ConnRow[]>([]);
   const [closedRows, setClosedRows] = useState<ConnRow[]>([]);
@@ -203,6 +170,7 @@ export function ConnectionsScreen() {
   const [closedLoaded, setClosedLoaded] = useState(false);
   const [aggregate, setAggregate] = useState<ConnectionsAggregate | null>(null);
   const [topN, setTopN] = useState<number>(10);
+  const tableScrollRef = useRef<HTMLDivElement>(null);
 
   // 上一帧字节记账（算速率）：id → {up, dn, at(ms)}
   const prevRef = useRef<Map<string, { up: number; dn: number; at: number }>>(
@@ -365,7 +333,7 @@ export function ConnectionsScreen() {
 
   const listRows = view === 'closed' ? closedRows : rows;
 
-  /** 搜索命中 + 排序后的完整列表；DOM 由视口虚拟化控制，不截断数据与检索范围。 */
+  /** 搜索命中 + 排序后的完整列表；分页只限制 DOM，不截断数据与检索范围。 */
   const filteredRows = useMemo(() => {
     let list = listRows.filter(matchRow);
     if (sort) {
@@ -398,8 +366,23 @@ export function ConnectionsScreen() {
     }
     return list;
   }, [listRows, matchRow, sort]);
-  const virtual = useVirtualRows(filteredRows.length, view);
-  const visibleRows = filteredRows.slice(virtual.start, virtual.end);
+  const pageCount = Math.max(1, Math.ceil(filteredRows.length / CONNECTION_PAGE_SIZE));
+  const visiblePage = Math.min(page, pageCount - 1);
+  const pageStart = visiblePage * CONNECTION_PAGE_SIZE;
+  const pageEnd = Math.min(filteredRows.length, pageStart + CONNECTION_PAGE_SIZE);
+  const visibleRows = filteredRows.slice(pageStart, pageEnd);
+
+  useEffect(() => {
+    setPage(0);
+  }, [view, q, sort]);
+
+  useEffect(() => {
+    if (page !== visiblePage) setPage(visiblePage);
+  }, [page, visiblePage]);
+
+  useEffect(() => {
+    if (tableScrollRef.current) tableScrollRef.current.scrollTop = 0;
+  }, [visiblePage, view, q, sort]);
 
   /* ── 关单条 / 关全部 ──
    * 后端 connections_close / connections_close_all 已真接管理 API gRPC（commands/proxy.rs:151-188），
@@ -769,10 +752,10 @@ export function ConnectionsScreen() {
         )}
       </div>
 
-      {/* 活动 / 已结束列表只在当前视图挂载，切走即释放整张表的 DOM 与 graphics surface。 */}
+      {/* 活动 / 已结束列表只在当前视图挂载；分页避免超长滚动面留住 graphics surface。 */}
       {(view === 'active' || view === 'closed') && (
       <div id="conn-table-view">
-        <div className="conn-scroll" ref={virtual.scrollRef} onScroll={virtual.onScroll}>
+        <div className="conn-scroll" ref={tableScrollRef}>
           <div className="conn-list-wrap">
             <table className={`conn-table${view === 'closed' ? ' conn-table-closed' : ''}`}>
               <thead>
@@ -813,11 +796,6 @@ export function ConnectionsScreen() {
                   </tr>
                 ) : (
                   <>
-                  {virtual.topSpace > 0 && (
-                    <tr className="conn-spacer" aria-hidden="true">
-                      <td colSpan={view === 'active' ? 10 : 9} style={{ height: virtual.topSpace }} />
-                    </tr>
-                  )}
                   {visibleRows.map((r) => {
                     const blocked = r.chain === 'block';
                     const direct = r.chain === 'direct';
@@ -925,17 +903,41 @@ export function ConnectionsScreen() {
                     );
                   })
                   }
-                  {virtual.bottomSpace > 0 && (
-                    <tr className="conn-spacer" aria-hidden="true">
-                      <td colSpan={view === 'active' ? 10 : 9} style={{ height: virtual.bottomSpace }} />
-                    </tr>
-                  )}
                   </>
                 )}
               </tbody>
             </table>
           </div>
         </div>
+        {filteredRows.length > CONNECTION_PAGE_SIZE && (
+          <div className="conn-pager" aria-live="polite">
+            <span>
+              {t('connections.pageStatus', {
+                start: pageStart + 1,
+                end: pageEnd,
+                total: filteredRows.length,
+              })}
+            </span>
+            <div className="conn-pager-actions">
+              <button
+                type="button"
+                className="btn ghost conn-page-btn"
+                disabled={visiblePage === 0}
+                onClick={() => setPage((current) => Math.max(0, current - 1))}
+              >
+                {t('connections.previousPage')}
+              </button>
+              <button
+                type="button"
+                className="btn ghost conn-page-btn"
+                disabled={visiblePage >= pageCount - 1}
+                onClick={() => setPage((current) => Math.min(pageCount - 1, current + 1))}
+              >
+                {t('connections.nextPage')}
+              </button>
+            </div>
+          </div>
+        )}
         {/* 行右键菜单：域名/IP/进程先选一个规则对象，复制、新建、追加三条动作共用该对象。 */}
         {menu && (
           <div

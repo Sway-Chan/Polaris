@@ -136,13 +136,14 @@ describe('detail 订阅腿随明细视图开关', () => {
 });
 
 describe('连接列表内存边界', () => {
-  it('列表按视图条件挂载且行由固定行高虚拟化，不再 hidden 保留整表 DOM', () => {
+  it('列表按视图条件挂载且最多渲染 50 行，不再用超长占位行', () => {
     expect(SRC).toContain("(view === 'active' || view === 'closed') && (");
     expect(SRC).not.toMatch(/id="conn-table-view"\s+hidden=/);
-    expect(SRC).toContain('useVirtualRows(filteredRows.length, view)');
-    expect(SRC).toContain('filteredRows.slice(virtual.start, virtual.end)');
-    expect(SRC).toContain('style={{ height: virtual.topSpace }}');
-    expect(SRC).toContain('style={{ height: virtual.bottomSpace }}');
+    expect(SRC).toContain('const CONNECTION_PAGE_SIZE = 50');
+    expect(SRC).toContain('filteredRows.slice(pageStart, pageEnd)');
+    expect(SRC).not.toContain('conn-spacer');
+    expect(SRC).not.toContain('bottomSpace');
+    expect(SRC).toContain("t('connections.pageStatus'");
   });
 
   it('切离活动视图释放活动行缓存；暂停仍只退订并保留当前视口', () => {
