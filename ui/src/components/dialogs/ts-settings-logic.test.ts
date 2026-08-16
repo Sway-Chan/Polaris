@@ -35,6 +35,7 @@ describe('initTsDraft：缺席回显 = 该字段真实缺省', () => {
     expect(d.ephemeral).toBe(false);
     // 未设 ≠ 0（R2：number 空 = undefined，绝不塞 0）
     expect(d.relayServerPort).toBeUndefined();
+    expect(d.listenPort).toBeUndefined();
     expect(d.routes).toBe('');
   });
 
@@ -112,6 +113,30 @@ describe('buildTsSettings：用户没动过就不写显式值（删键而非写 
     expect(mk(1).relayServerPort).toBe(1);
     expect(mk(65535).relayServerPort).toBe(65535);
     expect(mk(41641).relayServerPort).toBe(41641);
+  });
+
+  /**
+   * `listenPort` 与 `relayServerPort` 现在共用 `portOrUndefined` —— 正因为共用，这条不能省：
+   * 抽公共判据的收益是「不漂」，代价是「一处改错两个字段一起坏」，所以两个字段都要各自有门。
+   */
+  it('listenPort 同一口径：越界/0/非整数按未设，合法值原样落盘', () => {
+    const mk = (v: unknown) =>
+      buildTsSettings({}, { ...initTsDraft(node({})), listenPort: v as number });
+    for (const bad of [0, -1, 65536, 99999, 1.5, undefined]) {
+      expect(
+        Object.prototype.hasOwnProperty.call(mk(bad), 'listenPort'),
+        `listenPort=${bad} 不该落盘`
+      ).toBe(false);
+    }
+    expect(mk(1).listenPort).toBe(1);
+    expect(mk(65535).listenPort).toBe(65535);
+    expect(mk(41641).listenPort).toBe(41641);
+  });
+
+  it('listenPort 从设到清：磁盘上的旧值被删掉，不是留一个 0', () => {
+    const base: TailscaleSettings = { listenPort: 41641 };
+    const out = buildTsSettings(base, { ...initTsDraft(node(base)), listenPort: undefined });
+    expect(Object.prototype.hasOwnProperty.call(out, 'listenPort')).toBe(false);
   });
 
   it('填了 routes 自动开 acceptRoutes（否则 tsnet 不接收这些段，路由白配）', () => {

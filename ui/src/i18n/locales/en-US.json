@@ -1806,6 +1806,8 @@
     "loginDiscard": "Discard",
     "loginDiscardMsg": "What you've entered won't be saved.",
     "loginDiscardTitle": "Discard login?",
+    "listenPort": "Listen port",
+    "listenPortHint": "UDP port for this node's WireGuard / peer-to-peer traffic. Leave empty and Tailscale picks one at random; pin it to set up port forwarding on your router, which improves the odds of a direct connection instead of falling back to a DERP relay.",
     "loginFailed": "Login failed",
     "loginInMainCore": "This node is already running as the active connection; no need to log in again",
     "loginStarted": "Submitted, connecting…",

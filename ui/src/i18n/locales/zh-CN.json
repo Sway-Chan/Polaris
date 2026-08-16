@@ -1806,6 +1806,8 @@
     "loginDiscard": "放弃",
     "loginDiscardMsg": "已填写的内容将不会保存。",
     "loginDiscardTitle": "放弃登录？",
+    "listenPort": "监听端口",
+    "listenPortHint": "本节点 WireGuard / 点对点流量的 UDP 端口。留空由 Tailscale 随机选；填死后可在上游路由做端口映射，提高直连打洞成功率，否则更容易回落到 DERP 中继绕行。",
     "loginFailed": "登录失败",
     "loginInMainCore": "该节点已在主连接中运行，无需重复登录",
     "loginStarted": "已提交，正在连接…",

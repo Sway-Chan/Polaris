@@ -63,6 +63,7 @@ export function initTsDraft(node?: ServerConfig): FormValues {
     controlUrl: ts?.controlUrl ?? '',
     advertiseTags: (ts?.advertiseTags ?? []).join(', '),
     ephemeral: !!ts?.ephemeral,
+    listenPort: ts?.listenPort,
     relayServerPort: ts?.relayServerPort,
     sshServer: !!ts?.sshServer,
     resolveByName: ts?.resolveByName === true,
@@ -143,13 +144,27 @@ export function buildTsSettings(
   if (draft.resolveByName === true && draft.acceptDefaultResolvers === true)
     next.acceptDefaultResolvers = true;
   else delete next.acceptDefaultResolvers;
-  // u16 且后端 `if p > 0` 才下发（builder/endpoints.rs:211）→ 越界/0/空一律按未设处理。
-  // 越界不是「那个字段没生效」而是**整份 UserConfig 反序列化失败**（同 server_config.rs:208 记的那类整机不可用）。
-  const relay = draft.relayServerPort;
-  if (typeof relay === 'number' && Number.isInteger(relay) && relay >= 1 && relay <= 65535)
-    next.relayServerPort = relay;
+  // 两个端口字段共用 `portOrUndefined` 的判据，落盘写法同上一段：合法才写，否则删键。
+  const listen = portOrUndefined(draft.listenPort);
+  if (listen !== undefined) next.listenPort = listen;
+  else delete next.listenPort;
+  const relay = portOrUndefined(draft.relayServerPort);
+  if (relay !== undefined) next.relayServerPort = relay;
   else delete next.relayServerPort;
   return next;
+}
+
+/**
+ * u16 端口的提交口径：合法（整数 1..=65535）返回该值，否则 `undefined`（= 调用方删键）。
+ *
+ * 抽成一处而不是每个字段各写一遍：越界的代价与「这个字段没生效」不是一个量级 —— `Option<u16>`
+ * 装不下的值会让**整份 UserConfig 反序列化失败**（同 `server_config.rs:208` 记的那类整机不可用）。
+ * 两个端口字段各写一份判据，迟早漂掉其中一份，而漂掉的那份没有任何 UI 反馈。
+ *
+ * 后端两处都是 `if p > 0` 才下发（`builder/endpoints.rs`）⇒ `0` 与空在两侧同为「未设」。
+ */
+function portOrUndefined(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 65535 ? v : undefined;
 }
 
 // ════════════════════════════════════════════════════════════════════════════

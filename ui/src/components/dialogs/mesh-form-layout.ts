@@ -36,6 +36,7 @@ export const TS_FORM_GROUP_KEYS: Record<TsFormGroup, readonly string[]> = {
     'controlUrl',
     'advertiseTags',
     'ephemeral',
+    'listenPort',
     'relayServerPort',
     'sshServer',
     'resolveByName',

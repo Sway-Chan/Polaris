@@ -63,7 +63,7 @@ describe('统一接入表单的信息架构', () => {
         'exitNodeAllowLanAccess', 'advertiseRoutes',
       ],
       advanced: [
-        'detour', 'controlUrl', 'advertiseTags', 'ephemeral', 'relayServerPort',
+        'detour', 'controlUrl', 'advertiseTags', 'ephemeral', 'listenPort', 'relayServerPort',
         'sshServer', 'resolveByName', 'acceptDefaultResolvers',
       ],
     });

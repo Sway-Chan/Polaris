@@ -236,6 +236,13 @@ pub fn build_tailscale_endpoint(
             ep.relay_server_port = Some(p);
         }
     }
+    // `0` = 内核语义里的「自动选端口」（= 不设）。与 relay_server_port 同一口径：不把等价于默认值的
+    // 显式 0 写进配置，免得日后上游改默认时磁盘上躺着一份冻结的旧默认。
+    if let Some(p) = ts.listen_port {
+        if p > 0 {
+            ep.listen_port = Some(p);
+        }
+    }
     // Phase 2 reverseMesh → system_interface。
     if mesh_uses_system_interface(server) {
         ep.system_interface = Some(true);
@@ -348,6 +355,31 @@ mod tests {
             dir.starts_with("/fake/ts/t1"),
             "须落在该节点自己的 state_dir 之下，随节点一起清理，实得 {dir}"
         );
+    }
+
+    /// `listen_port`：填了才下发，`0` 与未填一律不下发。
+    ///
+    /// 同 `taildrop_directory` 那条的理由 —— 金样里零个 tailscale endpoint，对拍抓不到这条接线；
+    /// 而 `Endpoint.listen_port` 是 WG 腿也在用的**共用字段**，接错了不会编译失败，只会静默不发。
+    #[test]
+    fn ts_endpoint_emits_listen_port_only_when_set_nonzero() {
+        fn ep_with(port: Option<u16>) -> Endpoint {
+            let mut s = ServerConfig {
+                id: "t1".into(),
+                name: "TS".into(),
+                protocol: Protocol::Tailscale,
+                ..Default::default()
+            };
+            s.tailscale_settings = Some(crate::user_config::server_config::TailscaleSettings {
+                listen_port: port,
+                ..Default::default()
+            });
+            build_tailscale_endpoint(&s, "tag-t1", "/fake/ts/t1", "linux", None)
+        }
+        assert_eq!(ep_with(Some(41641)).listen_port, Some(41641));
+        // 0 = 内核的「自动选端口」，等价未设 ⇒ 不写进配置。
+        assert_eq!(ep_with(Some(0)).listen_port, None);
+        assert_eq!(ep_with(None).listen_port, None);
     }
 
     /// WireGuard 腿**不得**下发 `taildrop_directory`（该键只属 tailscale endpoint）。

@@ -228,6 +228,13 @@ pub struct TailscaleSettings {
     pub ssh_server: Option<bool>,
     #[serde(rename = "relayServerPort", skip_serializing_if = "Option::is_none")]
     pub relay_server_port: Option<u16>,
+    /// WireGuard / P2P 流量的 UDP 监听端口（sing-box 1.14.0-beta.15 新增 `listen_port`）。
+    ///
+    /// 缺省由 tsnet 随机选。固定它才能在上游路由/防火墙上做端口映射 —— 这直接决定能不能与对端
+    /// 直连打洞，还是恒回落 DERP 中继。与 [`Self::relay_server_port`] 是**两件事**：那个是本机作
+    /// peer relay 时的**入站中继**监听口，本字段是自己这条 WireGuard 腿的出/入口。
+    #[serde(rename = "listenPort", skip_serializing_if = "Option::is_none")]
+    pub listen_port: Option<u16>,
     #[serde(rename = "resolveByName", skip_serializing_if = "Option::is_none")]
     pub resolve_by_name: Option<bool>,
     #[serde(

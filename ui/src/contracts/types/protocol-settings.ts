@@ -270,6 +270,10 @@ export interface TailscaleSettings {
   advertiseTags?: string[]; // 向 tailnet 广告的 ACL 标签（如 tag:server）；按标签授权场景
   sshServer?: boolean; // 节点跑 Tailscale SSH（tailnet:22，ACL 控权）→ endpoint.ssh_server:true
   relayServerPort?: number; // 作 peer relay 收入站中继的监听端口 → endpoint.relay_server_port
+  // 1.14.0-beta.15 新增：WireGuard/P2P 流量的 UDP 监听端口 → endpoint.listen_port。
+  // 缺省 tsnet 随机选；固定它才能在上游路由做端口映射（决定直连打洞还是恒回落 DERP 中继）。
+  // 与 relayServerPort 是两件事：那个是本机作中继时的入站口，这个是自己这条 WireGuard 腿的端口。
+  listenPort?: number;
   // P4b 按名解析（仅选中此 mesh 节点为主出口时生效，详见 singbox-dns-builder）：
   // resolveByName=true → 注入 tailscale DNS server(accept_search_domain) + preferred_by 规则，
   //   让 tailnet 短名/MagicDNS 名自动归位到此节点解析（与 doh.pub/google 并存，仅 tailnet 域走它）。

@@ -98,6 +98,10 @@ const ADV_SPEC: FieldSpec[] = [
   { t: 'switch', k: 'ephemeral', label: 'ts.ephemeral', hint: 'ts.ephemeralHint' },
   // 低频专家项，跟 上游 一样归「高级」。u16：越界值会让整份 UserConfig 反序列化失败（同 server_config.rs:208
   // 记的那类整机不可用），故提交前限 1..=65535，越界按未填处理。
+  // 自己这条 WireGuard 腿的 UDP 口。留空 = tsnet 随机选；填死才能在上游路由做端口映射，
+  // 决定的是「能不能直连打洞」而不是「通不通」—— 不填也能用（回落 DERP 中继），只是绕远。
+  // 越界口径同 relayServerPort（见其注释）。
+  { t: 'number', k: 'listenPort', label: 'ts.listenPort', hint: 'ts.listenPortHint', ph: '41641', mono: true, opt: true },
   { t: 'number', k: 'relayServerPort', label: 'ts.relayPort', ph: '0', mono: true, opt: true },
   { t: 'switch', k: 'sshServer', label: 'ts.ssh', hint: 'ts.sshHint' },
   // P4b 按名解析：与 acceptDefaultResolvers 强联动。后端 `accept_default_resolvers` **只在 resolveByName
