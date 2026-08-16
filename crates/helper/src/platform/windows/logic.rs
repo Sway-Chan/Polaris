@@ -100,6 +100,30 @@ pub fn filepath_base(p: &str) -> &str {
     }
 }
 
+/// 轻量 dirname（[`filepath_base`] 的对偶）。
+///
+/// 取路径除末段外的前缀（`/` 与 `\` 均作分隔符），用途：起核时把子进程 CWD 定到配置文件所在目录。
+/// 不引 `std::path` 的理由同 [`filepath_base`] —— `std::path` 在 Linux 上只认 `/`，会把
+/// `C:\ProgramData\Polaris\config.json` 整段当成一个文件名而返回「无父目录」，于是本机单测恒绿、
+/// 生产恒错。
+///
+/// - 无分隔符（裸文件名）→ `None`，调用方保持「继承父进程 CWD」的旧行为
+/// - 根形态（`C:\cfg.json` / `\cfg.json`）→ **保留尾分隔符**（`C:\` / `\`）。Win32 里 `"C:"` 表示
+///   「C 盘的当前目录」而不是 C 盘根，丢掉这个反斜杠会把 CWD 指到完全不同的地方
+#[must_use]
+pub fn filepath_dir(p: &str) -> Option<&str> {
+    let trimmed = p.trim_end_matches(['\\', '/']);
+    let i = trimmed.rfind(['\\', '/'])?;
+    // `i == 0` → `\file`（根相对）；前一字节是 `:` → `C:\file`（盘符根）。两者都要把分隔符留下。
+    // 按字节比对安全：UTF-8 续字节恒 ≥ 0x80，不会等于 b':'，故不会误判多字节字符的中段。
+    let end = if i == 0 || trimmed.as_bytes()[i - 1] == b':' {
+        i + 1
+    } else {
+        i
+    };
+    Some(&trimmed[..end])
+}
+
 /// Windows 路径归一化（移植自 Go `filepath.Clean` 的最小子集，覆盖本协议用到的形态）。
 ///
 /// Go `filepath.Clean` 做的事很多（`./` `../` 折叠、重复分隔符合并、去尾分隔符）。本协议 cfg 路径由客户端
@@ -349,6 +373,46 @@ mod tests {
         assert_eq!(filepath_base("file.exe"), "file.exe");
         assert_eq!(filepath_base("/usr/bin/sing-box"), "sing-box");
         assert_eq!(filepath_base(r"a/b\c"), "c"); // 混合分隔符
+    }
+
+    // ===== filepath_dir（起核子进程 CWD 的推导）=====
+
+    #[test]
+    fn filepath_dir_takes_parent_of_windows_paths() {
+        // 生产形态：cfg 在 conf_dir 里（cfg_allowed 已保证），父目录就是要设的 CWD。
+        assert_eq!(
+            filepath_dir(r"C:\ProgramData\Polaris\config.json"),
+            Some(r"C:\ProgramData\Polaris")
+        );
+        assert_eq!(
+            filepath_dir("/etc/polaris/config.json"),
+            Some("/etc/polaris")
+        );
+        assert_eq!(filepath_dir(r"a/b\c.json"), Some("a/b")); // 混合分隔符
+    }
+
+    #[test]
+    fn filepath_dir_keeps_the_separator_at_a_root() {
+        // `"C:"` 在 Win32 = 「C 盘的当前目录」，不是 C 盘根 —— 尾分隔符丢不得。
+        assert_eq!(filepath_dir(r"C:\config.json"), Some(r"C:\"));
+        assert_eq!(filepath_dir(r"\config.json"), Some(r"\"));
+        assert_eq!(filepath_dir("/config.json"), Some("/"));
+    }
+
+    #[test]
+    fn filepath_dir_returns_none_without_a_separator() {
+        // 无父目录 → 调用方保持继承父进程 CWD 的旧行为，而不是拿一个空串去 chdir。
+        assert_eq!(filepath_dir("config.json"), None);
+        assert_eq!(filepath_dir(""), None);
+    }
+
+    #[test]
+    fn filepath_dir_does_not_split_multibyte_characters() {
+        // 分隔符前一字节按 b':' 比对：中文目录名的 UTF-8 续字节恒 ≥ 0x80，不得被误判成盘符根。
+        assert_eq!(
+            filepath_dir(r"C:\用户\配置\config.json"),
+            Some(r"C:\用户\配置")
+        );
     }
 
     // ===== local_port_from_net_order（对照 winproc.go:294-298）=====

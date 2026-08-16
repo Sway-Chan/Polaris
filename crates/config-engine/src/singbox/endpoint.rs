@@ -98,6 +98,21 @@ pub struct Endpoint {
     pub ssh_server: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relay_server_port: Option<u16>,
+    /// Taildrop 收件目录（1.14.0-beta.15 新增）。**必须恒填绝对路径**，不能吃内核默认值。
+    ///
+    /// 内核侧行为（`protocol/tailscale/endpoint.go:187-192` + `:253-263`，v1.14.0-beta.15 读源）：
+    /// 缺省取字面量 `"Taildrop"` —— **相对路径**，经 `filemanager.BasePath` + `filepath.Abs` 按
+    /// **核进程 CWD** 解析；随后在 `Start(StartStateInitialize)` 里 `MkdirAll(0o700)`，且该 mkdir
+    /// **无条件执行**（唯一豁免 `version.IsAppleTV()`），失败即 `create taildrop directory` 把整个核
+    /// 起崩。⇒ 只要配置里有 tailscale endpoint，这个目录就一定会被建出来，且落点由 CWD 决定。
+    ///
+    /// 本仓四条起核腿的 CWD 曾经三对一错：App 直起 / Linux helper / macOS helper 都设成 config 目录，
+    /// 而 Windows helper 的 `CreateProcessW` 没传 `lpCurrentDirectory` ⇒ 继承服务 CWD
+    /// `C:\Windows\System32`，tailnet peer 发来的文件会落进 System32。那条腿已单独补上
+    /// （`crates/helper/src/platform/windows/winproc/win.rs`），但**两处都要修**：补 CWD 治的是
+    /// 「CWD 是什么」，本字段治的是「不依赖 CWD」—— 只做前者，将来任何新的相对路径默认值仍会跟着漂。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub taildrop_directory: Option<String>,
     /// **custom（isEndpoint）逃生舱的原样透传载荷**（WG / Tailscale 两条腿一律留空 ⇒ 不产生任何键）。
     ///
     /// 语义、理由与代价见 [`crate::singbox::Outbound::extra`]；endpoint 侧此前的形态**更坏**：

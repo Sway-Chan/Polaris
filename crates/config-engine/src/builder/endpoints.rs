@@ -10,6 +10,11 @@ use crate::singbox::{DomainResolver, Endpoint, WireGuardPeer};
 use crate::user_config::ip::is_ip_literal;
 use crate::user_config::server_config::ServerConfig;
 
+/// Taildrop 收件目录相对 `state_dir` 的子目录名。取与内核默认值相同的字面量（`"Taildrop"`），
+/// 差别只在**我们把它锚成绝对路径**、不让它跟着 CWD 漂 —— 见
+/// [`crate::singbox::Endpoint::taildrop_directory`]。
+const TAILDROP_SUBDIR: &str = "Taildrop";
+
 /// WireGuard endpoint 构造。上游 `buildWireGuardEndpoint`。
 /// domain_resolver + platform + tailscale_state_dir（路径）注入。
 ///
@@ -79,6 +84,7 @@ pub fn build_wireguard_endpoint(
         advertise_tags: None,
         ssh_server: None,
         relay_server_port: None,
+        taildrop_directory: None,
     };
 
     if needs_resolver {
@@ -169,6 +175,13 @@ pub fn build_tailscale_endpoint(
         advertise_tags: None,
         ssh_server: None,
         relay_server_port: None,
+        // 恒填绝对路径，绝不留给内核默认值 —— 默认是相对的 `Taildrop`，按核进程 CWD 解析后
+        // 无条件 mkdir。为什么这是硬约束（含 Windows helper 那条 CWD 腿）见
+        // [`crate::singbox::Endpoint::taildrop_directory`]。
+        // 落在 state_dir 之下而不是与之并列：state_dir 已按节点 id 分好、随节点删除一起清理，
+        // 收件目录跟着走即天然隔离；同时它是 state_dir 的**子目录**，peer 送来的文件名不可能
+        // 撞上 `tailscaled.state` 这类密钥文件。
+        taildrop_directory: Some(format!("{state_dir}/{TAILDROP_SUBDIR}")),
     };
 
     // exit_node 仅承载全隧道时下发。
@@ -303,6 +316,59 @@ mod tests {
         let ep = build_tailscale_endpoint(&s, "tag-t1", "/fake/ts/t1", "linux", None);
         // exit_node 设 → mesh_allows_internet=true → exit_node 下发。
         assert_eq!(ep.exit_node.as_deref(), Some("exit-peer"));
+    }
+
+    /// `taildrop_directory` **恒下发且恒绝对**（1.14.0-beta.15）。
+    ///
+    /// 这条不是「多测一个字段」：金样快照里**一个 tailscale endpoint 都没有**，
+    /// 整套 golden/`sing-box check` 对拍对本字段的检出力恒为 0 —— 缺了这条断言，
+    /// 把它改回 `None`（= 回落到内核那个跟着 CWD 漂的相对默认值）不会红任何门。
+    #[test]
+    fn ts_endpoint_always_pins_taildrop_directory_under_state_dir() {
+        let mut s = ServerConfig {
+            id: "t1".into(),
+            name: "TS".into(),
+            protocol: Protocol::Tailscale,
+            ..Default::default()
+        };
+        // 用户一个 tailscale 设置都没填的最小形态：本字段仍须下发。
+        s.tailscale_settings = Some(Default::default());
+        let ep = build_tailscale_endpoint(&s, "tag-t1", "/fake/ts/t1", "linux", None);
+        let dir = ep
+            .taildrop_directory
+            .as_deref()
+            .expect("taildrop_directory 必须下发，不得留给内核相对默认值");
+        assert_eq!(dir, "/fake/ts/t1/Taildrop");
+        // 绝对性是本字段存在的**唯一理由**：相对路径会被内核按核进程 CWD 解析。
+        assert!(
+            dir.starts_with('/') || dir.as_bytes().get(1) == Some(&b':'),
+            "必须是绝对路径（unix `/…` 或 Windows `X:\\…`），实得 {dir}"
+        );
+        assert!(
+            dir.starts_with("/fake/ts/t1"),
+            "须落在该节点自己的 state_dir 之下，随节点一起清理，实得 {dir}"
+        );
+    }
+
+    /// WireGuard 腿**不得**下发 `taildrop_directory`（该键只属 tailscale endpoint）。
+    #[test]
+    fn wg_endpoint_never_sets_taildrop_directory() {
+        let s = ServerConfig {
+            id: "w1".into(),
+            name: "WG".into(),
+            protocol: Protocol::Wireguard,
+            address: "1.2.3.4".into(),
+            port: 51820,
+            wireguard_settings: Some(WireGuardSettings {
+                private_key: Some("priv".into()),
+                peer_public_key: Some("pub".into()),
+                local_address: vec!["10.0.0.2/32".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ep = build_wireguard_endpoint(&s, "tag-w1", None, "linux", None).unwrap();
+        assert_eq!(ep.taildrop_directory, None);
     }
 
     /// 落盘态直达生成器：`reverseMesh:true` 的 WARP 节点**不得**发出 `system:true` / 接口名。

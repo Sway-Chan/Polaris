@@ -8,7 +8,7 @@
 #![allow(unsafe_code)]
 
 use crate::platform::windows::logic::{
-    eq_ignore_ascii_case_path, filepath_base, filter_listen_pids, is_locked_singbox,
+    eq_ignore_ascii_case_path, filepath_base, filepath_dir, filter_listen_pids, is_locked_singbox,
     local_port_from_net_order, AF_INET, AF_INET6, MIB_TCP_STATE_LISTEN,
     TCP_TABLE_OWNER_PID_LISTENER,
 };
@@ -284,11 +284,31 @@ impl ProcOps for WinProcOps {
                 log_file = Some(lf);
             }
         }
+        // CWD = 配置文件所在目录（= 用户可写 config 目录）。**不设的后果不是噪音，是写错地方**：
+        // helper 是 SCM 服务，进程 CWD 恒为 `C:\Windows\System32`，child 不设就继承它，而 sing-box
+        // 对配置里的**相对**路径按 CWD 解析。1.14.0-beta.15 起 tailscale endpoint 的
+        // `taildrop_directory` 默认值就是相对的 `Taildrop`，且在 initialize 阶段无条件 `MkdirAll(0700)`
+        // ⇒ 目录建在 System32 里，tailnet peer 发来的文件也落在那；helper 跑在 SYSTEM 下，这个 mkdir
+        // 还会**成功**，于是没有任何报错。另一条更老的同型：`services[].dashboard` 省略 `path` 时的
+        // 联网下载兜底目录 `dashboard`。
+        //
+        // App 直起（`runtime/proxy.rs`）、Linux helper（`platform/linux/server.rs`）、macOS helper
+        // （`platform/macos/server.rs`）三条腿早就设了，本腿是漏的那条 —— 同一根因下做对的三条腿，
+        // 正是「这不是有意取舍」的证据。取父目录的方式与 Linux 腿同（配置文件的所在目录），只是不能用
+        // `std::path`（见 `logic::filepath_dir`）。取不到父目录（裸文件名）→ 不设，保持旧行为。
+        let cwd_w: Option<Vec<u16>> = filepath_dir(cfg).map(|dir| {
+            OsString::from(dir)
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect()
+        });
+        let cwd_ptr = cwd_w.as_ref().map_or(std::ptr::null(), |v| v.as_ptr());
         let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
         // SAFETY: CreateProcessW 启动 child。CREATE_NEW_PROCESS_GROUP 使 child 可被 CTRL_BREAK 投递
         //（服务模式 no-op，见 send_ctrl_break 注释）。CREATE_NO_WINDOW 避免黑窗。
         // bInheritHandles=inherit_handles（有 log 重定向时 TRUE，让 child 继承 STARTUPINFOW 的 std 句柄；
         // 其余句柄均非可继承 → 不泄漏）。lpApplicationName=NULL → lpCommandLine 首 token 作 exe。
+        // lpCurrentDirectory=cwd_ptr（`cwd_w` 须活到本调用之后，故在同作用域持有到函数末）。
         let ok = unsafe {
             CreateProcessW(
                 std::ptr::null(),
@@ -298,7 +318,7 @@ impl ProcOps for WinProcOps {
                 inherit_handles,
                 CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
                 std::ptr::null(),
-                std::ptr::null(),
+                cwd_ptr,
                 &si,
                 &mut pi,
             )
