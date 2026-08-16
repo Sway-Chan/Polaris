@@ -1297,6 +1297,7 @@
     "title": "新增接入",
     "managed": "帳號與託管網路",
     "tunnels": "標準與企業隧道",
+    "taildrop": "檔案",
     "tsConfigured": "已設定 · 開啟設定或切換帳號",
     "tsNew": "互動登入或使用 Auth Key",
     "warpConfigured": "已註冊 · 管理路由或裝置",
@@ -1762,6 +1763,22 @@
     "urlDlgDiscardTitle": "放棄下載？",
     "urlDlgDiscardMsg": "已填寫的內容將不會儲存。",
     "urlDlgDiscard": "放棄"
+  },
+  "taildrop": {
+    "title": "收件匣",
+    "empty": "沒有收到的檔案。",
+    "offline": "該 Tailscale 節點未連線，先連線後才能收發檔案。",
+    "notGranted": "此 tailnet 未啟用檔案分享。需在 Tailscale 管理後台為本節點授予 file-sharing 權限，在本應用內無法開啟。",
+    "receiving": "接收中",
+    "waiting": "待處理",
+    "fromSender": "來自 {{sender}}",
+    "cancelReceiving": "取消接收",
+    "saved": "已儲存",
+    "errUnavailable": "該節點目前不可用：核心未執行，或此節點尚未生效（新增後需重啟核心）。",
+    "errApi": "連線核心管理介面失敗，請稍後重試。",
+    "errCall": "核心拒絕了本次操作，檔案可能已被移除。",
+    "errWrite": "寫入所選位置失敗，請檢查磁碟空間與寫入權限。",
+    "errUnknown": "操作失敗。"
   },
   "ts": {
     "acceptDefaultResolvers": "接受 tailnet 預設解析器",

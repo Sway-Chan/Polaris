@@ -1613,3 +1613,31 @@ body:has(.pending-bar.show) #toast-stack{
   letter-spacing:.03em; }
 .imp-badge{ flex:none; font-size:10px; padding:0 6px; border-radius:999px;
   background:hsl(var(--warn)/0.14); color:hsl(var(--warn)); }
+
+/* ═══════════ Taildrop 收件箱（`TaildropDialog`）═══════════
+ * 结构与 `.imp-list`（导入预览）同型：无序列表 + 逐行 flex + 名称轨吃剩余宽度。**刻意复用同一套
+ * 数值与 token**（边框/圆角/字号/faint 色阶），而不是另起一套 —— 两个弹窗里的「一列条目」长得
+ * 不一样，用户读到的是「这是两种不同的东西」，而它们不是。
+ *
+ * 名称轨的 `min-width:0` 不可省：缺席时 flex item 的 automatic minimum size 是 max-content ⇒
+ * 长文件名把右侧按钮顶出行外，ellipsis 永远不触发（`.imp-name` 踩过同款，注释留在那里）。
+ *
+ * 高度上限同 `.imp-list`：收件箱可以有几十个文件，不封顶会把 footer 的按钮挤出视野
+ *（`.dlg` 有 max-height，正文再长只是把按钮推走）。只给 y 轴，x 轴显式按住 —— CSS Overflow §3
+ * 规定一轴非 visible 时另一轴的 visible 计算成 auto，不按住就会长出横向滚动条。 */
+.tdrop-list{ margin:0 0 4px; padding:0; list-style:none; max-height:240px;
+  overflow-y:auto; overflow-x:hidden; border:1px solid hsl(var(--line)); border-radius:var(--r); }
+.tdrop-row{ display:flex; align-items:center; gap:8px; padding:7px 9px; }
+.tdrop-row + .tdrop-row{ border-top:1px solid hsl(var(--line)); }
+.tdrop-main{ display:flex; flex-direction:column; gap:1px; flex:1; min-width:0; }
+.tdrop-name{ font-size:12px; font-weight:560; color:hsl(var(--fg));
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tdrop-meta{ font-size:10.5px; color:hsl(var(--fg-faint));
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tdrop-actions{ flex:none; display:flex; gap:4px; }
+.tdrop-empty{ margin:0; padding:34px 12px; text-align:center; font-size:12px;
+  line-height:1.6; color:hsl(var(--fg-faint)); }
+/* 未读角标：与 `.imp-badge` 同型（pill + 语义色底 + 同色前景）。用 `--flow`（本仓的主色/强调轨）
+ * 而不是 `--warn` —— 收到文件是中性事件，不是需要警惕的事，摆成琥珀色会读成「出问题了」。 */
+.tdrop-badge{ margin-left:5px; padding:0 6px; border-radius:999px; font-size:10px;
+  background:hsl(var(--flow)/0.16); color:hsl(var(--flow-hi)); }

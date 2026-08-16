@@ -1297,6 +1297,7 @@
     "title": "添加接入",
     "managed": "账号与托管网络",
     "tunnels": "标准与企业隧道",
+    "taildrop": "文件",
     "tsConfigured": "已配置 · 打开设置或切换账号",
     "tsNew": "交互登录或使用 Auth Key",
     "warpConfigured": "已注册 · 管理路由或设备",
@@ -1762,6 +1763,22 @@
     "urlDlgDiscardTitle": "放弃下载？",
     "urlDlgDiscardMsg": "已填写的内容将不会保存。",
     "urlDlgDiscard": "放弃"
+  },
+  "taildrop": {
+    "title": "收件箱",
+    "empty": "没有收到的文件。",
+    "offline": "该 Tailscale 节点未连接，先连接后才能收发文件。",
+    "notGranted": "此 tailnet 未启用文件共享。需在 Tailscale 管理后台为本节点授予 file-sharing 权限，在本应用内无法开启。",
+    "receiving": "接收中",
+    "waiting": "待处理",
+    "fromSender": "来自 {{sender}}",
+    "cancelReceiving": "取消接收",
+    "saved": "已保存",
+    "errUnavailable": "该节点当前不可用：内核未运行，或此节点尚未生效（新增后需重启内核）。",
+    "errApi": "连接内核管理接口失败，请稍后重试。",
+    "errCall": "内核拒绝了本次操作，文件可能已被移除。",
+    "errWrite": "写入所选位置失败，请检查磁盘空间与写入权限。",
+    "errUnknown": "操作失败。"
   },
   "ts": {
     "acceptDefaultResolvers": "接受 tailnet 默认解析器",

@@ -5444,6 +5444,30 @@ impl ProxyRuntime {
             .unwrap_or_default()
     }
 
+    /// 某个节点在**当前运行核**里的管理 API 落点：`(端口, secret, 该节点的 endpoint tag)`。
+    ///
+    /// `None` 有两种成因，调用方对用户的表述必须一致（都是「现在做不了」而不是「出错了」）：
+    /// 核没在跑；或该 serverId 不在运行快照的 `id_to_tag` 里 —— 后者意味着**核吃进去的那份配置里
+    /// 没有这个节点**（刚加还没重启、或已被删）。
+    ///
+    /// 🔴 **tag 解不到时不得回落成 `server.name` 猜一个**。热重设 exit_node 那条腿有这个回落，
+    /// 是因为它猜错只是「热切失败、退回重启」；而 Taildrop 侧猜错的后果是**静默空结果**：核对
+    /// 未知 endpointTag 返回的是一帧空收件箱而非错误（`daemon/started_service_taildrop.go:90-97`，
+    /// 判据见 `SingBoxApiClient::first_taildrop_inbox_snapshot` 文档）⇒ 用户看到「收件箱是空的」，
+    /// 而真实的收件箱在另一个端点上。宁可明说「取不到」。
+    pub(crate) fn management_target_for(&self, server_id: &str) -> Option<(u16, String, String)> {
+        let status = self.status();
+        if !status.running {
+            return None;
+        }
+        let tag = self
+            .switch_snapshot
+            .read()
+            .ok()
+            .and_then(|g| g.as_ref().and_then(|s| s.id_to_tag.get(server_id).cloned()))?;
+        Some((status.clash_api_port, self.clash_api_secret(), tag))
+    }
+
     /// 用户是否关掉了日志写盘（`disableLogFile`）。**它不只是「不写文件」**：该开关落到生成配置就是
     /// `log.disabled=true`，而 sing-box 见到它直接返回 `NewNOPFactory()`（`log/log.go`）—— 整个日志
     /// 工厂变空实现，`SubscribeLog` 也就永久没有任何一帧。核日志 relay 据此决定压根不订阅。

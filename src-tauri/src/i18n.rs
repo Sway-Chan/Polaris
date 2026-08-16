@@ -391,6 +391,8 @@ pub mod key {
     pub const NATIVE_CORE_PICK_TITLE: &str = "native.corePickTitle";
     /// 「所有文件」过滤器显示名。
     pub const NATIVE_ALL_FILES: &str = "native.allFiles";
+    /// Taildrop 取件：保存框标题。
+    pub const NATIVE_TAILDROP_SAVE_TITLE: &str = "native.taildropSaveTitle";
 
     // ── 提权引导消息框 ──
     /// 未装 helper：标题。

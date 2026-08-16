@@ -57,6 +57,12 @@ export const IPC_CHANNELS = {
   TAILSCALE_LOGOUT: 'tailscale_logout', // 退出登录：清该节点 state 目录（持久会话）；保留节点配置/authKey
   TAILSCALE_STATE_EXISTS: 'tailscale_state_exists', // 批量查 TS 节点 state 目录存在性（不起核判「登录过没」）：代理关时登录态缓存未命中的兜底
   TAILSCALE_GET_STATUS: 'tailscale_get_status', // L2：主动拉各 TS 节点状态末帧(self IP/peers) + 新鲜度(connected)。治本「状态流 push-only 无 pull、渲染端错过推送即陈旧」
+  // ── Taildrop 收件箱（sing-box 1.14.0-beta.15）。核无条件收件，故这几条是「看得见 + 清得掉」的最低要求 ──
+  TAILDROP_LIST: 'taildrop_list', // 读一次收件箱（首帧快照，不留订阅）
+  TAILDROP_MARK_READ: 'taildrop_mark_read', // 清未读角标，**不删文件**
+  TAILDROP_DELETE: 'taildrop_delete', // 删一个已落盘的文件
+  TAILDROP_CANCEL: 'taildrop_cancel', // 取消一个接收中的文件（senderID + name 定位）
+  TAILDROP_SAVE: 'taildrop_save', // 取件：开原生保存框 + 写盘
 
   // 订阅管理
   SUBSCRIPTION_ADD: 'subscription_add',

@@ -65,6 +65,7 @@ import type {
   TailscaleStatusEvent,
   TailscaleStatusSnapshot,
 } from '../contracts/tailscale-status';
+import type { TaildropInbox, TaildropSaveResult } from '../contracts/taildrop';
 import type { SpeedTestDonePayload, SpeedTestInvokeResult } from '../contracts/speed-test';
 import type { CoreBuildKind } from '../domain/core-build';
 
@@ -438,6 +439,31 @@ export const serverApi = {
   /** L2：主动拉各 TS 节点状态末帧(self IP/peers) + 新鲜度(connected)。 */
   async tailscaleGetStatus(): Promise<TailscaleStatusSnapshot> {
     return invoke(IPC_CHANNELS.TAILSCALE_GET_STATUS);
+  },
+
+  /** 读一次该 TS 节点的 Taildrop 收件箱（首帧快照）。失败抛 `IpcError`，`code` 见 `domain/taildrop.ts`。 */
+  async taildropList(serverId: string): Promise<TaildropInbox> {
+    return invoke(IPC_CHANNELS.TAILDROP_LIST, { serverId });
+  },
+
+  /** 清未读角标。**不删文件** —— 待处理数不变。 */
+  async taildropMarkRead(serverId: string): Promise<void> {
+    return invoke(IPC_CHANNELS.TAILDROP_MARK_READ, { serverId });
+  },
+
+  /** 删除收件箱里的一个文件。 */
+  async taildropDelete(serverId: string, name: string): Promise<void> {
+    return invoke(IPC_CHANNELS.TAILDROP_DELETE, { serverId, name });
+  },
+
+  /** 取消一个接收中的文件。`senderId` + `name` 必须成对（同名文件可来自不同发件人）。 */
+  async taildropCancel(serverId: string, senderId: string, name: string): Promise<void> {
+    return invoke(IPC_CHANNELS.TAILDROP_CANCEL, { serverId, senderId, name });
+  },
+
+  /** 取件：后端开原生保存框再写盘。`canceled:true` = 用户取消，**不是失败**。 */
+  async taildropSave(serverId: string, name: string): Promise<TaildropSaveResult> {
+    return invoke(IPC_CHANNELS.TAILDROP_SAVE, { serverId, name });
   },
 
   async switch(serverId: string): Promise<void> {

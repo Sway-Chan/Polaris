@@ -396,6 +396,46 @@ impl SingBoxApiClient {
         )
     }
 
+    /// 取某端点收件箱的**一次性快照**（`SubscribeTaildropInbox` 首帧），带 [`SNAPSHOT_TIMEOUT`] 兜底。
+    ///
+    /// # 为什么一次性读是合法的
+    ///
+    /// 与 [`Self::first_groups_snapshot`] 同型：上游没有 unary 的收件箱读方法，但服务端在**进入等待
+    /// 之前**先发一帧当前快照 —— `protocol/tailscale/taildrop.go:978-988` 的循环体是
+    /// `for { fn(manager.inbox()); select { ctx.Done() | signal } }`，`fn` 在 select 之前调用
+    /// （v1.14.0-beta.15 读源）。故「订阅 → 取首帧 → drop」拿到的就是此刻的完整收件箱。
+    ///
+    /// # 为什么不常驻订阅
+    ///
+    /// 收件箱面板的生命周期以分钟计，而未读/待处理/接收中三个**计数**本来就随
+    /// `SubscribeTailscaleStatus` 每帧下发（`TailscaleEndpointStatus` f12..f14）——角标不需要这条流。
+    /// 为一个短命面板挂一条常驻的、按端点数量翻倍的流，是拿长期开销换一个已经有的东西。
+    ///
+    /// # 🔴 tag 不存在时**不报错**
+    ///
+    /// 服务端在解析不到该 `endpoint_tag` 时发的是一帧**空** `TaildropInbox` 然后挂住
+    /// （`daemon/started_service_taildrop.go:90-97`）⇒ 本方法返回「空收件箱」，与「真的没有文件」
+    /// 逐字节同形。调用方**不得**把空结果当作 tag 正确的证据。
+    pub async fn first_taildrop_inbox_snapshot(
+        &self,
+        endpoint_tag: impl Into<String>,
+    ) -> Result<daemon::TaildropInbox, ClientError> {
+        let mut c = self.client();
+        let req = self.with_auth(Request::new(daemon::SubscribeTaildropInboxRequest {
+            endpoint_tag: endpoint_tag.into(),
+        }));
+        let fut = async move {
+            let mut stream = c.subscribe_taildrop_inbox(req).await?.into_inner();
+            let first = stream.message().await?;
+            Ok::<_, ClientError>(first.unwrap_or_default())
+        };
+        // deadline 裹住「建流 + 首帧」整体：服务端 `waitForStarted` 在核尚未 STARTED 时会一直挂着。
+        match tokio::time::timeout(SNAPSHOT_TIMEOUT, fut).await {
+            Ok(r) => r,
+            Err(_) => Err(ClientError::SnapshotTimeout),
+        }
+    }
+
     /// 把该端点收件箱标记为已读（`MarkTaildropInboxRead`）——清的是 `unreadFileCount`，
     /// **不删文件**（`waitingFileCount` 不变）。带 [`UNARY_DEADLINE`] deadline 保证必 settle。
     pub async fn mark_taildrop_inbox_read(
@@ -460,7 +500,7 @@ impl SingBoxApiClient {
         &self,
         endpoint_tag: impl Into<String>,
         name: impl Into<String>,
-    ) -> Result<tonic::Streaming<daemon::DownloadTaildropFileChunk>, ClientError> {
+    ) -> Result<TaildropDownload, ClientError> {
         let mut c = self.client();
         let req = self.with_auth(Request::new(daemon::DownloadTaildropFileRequest {
             endpoint_tag: endpoint_tag.into(),
@@ -469,6 +509,13 @@ impl SingBoxApiClient {
         Ok(c.download_taildrop_file(req).await?.into_inner())
     }
 }
+
+/// Taildrop 取件的字节流（[`SingBoxApiClient::download_taildrop_file`] 的返回）。
+///
+/// 起别名而不是让调用方去裸写 `tonic::Streaming<…>`：**src-tauri 不依赖 tonic** —— 传输层封装在本
+/// crate 是既定分层，为了写一个类型名就往上层加 tonic 依赖，等于把这层封装打穿。
+/// 消费只需 `stream.message().await`（`Streaming` 的固有方法，不必 import 任何 trait）。
+pub type TaildropDownload = tonic::Streaming<daemon::DownloadTaildropFileChunk>;
 
 /// 客户端错误：连接失败 / tonic Status（含 Unauthenticated=16 / DeadlineExceeded=4）。
 #[derive(Debug, thiserror::Error)]

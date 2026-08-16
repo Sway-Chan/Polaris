@@ -67,6 +67,7 @@ export type DialogDesc =
   | { kind: 'warp'; edit?: boolean } // WARP 单例槽，无 serverId（弹窗自查现有节点）
   | { kind: 'ts-login' }
   | { kind: 'ts-settings' }
+  | { kind: 'taildrop'; serverId: string } // 收件箱按节点开（一个 tailnet 账号 = 一个节点 = 一个收件箱）
   | { kind: 'wg'; serverId?: string } // WG 可多实例，携 id
   | {
       kind: 'mesh-join';

@@ -1297,6 +1297,7 @@
     "title": "Add Access",
     "managed": "Accounts & managed networks",
     "tunnels": "Standard & enterprise tunnels",
+    "taildrop": "Files",
     "tsConfigured": "Configured · open settings or switch accounts",
     "tsNew": "Interactive login or Auth Key",
     "warpConfigured": "Registered · manage routing or device",
@@ -1762,6 +1763,22 @@
     "urlDlgDiscardTitle": "Discard download?",
     "urlDlgDiscardMsg": "The details you entered will not be saved.",
     "urlDlgDiscard": "Discard"
+  },
+  "taildrop": {
+    "title": "Inbox",
+    "empty": "No received files.",
+    "offline": "This Tailscale node is not connected. Connect it before sending or receiving files.",
+    "notGranted": "File sharing is not enabled on this tailnet. Grant this node the file-sharing capability in the Tailscale admin console — it cannot be enabled from this app.",
+    "receiving": "Receiving",
+    "waiting": "Waiting",
+    "fromSender": "From {{sender}}",
+    "cancelReceiving": "Cancel",
+    "saved": "Saved",
+    "errUnavailable": "This node is unavailable right now: the core is not running, or the node is not live yet (a newly added node needs a core restart).",
+    "errApi": "Could not reach the core management API. Try again shortly.",
+    "errCall": "The core rejected the request; the file may already be gone.",
+    "errWrite": "Could not write to the chosen location. Check free space and write permissions.",
+    "errUnknown": "The operation failed."
   },
   "ts": {
     "acceptDefaultResolvers": "Accept tailnet default resolvers",

@@ -70,6 +70,7 @@
     "configPickTitle": "Select Configuration File",
     "configFileType": "Configuration File",
     "corePickTitle": "Select the sing-box core executable",
+    "taildropSaveTitle": "Save Received File",
     "allFiles": "All Files",
     "helperInstallTitle": "Privileged helper required",
     "helperInstallBody": "TUN mode needs the privileged helper to create the virtual adapter and take over system traffic. Installing asks for system authorization once; after that, starting and stopping never ask again.",

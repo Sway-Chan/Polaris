@@ -1738,6 +1738,12 @@ fn main() {
             tailscale_logout,
             tailscale_state_exists,
             tailscale_get_status,
+            // ── Taildrop 收件箱（sing-box 1.14.0-beta.15）──────────────────────
+            taildrop_list,
+            taildrop_mark_read,
+            taildrop_delete,
+            taildrop_cancel,
+            taildrop_save,
             // ── 代理控制（proxy:start/stop/restart/getStatus + pending + connections）──
             proxy_start,
             proxy_stop,

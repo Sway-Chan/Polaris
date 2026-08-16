@@ -21,6 +21,7 @@ import { SubDialog } from './SubDialog';
 import { WarpDialog } from './WarpDialog';
 import { TsLoginDialog } from './TsLoginDialog';
 import { TsSettingsDialog } from './TsSettingsDialog';
+import { TaildropDialog } from './TaildropDialog';
 import { WgDialog } from './WgDialog';
 import { RuleDialog } from './RuleDialog';
 import { ProcPickDialog } from './ProcPickDialog';
@@ -48,6 +49,8 @@ function renderDialog(desc: DialogDesc) {
       return <TsLoginDialog />;
     case 'ts-settings':
       return <TsSettingsDialog />;
+    case 'taildrop':
+      return <TaildropDialog serverId={desc.serverId} />;
     case 'wg':
       return <WgDialog serverId={desc.serverId} />;
     case 'mesh-join':

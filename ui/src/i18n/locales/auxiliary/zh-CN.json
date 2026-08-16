@@ -70,6 +70,7 @@
     "configPickTitle": "选择配置文件",
     "configFileType": "配置文件",
     "corePickTitle": "选择 sing-box 内核可执行文件",
+    "taildropSaveTitle": "保存收到的文件",
     "allFiles": "所有文件",
     "helperInstallTitle": "需要安装提权助手",
     "helperInstallBody": "TUN 模式需要提权助手才能创建虚拟网卡并接管系统流量。安装需要一次系统授权，之后每次启停都不再需要授权。",

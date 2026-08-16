@@ -70,6 +70,7 @@
     "configPickTitle": "選擇設定檔",
     "configFileType": "設定檔",
     "corePickTitle": "選擇 sing-box 核心執行檔",
+    "taildropSaveTitle": "儲存收到的檔案",
     "allFiles": "所有檔案",
     "helperInstallTitle": "需要安裝提權助手",
     "helperInstallBody": "TUN 模式需要提權助手才能建立虛擬網卡並接管系統流量。安裝需要一次系統授權，之後每次啟停都不再需要授權。",

@@ -232,6 +232,14 @@ const IMPL_ONLY: readonly ImplOnlyRow[] = [
       '属于不可撤销的数据删除，因此保留二次确认。',
   },
   {
+    key: 'taildrop-del',
+    file: 'components/dialogs/TaildropDialog.tsx',
+    why:
+      'Taildrop 收件箱里删一个文件。删的是**内核收件目录里的真文件**（`DeleteTaildropFile` 直接落到盘上），' +
+      '不进回收站、无撤销腿，且对端要重发才能拿回来 —— 属不可逆数据删除。同一列表里紧挨着的「保存」' +
+      '是可逆动作、不确认，两颗按钮相邻正是误点最贵的形态。key 带 `:<文件名>` 实例后缀（一行一个武装态）。',
+  },
+  {
     key: 'node-use',
     file: 'components/screens/nodes/NodesScreen.tsx',
     why:

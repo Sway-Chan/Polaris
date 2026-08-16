@@ -1104,3 +1104,47 @@ async fn taildrop_download_yields_a_size_header_then_the_body() {
     }
     assert_eq!(got, body, "逐块拼回的字节必须与源逐字节相同");
 }
+
+#[tokio::test]
+async fn taildrop_inbox_snapshot_reads_the_first_frame_and_leaves_no_subscription() {
+    // 一次性读的两条断言：① 拿到的是首帧内容；② 只订阅了一次（drop 即关流，不留后台订阅）。
+    // 打断 `first_taildrop_inbox_snapshot` 里的 drop 语义 / 改成常驻订阅 → 第二条转红。
+    let (addr, state, _h) = spawn_server(SECRET, 0).await;
+    *state.taildrop_inbox.lock().unwrap() = vec![canned_inbox("ts-node")];
+    let client = SingBoxApiClient::connect(Endpoint::new("127.0.0.1", addr.port()), SECRET)
+        .await
+        .unwrap();
+
+    let inbox = client
+        .first_taildrop_inbox_snapshot("ts-node")
+        .await
+        .unwrap();
+    assert_eq!(inbox.files.len(), 1);
+    assert_eq!(inbox.files[0].name, "report.pdf");
+    assert_eq!(inbox.receiving.len(), 1);
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert_eq!(
+        state.taildrop_subscribe_tags.lock().unwrap().len(),
+        1,
+        "一次性读不得留下后台订阅（重订阅会让计数继续涨）"
+    );
+}
+
+#[tokio::test]
+async fn taildrop_inbox_snapshot_is_empty_not_an_error_for_an_unknown_tag() {
+    // 核对未知 tag 发的是一帧**空**收件箱然后挂住（started_service_taildrop.go:90-97），
+    // 不是错误。这条钉住「空 ≠ tag 正确」这个判据边界：调用方不得据空结果推断 tag 有效。
+    let (addr, state, _h) = spawn_server(SECRET, 0).await;
+    *state.taildrop_inbox.lock().unwrap() = vec![daemon::TaildropInbox::default()];
+    let client = SingBoxApiClient::connect(Endpoint::new("127.0.0.1", addr.port()), SECRET)
+        .await
+        .unwrap();
+
+    let inbox = client
+        .first_taildrop_inbox_snapshot("no-such-endpoint")
+        .await
+        .unwrap();
+    assert!(inbox.files.is_empty());
+    assert!(inbox.receiving.is_empty());
+    assert_eq!(inbox.endpoint_tag, "", "空帧不带 tag");
+}

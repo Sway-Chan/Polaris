@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ServerConfig } from '@/contracts/types';
-import { useEffectiveServers } from '@/store/app-store';
+import { useAppStore, useEffectiveServers } from '@/store/app-store';
+import { taildropAvailability, taildropBadgeCount } from '@/domain/taildrop';
 import { findWarpNode } from '@/domain/warp';
 import { Modal } from './Modal';
 import { useDialogStore } from './dialog-store';
@@ -58,6 +59,11 @@ export function MeshJoinDialog({ onTsLogout, onWarpReregister, onWarpDeregister 
   const close = useDialogStore((state) => state.close);
   const tsNode = servers.find((server) => server.protocol === 'tailscale');
   const warpNode = findWarpNode(servers);
+  // 收件箱入口只在**该 tailnet 真的开了文件共享**时出现。未授权时不画一个点了没用的按钮，
+  // 原因由收件箱弹窗自己说（`taildropAvailability` 的 notGranted 那一格）—— 入口层只做出现/不出现。
+  const tsStatus = useAppStore((state) => (tsNode ? state.tailscaleStatuses[tsNode.id] : undefined));
+  const taildropReady = taildropAvailability(tsStatus) === 'ready';
+  const unread = taildropBadgeCount(tsStatus);
 
   const go = (next: Parameters<typeof open>[0]) => {
     close();
@@ -115,6 +121,16 @@ export function MeshJoinDialog({ onTsLogout, onWarpReregister, onWarpDeregister 
           onClick={() => go({ kind: tsNode ? 'ts-settings' : 'ts-login' })}
           actions={tsNode && (
             <>
+              {taildropReady && (
+                <button
+                  type="button"
+                  className="btn ghost sm"
+                  onClick={() => go({ kind: 'taildrop', serverId: tsNode.id })}
+                >
+                  {t('meshJoin.taildrop')}
+                  {unread > 0 && <span className="tdrop-badge">{unread}</span>}
+                </button>
+              )}
               <button type="button" className="btn ghost sm" onClick={() => go({ kind: 'ts-login' })}>
                 {t('meshJoin.switchAccount')}
               </button>
