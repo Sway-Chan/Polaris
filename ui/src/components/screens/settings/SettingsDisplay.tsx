@@ -90,7 +90,7 @@ export default function SettingsDisplay({ config, update }: SettingsDisplayProps
           - rememberWindowSize：`tauri-plugin-window-state` 按此配置 gate 注册——开启时插件恢复/
             持久化窗口几何，关闭时不注册（窗口回到默认尺寸）。
           - desktopNotifications：App.tsx onError → notifyDesktop（tauri-plugin-notification，setter 同步开关门控）。
-          - autoLightweightMode：**主进程**闲置巡检（`src-tauri/src/idle_lightweight.rs`，30s 一拍）
+          - autoLightweightMode：**主进程**隐藏 / 最小化驻留巡检（`src-tauri/src/idle_lightweight.rs`，30s 一拍）
             → tray_enter_lightweight 销毁主窗 webview 释放内存。计时不在前端：要销毁的就是这个
             renderer，把计时器放在里面等于让它自己判自己（隐藏窗的 visibilityState 依平台、
             定时器又被 WKWebView 节流，mac 上因此从不触发）。 */}

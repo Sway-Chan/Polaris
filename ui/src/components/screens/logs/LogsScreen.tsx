@@ -14,7 +14,8 @@
  *
  * 接线（保留，见 vault ~/docs/polaris/design/polaris-ui-rebuild-plan.md C3 台账）：
  *  - useAppStore(config/saveConfig/privacyMode)
- *  - api.logs.get（初始水合）/ .onReceivedBatch（~150ms coalesce 批量推送）/ .clear / .export（纯日志导出）
+ *  - api.logs.get（初始水合 + 页面所有权登记）/ .onReceivedBatch（~150ms 合批）/
+ *    .unsubscribe（离页释放）/ .clear / .export（纯日志导出）
  *  - api.diagnostic.export（诊断包导出，与纯日志导出是两个不同产物，各自独立按钮）
  *  - 级别：configApi.save 写 config.logLevel（核记录 + 视图显示同一级别，无独立视图侧级别）。
  *    后端经 config.rs::broadcast_config_changed → logging::set_level 即刻改 max_level，而**内核日志
@@ -75,6 +76,13 @@ const LEVEL_SELECT_OPTIONS: CselOption[] = LEVEL_OPTS.map((value) => ({
   label: value.toUpperCase(),
 }));
 const MAX_BUFFER = 500; // 渲染端缓冲上限（防日志风暴拖死 DOM）
+let logSubscriptionSeq = 0;
+
+/** 同一 renderer 内单调唯一即可；后端按 window + token 防陈旧 cleanup 误退新页面。 */
+function nextLogSubscriptionId(): string {
+  logSubscriptionSeq += 1;
+  return `logs-${Date.now()}-${logSubscriptionSeq}`;
+}
 /** 本屏唯一的原地二次确认项（原型 :4130 `log-clear`）。超时/复位语义全在 `lib/confirm-twice.ts`。 */
 const CLEAR_KEY = 'logs-clear';
 /** 距底 ≤ 此像素即算「贴底」（对齐 上游 `checkIsAtBottom` 的 30px 容差，容子像素/行高抖动）。 */
@@ -117,6 +125,9 @@ export function LogsScreen() {
   const [source, setSource] = useState<LogSource>('all');
   const [search, setSearch] = useState('');
   const [follow, setFollow] = useState(true);
+  /** 直播监听只在 mount 时建立一次；用 ref 读取最新 follow，避免每次暂停都退订、重水合。 */
+  const followRef = useRef(follow);
+  followRef.current = follow;
   /** 暂停时缓冲的新行（恢复即回填，对齐原型 logPending）；count 单独入 state 供 label 响应式渲染。 */
   const pendingRef = useRef<LogRow[]>([]);
   const [pendingCount, setPendingCount] = useState(0);
@@ -194,16 +205,41 @@ export function LogsScreen() {
     return fresh;
   }, []);
 
-  /* ── 初始水合：logsApi.get ──
+  /* ── 页面级日志所有权：先监听，再水合 / 登记；卸载时监听与后端订阅一起释放 ──
    *
    * **合并进缓冲，不是整体替换，也不走游标去重**：两条腿同时起跑，订阅腿完全可能先送到一批
    * （核在高频输出时必然如此）。走 `dedupe` + `setLogs(...)` 的那一版会把游标推到 N 之后再拿快照
    * 去重成空，然后用空数组替换掉已入列的行 ⇒ 进页历史区恒空直到新行到达。理由详见 logs-buffer.ts。
    * 游标仍要**快进到快照最大 id**，否则快照里比游标新的行会被随后的流式批当成新行再收一次。 */
   useEffect(() => {
+    let alive = true;
+    const subscriptionId = nextLogSubscriptionId();
+    const off = api.logs.onReceivedBatch((raw) => {
+      if (!Array.isArray(raw) || raw.length === 0) return;
+      const batch = dedupe(raw);
+      if (batch.length === 0) return;
+      if (followRef.current) {
+        setLogs((prev) => {
+          const next = [...prev, ...batch];
+          return next.length > MAX_BUFFER ? next.slice(-MAX_BUFFER) : next;
+        });
+      } else {
+        pendingRef.current.push(...batch);
+        if (pendingRef.current.length > MAX_BUFFER) {
+          pendingRef.current = pendingRef.current.slice(-MAX_BUFFER);
+        }
+        setPendingCount(pendingRef.current.length);
+      }
+    });
+
     api.logs
-      .get(MAX_BUFFER)
+      .get(subscriptionId, MAX_BUFFER)
       .then((batch) => {
+        if (!alive) {
+          // invoke 可能晚于 React cleanup 返回；token 退订只会删除这个陈旧实例。
+          void api.logs.unsubscribe(subscriptionId);
+          return;
+        }
         if (!Array.isArray(batch)) return;
         const snapshot = batch.slice(-MAX_BUFFER);
         const top = maxLogId(snapshot);
@@ -213,7 +249,12 @@ export function LogsScreen() {
       .catch(() => {
         /* 非 Tauri 忽略 */
       });
-  }, []);
+    return () => {
+      alive = false;
+      off();
+      void api.logs.unsubscribe(subscriptionId);
+    };
+  }, [dedupe]);
 
   /* 会话诊断态由后端进程持有：换屏会卸载本组件，但不能因此误关诊断；重挂时读回即可。 */
   useEffect(() => {
@@ -259,29 +300,6 @@ export function LogsScreen() {
 
   /* 内核真跃迁后立即重读；事件只是信号，级别真值仍由 logs:runtimeLevel 回读。 */
   useEffect(() => api.proxy.onLifecycle(() => void refreshRuntimeLevel()), [refreshRuntimeLevel]);
-
-  /* ── 流式订阅：批量追加（follow 时入缓冲，暂停入 pending）── */
-  useEffect(() => {
-    const off = api.logs.onReceivedBatch((raw) => {
-      if (!Array.isArray(raw) || raw.length === 0) return;
-      // 去重在分流**之前**：无论进 logs 还是进 pending，重复行都不该被收下。
-      const batch = dedupe(raw);
-      if (batch.length === 0) return;
-      if (follow) {
-        setLogs((prev) => {
-          const next = [...prev, ...batch];
-          return next.length > MAX_BUFFER ? next.slice(-MAX_BUFFER) : next;
-        });
-      } else {
-        pendingRef.current.push(...batch);
-        if (pendingRef.current.length > MAX_BUFFER) {
-          pendingRef.current = pendingRef.current.slice(-MAX_BUFFER);
-        }
-        setPendingCount(pendingRef.current.length);
-      }
-    });
-    return off;
-  }, [follow, dedupe]);
 
   const scrollToBottom = useCallback(() => {
     const el = viewRef.current;

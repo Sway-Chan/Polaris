@@ -46,7 +46,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 
 use polaris_net_stack::safe_redirect::{safe_redirect_fetch, SafeRedirectFetchOptions};
 use polaris_updater::core_build::{ComparableVersion, CoreBuildKind};
@@ -447,15 +447,26 @@ pub async fn update_check(
 ///
 /// 故后到者在此等待；等到之后若前一位已把**同一份**包落好（sha256 相符）就直接复用，不重下。
 ///
-/// map 的 key 是 dest 路径，条目数 = 本进程见过的不同更新包文件名（个位数），不做回收。
-fn download_gate(dest: &Path) -> Arc<tokio::sync::Mutex<()>> {
-    static GATES: OnceLock<Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+/// 表只持弱引用：并发下载共同持有强引用时，同一 dest 仍命中同一把锁；最后一个下载释放后，下一次
+/// 取锁会驱逐失效项。这样容量只与**当前在途目标**相关，不与长会话里见过多少更新文件名相关。
+type DownloadGate = tokio::sync::Mutex<()>;
+type DownloadGateMap = HashMap<PathBuf, Weak<DownloadGate>>;
+
+fn keyed_download_gate(map: &mut DownloadGateMap, dest: &Path) -> Arc<DownloadGate> {
+    map.retain(|_, gate| gate.strong_count() > 0);
+    if let Some(gate) = map.get(dest).and_then(Weak::upgrade) {
+        return gate;
+    }
+    let gate = Arc::new(DownloadGate::new(()));
+    map.insert(dest.to_path_buf(), Arc::downgrade(&gate));
+    gate
+}
+
+fn download_gate(dest: &Path) -> Arc<DownloadGate> {
+    static GATES: OnceLock<Mutex<DownloadGateMap>> = OnceLock::new();
     let map = GATES.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = map.lock().unwrap_or_else(PoisonError::into_inner);
-    guard
-        .entry(dest.to_path_buf())
-        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-        .clone()
+    keyed_download_gate(&mut guard, dest)
 }
 
 /// 纯判定（吃真实 FS）：已落盘的更新包能否被单飞的**后到者**直接复用。
@@ -2621,6 +2632,29 @@ mod tests {
             !Arc::ptr_eq(&download_gate(a), &download_gate(b)),
             "不同目标文件必须各有各的闸"
         );
+    }
+
+    /// 单飞表只拥有在途锁：旧目标的最后一个强引用释放后，下次取锁必须驱逐旧键。
+    #[test]
+    fn download_gate_map_prunes_finished_destinations() {
+        let mut map = DownloadGateMap::new();
+        let first_path = std::path::Path::new("/cache/updates/old.dmg");
+        let first = keyed_download_gate(&mut map, first_path);
+        assert_eq!(map.len(), 1);
+        assert!(Arc::ptr_eq(
+            &first,
+            &keyed_download_gate(&mut map, first_path)
+        ));
+
+        drop(first);
+        let current_path = std::path::Path::new("/cache/updates/current.dmg");
+        let current = keyed_download_gate(&mut map, current_path);
+        assert_eq!(map.len(), 1, "已结束目标不应在进程内永久占位");
+        assert!(!map.contains_key(first_path));
+        assert!(Arc::ptr_eq(
+            &current,
+            &keyed_download_gate(&mut map, current_path)
+        ));
     }
 
     /// 🟡 **变异锁：同一个 dest 同时只允许一条下载腿在临界区内。**

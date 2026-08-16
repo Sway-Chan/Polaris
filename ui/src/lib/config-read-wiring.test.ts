@@ -235,6 +235,12 @@ const SITES: readonly Site[] = [
     why: '基准类：FR-9 逐条标注走 classifyStaged(replay(config,[e]))，问的是「只有这一条时要不要重启」，重放基准必须是盘',
   },
   {
+    file: 'App.tsx',
+    shape: 'useAppStore((s)=>s.config)',
+    route: 'disk',
+    why: '对账类：节点与订阅派生缓存的所有权必须跟随后端已落盘的权威配置；暂存编辑尚未应用，不能提前驱逐其对应缓存',
+  },
+  {
     file: 'components/screens/logs/LogsScreen.tsx',
     shape: 'useAppStore((s)=>s.config)',
     route: 'disk',

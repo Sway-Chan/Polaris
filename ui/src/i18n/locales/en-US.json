@@ -403,7 +403,7 @@
       "silentStartDesc": "Starts without showing the main window, straight to the system tray",
       "autoConnect": "Auto-connect on Startup",
       "autoLightweightMode": "Auto lightweight mode",
-      "autoLightweightModeDesc": "After 10 idle minutes the window closes to free memory; only the tray stays and the proxy keeps running",
+      "autoLightweightModeDesc": "Release the interface after it has been hidden or minimized for 10 minutes; the tray and proxy keep running",
       "desktopNotifications": "Desktop notifications",
       "desktopNotificationsDesc": "Raises a system notification when the proxy hits a serious error",
       "autoCheckUpdate": "Check for updates at startup",

@@ -97,6 +97,7 @@ export const IPC_CHANNELS = {
 
   // 日志管理
   LOGS_GET: 'logs_get',
+  LOGS_UNSUBSCRIBE: 'logs_unsubscribe',
   LOGS_CLEAR: 'logs_clear',
   LOGS_EXPORT: 'logs_export', // 纯日志导出（节点身份打码，无配置块/密钥脱敏）——与 DIAGNOSTIC_EXPORT 是两个不同产物
   LOGS_OPEN_DIR: 'logs_open_dir', // 文件管理器打开日志目录（后端一步做完：解析路径 + shell.open）

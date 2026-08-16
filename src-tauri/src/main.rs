@@ -235,7 +235,22 @@ fn present_main_window(app: &tauri::AppHandle) {
 /// 上屏时机交 [`window_health::show_timing`] 判：窗在且内容已就绪 → 立刻呈现（常态，零延迟）；
 /// 窗在但当前文档还没 mount 成功（启动期 / webview 崩溃后 Tauri 内置 reload 在途）→ **不把空窗推给
 /// 用户**，扣在隐藏态等 `renderer:ready`（超期有兜底，见 `window_health::defer_show`）。
+///
+/// 所有调用先统一投到主线程，再由 [`show_main_window_on_main_thread`] 执行。这个边界不能只包
+/// `apply_vibrancy`：重建窗的 builder、原生材质和窗口事件装配是一项不可拆的主线程事务。托盘 WebView
+/// command 会从异步 IPC 线程进入；若直接在那条线程重建，macOS 会拒绝 vibrancy，而前端仍按“材质已开”
+/// 让侧栏透明，最终露出桌面。首建在 setup 主线程、重建在 IPC 线程的分叉必须在入口处消掉。
 fn show_main_window(app: &tauri::AppHandle) {
+    let app_for_main = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || {
+        show_main_window_on_main_thread(&app_for_main);
+    }) {
+        log::error!("主窗唤出投递主线程失败：{error}");
+    }
+}
+
+/// 主线程内完成“复用现有主窗或完整重建”的唯一实现。
+fn show_main_window_on_main_thread(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         match window_health::show_timing(app, Some(&w)) {
             window_health::ShowTiming::Now => present_main_window(app),
@@ -974,10 +989,11 @@ fn run_menu_action(app: &tauri::AppHandle, action: MenuAction) {
 /// 建（或**重建**）主窗：conf 声明 + per-platform 窗口铬（transparent/decorations）+ vibrancy/Mica 特效
 /// + mount 健康门武装 + 窗口事件接线（可见性 → stats 门控 / 关窗语义 / 主题跟随）。
 ///
-/// **两处调用**：① `setup` 首次建窗；② `show_main_window` 在 **C16 轻量模式销毁 webview** 后 `get_webview_window("main")`
+/// **两处调用**：① `setup` 首次建窗；② `show_main_window_on_main_thread` 在 **C16 轻量模式销毁 webview** 后 `get_webview_window("main")`
 /// 返 None 时**重建**。故所有 per-window 装配必须收在**这一处**——重建才与首建逐字节等价（否则重建窗少了
 /// 关闭进轻量 / 白屏自愈 / 主题跟随，成半残窗）。`on_page_load` / 图标 scheme / 托盘监听是 app 级（builder /
 /// setup 一次装），不在此、重建自动覆盖同 `label=="main"`。
+/// 两个调用点都在 Tauri 主线程；macOS 的 `apply_vibrancy` 会硬性校验这一点。
 ///
 /// `start_hidden`：true → 建成**隐藏**窗（`--hidden` / `silentStart`；托盘作唤出锚点）。重建路径恒传 false
 /// （用户显式唤出即要可见）。返回 `Box<dyn Error>` 与 `setup` 同型，`?` 直冒泡（`.first()` None 仅理论态：conf 恒声明主窗）。
@@ -1087,6 +1103,11 @@ fn create_main_window(
         builder = builder.visible(false);
     }
     let window = builder.build()?;
+    // Tauri 的窗口 registry 在 destroy/create 过渡期不等同于“可用 WebView”。把建窗成功作为明确的
+    // 生命周期提交点，供 stats/logs 的非阻塞可见性门共享；窗口此刻仍隐藏，renderer ready 后再翻可见。
+    if let Some(rt) = app.try_state::<AppRuntime>() {
+        rt.stats().mark_main_window_created();
+    }
 
     // ── 原生窗口外观跟随 `config.uiTheme`（不是跟随系统）──
     // vibrancy/Mica 的明暗由 **NSWindow/HWND 的 appearance** 决定，而不是网页里的 `data-theme`。
@@ -1300,15 +1321,16 @@ fn main() {
                 && payload.event() == tauri::webview::PageLoadEvent::Started
             {
                 window_health::dispatch(webview.app_handle(), MountGateEvent::PageStarted);
-                // 导航开始 = 旧 JS 上下文连同它的全部 stats 订阅一起作废，但它已经没机会再发
-                // `stats:unsubscribe` 了。而 registry 按 **webview label** 记账，reload 后 label 仍是
+                // 导航开始 = 旧 JS 上下文连同它的 stats / logs 页面订阅一起作废，但它已经没机会再发
+                // unsubscribe 了。而 registry 按 **webview label** 记账，reload 后 label 仍是
                 // "main" → 旧 token 无人退订 → 订阅计数永远 ≥1 → `stop_*_poller` 的计数闸门恒拦 →
-                // poller 永久 1s gRPC 轮询、`subs` Vec 无界累积。故在此主动清账（`clear_window` 本是
-                // 为此写的防泄漏兜底，此前全仓零调用点）：新上下文 mount 后会自行重订。
+                // poller 永久 1s gRPC 轮询、日志 emitter 永续拉环。故在此主动清两类账；新上下文
+                // mount 后会按当前页面自行重订。
                 // 触发面：白屏自愈 reload / 用户手动刷新 / dev 热重载。
                 if let Some(rt) = webview.app_handle().try_state::<AppRuntime>() {
                     rt.stats().clear_window("main");
                 }
+                commands::misc::clear_log_stream_window("main");
             }
         })
         .setup(move |app| {
@@ -1460,7 +1482,7 @@ fn main() {
             core_update_scheduler.start(app.handle().clone());
             app.manage(core_update_scheduler);
 
-            // ── C16 自动轻量模式闲置巡检（30s 一拍，`autoLightweightMode` 开时才动作）──
+            // ── 自动轻量模式窗口驻留巡检（隐藏 / 最小化 10 分钟，30s 一拍）──
             // 计时**必须在主进程**：原实现挂在主窗 renderer 里，等于让那个正要被回收的 webview
             // 自己判断自己该不该被回收 —— 隐藏窗的 visibilityState 依平台、定时器又被 WKWebView
             // 节流，mac 上因此两条腿全断（根因见 `idle_lightweight` 头注）。
@@ -1816,6 +1838,7 @@ fn main() {
             fatal_retry,
             // ── 杂项（logs/shell/singbox-dashboard/backup/diagnostic/autostart/ipinfo）──
             logs_get,
+            logs_unsubscribe,
             logs_clear,
             logs_runtime_level,
             logs_diagnostic_state,
@@ -2321,6 +2344,41 @@ mod tests {
                  尺寸改动请改 conf，不要在这里再设一份。"
             );
         }
+    }
+
+    /// 首建天然发生在 setup 主线程，轻量态重建则可能由托盘 WebView IPC 线程触发。两条路径必须在
+    /// `show_main_window` 入口合流到主线程，否则 macOS `apply_vibrancy` 会拒绝重建窗，透明侧栏背后
+    /// 没有原生材质，表现为整个左侧导航直接透出桌面。
+    #[test]
+    fn main_window_rebuild_is_dispatched_to_main_thread() {
+        let src = include_str!("main.rs");
+        let entry = crate::commands::guard_scan::top_level_fn_body(src, "fn show_main_window(");
+        let on_main = crate::commands::guard_scan::top_level_fn_body(
+            src,
+            "fn show_main_window_on_main_thread(",
+        );
+
+        assert!(
+            entry.contains("run_on_main_thread"),
+            "主窗唤出入口必须先投主线程；托盘 IPC 线程不得直接重建原生窗口"
+        );
+        assert!(
+            entry.contains("show_main_window_on_main_thread("),
+            "主线程闭包必须调用唯一的建窗/呈现实现"
+        );
+        assert!(
+            !entry.contains("create_main_window("),
+            "跨线程入口不得绕过主线程边界直接建窗"
+        );
+        assert!(
+            on_main.contains("create_main_window(app, false)"),
+            "轻量态重建必须留在主线程实现内"
+        );
+        let create = crate::commands::guard_scan::top_level_fn_body(src, "fn create_main_window(");
+        assert!(
+            create.contains("rt.stats().mark_main_window_created()"),
+            "builder 成功后必须提交主窗口生命周期，供三平台 stats/logs 可见性门共享"
+        );
     }
 
     /// 四个托盘态必须是四张**互不相同**的图，且黑白变体成对。

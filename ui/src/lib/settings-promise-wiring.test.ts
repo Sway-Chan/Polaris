@@ -257,11 +257,11 @@ const REGISTRY: readonly PromiseRow[] = [
     evidence: { kind: 'config-key', key: 'rememberWindowSize' },
   },
   {
-    snippet: '闲置 10 分钟后关闭界面释放内存',
+    snippet: '界面隐藏或最小化 10 分钟后释放内存',
     evidence: { kind: 'config-key', key: 'autoLightweightMode' },
     // 阈值在 Rust 侧：这条要销毁的正是 renderer 自己，计时器不能留在被销毁方（且隐藏窗的
     // setTimeout 会被 WebKit 节流）。见 `src-tauri/src/idle_lightweight.rs`。
-    timer: { lang: 'rs', name: 'IDLE_THRESHOLD_SECS' },
+    timer: { lang: 'rs', name: 'HIDDEN_RECLAIM_SECS' },
   },
   {
     snippet: '崩溃或断电后自动恢复原系统 DNS',

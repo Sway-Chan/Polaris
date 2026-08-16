@@ -33,6 +33,7 @@ import {
   loadTailscaleLoginStatesFromCache,
   useTailscaleLoginCacheStore,
 } from './use-tailscale-login-cache-store';
+import { retainItemsById, retainRecordKeys } from './retain-entities';
 
 // 兼容旧的类型别名（Polaris 习惯）
 type ProxyMode = UserConfig['proxyMode'];
@@ -180,6 +181,8 @@ export interface AppState {
   setTailscaleAuthUrl: (serverId: string, url: string | null) => void;
   setTailscaleStatus: (event: TailscaleStatusEvent) => void;
   setTailscaleLoginInitiated: (serverId: string, initiated: boolean) => void;
+  /** 当前配置删除节点后统一驱逐所有以 serverId 为键的派生状态。 */
+  retainServerIds: (serverIds: readonly string[]) => void;
   setServerPageAction: (action: ServerPageAction | null) => void;
   reset: () => void;
 }
@@ -534,6 +537,32 @@ export const useAppStore = create<AppState>((set, get) => ({
     else delete next[serverId];
     set({ tailscaleLoginInitiated: next });
   },
+
+  retainServerIds: (serverIds) =>
+    set((state) => {
+      const keep = new Set(serverIds);
+      const tailscaleLoginStates = retainRecordKeys(state.tailscaleLoginStates, keep);
+      const tailscaleAuthUrls = retainRecordKeys(state.tailscaleAuthUrls, keep);
+      const tailscaleLoginInitiated = retainRecordKeys(state.tailscaleLoginInitiated, keep);
+      const tailscaleStatuses = retainRecordKeys(state.tailscaleStatuses, keep);
+      const invalidNodes = retainItemsById(state.invalidNodes, keep);
+      if (
+        tailscaleLoginStates === state.tailscaleLoginStates &&
+        tailscaleAuthUrls === state.tailscaleAuthUrls &&
+        tailscaleLoginInitiated === state.tailscaleLoginInitiated &&
+        tailscaleStatuses === state.tailscaleStatuses &&
+        invalidNodes === state.invalidNodes
+      ) {
+        return state;
+      }
+      return {
+        tailscaleLoginStates,
+        tailscaleAuthUrls,
+        tailscaleLoginInitiated,
+        tailscaleStatuses,
+        invalidNodes,
+      };
+    }),
 
   /** 置/清跨屏一次性意图。消费方读到后立刻 `setServerPageAction(null)`（见类型注释）。 */
   setServerPageAction: (action) => set({ serverPageAction: action }),

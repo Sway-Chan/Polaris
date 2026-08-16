@@ -243,8 +243,12 @@ struct StreamGateState {
 ///    不等回包），闭包**在主线程里**跑 getter —— `send_user_message` 对主线程走内联分支，不会自死锁。
 ///    主循环忙时这次刷新只是排队等，relay 照常用上一份真值继续跑。
 struct VisibilityCache {
+    /// 主窗口是否处在可用生命周期内。Tauri 在 `destroy()` 过渡期仍可能短暂从窗口 registry 返回旧句柄，
+    /// 仅靠 `get_webview_window()` 无法区分“活窗”与“正在析构的壳”。由建窗 / 销毁事务显式维护，三平台
+    /// 共用；false 时绝不向平台窗口后端投 getter。
+    window_alive: AtomicBool,
     /// 最近一次回读到的可见性。**缺省 true**：与 getter 报错时的兜底方向一致
-    /// （宁可多流一拍，绝不误把还在屏上的 UI 饿死）。
+    /// （在主窗首次建成前会由 `window_alive=false` 的生命周期门归一为 false）。
     visible: AtomicBool,
     /// 是否已有一次刷新在飞（两条 relay 各自反复投递 → 去重成一次）。
     refreshing: AtomicBool,
@@ -270,6 +274,7 @@ impl StreamGateState {
             registry: Mutex::new(SubscriptionRegistry::new()),
             epoch: watch::channel(0).0,
             vis: VisibilityCache {
+                window_alive: AtomicBool::new(false),
                 visible: AtomicBool::new(true),
                 refreshing: AtomicBool::new(false),
                 error_streak: AtomicU64::new(0),
@@ -289,6 +294,12 @@ impl StreamGateState {
 
     /// 投递一次主线程可见性回读（已有一次在飞 → no-op）。
     fn spawn_visibility_refresh(self: &Arc<Self>, app: &AppHandle) {
+        // `destroy()` 的平台 registry 更新并非原子：销毁事务已开始时，getter 仍可能拿到一个失效句柄。
+        // 生命周期真值优先于 registry；此时直接关门，不把无意义调用投给主线程。
+        if !self.vis.window_alive.load(Ordering::SeqCst) {
+            self.store_window_visible(false);
+            return;
+        }
         if self.vis.refreshing.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -298,7 +309,12 @@ impl StreamGateState {
         // 主线程走内联分支）；非主线程时只是一次 channel send —— 两种情形都不阻塞调用方。
         if app
             .run_on_main_thread(move || {
-                let probe = probe_main_window_visible(&app_for_probe);
+                // 闭包排队期间窗口可能已进入销毁事务；执行前再查一次，避免旧探针命中失效 WebView。
+                let probe = if this.vis.window_alive.load(Ordering::SeqCst) {
+                    probe_main_window_visible(&app_for_probe)
+                } else {
+                    Ok(false)
+                };
                 this.apply_visibility_probe(probe);
                 this.vis.refreshing.store(false, Ordering::SeqCst);
             })
@@ -307,6 +323,18 @@ impl StreamGateState {
             // 事件循环已退出（收尾期）→ 必须复位闸，否则此后再也不会有刷新排上队。
             self.vis.refreshing.store(false, Ordering::SeqCst);
         }
+    }
+
+    /// 主窗口刚由 builder 成功创建。窗口先按隐藏态入账；真正上屏后由统一探针翻为可见。
+    fn mark_main_window_created(&self) {
+        self.vis.window_alive.store(true, Ordering::SeqCst);
+        self.store_window_visible(false);
+    }
+
+    /// 主窗口进入销毁事务。必须先于 `WebviewWindow::destroy()`，从而挡住平台 registry 的过渡旧句柄。
+    fn mark_main_window_destroying(&self) {
+        self.vis.window_alive.store(false, Ordering::SeqCst);
+        self.store_window_visible(false);
     }
 
     /// 落一次回读结果（成功 → 写缓存 + 门；失败 → 兜底「可见」+ 限频告警）。
@@ -1010,6 +1038,16 @@ impl StatsRelay {
         }
     }
 
+    /// 建窗成功后的生命周期接线。与 [`Self::mark_main_window_destroying`] 成对，只由主窗所有者调用。
+    pub fn mark_main_window_created(&self) {
+        self.gate.mark_main_window_created();
+    }
+
+    /// 销毁调用前的生命周期接线。它不清订阅；订阅只在 destroy 成功后提交清理，失败时仍可继续使用。
+    pub fn mark_main_window_destroying(&self) {
+        self.gate.mark_main_window_destroying();
+    }
+
     /// 按窗口实况刷新可见性 → 降流门（Polaris stats-worker 据此门控 connectionsStreamOn）。
     ///
     /// 由 `main.rs` 的三个显隐写入点调（`WindowEvent::Focused` / 收托盘 `hide()` 后 / 单实例唤起
@@ -1575,8 +1613,11 @@ async fn run_connections_stream(
                             .map(|mut history| history.apply_events(&events, &table))
                             .unwrap_or(None);
                         let detail_change = table.on_connection_events(&events, 0);
+                        let topology_changed = detail_change.affects_topology();
                         detail_pending.merge(detail_change);
-                        agg_emit.note_change();
+                        if topology_changed {
+                            agg_emit.note_change();
+                        }
                         detail_emit.note_change();
                         if let Some(change) = closed_change {
                             closed_pending.merge(change);
@@ -3289,6 +3330,33 @@ mod tests {
     fn visibility_cache_defaults_to_visible() {
         let state = StreamGateState::new();
         assert!(state.vis.visible.load(Ordering::Relaxed));
+        assert!(
+            !state.vis.window_alive.load(Ordering::Relaxed),
+            "AppRuntime 先于主窗创建：生命周期缺省必须是 absent"
+        );
+    }
+
+    /// 主窗生命周期是平台 registry 之外的真值：created 先以隐藏态入账，探针上屏后翻可见；
+    /// destroying 必须在 getter 之前把门关掉。
+    #[test]
+    fn main_window_lifecycle_gates_visibility() {
+        let state = StreamGateState::new();
+        state.mark_main_window_created();
+        assert!(state.vis.window_alive.load(Ordering::Relaxed));
+        assert!(
+            !state.vis.visible.load(Ordering::Relaxed),
+            "builder 成功时窗口仍被 renderer-ready 门扣在隐藏态"
+        );
+
+        state.apply_visibility_probe(Ok(true));
+        assert!(state.vis.visible.load(Ordering::Relaxed));
+
+        state.mark_main_window_destroying();
+        assert!(!state.vis.window_alive.load(Ordering::Relaxed));
+        assert!(
+            !state.vis.visible.load(Ordering::Relaxed),
+            "销毁事务开始必须同步关闭降流门，不得等平台 registry 清旧句柄"
+        );
     }
 
     /// 回读成功 → 写缓存 + 同步进降流门（变了才 bump，park 中的 poller 由此立刻醒）。

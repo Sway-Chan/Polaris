@@ -525,8 +525,12 @@ export const rulesApi = {
 // ============================================================================
 
 export const logsApi = {
-  async get(limit?: number): Promise<LogEntry[]> {
-    return invoke(IPC_CHANNELS.LOGS_GET, { limit });
+  async get(subscriptionId: string, limit?: number): Promise<LogEntry[]> {
+    return invoke(IPC_CHANNELS.LOGS_GET, { subscriptionId, limit });
+  },
+
+  async unsubscribe(subscriptionId: string): Promise<void> {
+    return invoke(IPC_CHANNELS.LOGS_UNSUBSCRIBE, { subscriptionId });
   },
 
   async clear(): Promise<void> {

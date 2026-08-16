@@ -403,7 +403,7 @@
       "silentStartDesc": "啟動時不顯示主視窗，直接最小化到系統匣",
       "autoConnect": "啟動時自動連線",
       "autoLightweightMode": "自動輕量模式",
-      "autoLightweightModeDesc": "閒置 10 分鐘後關閉介面釋放記憶體，僅系統匣常駐，代理不中斷",
+      "autoLightweightModeDesc": "介面隱藏或最小化 10 分鐘後釋放記憶體；系統匣與代理繼續運作",
       "desktopNotifications": "桌面通知",
       "desktopNotificationsDesc": "代理出現嚴重錯誤時跳出系統通知",
       "autoCheckUpdate": "啟動時檢查更新",

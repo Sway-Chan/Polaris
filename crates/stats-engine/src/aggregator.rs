@@ -38,6 +38,12 @@ pub struct ConnectionsDetailChange {
 }
 
 impl ConnectionsDetailChange {
+    /// 拓扑只依赖连接集合与静态元数据；单纯 upload/download 计数变化不改变拓扑投影。
+    #[must_use]
+    pub fn affects_topology(&self) -> bool {
+        self.reset || !self.upserts.is_empty() || !self.removed_ids.is_empty()
+    }
+
     fn upsert(&mut self, entry: ConnectionEntry) {
         if self.reset {
             return;
@@ -74,6 +80,16 @@ impl ConnectionsDetailChange {
 /// OOM 安全网（StatsService.ts:24 `MAX_CONN_MAP_SIZE`）：sing-box 系统性漏发 CLOSED（UDP/QUIC NAT 超时回收高发）
 /// 时 connMap 漏删条目单调累积。正常活跃连接数 << 此值；仅异常累积时硬上限驱逐最旧条目兜底防 OOM。
 pub const MAX_CONN_MAP_SIZE: usize = 50_000;
+
+// 长驻连接表的字段级字节预算。条目数上限不能约束外部字符串体积，所有非身份字段在入表时裁剪。
+const CONNECTION_HOST_MAX_BYTES: usize = 512;
+const CONNECTION_ADDRESS_PART_MAX_BYTES: usize = 128;
+const CONNECTION_KIND_MAX_BYTES: usize = 256;
+const CONNECTION_PROCESS_PATH_MAX_BYTES: usize = 4096;
+const CONNECTION_RULE_MAX_BYTES: usize = 1024;
+const CONNECTION_CHAIN_MAX_ITEMS: usize = 16;
+const CONNECTION_CHAIN_ITEM_MAX_BYTES: usize = 256;
+const TRUNCATION_MARK: &str = "…";
 
 /// 拆 "ip:port"（含 IPv6 "[::1]:443"）为 { ip, port }（splitHostPort，StatsService.ts:37）。
 ///
@@ -180,16 +196,18 @@ fn unix_to_civil(secs: i64) -> (i32, u8, u8, u8, u8, u8) {
 pub fn trim_connection(c: &SingBoxConnection) -> ConnectionEntry {
     let (source_ip, source_port) = split_host_port(&c.source);
     let (destination_ip, destination_port) = split_host_port(&c.destination);
-    let host = field_or_none(&c.domain);
     let metadata = ConnectionMetadata {
-        host,
-        destination_ip,
-        network: field_or_none(&c.network),
-        inbound_type: field_or_none(&c.inbound_type),
-        source_ip,
-        source_port,
-        destination_port,
-        process_path: field_or_none(&c.process_info.process_path),
+        host: field_or_none_bounded(&c.domain, CONNECTION_HOST_MAX_BYTES),
+        destination_ip: bound_optional(destination_ip, CONNECTION_ADDRESS_PART_MAX_BYTES),
+        network: field_or_none_bounded(&c.network, CONNECTION_KIND_MAX_BYTES),
+        inbound_type: field_or_none_bounded(&c.inbound_type, CONNECTION_KIND_MAX_BYTES),
+        source_ip: bound_optional(source_ip, CONNECTION_ADDRESS_PART_MAX_BYTES),
+        source_port: bound_optional(source_port, CONNECTION_ADDRESS_PART_MAX_BYTES),
+        destination_port: bound_optional(destination_port, CONNECTION_ADDRESS_PART_MAX_BYTES),
+        process_path: field_or_none_bounded(
+            &c.process_info.process_path,
+            CONNECTION_PROCESS_PATH_MAX_BYTES,
+        ),
     };
     let metadata_non_empty = metadata.host.is_some()
         || metadata.destination_ip.is_some()
@@ -201,8 +219,13 @@ pub fn trim_connection(c: &SingBoxConnection) -> ConnectionEntry {
         || metadata.process_path.is_some();
     ConnectionEntry {
         id: c.id.clone(),
-        chains: c.chain_list.clone(),
-        rule: c.rule.clone(),
+        chains: c
+            .chain_list
+            .iter()
+            .take(CONNECTION_CHAIN_MAX_ITEMS)
+            .map(|chain| bounded_display_string(chain, CONNECTION_CHAIN_ITEM_MAX_BYTES))
+            .collect(),
+        rule: bounded_display_string(&c.rule, CONNECTION_RULE_MAX_BYTES),
         metadata: metadata_non_empty.then_some(metadata),
         upload: Some(c.uplink_total as u64),
         download: Some(c.downlink_total as u64),
@@ -210,12 +233,32 @@ pub fn trim_connection(c: &SingBoxConnection) -> ConnectionEntry {
     }
 }
 
-fn field_or_none(s: &str) -> Option<String> {
+fn field_or_none_bounded(s: &str, max_bytes: usize) -> Option<String> {
     if s.is_empty() {
         None
     } else {
-        Some(s.to_string())
+        Some(bounded_display_string(s, max_bytes))
     }
+}
+
+fn bound_optional(value: Option<String>, max_bytes: usize) -> Option<String> {
+    value.map(|value| bounded_display_string(&value, max_bytes))
+}
+
+/// UTF-8 安全的显示字段裁剪。ID 不调用本函数，避免身份碰撞。
+fn bounded_display_string(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let payload_limit = max_bytes.saturating_sub(TRUNCATION_MARK.len());
+    let mut cut = payload_limit.min(value.len());
+    while !value.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let mut bounded = String::with_capacity(cut + TRUNCATION_MARK.len());
+    bounded.push_str(&value[..cut]);
+    bounded.push_str(TRUNCATION_MARK);
+    bounded
 }
 
 // ── 纯函数聚合（connections-aggregate.ts 1:1）──────────────────────────────────
@@ -1535,6 +1578,81 @@ mod tests {
         assert_eq!(e.upload, Some(111));
         assert_eq!(e.download, Some(222));
         assert!(e.start.unwrap().starts_with("2001-"));
+    }
+
+    #[test]
+    fn trim_connection_bounds_all_untrusted_display_payloads() {
+        let raw = SingBoxConnection {
+            id: "identity-must-not-be-truncated".repeat(100),
+            source: format!("{}:{}", "1".repeat(1000), "2".repeat(1000)),
+            destination: format!("{}:{}", "3".repeat(1000), "4".repeat(1000)),
+            domain: "域".repeat(1000),
+            network: "n".repeat(1000),
+            inbound_type: "i".repeat(1000),
+            rule: "r".repeat(5000),
+            chain_list: (0..40).map(|_| "链".repeat(500)).collect(),
+            process_info: crate::types::SingBoxProcessInfo {
+                process_path: "路".repeat(5000),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let expected_id = raw.id.clone();
+        let entry = trim_connection(&raw);
+        assert_eq!(entry.id, expected_id, "身份字段不能裁剪或制造碰撞");
+        assert!(entry.rule.len() <= CONNECTION_RULE_MAX_BYTES);
+        assert_eq!(entry.chains.len(), CONNECTION_CHAIN_MAX_ITEMS);
+        assert!(entry
+            .chains
+            .iter()
+            .all(|chain| chain.len() <= CONNECTION_CHAIN_ITEM_MAX_BYTES));
+        let metadata = entry.metadata.expect("oversized fields remain present");
+        assert!(metadata.host.unwrap().len() <= CONNECTION_HOST_MAX_BYTES);
+        assert!(metadata.network.unwrap().len() <= CONNECTION_KIND_MAX_BYTES);
+        assert!(metadata.inbound_type.unwrap().len() <= CONNECTION_KIND_MAX_BYTES);
+        assert!(metadata.process_path.unwrap().len() <= CONNECTION_PROCESS_PATH_MAX_BYTES);
+        for part in [
+            metadata.source_ip,
+            metadata.source_port,
+            metadata.destination_ip,
+            metadata.destination_port,
+        ] {
+            assert!(part.unwrap().len() <= CONNECTION_ADDRESS_PART_MAX_BYTES);
+        }
+    }
+
+    #[test]
+    fn topology_invalidation_ignores_counter_only_frames() {
+        let mut counters_only = ConnectionsDetailChange::default();
+        counters_only.counters.insert(
+            "conn".into(),
+            ConnectionCounters {
+                id: "conn".into(),
+                upload: 1,
+                download: 2,
+            },
+        );
+        assert!(!counters_only.affects_topology());
+
+        let reset = ConnectionsDetailChange {
+            reset: true,
+            ..ConnectionsDetailChange::default()
+        };
+        assert!(reset.affects_topology());
+
+        let mut removed = ConnectionsDetailChange::default();
+        removed.removed_ids.insert("conn".into());
+        assert!(removed.affects_topology());
+
+        let mut upserted = ConnectionsDetailChange::default();
+        upserted.upserts.insert(
+            "conn".into(),
+            ConnectionEntry {
+                id: "conn".into(),
+                ..ConnectionEntry::default()
+            },
+        );
+        assert!(upserted.affects_topology());
     }
 
     // ══════════════════════════════════════════════════════════════════════════

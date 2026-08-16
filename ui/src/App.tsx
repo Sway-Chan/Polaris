@@ -21,7 +21,11 @@ import { IPC_CHANNELS } from './domain/ipc-channels';
 import { useAppStore, useEffectiveConfig } from './store/app-store';
 import type { UnlockDisplayState } from './store/app-store';
 import { subscribeLatencyEvents, useLatencyStore } from './store/use-latency-store';
-import { subscribeSubscriptionProgressEvents } from './store/use-subscription-progress-store';
+import {
+  subscribeSubscriptionProgressEvents,
+  useSubscriptionProgressStore,
+} from './store/use-subscription-progress-store';
+import { useTailscaleLoginCacheStore } from './store/use-tailscale-login-cache-store';
 import { subscribeSpeedTestProgressToast } from './lib/speedtest-progress-toast';
 import { useSystemProxyLivePolling } from './store/use-system-proxy-live';
 import { api } from './ipc';
@@ -43,6 +47,7 @@ import { createOnceGate } from './components/screens/settings/settings-logic';
  * `let coreBaselineWarnedThisSession = false`。
  */
 const coreBaselineWarnGate = createOnceGate();
+const UNOWNED_TAILSCALE_AUTH_KEY = '__unowned__';
 
 /**
  * R2 待应用差集 pull 兜底：拉当下差集写 store（覆盖 PUSH 盖不住的清差集/冷启/订阅刷新——对齐 上游的
@@ -201,11 +206,30 @@ export default function App() {
   const loadConfig = useAppStore((s) => s.loadConfig);
   const refreshProxyStatus = useAppStore((s) => s.refreshProxyStatus);
   const servers = useAppStore((s) => s.servers);
+  const config = useAppStore((s) => s.config);
+  /** 每个节点只记最后一个登录 URL，配置对账时同步驱逐，避免长会话按 URL 永久增长。 */
+  const tsAuthSeen = useRef<Map<string, string>>(new Map());
 
-  // 延迟是会话缓存，不该替已删除节点永久占位。配置节点集每次收敛后同步裁剪；保留节点的测量值不动。
+  // 配置实体是所有 per-node / per-subscription 派生缓存的共同所有者。一次对账覆盖全部 store，避免
+  // 只清延迟、却让登录 URL / STATUS / 无效节点 / 订阅失败进度在长会话里只增不减。
   useEffect(() => {
-    useLatencyStore.getState().retainServerIds(servers.map((server) => server.id));
-  }, [servers]);
+    // 初始 `config=null, servers=[]` 是“尚未水合”，不是“用户删光配置”；此时清持久登录缓存会把
+    // 冷启动秒显真值误删。只有权威配置已到达后才允许做所有权对账。
+    if (!config) return;
+    const serverIds = config.servers.map((server) => server.id);
+    const subscriptionIds = (config.subscriptions ?? []).map((subscription) => subscription.id);
+    useLatencyStore.getState().retainServerIds(serverIds);
+    useAppStore.getState().retainServerIds(serverIds);
+    useTailscaleLoginCacheStore.getState().retainServerIds(serverIds);
+    useSubscriptionProgressStore.getState().retainSubscriptionIds(subscriptionIds);
+
+    const keep = new Set(serverIds);
+    for (const serverId of tsAuthSeen.current.keys()) {
+      if (serverId !== UNOWNED_TAILSCALE_AUTH_KEY && !keep.has(serverId)) {
+        tsAuthSeen.current.delete(serverId);
+      }
+    }
+  }, [config]);
 
   // 系统代理**活态**轮询（`system_proxy_get_status`）——**全窗口唯一一处驱动**。
   // 消费方是 StatusBar 与 HomeScreen，两者同屏共存；各起一份轮询会双倍 exec
@@ -333,16 +357,16 @@ export default function App() {
   // 无人接 → 用户完全错过登录（审计 diag-update：Polaris 此前仅弹窗内手动点「在浏览器打开」才
   // openExternal，托盘/最小化态必漏）。收到即三件事：① 落 store（authUrl 真值，弹窗/角标读同一份，
   // 永不丢）② 自动开浏览器（openExternal）③ 系统桌面通知（notifyDesktop 尊重 desktopNotifications
-  // 总开关+权限，正文不含节点身份）。按 URL 去重（seen = 上游 tailscaleAuthSeen）：同一 URL 重复到达
-  // 不重复开浏览器/弹通知（弹窗内的手动按钮仍可再开）。
-  const tsAuthSeen = useRef<Set<string>>(new Set());
+  // 总开关+权限，正文不含节点身份）。每个节点只记最后一个 URL：同一 URL 重复到达不重复开浏览器 /
+  // 弹通知，URL 更新仍会送达；节点删除时由上方配置对账驱逐（弹窗内的手动按钮仍可再开）。
   useEffect(() => {
     const setTailscaleAuthUrl = useAppStore.getState().setTailscaleAuthUrl;
     return api.proxy.onTailscaleAuth((data) => {
       if (!data.url) return;
       if (data.serverId) setTailscaleAuthUrl(data.serverId, data.url);
-      if (tsAuthSeen.current.has(data.url)) return;
-      tsAuthSeen.current.add(data.url);
+      const owner = data.serverId || UNOWNED_TAILSCALE_AUTH_KEY;
+      if (tsAuthSeen.current.get(owner) === data.url) return;
+      tsAuthSeen.current.set(owner, data.url);
       void api.system.openExternal(data.url);
       void notifyDesktop(
         t('notify.tsLogin.title'),

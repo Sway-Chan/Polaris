@@ -403,7 +403,7 @@
       "silentStartDesc": "启动时不显示主窗口，直接最小化到系统托盘",
       "autoConnect": "启动时自动连接",
       "autoLightweightMode": "自动轻量模式",
-      "autoLightweightModeDesc": "闲置 10 分钟后关闭界面释放内存，仅托盘驻留，代理不中断",
+      "autoLightweightModeDesc": "界面隐藏或最小化 10 分钟后释放内存；托盘与代理继续运行",
       "desktopNotifications": "桌面通知",
       "desktopNotificationsDesc": "代理出现严重错误时弹系统通知",
       "autoCheckUpdate": "启动时检查更新",

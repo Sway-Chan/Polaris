@@ -11,6 +11,7 @@
  *  - 真值仍是 api STATUS 流（代理开时实时校正缓存）；本缓存只服务「代理关时秒显 + 不起核」。
  */
 import { create } from 'zustand';
+import { retainRecordKeys } from './retain-entities';
 
 // Polaris 命名空间
 const STORAGE_KEY = 'polaris.tailscaleLoginCache';
@@ -69,6 +70,8 @@ interface TailscaleLoginCacheState {
   setCached: (serverId: string, loggedIn: boolean) => void;
   // 删除一条（节点删除时清理，避免陈旧缓存误显「已连接」）。
   removeCached: (serverId: string) => void;
+  // 配置对账批量驱逐已删除节点；无删除时不写 localStorage。
+  retainServerIds: (serverIds: readonly string[]) => void;
 }
 
 export const useTailscaleLoginCacheStore = create<TailscaleLoginCacheState>(
@@ -88,6 +91,12 @@ export const useTailscaleLoginCacheStore = create<TailscaleLoginCacheState>(
       if (!(serverId in get().cache)) return;
       const next = { ...get().cache };
       delete next[serverId];
+      persist(next);
+      set({ cache: next });
+    },
+    retainServerIds: (serverIds) => {
+      const next = retainRecordKeys(get().cache, new Set(serverIds));
+      if (next === get().cache) return;
       persist(next);
       set({ cache: next });
     },

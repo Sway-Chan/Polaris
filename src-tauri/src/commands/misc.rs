@@ -3,7 +3,7 @@
 //! singbox-dashboard / shell 相关）。
 //!
 //! 映射 channel：
-//! - `logs:get` / `logs:clear` → [`logs_get`] / [`logs_clear`]
+//! - `logs:get` / `logs:unsubscribe` / `logs:clear` → [`logs_get`] / [`logs_unsubscribe`] / [`logs_clear`]
 //! - `logs:runtimeLevel` → [`logs_runtime_level`]（读回核在跑的真实日志级别，不是盘上写的那个）
 //! - `logs:diagnosticState` / `logs:setDiagnostic` → 会话级 DEBUG（只活到本次应用退出）
 //! - `shell:openExternal` → [`shell_open_external`]（tauri-plugin-shell）
@@ -16,13 +16,14 @@
 
 #![allow(clippy::needless_pass_by_value)]
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::ShellExt;
 
@@ -150,8 +151,73 @@ const LOG_BATCH_INTERVAL_MS: u64 = 150;
 /// 下一次 `logs:get` 水合仍能取到（且截断条数会 warn 出来，不静默）。
 const MAX_PENDING_LOG_BATCH: usize = 500;
 
-/// 批量日志推送任务的单次启动闸（首个 logs:get 携 AppHandle 时惰性起，幂等）。
+/// 批量日志推送任务的单次启动闸（首个日志页订阅时惰性起，进程内幂等）。
 static LOG_BATCH_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// 日志流当前读取游标。注册表从空变为非空时由同锁快照的 cursor 重置，保证水合与直播首尾相接。
+static LOG_STREAM_CURSOR: AtomicU64 = AtomicU64::new(0);
+
+/// 页面级订阅账：window label → 本次 LogsScreen mount 的唯一 token。
+///
+/// token 不能省：React StrictMode 或快速切屏时，旧页面的异步 cleanup 可能晚于新页面订阅到达；若只按
+/// window label 删除，旧 cleanup 会误删新页面所有权。按 token 比对后，陈旧退订天然无效。
+static LOG_SUBSCRIBERS: OnceLock<Mutex<LogSubscriberRegistry>> = OnceLock::new();
+
+/// 唤醒长期 emitter 的世代通道。没有订阅时任务 park 在 `watch::Receiver::changed`，不做 150ms 空转。
+static LOG_STREAM_WAKE: OnceLock<tokio::sync::watch::Sender<u64>> = OnceLock::new();
+
+#[derive(Default)]
+struct LogSubscriberRegistry {
+    by_window: HashMap<String, String>,
+}
+
+impl LogSubscriberRegistry {
+    /// 返回注册前是否为空。相同 window 的新 token 替换旧 token，旧 cleanup 不再拥有删除权。
+    fn register(&mut self, window: &str, token: &str) -> bool {
+        let was_empty = self.by_window.is_empty();
+        self.by_window.insert(window.to_string(), token.to_string());
+        was_empty
+    }
+
+    fn unregister(&mut self, window: &str, token: &str) -> bool {
+        if self.by_window.get(window).map(String::as_str) != Some(token) {
+            return false;
+        }
+        self.by_window.remove(window);
+        true
+    }
+
+    fn clear_window(&mut self, window: &str) -> bool {
+        self.by_window.remove(window).is_some()
+    }
+
+    fn windows(&self) -> Vec<String> {
+        self.by_window.keys().cloned().collect()
+    }
+}
+
+fn log_subscribers() -> &'static Mutex<LogSubscriberRegistry> {
+    LOG_SUBSCRIBERS.get_or_init(|| Mutex::new(LogSubscriberRegistry::default()))
+}
+
+fn log_stream_wake() -> &'static tokio::sync::watch::Sender<u64> {
+    LOG_STREAM_WAKE.get_or_init(|| tokio::sync::watch::channel(0).0)
+}
+
+fn notify_log_stream() {
+    log_stream_wake().send_modify(|epoch| *epoch = epoch.wrapping_add(1));
+}
+
+/// 窗口 reload / destroy 的后端兜底：旧 JS 上下文来不及执行 cleanup 时仍能释放日志订阅。
+pub(crate) fn clear_log_stream_window(window: &str) {
+    let removed = log_subscribers()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear_window(window);
+    if removed {
+        notify_log_stream();
+    }
+}
 
 /// `logging::LogRecord` → 渲染端 `LogEntry`（camelCase 契约：timestamp/level/message/source/_id）。
 ///
@@ -190,42 +256,65 @@ fn ts_ms_to_iso(ts_ms: u128) -> String {
         .unwrap_or_else(|| ts_ms.to_string())
 }
 
-/// 惰性起批量日志推送任务（首个 logs:get 触发）：每 ~150ms 拉环形缓冲增量 → broadcast
-/// `EVENT_LOG_RECEIVED_BATCH`。
-///
-/// `from_cursor` 由调用方与 `logs:get` 的快照**同一把锁下同时取**（见
-/// [`snapshot_with_cursor`](crate::logging::snapshot_with_cursor)）后传入：游标绝不能在本任务内部
-/// 才取——spawn 到任务真正开跑之间是一段异步间隙，期间写入的日志 seq 会低于游标而被永久跨过（丢行）。
-fn ensure_log_batch_emitter(app: &AppHandle, from_cursor: u64) {
+/// 惰性起唯一日志推送任务。无订阅时真正休眠；有订阅但窗口隐藏时降到 1s 可见性巡检且不推进游标；
+/// 只有可见的日志页面才按 150ms 拉取并定向发给拥有订阅的窗口。
+fn ensure_log_batch_emitter(app: &AppHandle) {
     if LOG_BATCH_STARTED.swap(true, Ordering::SeqCst) {
-        return; // 已起。
+        return;
     }
     let app = app.clone();
+    let mut wake = log_stream_wake().subscribe();
     tauri::async_runtime::spawn(async move {
-        let mut cursor = from_cursor;
         loop {
-            tokio::time::sleep(Duration::from_millis(LOG_BATCH_INTERVAL_MS)).await;
-            // UI 门控：不活跃时**不拉、不推、游标不动** —— 条目留在环里，下一个活跃 tick 一次性补推。
-            if !ui_log_stream_active(&app) {
+            let subscribed = subscribed_log_windows();
+            if subscribed.is_empty() {
+                // 没有所有者时 park，不做每 150ms 的永久空轮询。
+                let _ = wake.changed().await;
                 continue;
             }
+
+            let visible = visible_log_windows(&app, &subscribed);
+            if visible.is_empty() {
+                // 隐藏 / 最小化时不读环、不推进游标；可见性没有事件通道，因此以低频巡检恢复。
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    _ = wake.changed() => {}
+                }
+                continue;
+            }
+
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(LOG_BATCH_INTERVAL_MS)) => {}
+                _ = wake.changed() => continue,
+            }
+            let visible = visible_log_windows(&app, &subscribed_log_windows());
+            if visible.is_empty() {
+                continue;
+            }
+
+            let cursor = LOG_STREAM_CURSOR.load(Ordering::Acquire);
             let (recs, next) = crate::logging::records_from(cursor);
             if recs.is_empty() {
                 continue;
             }
             // 游标按**全量**推进（含被截掉的那些）：截断只降 UI 直播流的量，不是「下次再发」——
             // 否则每 tick 都从同一批老条目重发，永远追不上洪流。
-            cursor = next;
+            LOG_STREAM_CURSOR.store(next, Ordering::Release);
             let dropped = recs.len().saturating_sub(MAX_PENDING_LOG_BATCH);
             let batch: Vec<Value> = tail_capped(&recs, MAX_PENDING_LOG_BATCH)
                 .iter()
                 .map(log_record_to_entry)
                 .collect();
-            crate::events::broadcast(
-                &app,
-                crate::events::channel::EVENT_LOG_RECEIVED_BATCH,
-                batch,
-            );
+            for label in visible {
+                if let Some(window) = app.get_webview_window(&label) {
+                    if let Err(error) = window.emit(
+                        crate::events::channel::EVENT_LOG_RECEIVED_BATCH,
+                        batch.clone(),
+                    ) {
+                        log::warn!("向日志订阅窗口 `{label}` 推送批次失败：{error}");
+                    }
+                }
+            }
             if dropped > 0 {
                 // 自曝截断：不写出来的话，「UI 隐藏期间掉了 N 行直播」与「本来就没这几行」输出无区别。
                 // 本条自身也会进环 → 下一批推给 UI，用户在日志页直接看得到。
@@ -237,28 +326,26 @@ fn ensure_log_batch_emitter(app: &AppHandle, from_cursor: u64) {
     });
 }
 
-/// 日志直播流的 UI 活跃门控（契约 L81）：主窗口存在且既未隐藏也未最小化时才推。
-///
-/// # 为什么要门控
-///
-/// emitter 每 ~150ms 一批，每批都是一次 IPC 序列化 + webview 唤醒。窗口收进托盘 / 最小化时
-/// **没有任何消费者**，却仍在按日志速率唤醒 webview —— sing-box 启动期洪流下尤其浪费。
-///
-/// # 判定为何长这样
-///
-/// - 窗口**不存在** → 判不活跃：C16 轻量模式会销毁主 webview，那时连渲染端都没有，推给谁都不是。
-/// - 平台 API 出错（`is_visible` / `is_minimized` 返 Err）→ **一律判活跃**（fail-open）。判反的代价
-///   不对称：误判「活跃」只多推几批；误判「不活跃」会让用户盯着的日志页静默冻住，而那正是日志页
-///   存在的意义所在。
-/// - 只看可见性，**不看焦点**：切到别的应用但窗口仍在屏幕上时日志必须继续流。
-///
-/// 注：上游的同名门控还含 `!isDragging`（win32 拖动期 modal loop）。Polaris 侧无拖动态基建，
-/// 本函数只做可见性这一半；拖动期降流属另一批。
-fn ui_log_stream_active(app: &AppHandle) -> bool {
-    let Some(win) = app.get_webview_window("main") else {
-        return false; // 主 webview 已销毁（C16 轻量模式）→ 无消费者。
-    };
-    win.is_visible().unwrap_or(true) && !win.is_minimized().unwrap_or(false)
+fn subscribed_log_windows() -> Vec<String> {
+    log_subscribers()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .windows()
+}
+
+fn visible_log_windows(app: &AppHandle, labels: &[String]) -> Vec<String> {
+    // 日志订阅入口只接受 main；后台 task 不直接调平台 getter。wry 的 getter 会跨线程投主循环并阻塞
+    // 等回包，原生模态期间占住 tokio worker，destroy 过渡期还会命中失效 WebView。复用 stats 的进程级
+    // 可见性缓存：它在主线程刷新，并带明确的主窗 created/destroying 生命周期门，三平台判据一致。
+    let visible = app
+        .try_state::<AppRuntime>()
+        .map(|runtime| runtime.stats().window_visible(app))
+        .unwrap_or(true);
+    if visible {
+        labels.to_vec()
+    } else {
+        Vec::new()
+    }
 }
 
 /// 取尾部最多 `cap` 条（丢最旧、保最新 = live tail 语义）。`cap == 0` → 空。
@@ -273,20 +360,45 @@ fn tail_capped<T>(recs: &[T], cap: usize) -> &[T] {
     }
 }
 
-/// 上游 `LOGS_GET`：取日志缓冲（内存环形缓冲）+ 惰性起批量推送流。
+/// 取日志缓冲并登记本次 LogsScreen mount 对直播流的所有权。
 ///
 /// `limit` = 只取最新 N 条（渲染端 LogsScreen 传 MAX_BUFFER）。
 #[tauri::command]
 pub fn logs_get(
     app: AppHandle,
+    window: WebviewWindow,
     _state: State<'_, AppRuntime>,
+    subscription_id: String,
     limit: Option<usize>,
 ) -> ApiResponse<Vec<Value>> {
-    // 快照与流式起始游标同锁取 → 水合与增量流首尾相接，不重放、不丢行。
+    // 快照与 cursor 同锁取；注册表从空变为非空时从该 cursor 开始直播，水合与增量首尾相接。
     let (recs, cursor) = crate::logging::snapshot_with_cursor(limit);
-    ensure_log_batch_emitter(&app, cursor);
+    if window.label() == "main" && !subscription_id.is_empty() {
+        let was_empty = log_subscribers()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .register(window.label(), &subscription_id);
+        if was_empty {
+            LOG_STREAM_CURSOR.store(cursor, Ordering::Release);
+        }
+        ensure_log_batch_emitter(&app);
+        notify_log_stream();
+    }
     let entries: Vec<Value> = recs.iter().map(log_record_to_entry).collect();
     ApiResponse::ok(entries)
+}
+
+/// 释放当前 LogsScreen mount 的直播流所有权。陈旧 token 不会误删后来的页面实例。
+#[tauri::command]
+pub fn logs_unsubscribe(window: WebviewWindow, subscription_id: String) -> ApiResponse<()> {
+    let removed = log_subscribers()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .unregister(window.label(), &subscription_id);
+    if removed {
+        notify_log_stream();
+    }
+    ok_void()
 }
 
 /// 上游 `LOGS_CLEAR`：清日志缓冲 —— **两侧一起清**。
@@ -1836,6 +1948,46 @@ pub fn schedule_ipinfo_refresh(app: &AppHandle, delay_ms: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_subscription_tokens_protect_new_mount_from_stale_cleanup() {
+        let mut registry = LogSubscriberRegistry::default();
+        assert!(registry.register("main", "mount-1"));
+        assert!(!registry.register("main", "mount-2"));
+        assert!(
+            !registry.unregister("main", "mount-1"),
+            "旧页面 cleanup 不得删除同一窗口的新页面订阅"
+        );
+        assert_eq!(registry.windows(), vec!["main"]);
+        assert!(registry.unregister("main", "mount-2"));
+        assert!(registry.windows().is_empty());
+    }
+
+    #[test]
+    fn log_subscription_window_cleanup_is_idempotent() {
+        let mut registry = LogSubscriberRegistry::default();
+        registry.register("main", "mount-1");
+        assert!(registry.clear_window("main"));
+        assert!(!registry.clear_window("main"));
+    }
+
+    #[test]
+    fn log_emitter_reuses_non_blocking_main_window_visibility() {
+        let body = crate::commands::guard_scan::top_level_fn_body(
+            include_str!("misc.rs"),
+            "fn visible_log_windows(",
+        );
+        assert!(
+            body.contains("runtime.stats().window_visible(app)"),
+            "日志 emitter 必须复用 stats 的主线程缓存式可见性真值"
+        );
+        for forbidden in ["is_visible(", "is_minimized(", "get_webview_window("] {
+            assert!(
+                !body.contains(forbidden),
+                "后台日志 emitter 不得直接调用平台窗口 getter `{forbidden}`"
+            );
+        }
+    }
 
     // ══════════════════════════════════════════════════════════════════════════
     // 核在跑的真实日志级别：级别名投影

@@ -1090,31 +1090,55 @@ pub fn tray_quit(app: AppHandle) -> ApiResponse<()> {
 }
 
 /// C16 进入轻量模式：**销毁主窗 webview 释放内存，保托盘 + 核活**（≠ 关窗到托盘的 `hide()`——那只隐藏、
-/// renderer 进程仍活=内存未释放）。两个入口共用：托盘浮层「进入轻量模式」项 + 前端 idle 计时（autoLightweightMode）。
+/// renderer 进程仍活=内存未释放）。两个入口共用：托盘浮层「进入轻量模式」项 + 主进程窗口驻留巡检。
 /// 对齐 上游 `releaseWindowMemory` + `markLightweightModeTransition`。
 ///
-/// 顺序（销毁前先收尾）：
+/// 顺序（以 destroy 成功为事务提交点）：
 ///  1. 置 `LightweightState`：万一销毁末窗触发 `ExitRequested`，`main.rs` 守卫据此**保核 + 阻退**（轻量恒不停核）。
-///  2. `clear_window("main")` 释放 stats 订阅账：webview 销毁**不**触发 `on_page_load`（reload 才有），不清账则
-///     registry 里旧订阅无人退订 → gRPC poller 永续 1s 轮询、`subs` 无界累积 → **内存/CPU 反而不降 = 轻量白做**。
-///  3. 收起并提前销毁浮层；它本身另有独立隐藏回收计时，这里只是轻量转场顺手立即释放。
-///  4. `destroy()` 销毁主窗（**force**：绕过 `CloseRequested` 的 hide-to-tray 拦截，真释放内存）。用户经托盘
-///     浮层内明确入口、Linux 原生菜单或 Dock/任务栏唤出时，`show_main_window` 走 `create_main_window` 重建。
+///  2. 收起并提前销毁浮层；它本身另有独立隐藏回收计时，这里只是轻量转场顺手立即释放。
+///  3. 先把主窗生命周期标成“销毁中”，再 `destroy()`（**force**：绕过 `CloseRequested` 的拦截）。这道
+///     显式状态挡住 Tauri registry 过渡期仍返回的失效 WebView，stats/logs 不再跨线程探测旧句柄。
+///  4. destroy 成功才提交 main 的 stats + logs 订阅清理；失败则回滚生命周期与 LightweightState，保留
+///     原页面订阅。webview 销毁不触发 `on_page_load`，成功后不清账会让 gRPC/log emitter 永续工作。
+/// 用户经托盘浮层内明确入口、Linux 原生菜单或 Dock/任务栏唤出时，`show_main_window` 走
+/// `create_main_window` 重建。
 #[tauri::command]
 pub fn tray_enter_lightweight(app: AppHandle) -> ApiResponse<()> {
     app.state::<crate::LightweightState>()
         .0
         .store(true, Ordering::SeqCst);
-    if let Some(rt) = app.try_state::<crate::runtime::AppRuntime>() {
-        rt.stats().clear_window("main");
-    }
     hide_overlay(&app);
     destroy_overlay(&app);
+    if let Some(rt) = app.try_state::<crate::runtime::AppRuntime>() {
+        rt.stats().mark_main_window_destroying();
+    }
     if let Some(win) = app.get_webview_window("main") {
         match win.destroy() {
-            Ok(()) => crate::set_macos_dock_visible(&app, false),
-            Err(e) => log::warn!("轻量模式销毁主窗失败（内存未释放；托盘/核不受影响）：{e}"),
+            Ok(()) => {
+                if let Some(rt) = app.try_state::<crate::runtime::AppRuntime>() {
+                    rt.stats().clear_window("main");
+                }
+                crate::commands::misc::clear_log_stream_window("main");
+                crate::set_macos_dock_visible(&app, false);
+            }
+            Err(e) => {
+                app.state::<crate::LightweightState>()
+                    .0
+                    .store(false, Ordering::SeqCst);
+                if let Some(rt) = app.try_state::<crate::runtime::AppRuntime>() {
+                    rt.stats().mark_main_window_created();
+                    rt.stats().refresh_window_visible(&app);
+                }
+                log::warn!("轻量模式销毁主窗失败（已回滚窗口与订阅状态；托盘/核不受影响）：{e}");
+            }
         }
+    } else {
+        // 窗已被另一条腿释放：把这次操作视为幂等成功，并兜底清掉按 label 持有的旧订阅账。
+        if let Some(rt) = app.try_state::<crate::runtime::AppRuntime>() {
+            rt.stats().clear_window("main");
+        }
+        crate::commands::misc::clear_log_stream_window("main");
+        crate::set_macos_dock_visible(&app, false);
     }
     ok_void()
 }
@@ -1331,6 +1355,33 @@ mod overlay_lifecycle_gate {
             TRAY_RS.contains("destroy_overlay(&app);")
                 && TRAY_RS.contains("tray_enter_lightweight"),
             "轻量转场应提前回收已存在的托盘浮层，但不得成为唯一回收入口"
+        );
+    }
+
+    #[test]
+    fn main_window_destroy_is_a_transactional_lifecycle_boundary() {
+        let body = crate::commands::guard_scan::top_level_fn_body(
+            TRAY_RS,
+            "pub fn tray_enter_lightweight(",
+        );
+        let destroying = body
+            .find("mark_main_window_destroying()")
+            .expect("destroy 前必须先关闭主窗口生命周期门");
+        let destroy = body
+            .find("win.destroy()")
+            .expect("轻量态必须真正销毁主 WebView");
+        let clear = body
+            .find("rt.stats().clear_window(\"main\")")
+            .expect("destroy 成功后必须释放 stats 订阅");
+        assert!(destroying < destroy, "生命周期门必须先于平台 destroy 关闭");
+        assert!(
+            clear > destroy,
+            "订阅清理是 destroy 成功后的事务提交；提前清会让失败回滚后的活页面永久断流"
+        );
+        assert!(
+            body.contains("rt.stats().mark_main_window_created()")
+                && body.contains("store(false, Ordering::SeqCst)"),
+            "destroy 失败必须同时回滚窗口生命周期与 LightweightState"
         );
     }
 

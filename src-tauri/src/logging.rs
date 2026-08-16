@@ -20,13 +20,11 @@
 //! 被 `log` 的 `std` feature 门控，而本仓 `Cargo.toml:17` 是裸 `log = "0.4"`（default-features 为空，
 //! 不含 `std`）。走 `set_logger` 就无需改 Cargo.toml 的 feature 面，改动面更小、也不与并发批次抢文件。
 //!
-//! ## 边界（如实登记，勿当完整 LogManager）
+//! ## 边界
 //!
-//! - 时间戳是 **Unix epoch 毫秒**（可读日期需 `chrono`/`time` = 新依赖）。排障够用（可排序、可换算），
-//!   但不如 上游 app.log 的人类可读格式。
-//! - `logs:get` / `logs:clear` / `diagnostic:export` 三个 command **仍是 stub**（`misc.rs:28/35/111`），
-//!   本模块只保证日志**落盘**，没接前端日志页与诊断导出。完整 LogManager 属另一批。
+//! - 文件时间戳是 Unix epoch 毫秒；UI 出境时转换为 RFC3339。
 //! - 单文件 + 满则轮转一次（`.1`），无按日切分、无压缩。
+//! - 完整正文先落盘；内存环为日志页诊断副本，受条数与单条字节双重预算约束。
 
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
@@ -48,11 +46,16 @@ const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 //
 // 上游 `LogManager` 的最小面：主进程侧每条 log 落盘之余，也进一个有界环形缓冲，供
 // 日志页 `logs:get` 一次性水合 + 批量事件流增量推送（`misc.rs` 侧 ~150ms coalesce）。
-// 与落盘解耦（独立 static，不进 `PolarisLogger`）：`snapshot` / `records_from` / `clear`
-// 是自由函数，command 层无需持有 logger 引用。
+// 与落盘解耦（独立 static，不进 `PolarisLogger`）：页面 mount 时登记直播所有权，离页 / reload /
+// 窗口销毁时释放；无订阅时 emitter 真正休眠。
 
 /// 环形缓冲容量上限（条）。超出即从头丢弃最旧条目（有界，防无限增长）。
 const LOG_RING_CAP: usize = 2000;
+
+/// 单条 UI 内存日志正文的字节上限。完整日志已经在 [`PolarisLogger::log`] 中先行落盘；这里只有
+/// 诊断页面的长驻副本需要硬预算，防止“条目数有界、单条字符串无界”绕过环形容量。
+const UI_LOG_MESSAGE_MAX_BYTES: usize = 16 * 1024;
+const TRUNCATION_MARK: &str = "…";
 
 /// 结构化日志条目（渲染端 `LogEntry` 的后端镜像；`timestamp`/`level` 的最终成形在 `misc.rs`）。
 #[derive(Clone, Debug)]
@@ -135,6 +138,25 @@ fn collect_from(r: &VecDeque<LogRecord>, from_seq: u64) -> (Vec<LogRecord>, u64)
     (recs, next)
 }
 
+/// 把 UI 长驻正文裁到固定字节预算，保持 UTF-8 边界并在发生裁剪时附加省略号。
+///
+/// 超限时构造新的有界 allocation，不能在原巨型 `String` 上只做 `truncate`：后者会保留原 capacity，
+/// 仍然把整块内存带进环形缓冲，表面长度变短但物理内存没有治理。
+fn truncate_ui_message(message: String) -> String {
+    if message.len() <= UI_LOG_MESSAGE_MAX_BYTES {
+        return message;
+    }
+    let payload_limit = UI_LOG_MESSAGE_MAX_BYTES - TRUNCATION_MARK.len();
+    let mut cut = payload_limit;
+    while !message.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let mut bounded = String::with_capacity(cut + TRUNCATION_MARK.len());
+    bounded.push_str(&message[..cut]);
+    bounded.push_str(TRUNCATION_MARK);
+    bounded
+}
+
 /// 追加一条到环形缓冲（满则丢最旧）。锁毒化 → 静默跳过（日志缓冲绝不反噬主流程）。
 ///
 /// **seq 必须在 ring 锁内分配**：发号与入环若非原子，两个并发 logger 线程可以先各自取到 seq=N/N+1，
@@ -152,7 +174,7 @@ fn push_ring(ts_ms: u128, level: Level, target: &str, message: String) {
                 ts_ms,
                 level: level_tag(level),
                 target: ui_source(target).to_string(),
-                message,
+                message: truncate_ui_message(message),
             },
         );
     }
@@ -436,6 +458,31 @@ pub fn init(config_dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ui_log_message_keeps_small_allocation_unchanged() {
+        let message = String::from("normal log line");
+        let pointer = message.as_ptr();
+        let bounded = truncate_ui_message(message);
+        assert_eq!(bounded, "normal log line");
+        assert_eq!(bounded.as_ptr(), pointer, "未超限时不应重新分配");
+    }
+
+    #[test]
+    fn ui_log_message_has_real_ascii_byte_budget() {
+        let bounded = truncate_ui_message("x".repeat(UI_LOG_MESSAGE_MAX_BYTES * 4));
+        assert_eq!(bounded.len(), UI_LOG_MESSAGE_MAX_BYTES);
+        assert!(bounded.ends_with(TRUNCATION_MARK));
+        assert!(bounded.capacity() <= UI_LOG_MESSAGE_MAX_BYTES);
+    }
+
+    #[test]
+    fn ui_log_message_truncation_preserves_utf8() {
+        let bounded = truncate_ui_message("网".repeat(UI_LOG_MESSAGE_MAX_BYTES));
+        assert!(bounded.is_char_boundary(bounded.len()));
+        assert!(bounded.len() <= UI_LOG_MESSAGE_MAX_BYTES);
+        assert!(bounded.ends_with(TRUNCATION_MARK));
+    }
 
     #[test]
     fn open_log_file_creates_dir_and_file() {

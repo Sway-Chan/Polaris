@@ -39,6 +39,7 @@ import {
   isSubscriptionUpdateTerminal,
   type SubscriptionUpdateProgress,
 } from '@/contracts/subscription-progress';
+import { retainRecordKeys } from './retain-entities';
 
 /** 订阅信息栏要显示的东西。`null` = 该订阅当前无事发生（既不在更新，也没有未清的失败）。 */
 export type SubscriptionProgressEntry = SubscriptionUpdateProgress | null;
@@ -75,11 +76,17 @@ interface SubscriptionProgressState {
   /** 收到一帧（事件流的**唯一**写入口——没有手动 dismiss：失败徽标该由「重试成功」清掉，
    *  而不是由「假装没看见」清掉。 */
   applyProgress: (ev: SubscriptionUpdateProgress) => void;
+  retainSubscriptionIds: (subscriptionIds: readonly string[]) => void;
 }
 
 export const useSubscriptionProgressStore = create<SubscriptionProgressState>((set) => ({
   progress: {},
   applyProgress: (ev) => set((s) => ({ progress: reduceSubscriptionProgress(s.progress, ev) })),
+  retainSubscriptionIds: (subscriptionIds) =>
+    set((state) => {
+      const progress = retainRecordKeys(state.progress, new Set(subscriptionIds));
+      return progress === state.progress ? state : { progress };
+    }),
 }));
 
 /** 取某条订阅的当前状态（组件里用：`useSubscriptionProgress(sub.id)`）。 */
