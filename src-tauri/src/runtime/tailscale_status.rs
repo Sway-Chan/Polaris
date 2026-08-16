@@ -68,6 +68,22 @@ pub struct TailscaleStatusEvent {
     pub expired: bool,
     /// 对端列表（摊平 userGroups 各组 + 去重）。
     pub peers: Vec<TailscaleStatusPeer>,
+    /// Taildrop **能力位**：tailnet 是否授了 `https://tailscale.com/cap/file-sharing`。
+    ///
+    /// 这是 UI 的门，不是用户开关 —— 未授时内核照常跑，只是收发不成立。不拿它当门就会做出
+    /// 「点了没反应」的界面（本仓为 `allowInternet` / `resolveByName` 两次记过同一条教训）。
+    ///
+    /// 旧核（< 1.14.0-beta.15）没有这个字段 ⇒ prost 给 proto3 标量的缺省 `false`，UI 落到
+    /// 「此 tailnet 未启用文件共享」那一档。**这个降级是对的**：换了没有 Taildrop 的核，
+    /// 收发本来也不成立。
+    pub can_share_files: bool,
+    /// 已落盘待处理的文件数。
+    pub waiting_file_count: i32,
+    /// 正在接收中的文件数。
+    pub receiving_file_count: i32,
+    /// 未读数（`MarkTaildropInboxRead` 清零）。角标取它而不是 waiting：读过但没删的文件
+    /// 仍在 waiting 里，拿 waiting 当角标会让角标永远消不掉。
+    pub unread_file_count: i32,
 }
 
 /// `TAILSCALE_GET_STATUS` 返回：缓存末帧 + 新鲜度（`contracts/tailscale-status.ts` `TailscaleStatusSnapshot`）。
@@ -156,6 +172,10 @@ pub fn decode_tailscale_status(
                 tailscale_ips,
                 expired,
                 peers: flatten_peers(&ep.user_groups),
+                can_share_files: ep.can_share_files,
+                waiting_file_count: ep.waiting_file_count,
+                receiving_file_count: ep.receiving_file_count,
+                unread_file_count: ep.unread_file_count,
             })
         })
         .collect()
@@ -378,6 +398,12 @@ mod exit_warning_tests {
             tailscale_ips: vec![],
             expired,
             peers: vec![],
+            // Taildrop 四位在本用例无关，取「无能力、无文件」的中性值；不给 Default 是刻意的：
+            // 日后再加字段时，这些构造点必须重新被人看一眼，而不是被 `..Default::default()` 静默补齐。
+            can_share_files: false,
+            waiting_file_count: 0,
+            receiving_file_count: 0,
+            unread_file_count: 0,
         };
         assert!(!is_definitive_logged_out(&ev("Running", true, false)));
         // `logged_in=true` 一票否决，**即便**同帧带着否定信号。这两格 [`decode_tailscale_status`]

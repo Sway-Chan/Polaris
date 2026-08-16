@@ -42,12 +42,17 @@ const CHECKED_MESSAGE: &str = "TailscaleEndpointStatus";
 // 由 `every_checked_symbol_has_a_recorded_layout` 守着。
 use proto_wire_check::{SymbolKind, CHECKED_SYMBOLS, PROTO_SRC};
 
-/// sing-box **1.14.0-beta.7** 的 `TailscaleEndpointStatus` 真实字段号。
+/// `TailscaleEndpointStatus` 的真实字段号。**f1..f10 记于 1.14.0-beta.7，f11..f14 记于 1.14.0-beta.15。**
 ///
-/// 取证方式（2026-08-05）：从 `resources/linux/sing-box` 与 `resources/mac-arm64/sing-box` 两份二进制里
+/// f1..f10 取证方式（2026-08-05）：从 `resources/linux/sing-box` 与 `resources/mac-arm64/sing-box` 两份二进制里
 /// 抠 protoc-gen-go 嵌入的 `FileDescriptorProto`，两份一致。对照组 `1.14.0-alpha.40`（/opt/上游 随包核）
 /// 为 `authURL=3 … self=6 userGroups=7 exitNode=8 keyAuth=9` —— 上游正是在 f3 插入 `stateText`
 /// 把其后全部顶掉一位，那次漂移就是本目录这道门存在的原因。
+///
+/// f11..f14 取证方式（2026-08-17，随核升 beta.15）：`v1.14.0-beta.14` 与 `v1.14.0-beta.15` 的上游
+/// `daemon/started_service.proto` 逐行 diff —— 本消息**只在末尾追加**这四个，f1..f10 一个未动；
+/// 随后由 `vendored_proto_matches_every_bundled_core` 对随包 beta.15 二进制的 descriptor 复核通过。
+/// 「这次是追加不是插入」是**观察结果**，不是上游的承诺 —— 所以四个照样逐条记进表。
 const RECORDED_BETA7_LAYOUT: &[(&str, u32)] = &[
     ("endpointTag", 1),
     ("backendState", 2),
@@ -59,6 +64,11 @@ const RECORDED_BETA7_LAYOUT: &[(&str, u32)] = &[
     ("userGroups", 8),
     ("exitNode", 9),
     ("keyAuth", 10),
+    // Taildrop（beta.15 追加）。
+    ("canShareFiles", 11),
+    ("waitingFileCount", 12),
+    ("receivingFileCount", 13),
+    ("unreadFileCount", 14),
 ];
 
 /// sing-box **1.14.0-beta.7** 的 `DefaultLogLevel`（`GetDefaultLogLevel` 的响应）字段号。
@@ -99,8 +109,54 @@ const RECORDED_BETA7_LOG_MESSAGE: &[(&str, u32)] = &[("level", 1), ("message", 2
 /// `every_checked_symbol_has_a_recorded_layout` 守）：只加进对拍表却不留实测记录，等于把
 /// 「我们确实核对过真核」这条书面证据跳过了。
 type RecordedLayout = (SymbolKind, &'static str, &'static [(&'static str, u32)]);
+/// Taildrop 收件侧四个消费面的字段号。**记于 1.14.0-beta.15**（该版本首次引入）。
+///
+/// 取证方式（2026-08-17）：`v1.14.0-beta.14` ⇄ `v1.14.0-beta.15` 的上游
+/// `daemon/started_service.proto` 逐行 diff（beta.14 里这四个 message 根本不存在，故是纯新增、
+/// 无「改号」风险面），随后由 `vendored_proto_matches_every_bundled_core` 对随包 beta.15
+/// 二进制的 descriptor 复核通过。
+const RECORDED_BETA15_TAILDROP_INBOX: &[(&str, u32)] = &[
+    ("endpointTag", 1),
+    ("files", 2),
+    ("receiving", 3),
+];
+const RECORDED_BETA15_TAILDROP_FILE: &[(&str, u32)] = &[
+    ("name", 1),
+    ("size", 2),
+    ("senderName", 3),
+    ("modifiedAt", 4),
+];
+const RECORDED_BETA15_TAILDROP_RECEIVING_FILE: &[(&str, u32)] = &[
+    ("name", 1),
+    ("size", 2),
+    ("receivedBytes", 3),
+    ("senderID", 4),
+    ("senderName", 5),
+];
+const RECORDED_BETA15_TAILDROP_DOWNLOAD_CHUNK: &[(&str, u32)] = &[("size", 1), ("data", 2)];
+
 const RECORDED_LAYOUTS: &[RecordedLayout] = &[
     (SymbolKind::Message, CHECKED_MESSAGE, RECORDED_BETA7_LAYOUT),
+    (
+        SymbolKind::Message,
+        "TaildropInbox",
+        RECORDED_BETA15_TAILDROP_INBOX,
+    ),
+    (
+        SymbolKind::Message,
+        "TaildropFile",
+        RECORDED_BETA15_TAILDROP_FILE,
+    ),
+    (
+        SymbolKind::Message,
+        "TaildropReceivingFile",
+        RECORDED_BETA15_TAILDROP_RECEIVING_FILE,
+    ),
+    (
+        SymbolKind::Message,
+        "DownloadTaildropFileChunk",
+        RECORDED_BETA15_TAILDROP_DOWNLOAD_CHUNK,
+    ),
     (
         SymbolKind::Message,
         "DefaultLogLevel",
@@ -265,10 +321,24 @@ fn runtime_verdict_blocks_number_drift_but_never_a_blind_spot() {
     let log = sym(SymbolKind::Message, "Log");
     let log_msg = sym(SymbolKind::Message, "Log.Message");
     let lvl = sym(SymbolKind::Enum, "LogLevel");
+    // 合成核必须**覆盖 `CHECKED_SYMBOLS` 全表**：漏掉任何一个，第一条断言就会拿到
+    // `Unobservable("该核里没有 …")` 而不是 `Match` —— 那时红的是这道门自己，不是被测判据。
+    // 表一扩就要在这里同步扩，是刻意的（同 `RECORDED_LAYOUTS`：每加一个消费面都得有人看一眼）。
+    let inbox = sym(SymbolKind::Message, "TaildropInbox");
+    let file = sym(SymbolKind::Message, "TaildropFile");
+    let recv = sym(SymbolKind::Message, "TaildropReceivingFile");
+    let chunk = sym(SymbolKind::Message, "DownloadTaildropFileChunk");
 
     let build = |inner: &BTreeMap<String, u32>| {
         synthetic_core_with_nested(
-            &[("TailscaleEndpointStatus", &tse), ("DefaultLogLevel", &dll)],
+            &[
+                ("TailscaleEndpointStatus", &tse),
+                ("DefaultLogLevel", &dll),
+                ("TaildropInbox", &inbox),
+                ("TaildropFile", &file),
+                ("TaildropReceivingFile", &recv),
+                ("DownloadTaildropFileChunk", &chunk),
+            ],
             &[("LogLevel", &lvl)],
             &[("Log", &log, &[("Message", inner)])],
         )

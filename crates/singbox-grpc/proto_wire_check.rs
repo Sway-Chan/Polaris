@@ -490,6 +490,15 @@ mod proto_wire_check {
         (SymbolKind::Enum, "LogLevel"),
         (SymbolKind::Message, "Log"),
         (SymbolKind::Message, "Log.Message"),
+        // Taildrop 收件侧的全部消费面（1.14.0-beta.15）。进表的理由同 `Log`：这几个的字段撞号
+        // 不会报错，只会静默失真 —— `TaildropFile.size/modifiedAt` 都是 int64、`senderName/name`
+        // 都是 string，互换后收件箱照常渲染，只是把文件名当成发件人、把时间当成大小。
+        // `TaildropReceivingFile` 更硬：`senderID` + `name` 是 `CancelTaildropReceiving` 的定位键，
+        // 撞号 = 取消到别的文件上去。
+        (SymbolKind::Message, "TaildropInbox"),
+        (SymbolKind::Message, "TaildropFile"),
+        (SymbolKind::Message, "TaildropReceivingFile"),
+        (SymbolKind::Message, "DownloadTaildropFileChunk"),
     ];
 
     /// 对**内存里的一份核**做整表对拍的三态结论。

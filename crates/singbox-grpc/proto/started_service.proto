@@ -28,6 +28,21 @@ service StartedService {
   rpc TailscaleLogout(TailscaleLogoutRequest) returns (Empty);
   rpc SetTailscaleExitNode(SetTailscaleExitNodeRequest) returns (Empty);
 
+  // ── Taildrop（1.14.0-beta.15 新增）───────────────────────────────────────────────────
+  //
+  // 收件侧四条本 crate 暴露；`SendTaildropFiles` 保留以与服务端 wire 同构，客户端方法待发送侧接线
+  //（与 `TailscaleLogout` 同一处理：proto 声明，Rust 侧暂不暴露）。
+  //
+  // **为什么收件侧不是可选功能**：核从 beta.15 起在 `Start(StartStateInitialize)` 里无条件建收件目录
+  // 并注册收件 handler（`protocol/tailscale/endpoint.go:253-263`）⇒ 只要 tailnet 授了
+  // `cap/file-sharing`，文件**已经在往盘上落**。没有这几条 rpc，用户就只有一个看不见也删不掉的目录。
+  rpc SubscribeTaildropInbox(SubscribeTaildropInboxRequest) returns (stream TaildropInbox);
+  rpc MarkTaildropInboxRead(MarkTaildropInboxReadRequest) returns (Empty);
+  rpc SendTaildropFiles(stream TaildropSendClientMessage) returns (stream TaildropSendServerMessage);
+  rpc DownloadTaildropFile(DownloadTaildropFileRequest) returns (stream DownloadTaildropFileChunk);
+  rpc DeleteTaildropFile(DeleteTaildropFileRequest) returns (Empty);
+  rpc CancelTaildropReceiving(CancelTaildropReceivingRequest) returns (Empty);
+
   // clash 等价管理方法（本 crate 主暴露面）。
   rpc SubscribeStatus(SubscribeStatusRequest) returns (stream Status);
   rpc SubscribeConnections(SubscribeConnectionsRequest) returns (stream ConnectionEvents);
@@ -145,6 +160,23 @@ message TailscaleEndpointStatus {
   repeated TailscaleUserGroup userGroups = 8;
   TailscalePeer exitNode = 9;
   bool keyAuth = 10;
+  // ── Taildrop（1.14.0-beta.15 新增 f11..f14）──────────────────────────────────────────
+  //
+  // 这四个是**上游追加在末尾**的，不像 `stateText` 那样插在中间 —— 故对既有 f1..f10 零位移，
+  // 旧布局解新帧不会炸。但仍然逐字段声明并进 `CHECKED_SYMBOLS`：本消息恰恰是有过位移事故的那个，
+  // 「这次是追加」是**观察结果**（对 beta.15 descriptor 实测）而不是上游的承诺。
+  //
+  // `canShareFiles` 是能力位，不是开关：Taildrop 收发要 tailnet admin 授
+  // `https://tailscale.com/cap/file-sharing`，未授时**内核这边照常跑，只是收发不成立**。
+  // UI 必须拿它当门 —— 否则就是本仓明令禁止的「拨了不生效的控件」（同 `ts-settings-logic.ts`
+  // 头注为 allowInternet / resolveByName 记过的那两笔）。
+  bool canShareFiles = 11;
+  // 已落盘等待处理的文件数（收件箱里躺着的）。
+  int32 waitingFileCount = 12;
+  // 正在接收中的文件数（进度条那一档）。
+  int32 receivingFileCount = 13;
+  // 未读数（`MarkTaildropInboxRead` 清零）——角标取它，不取 waiting。
+  int32 unreadFileCount = 14;
 }
 
 // 对端节点按归属用户(owner/sharee)分组；peers 在 f5。
@@ -167,6 +199,107 @@ message TailscalePeer {
   int64 keyExpiry = 11;
   string stableID = 12;
   bool expired = 13;
+}
+
+// ── Taildrop（1.14.0-beta.15）──────────────────────────────────────────────────────────
+//
+// 字段号取自上游 `v1.14.0-beta.15` 的 `daemon/started_service.proto`，并由
+// `tests/bundled_core_wire.rs` 对随包核二进制的 descriptor 复核（消费面的四个 message
+// 已进 `CHECKED_SYMBOLS`）。
+
+message SubscribeTaildropInboxRequest {
+  string endpointTag = 1;
+}
+
+message MarkTaildropInboxReadRequest {
+  string endpointTag = 1;
+}
+
+// 每帧 = 该 endpoint 收件箱的**全量快照**（非增量），同 `TailscaleStatusUpdate` 的口径。
+message TaildropInbox {
+  string endpointTag = 1;
+  repeated TaildropFile files = 2;
+  repeated TaildropReceivingFile receiving = 3;
+}
+
+// 已落盘、等待用户处理的一个文件。
+message TaildropFile {
+  string name = 1;
+  int64 size = 2;
+  string senderName = 3;
+  int64 modifiedAt = 4;
+}
+
+// 正在接收中的一个文件（`receivedBytes/size` 即进度）。
+// `senderID` + `name` 是 `CancelTaildropReceiving` 的定位键。
+message TaildropReceivingFile {
+  string name = 1;
+  int64 size = 2;
+  int64 receivedBytes = 3;
+  string senderID = 4;
+  string senderName = 5;
+}
+
+// ── 发送侧（proto 保留以与服务端 wire 同构；Rust 客户端方法待发送侧接线）──────────────
+message TaildropSendClientMessage {
+  oneof message {
+    TaildropSendStart start = 1;
+    TaildropFileChunk chunk = 2;
+    TaildropFileDone fileDone = 3;
+  }
+}
+
+message TaildropSendStart {
+  string endpointTag = 1;
+  string peerStableID = 2;
+  repeated TaildropOutgoingFile files = 3;
+}
+
+message TaildropOutgoingFile {
+  string name = 1;
+  int64 size = 2;
+}
+
+message TaildropFileChunk {
+  bytes data = 1;
+}
+
+message TaildropFileDone {}
+
+message TaildropSendServerMessage {
+  oneof message {
+    TaildropSendProgress progress = 1;
+    int64 receivedBytes = 2;
+  }
+}
+
+message TaildropSendProgress {
+  int32 fileIndex = 1;
+  int64 sentBytes = 2;
+  bool fileCompleted = 3;
+}
+
+// ── 取件 / 清理 ───────────────────────────────────────────────────────────────────────
+message DownloadTaildropFileRequest {
+  string endpointTag = 1;
+  string name = 2;
+}
+
+// 服务端流：**首帧带 `size`**（总字节），其后逐块 `data`。
+message DownloadTaildropFileChunk {
+  int64 size = 1;
+  bytes data = 2;
+}
+
+message DeleteTaildropFileRequest {
+  string endpointTag = 1;
+  string name = 2;
+}
+
+message CancelTaildropReceivingRequest {
+  string endpointTag = 1;
+  string senderID = 2;
+  string name = 3;
 }
 
 message TailscaleLogoutRequest {

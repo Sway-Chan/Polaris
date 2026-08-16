@@ -16253,6 +16253,12 @@ mod tests {
             tailscale_ips: vec!["100.64.0.9".into()],
             expired: false,
             peers,
+            // Taildrop 四位在本用例无关，取「无能力、无文件」的中性值；不给 Default 是刻意的：
+            // 日后再加字段时，这些构造点必须重新被人看一眼，而不是被 `..Default::default()` 静默补齐。
+            can_share_files: false,
+            waiting_file_count: 0,
+            receiving_file_count: 0,
+            unread_file_count: 0,
         }]);
     }
 

@@ -83,6 +83,12 @@ const VLESS: ServerConfig = {
 
 const STATUS: TailscaleStatusEvent = {
   serverId: 'ts1',
+  // Taildrop 四位在本用例无关，取「无能力、无文件」中性值。不给可选/默认是刻意的：
+  // 契约加字段时这些夹具必须被人重新看一眼，而不是被 `?:` 静默补齐。
+  canShareFiles: false,
+  waitingFileCount: 0,
+  receivingFileCount: 0,
+  unreadFileCount: 0,
   backendState: 'Running',
   loggedIn: true,
   tailscaleIPs: ['100.64.0.5', 'fd7a:115c:a1e0::5'],

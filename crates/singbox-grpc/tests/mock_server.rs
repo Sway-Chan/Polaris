@@ -34,6 +34,10 @@ use polaris_singbox_grpc::daemon::{
 
 const SECRET: &str = "test-secret-123";
 
+/// 退避长到本次测试期内不会发生第二次订阅 —— 用于「只看首连行为」的用例，
+/// 免得重连把订阅计数搅成不确定值。
+const NO_RECONNECT: Duration = Duration::from_secs(3600);
+
 /// mock server 状态：记录收到的调用 + 可配置的流行为。
 #[derive(Default)]
 struct MockState {
@@ -51,6 +55,18 @@ struct MockState {
     log_history: Arc<std::sync::Mutex<Vec<daemon::log::Message>>>,
     /// `ClearLogs` 被调用的次数（验「清空必须两侧一起清」真的发到了核）。
     clear_logs_count: Arc<AtomicU64>,
+    /// `SubscribeTaildropInbox` 每次订阅回放的收件箱快照（测试预置）。
+    taildrop_inbox: Arc<std::sync::Mutex<Vec<daemon::TaildropInbox>>>,
+    /// `SubscribeTaildropInbox` 收到的 `endpointTag`（验 tag 真的发出去了、重连后仍是同一个）。
+    taildrop_subscribe_tags: Arc<std::sync::Mutex<Vec<String>>>,
+    /// `MarkTaildropInboxRead` 收到的 tag。
+    taildrop_read_calls: Arc<std::sync::Mutex<Vec<String>>>,
+    /// `DeleteTaildropFile` 收到的 (tag, name)。
+    taildrop_delete_calls: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    /// `CancelTaildropReceiving` 收到的 (tag, senderID, name)。
+    taildrop_cancel_calls: Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
+    /// `DownloadTaildropFile` 回放的字节（首帧带 size，其后逐块 data）。
+    taildrop_download_body: Arc<std::sync::Mutex<Vec<u8>>>,
 }
 
 struct MockService {
@@ -87,6 +103,111 @@ impl StartedService for MockService {
     ) -> Result<Response<Empty>, Status> {
         Err(Status::unimplemented("not used in tests"))
     }
+    // ── Taildrop（1.14.0-beta.15）────────────────────────────────────────────────────────
+    type SubscribeTaildropInboxStream = ReceiverStream<Result<daemon::TaildropInbox, Status>>;
+    async fn subscribe_taildrop_inbox(
+        &self,
+        req: Request<daemon::SubscribeTaildropInboxRequest>,
+    ) -> Result<Response<Self::SubscribeTaildropInboxStream>, Status> {
+        check_auth(&req, &self.secret)?;
+        let tag = req.into_inner().endpoint_tag;
+        self.state
+            .taildrop_subscribe_tags
+            .lock()
+            .unwrap()
+            .push(tag.clone());
+        let frames = self.state.taildrop_inbox.lock().unwrap().clone();
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        tokio::spawn(async move {
+            for f in frames {
+                let _ = tx.send(Ok(f)).await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            // drop tx → 流自然结束（触发客户端重连，用来验重连后仍带同一个 tag）。
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    async fn mark_taildrop_inbox_read(
+        &self,
+        req: Request<daemon::MarkTaildropInboxReadRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        check_auth(&req, &self.secret)?;
+        self.state
+            .taildrop_read_calls
+            .lock()
+            .unwrap()
+            .push(req.into_inner().endpoint_tag);
+        Ok(Response::new(Empty {}))
+    }
+
+    /// 发送侧尚未接线（客户端无对应方法）。这里**明确报 Unimplemented 而不是假装成功**：
+    /// 一个静默返回 Ok 的 mock 会让将来接线时的第一版测试恒绿。
+    type SendTaildropFilesStream = ReceiverStream<Result<daemon::TaildropSendServerMessage, Status>>;
+    async fn send_taildrop_files(
+        &self,
+        _req: Request<tonic::Streaming<daemon::TaildropSendClientMessage>>,
+    ) -> Result<Response<Self::SendTaildropFilesStream>, Status> {
+        Err(Status::unimplemented("发送侧随发送批次接线"))
+    }
+
+    type DownloadTaildropFileStream =
+        ReceiverStream<Result<daemon::DownloadTaildropFileChunk, Status>>;
+    async fn download_taildrop_file(
+        &self,
+        req: Request<daemon::DownloadTaildropFileRequest>,
+    ) -> Result<Response<Self::DownloadTaildropFileStream>, Status> {
+        check_auth(&req, &self.secret)?;
+        let body = self.state.taildrop_download_body.lock().unwrap().clone();
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        tokio::spawn(async move {
+            // 复现真核形状：**首帧只带 size**（总字节，data 空），其后逐块 data。
+            let _ = tx
+                .send(Ok(daemon::DownloadTaildropFileChunk {
+                    size: body.len() as i64,
+                    data: Vec::new(),
+                }))
+                .await;
+            for chunk in body.chunks(4) {
+                let _ = tx
+                    .send(Ok(daemon::DownloadTaildropFileChunk {
+                        size: 0,
+                        data: chunk.to_vec(),
+                    }))
+                    .await;
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    async fn delete_taildrop_file(
+        &self,
+        req: Request<daemon::DeleteTaildropFileRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        check_auth(&req, &self.secret)?;
+        let r = req.into_inner();
+        self.state
+            .taildrop_delete_calls
+            .lock()
+            .unwrap()
+            .push((r.endpoint_tag, r.name));
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn cancel_taildrop_receiving(
+        &self,
+        req: Request<daemon::CancelTaildropReceivingRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        check_auth(&req, &self.secret)?;
+        let r = req.into_inner();
+        self.state
+            .taildrop_cancel_calls
+            .lock()
+            .unwrap()
+            .push((r.endpoint_tag, r.sender_id, r.name));
+        Ok(Response::new(Empty {}))
+    }
+
     async fn set_tailscale_exit_node(
         &self,
         req: Request<SetTailscaleExitNodeRequest>,
@@ -842,4 +963,144 @@ async fn clear_logs_reaches_the_core() {
         state.log_history.lock().unwrap().is_empty(),
         "核侧历史应已清空（否则重订阅还会把它带回来）"
     );
+}
+
+// ── Taildrop 收件侧（1.14.0-beta.15）─────────────────────────────────────────────────────
+
+/// 预置一帧收件箱：1 个已落盘文件 + 1 个接收中文件。
+fn canned_inbox(tag: &str) -> daemon::TaildropInbox {
+    daemon::TaildropInbox {
+        endpoint_tag: tag.to_string(),
+        files: vec![daemon::TaildropFile {
+            name: "report.pdf".into(),
+            size: 2048,
+            sender_name: "laptop".into(),
+            modified_at: 1_760_000_000,
+        }],
+        receiving: vec![daemon::TaildropReceivingFile {
+            name: "movie.mkv".into(),
+            size: 1000,
+            received_bytes: 250,
+            sender_id: "nodekey:abc".into(),
+            sender_name: "phone".into(),
+        }],
+    }
+}
+
+#[tokio::test]
+async fn taildrop_inbox_stream_delivers_frames_and_sends_the_endpoint_tag() {
+    // 打断 `TaildropInboxReconnect::open` 里的 `endpoint_tag` 透传 → tag 断言转红；
+    // 打断字段映射（比如把 size/modifiedAt 接反）→ 下面逐字段断言转红。
+    let (addr, state, _h) = spawn_server(SECRET, 0).await;
+    *state.taildrop_inbox.lock().unwrap() = vec![canned_inbox("ts-node")];
+    let client = SingBoxApiClient::connect(Endpoint::new("127.0.0.1", addr.port()), SECRET)
+        .await
+        .unwrap();
+    let mut stream =
+        client.subscribe_taildrop_inbox("ts-node", ReconnectConfig::with_backoff(NO_RECONNECT));
+    use tokio_stream::StreamExt;
+    let frame = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("frame in time")
+        .expect("frame present");
+
+    assert_eq!(frame.endpoint_tag, "ts-node");
+    assert_eq!(frame.files.len(), 1);
+    assert_eq!(frame.files[0].name, "report.pdf");
+    assert_eq!(frame.files[0].size, 2048);
+    assert_eq!(frame.files[0].sender_name, "laptop");
+    assert_eq!(frame.receiving.len(), 1);
+    assert_eq!(frame.receiving[0].received_bytes, 250);
+    assert_eq!(frame.receiving[0].sender_id, "nodekey:abc");
+    assert_eq!(
+        state.taildrop_subscribe_tags.lock().unwrap().as_slice(),
+        ["ts-node"],
+        "请求里必须带 endpointTag —— 不带就订到别的端点上去了"
+    );
+}
+
+#[tokio::test]
+async fn taildrop_inbox_stream_resubscribes_with_the_same_tag() {
+    // 每次连接推 1 帧后 drop tx → 客户端退避重连。重连必须**重发同一个 tag**：
+    // 若把 tag 做成「重连时重新解析」，核重启后这条流会静默订到别处，而流本身照常「活着」。
+    let (addr, state, _h) = spawn_server(SECRET, 0).await;
+    *state.taildrop_inbox.lock().unwrap() = vec![canned_inbox("ts-node")];
+    let client = SingBoxApiClient::connect(Endpoint::new("127.0.0.1", addr.port()), SECRET)
+        .await
+        .unwrap();
+    let mut stream = client
+        .subscribe_taildrop_inbox("ts-node", ReconnectConfig::with_backoff(Duration::from_millis(20)));
+    use tokio_stream::StreamExt;
+    for _ in 0..2 {
+        tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .expect("frame in time")
+            .expect("frame present");
+    }
+    let tags = state.taildrop_subscribe_tags.lock().unwrap().clone();
+    assert!(tags.len() >= 2, "应至少订阅两次（首连 + 重连），实得 {tags:?}");
+    assert!(
+        tags.iter().all(|t| t == "ts-node"),
+        "重连必须重发同一个 tag，实得 {tags:?}"
+    );
+}
+
+#[tokio::test]
+async fn taildrop_mutations_reach_the_core_with_their_locator_keys() {
+    // 取消用的是 senderID + name **两个键**：只发 name 时，两个发件人同时发同名文件就会取消错对象。
+    let (addr, state, _h) = spawn_server(SECRET, 0).await;
+    let client = SingBoxApiClient::connect(Endpoint::new("127.0.0.1", addr.port()), SECRET)
+        .await
+        .unwrap();
+    client.mark_taildrop_inbox_read("ts-node").await.unwrap();
+    client
+        .delete_taildrop_file("ts-node", "report.pdf")
+        .await
+        .unwrap();
+    client
+        .cancel_taildrop_receiving("ts-node", "nodekey:abc", "movie.mkv")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        state.taildrop_read_calls.lock().unwrap().as_slice(),
+        ["ts-node"]
+    );
+    assert_eq!(
+        state.taildrop_delete_calls.lock().unwrap().as_slice(),
+        [("ts-node".to_string(), "report.pdf".to_string())]
+    );
+    assert_eq!(
+        state.taildrop_cancel_calls.lock().unwrap().as_slice(),
+        [(
+            "ts-node".to_string(),
+            "nodekey:abc".to_string(),
+            "movie.mkv".to_string()
+        )]
+    );
+}
+
+#[tokio::test]
+async fn taildrop_download_yields_a_size_header_then_the_body() {
+    // 真核形状：首帧只带 size（总字节、data 空），其后逐块 data。调用方据首帧算进度，
+    // 据后续块拼字节 —— 把首帧当数据块拼进去会在文件头部多出 0 字节/错位。
+    let (addr, state, _h) = spawn_server(SECRET, 0).await;
+    let body: Vec<u8> = (0u8..=32).collect();
+    *state.taildrop_download_body.lock().unwrap() = body.clone();
+    let client = SingBoxApiClient::connect(Endpoint::new("127.0.0.1", addr.port()), SECRET)
+        .await
+        .unwrap();
+    let mut stream = client
+        .download_taildrop_file("ts-node", "report.pdf")
+        .await
+        .unwrap();
+
+    let head = stream.message().await.unwrap().expect("首帧");
+    assert_eq!(head.size, body.len() as i64, "首帧带总字节数");
+    assert!(head.data.is_empty(), "首帧不带数据");
+    let mut got = Vec::new();
+    while let Some(chunk) = stream.message().await.unwrap() {
+        got.extend_from_slice(&chunk.data);
+    }
+    assert_eq!(got, body, "逐块拼回的字节必须与源逐字节相同");
 }

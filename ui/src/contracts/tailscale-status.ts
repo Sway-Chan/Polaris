@@ -41,6 +41,17 @@ export interface TailscaleStatusEvent {
   /** 对端列表（摊平 userGroups 各组 + 去重）；供出口下拉 + 组网信息 popover。
    *  「当前出口」由 peers 中 exitNode=true 的那台体现，无需另带事件级字段。 */
   peers: TailscaleStatusPeer[];
+  /** Taildrop **能力位**：tailnet 是否授了 `cap/file-sharing`（sing-box 1.14.0-beta.15 起）。
+   *  这是 UI 的门而不是用户开关——未授时收发不成立，界面必须显式说明，不能给一个点了没反应的入口。
+   *  旧核无此字段 → 解码缺省 false，落到「未启用」那一档（降级正确：那种核本来也不支持）。 */
+  canShareFiles: boolean;
+  /** 已落盘待处理的文件数。 */
+  waitingFileCount: number;
+  /** 正在接收中的文件数。 */
+  receivingFileCount: number;
+  /** 未读数（标记已读后清零）。角标取它而不是 waiting——读过没删的仍在 waiting 里，
+   *  拿 waiting 当角标会让角标永远消不掉。 */
+  unreadFileCount: number;
 }
 
 /**

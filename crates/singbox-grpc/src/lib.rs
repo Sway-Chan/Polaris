@@ -377,6 +377,97 @@ impl SingBoxApiClient {
     ) -> ReconnectingStream<daemon::TailscaleStatusUpdate> {
         reconnect::subscribe_tailscale_status(self.target.clone(), self.secret.clone(), cfg)
     }
+
+    /// 订阅某个 tailscale endpoint 的 Taildrop 收件箱（`SubscribeTaildropInbox`）。
+    /// 每帧 = 该端点收件箱的**全量快照**（已落盘的 `files` + 接收中的 `receiving`），非增量。
+    ///
+    /// 与 [`Self::subscribe_tailscale_status`] 的区别：那条是 `Empty` 请求、一条流覆盖所有端点；
+    /// 本条按 `endpoint_tag` 逐端点订阅，故多个 tailscale 节点要多条流。
+    pub fn subscribe_taildrop_inbox(
+        &self,
+        endpoint_tag: impl Into<String>,
+        cfg: ReconnectConfig,
+    ) -> ReconnectingStream<daemon::TaildropInbox> {
+        reconnect::subscribe_taildrop_inbox(
+            self.target.clone(),
+            self.secret.clone(),
+            endpoint_tag.into(),
+            cfg,
+        )
+    }
+
+    /// 把该端点收件箱标记为已读（`MarkTaildropInboxRead`）——清的是 `unreadFileCount`，
+    /// **不删文件**（`waitingFileCount` 不变）。带 [`UNARY_DEADLINE`] deadline 保证必 settle。
+    pub async fn mark_taildrop_inbox_read(
+        &self,
+        endpoint_tag: impl Into<String>,
+    ) -> Result<(), ClientError> {
+        let mut c = self.client();
+        let mut req = self.with_auth(Request::new(daemon::MarkTaildropInboxReadRequest {
+            endpoint_tag: endpoint_tag.into(),
+        }));
+        req.set_timeout(UNARY_DEADLINE);
+        c.mark_taildrop_inbox_read(req).await?;
+        Ok(())
+    }
+
+    /// 删除收件箱里的一个文件（`DeleteTaildropFile`）。`name` 取自 `TaildropFile.name`。
+    pub async fn delete_taildrop_file(
+        &self,
+        endpoint_tag: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Result<(), ClientError> {
+        let mut c = self.client();
+        let mut req = self.with_auth(Request::new(daemon::DeleteTaildropFileRequest {
+            endpoint_tag: endpoint_tag.into(),
+            name: name.into(),
+        }));
+        req.set_timeout(UNARY_DEADLINE);
+        c.delete_taildrop_file(req).await?;
+        Ok(())
+    }
+
+    /// 取消一个**接收中**的文件（`CancelTaildropReceiving`）。
+    ///
+    /// 定位键是 `sender_id` + `name` 两个一起，取自 `TaildropReceivingFile.{senderID,name}` ——
+    /// 只用 name 不够：不同发件人可以同时发同名文件。
+    pub async fn cancel_taildrop_receiving(
+        &self,
+        endpoint_tag: impl Into<String>,
+        sender_id: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Result<(), ClientError> {
+        let mut c = self.client();
+        let mut req = self.with_auth(Request::new(daemon::CancelTaildropReceivingRequest {
+            endpoint_tag: endpoint_tag.into(),
+            sender_id: sender_id.into(),
+            name: name.into(),
+        }));
+        req.set_timeout(UNARY_DEADLINE);
+        c.cancel_taildrop_receiving(req).await?;
+        Ok(())
+    }
+
+    /// 取件：把收件箱里的一个文件读出来（`DownloadTaildropFile`，服务端流）。
+    ///
+    /// **刻意不走 [`ReconnectingStream`]**：那套的语义是「断了就退避重连、永不向消费方报错」，
+    /// 对状态流是对的（下一帧是全量快照，补得回来），对**一次性字节流是灾难** —— 重连会从头再来，
+    /// 而调用方已经把前半截写进目标文件了，结果是一个悄悄拼错的文件。这里让错误原样冒出来，
+    /// 由调用方删掉半成品重试。
+    ///
+    /// 无 [`UNARY_DEADLINE`]：大文件的传输时长不该被一个为 unary 设的超时砍断。
+    pub async fn download_taildrop_file(
+        &self,
+        endpoint_tag: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Result<tonic::Streaming<daemon::DownloadTaildropFileChunk>, ClientError> {
+        let mut c = self.client();
+        let req = self.with_auth(Request::new(daemon::DownloadTaildropFileRequest {
+            endpoint_tag: endpoint_tag.into(),
+            name: name.into(),
+        }));
+        Ok(c.download_taildrop_file(req).await?.into_inner())
+    }
 }
 
 /// 客户端错误：连接失败 / tonic Status（含 Unauthenticated=16 / DeadlineExceeded=4）。

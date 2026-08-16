@@ -170,6 +170,40 @@ impl Reconnect<daemon::TailscaleStatusUpdate> for TailscaleStatusReconnect {
     }
 }
 
+/// Taildrop 收件箱流连接器（`SubscribeTaildropInbox`）。
+///
+/// **唯一带请求参数的连接器**：`endpointTag` 存在连接器自身，重连时原样重发 —— 若改成每次重连
+/// 重新解析 tag，核重启后 tag 变了这条流会静默订到别的端点上去（或空端点），而流本身照常「活着」。
+struct TaildropInboxReconnect {
+    endpoint_tag: String,
+}
+
+impl Reconnect<daemon::TaildropInbox> for TaildropInboxReconnect {
+    fn open(
+        &self,
+        target: String,
+        secret: Option<String>,
+        _interval_ns: i64,
+    ) -> Pin<Box<dyn Future<Output = Result<Streaming<daemon::TaildropInbox>, String>> + Send>> {
+        let endpoint_tag = self.endpoint_tag.clone();
+        Box::pin(async move {
+            let channel = h2c::connect_h2c(&target)
+                .await
+                .map_err(|e| format!("h2c connect: {e}"))?;
+            let mut client = StartedServiceClient::new(channel);
+            let req = auth_request(
+                &secret,
+                daemon::SubscribeTaildropInboxRequest { endpoint_tag },
+            );
+            client
+                .subscribe_taildrop_inbox(req)
+                .await
+                .map_err(|e| format!("SubscribeTaildropInbox: {e}"))
+                .map(|r| r.into_inner())
+        })
+    }
+}
+
 /// 核日志流连接器（`SubscribeLog`）。请求是 `Empty`（无 interval——核逐条推、短时多条合批），
 /// 故 `open` 忽略 `interval_ns`。
 ///
@@ -226,6 +260,17 @@ pub(crate) fn subscribe_tailscale_status(
     cfg: ReconnectConfig,
 ) -> ReconnectingStream<daemon::TailscaleStatusUpdate> {
     ReconnectingStream::new_tailscale_status(target, secret, cfg)
+}
+
+/// 构造 Taildrop 收件箱流（带自动重连）。无 interval；请求带 `endpointTag`，故 tag 存在连接器里
+/// （`Reconnect::open` 的签名只有 target/secret/interval，重连时要能原样重发同一个 tag）。
+pub(crate) fn subscribe_taildrop_inbox(
+    target: String,
+    secret: Option<String>,
+    endpoint_tag: String,
+    cfg: ReconnectConfig,
+) -> ReconnectingStream<daemon::TaildropInbox> {
+    ReconnectingStream::new_taildrop_inbox(target, secret, endpoint_tag, cfg)
 }
 
 /// 构造核日志流（带自动重连）。无 interval（`SubscribeLog` 取 `Empty` 请求）。
@@ -311,6 +356,25 @@ impl ReconnectingStream<daemon::TailscaleStatusUpdate> {
             interval_ns: 0,
             cfg,
             connector: Box::new(TailscaleStatusReconnect),
+            state: State::Initial,
+        }
+    }
+}
+
+impl ReconnectingStream<daemon::TaildropInbox> {
+    pub(crate) fn new_taildrop_inbox(
+        target: String,
+        secret: Option<String>,
+        endpoint_tag: String,
+        cfg: ReconnectConfig,
+    ) -> Self {
+        Self {
+            target,
+            secret,
+            // `SubscribeTaildropInbox` 的请求只有 `endpointTag`，无 interval 字段；连接器 open 忽略此值。
+            interval_ns: 0,
+            cfg,
+            connector: Box::new(TaildropInboxReconnect { endpoint_tag }),
             state: State::Initial,
         }
     }
