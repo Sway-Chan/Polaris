@@ -71,16 +71,25 @@ const COL_X_SOURCE = 0.12; // 原型 xDev（条中心）
 const COL_X_HOST = 0.5; // 原型 xDom（条左缘）
 const COL_X_OUTBOUND = 0.88; // 原型 xOut（条右缘）
 
-/* ── 缩放：issue #303 题 1B 定稿 ── */
-const SOURCE_HEIGHT = 80; // 左条恒定：设备只有一个，作视觉锚，不随流量缩放
-const BAR_HEIGHT_MAX = 80; // 单个节点条高上限：少量高频目标也不拉满整列
+/* ── 缩放：issue #303 题 1B 定稿 + 2026-08-17 大窗口密度复审 ── */
+/**
+ * 单条流向的视觉粗度上限。
+ *
+ * 48–56px 在只有 1–3 个目标时仍会把流向画成大色块；36px 已能承载 11.5px 标签和 18px
+ * 独立命中区，又不会随窗口最大化继续膨胀。纵向空间只用于增加可见目标槽位，不能拿来加粗已有流向。
+ */
+export const MAX_FLOW_THICKNESS = 36;
+const SOURCE_HEIGHT = MAX_FLOW_THICKNESS; // 左条只是设备锚；与单条流向共用粗度上限
+const BAR_HEIGHT_MAX = MAX_FLOW_THICKNESS;
 const MID_TOTAL_RATIO = 0.8; // 中列总高上限 = 可用高 × 此比例
-const OUT_TOTAL_SINGLE = 80; // 右列总高上限：单出口（与左条等高）
-const OUT_TOTAL_MULTI = 120; // 右列总高上限：多出口分列
+const OUT_TOTAL_SINGLE = MAX_FLOW_THICKNESS; // 单出口与设备锚等高
+const OUT_TOTAL_MULTI = MAX_FLOW_THICKNESS * 2; // 多出口共用紧凑总预算；单条仍受 BAR_HEIGHT_MAX 约束
 const MIN_BAR_HEIGHT = 2; // 条最小视觉高度（可细到 2px，命中区由 hitBox 兜底）
-/** 容量节距 = 视觉条/标签最低舒适占用 5px + 12px 固定间距；默认画布给出 16 槽。 */
-const NODE_SLOT_PITCH = 17;
+/** 容量节距 = 视觉条/标签最低舒适占用 4px + 12px 固定间距；运行态默认画布实测 301px 仍给出 16 槽。 */
+const NODE_SLOT_PITCH = 16;
 export const DEFAULT_TOPOLOGY_SLOTS = 16;
+/** 与 Rust command 的输入闸一致；超大/多屏窗口也不得制造无界投影。 */
+export const MAX_TOPOLOGY_SLOTS = 128;
 /** 980×740 下五语种画布高度的上界档；默认密度不因文案换行而漂移。 */
 const DEFAULT_CANVAS_HEIGHT_CEILING = 340;
 
@@ -92,11 +101,14 @@ export function topologySlotCapacity(canvasHeight: number): number {
   if (canvasHeight <= DEFAULT_CANVAS_HEIGHT_CEILING) {
     return Math.min(DEFAULT_TOPOLOGY_SLOTS, physicalSlots);
   }
-  return DEFAULT_TOPOLOGY_SLOTS +
-    Math.floor((canvasHeight - DEFAULT_CANVAS_HEIGHT_CEILING) / NODE_SLOT_PITCH);
+  return Math.min(
+    MAX_TOPOLOGY_SLOTS,
+    DEFAULT_TOPOLOGY_SLOTS +
+      Math.floor((canvasHeight - DEFAULT_CANVAS_HEIGHT_CEILING) / NODE_SLOT_PITCH),
+  );
 }
 
-/** 少量高频目标也只长到 80px；连接数决定相对粗细，不得把单条目标拉满整列。 */
+/** 少量高频目标也只长到 36px；连接数决定相对粗细，不得把单条目标拉满整列。 */
 function scaledBarHeight(value: number, scale: number): number {
   return Math.min(BAR_HEIGHT_MAX, Math.max(MIN_BAR_HEIGHT, value * scale));
 }

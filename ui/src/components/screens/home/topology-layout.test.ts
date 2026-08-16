@@ -11,6 +11,8 @@ import { describe, expect, it } from 'vitest';
 import {
   collectLinkedIds,
   computeTopologyLayout,
+  MAX_FLOW_THICKNESS,
+  MAX_TOPOLOGY_SLOTS,
   topologySlotCapacity,
 } from './topology-layout';
 import type { ConnectionsAggregate } from '@/contracts/types';
@@ -29,8 +31,23 @@ function aggregateWith(outbounds: string[]): ConnectionsAggregate {
   } as unknown as ConnectionsAggregate;
 }
 
+function aggregateHosts(count: number): ConnectionsAggregate {
+  return {
+    hosts: Array.from({ length: count }, (_, index) => ({
+      name: `target-${index}.example`,
+      count: 1,
+      flows: [{ outbound: 'HK', count: 1 }],
+      recent: index >= Math.max(0, count - 5),
+    })),
+    outbounds: [{ name: 'HK', count }],
+    total: count,
+    at: 0,
+  };
+}
+
 describe('视口容量与纵向对齐', () => {
   it('默认窗口高度档稳定在 16 槽，超出默认档后再随高度增长', () => {
+    expect(topologySlotCapacity(301)).toBe(16);
     expect(topologySlotCapacity(303)).toBe(16);
     expect(topologySlotCapacity(320)).toBe(16);
     expect(topologySlotCapacity(337)).toBe(16);
@@ -38,6 +55,13 @@ describe('视口容量与纵向对齐', () => {
     expect(topologySlotCapacity(425)).toBe(21);
     expect(topologySlotCapacity(250)).toBeLessThan(16);
     expect(topologySlotCapacity(0)).toBe(16);
+  });
+
+  it('最大化窗口把新增高度换成槽位，并在异常大画布上守住后端同款硬上限', () => {
+    expect(topologySlotCapacity(730)).toBe(40);
+    expect(topologySlotCapacity(766)).toBe(42);
+    expect(topologySlotCapacity(730)).toBeGreaterThan(topologySlotCapacity(337));
+    expect(topologySlotCapacity(100_000)).toBe(MAX_TOPOLOGY_SLOTS);
   });
 
   it('三列内容组共享同一纵向中心线，少量数据不会被拉伸铺满', () => {
@@ -50,7 +74,26 @@ describe('视口容量与纵向对齐', () => {
     };
     expect(centers('source')).toBeCloseTo(centers('host'), 5);
     expect(centers('host')).toBeCloseTo(centers('outbound'), 5);
-    expect(result.nodes.find((node) => node.type === 'host')?.height).toBeLessThanOrEqual(80);
+    expect(result.nodes.find((node) => node.type === 'host')?.height).toBeLessThanOrEqual(MAX_FLOW_THICKNESS);
+  });
+
+  it('画布增高只增加槽位，不把任何一列的单条流向加粗', () => {
+    const compact = computeTopologyLayout(aggregateWith(['HK']), 800, (key) => key, 337);
+    const maximized = computeTopologyLayout(aggregateWith(['HK']), 1400, (key) => key, 730);
+
+    for (const result of [compact, maximized]) {
+      expect(result.nodes).not.toHaveLength(0);
+      expect(Math.max(...result.nodes.map((node) => node.height))).toBe(MAX_FLOW_THICKNESS);
+    }
+  });
+
+  it('最大化运行态 40 槽满载时所有节点仍留在画布内', () => {
+    const canvasHeight = 730;
+    const result = computeTopologyLayout(aggregateHosts(40), 1400, (key) => key, canvasHeight);
+    const hosts = result.nodes.filter((node) => node.type === 'host');
+
+    expect(hosts).toHaveLength(40);
+    expect(result.nodes.every((node) => node.y >= 0 && node.y + node.height <= canvasHeight)).toBe(true);
   });
 });
 
