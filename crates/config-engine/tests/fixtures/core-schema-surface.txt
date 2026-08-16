@@ -170,6 +170,8 @@ DNSRule.process_path
 DNSRule.process_path_regex
 DNSRule.protocol
 DNSRule.protocol = ["bittorrent","dns","dtls","http","ntp","quic","rdp","ssh","stun","tls"]
+DNSRule.query_client_subnet
+DNSRule.query_dnssec
 DNSRule.query_type
 DNSRule.response_answer
 DNSRule.response_extra
@@ -207,6 +209,7 @@ DNSRuleAction.no_drop
 DNSRuleAction.ns
 DNSRuleAction.race
 DNSRuleAction.rcode
+DNSRuleAction.remove_client_subnet
 DNSRuleAction.rewrite_ttl
 DNSRuleAction.server
 DNSRuleAction.speculative
@@ -771,6 +774,7 @@ Endpoint[tailscale].fallback_network_type
 Endpoint[tailscale].hostname
 Endpoint[tailscale].inet4_bind_address
 Endpoint[tailscale].inet6_bind_address
+Endpoint[tailscale].listen_port
 Endpoint[tailscale].netns
 Endpoint[tailscale].network_strategy
 Endpoint[tailscale].network_strategy = ["default","fallback","hybrid"]
@@ -786,6 +790,7 @@ Endpoint[tailscale].system_interface
 Endpoint[tailscale].system_interface_mtu
 Endpoint[tailscale].system_interface_name
 Endpoint[tailscale].tag
+Endpoint[tailscale].taildrop_directory
 Endpoint[tailscale].tcp_fast_open
 Endpoint[tailscale].tcp_keep_alive
 Endpoint[tailscale].tcp_keep_alive_interval
@@ -1548,6 +1553,8 @@ NestedDNSRule.process_path
 NestedDNSRule.process_path_regex
 NestedDNSRule.protocol
 NestedDNSRule.protocol = ["bittorrent","dns","dtls","http","ntp","quic","rdp","ssh","stun","tls"]
+NestedDNSRule.query_client_subnet
+NestedDNSRule.query_dnssec
 NestedDNSRule.query_type
 NestedDNSRule.response_answer
 NestedDNSRule.response_extra
