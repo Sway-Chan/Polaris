@@ -23,7 +23,7 @@
  * 原实现是 `AppAddDialog` 里内联的 state + effect + handler，复制一份就会漂 —— 而漂出来的症状是
  * 「一个面板滚得动、另一个滚到底不再加载」。抽 hook 是为了消掉第二份，不是为了更优雅。
  */
-import { useEffect, useState, type UIEvent } from 'react';
+import { useEffect, useState } from 'react';
 
 /**
  * 每批渲染数。`.aad-ico-grid` 是 `max-height:150px` 的滚动容器（原型 §AF2），可视区约 3 行 ≈ 24 格，
@@ -36,8 +36,16 @@ export const SCROLL_BATCH_AHEAD_PX = 240;
 export interface ScrollBatch {
   /** 当前该渲染多少条（调用方自己 `slice(0, count)`）。 */
   count: number;
-  /** 挂到滚动容器的 `onScroll`。 */
-  onScroll: (e: UIEvent<HTMLElement>) => void;
+  /**
+   * 挂到滚动容器的 `onScroll`。
+   *
+   * 形参写成**结构型**（只要一个 `currentTarget`）而不是 `React.UIEvent`：本函数从头到尾只读
+   * `e.currentTarget`，而第三个消费方（节点网格）的滚动容器是 `AppShell` 的 `.main-scroll`
+   * ——**祖先**元素，不在本组件的 JSX 里，只能走原生 `addEventListener` / 直接调用。若签名钉死
+   * React 合成事件，那边就得造一个 `as unknown as UIEvent` 的假事件来喂它，纯属为类型而说谎。
+   * 逆变使这个更宽的形参依然能直接写成 `onScroll={onScroll}`（前两个消费方一字未改）。
+   */
+  onScroll: (e: { currentTarget: HTMLElement }) => void;
 }
 
 /**

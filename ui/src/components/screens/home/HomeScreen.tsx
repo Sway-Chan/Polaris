@@ -409,12 +409,24 @@ export function HomeScreen() {
        两条不变式（各自守着一个真机缺陷，见该文件头注），并可脱离组件直测。 */
     const sub = createTopicSubscription<ConnectionsAggregate>(
       {
-        onFrame: (cb) => api.stats.onConnectionsAggregate(cb),
+        /* aggregate 帧不供首页任何读点，此处仅维持订阅令牌 —— 故**不挂真监听**，返回空注销函数。
+         *
+         * 别把它当成漏接的监听补回来：Tauri 只在「该 webview 对该事件有 JS 监听」时才向本窗口发
+         * 一段 eval 脚本。挂一个空回调不是零成本，而是让整条 eval 链每帧真实发生一遍：一份 UTF-16
+         * 源码字符串 + 一次 JSC parse/bytecode 分配（源码逐帧不同 ⇒ code cache 恒不命中）+ 一份
+         * JS 对象图，随即全成垃圾。250ms 的 `AGGREGATE_POLL_INTERVAL` 下这是每秒 4 次白付。
+         *
+         * `subscribe`/`unsubscribe` 必须留着：三条 topic 共用一条 gRPC 连接流，后端按
+         * `should_stream_connections()`（aggregate ∪ detail ∪ closed）判需求，三者全零才停流。
+         * 撤掉这枚**令牌**会在首页可见时误停整条流；而连接导航排名页自带真监听
+         * （`connections/ConnectionsScreen.tsx` 的 `setAggregate` 腿），事件按监听独立投递，
+         * 首页这条空监听撤掉对它零影响。令牌与数据帧是两件事，别一起撤。 */
+        onFrame: () => () => {},
         subscribe: () => api.stats.subscribe('aggregate'),
         unsubscribe: () => api.stats.unsubscribe('aggregate'),
       },
       () => {
-        // 首页流向按自身实测高度拉取投影；aggregate 帧只维持既有订阅/兼容连接导航排名通道。
+        // 恒不会被调用（上面不挂监听）；留形参位是 createTopicSubscription 的签名要求。
       }
     );
     sub.setWanted(true);

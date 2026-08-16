@@ -87,6 +87,31 @@ export function subEffectiveIntervalHours(config: SubAutoUpdateConfigLike | null
  * ──────────────────────────────────────────────────────────────────────────── */
 
 /**
+ * 「本屏这一刻要不要订整张延迟表」的选择器 —— 排序键不是 `lat` 时恒返回**同一个**空表哨兵。
+ *
+ * # 为什么必须是模块级常量，而不是 `{}` 字面量或 `useMemo`
+ *
+ * zustand 默认用 `Object.is` 比较选择器的返回值来决定「要不要让这个组件重渲」。选择器里写
+ * `: {}` 每次求值都是新对象 ⇒ 每一次 store 提交（测速逐节点回包，一轮几十上百次）都判不等 ⇒
+ * 父层照样每次提交重渲、`visibleServers` 照样整表重算、所有卡片跟着重渲 —— 与不做条件订阅
+ * **逐字等价**，但多骗了一次 code review。`useMemo` 也不行：hook 只在组件里能调，而这里要的是
+ * 「跨组件实例、跨渲染恒等」的一个引用，只有模块级常量给得了。
+ *
+ * # 为什么不能反过来「恒不订、动作腿现取」
+ *
+ * `sortKey === 'lat'` 时排序结果**必须**随每次回包同步重排（不变量①），那时父层就该重渲。
+ * 条件订阅要收掉的是另外三档排序（默认/名称/协议）下那份「订了也没人读」的重渲，不是排序本身。
+ */
+export const EMPTY_LATENCY_MAP: Readonly<Record<string, number | null>> = Object.freeze({});
+
+/** [`EMPTY_LATENCY_MAP`] 的消费面：`useLatencyStore(latencySortSelector(sortKey === 'lat'))`。 */
+export function latencySortSelector(
+  needsLatency: boolean
+): (s: { latencyMap: Record<string, number | null> }) => Readonly<Record<string, number | null>> {
+  return (s) => (needsLatency ? s.latencyMap : EMPTY_LATENCY_MAP);
+}
+
+/**
  * 批选测速的目标 id 集 = **当前可见列表里被选中、且结构上可测**的那些（按可见顺序）。
  *
  * 两层过滤，缺一不可：

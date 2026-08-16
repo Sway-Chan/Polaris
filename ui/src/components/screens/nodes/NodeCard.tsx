@@ -10,12 +10,24 @@
  *   .nd-acts（nd-a 按钮：测速/复制/克隆/编辑/删除）
  *   .nd-check（批选复选框，原型 appendChild 置于末尾——position:absolute 不受 DOM 序影响）
  *
- * 数据源：ServerConfig（store.servers）。延迟态来自测速流（props.latencyMs）——
- * 节点本身不存延迟，每次测速经 onSpeedTestResult 推。延迟分级用 shared/format.latLevel。
+ * 数据源：ServerConfig（store.servers）。延迟态**本卡按自身节点 id 直接订** `use-latency-store`
+ * （不再由 NodesScreen 以 prop 灌下来）——节点本身不存延迟，每次测速经 onSpeedTestResult 推。
+ * 延迟分级用 shared/format.latLevel。
+ *
+ * # 为什么是「细粒度订阅 + memo」这一对（拆开任一半都不成立）
+ *
+ * 测速是**逐节点回包**：一轮 200 个节点就是 200 次 store 提交。父层若把整张延迟表灌成 prop，
+ * 每一次回包都会让全部卡片拿到新 prop ⇒ 全表重渲 200 遍。改成每张卡只订 `latencyMap[server.id]`
+ * （返回的是 number|null|undefined 这种**原始值**，`Object.is` 天然稳定），某个节点回包就只有那
+ * 一张卡的选择器判不等 ⇒ 只重渲它自己。
+ * 而 memo 是让「父层因别的原因重渲」不再穿透到卡片的那一半；两半都在，逐节点回包才真的只动一张卡。
+ * memo 的前提是调用点 props 引用稳定，该不变式由 `nodes-render-budget.test.tsx` 钉住。
  */
 
+import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ServerConfig } from '@/contracts/types';
+import { useLatencyStore } from '@/store/use-latency-store';
 import { latLevel } from '@/components/screens/shared/format';
 import { isMeshNode } from '@/domain/endpoint-routes';
 import { invalidNodeReasonText } from '@/domain/invalid-node-reason';
@@ -75,8 +87,6 @@ function transferSummary(server: ServerConfig): string {
 
 export interface NodeCardProps {
   server: ServerConfig;
-  /** 测速延迟（ms）。null=超时，undefined=未测。 */
-  latencyMs?: number | null;
   /** 当前出口（选中节点）。 */
   isCurrent?: boolean;
   /** 组网出口节点（显示「出口」标记）。 */
@@ -162,9 +172,8 @@ export interface NodeCardProps {
   onToggleSelect?: (server: ServerConfig) => void;
 }
 
-export function NodeCard({
+function NodeCardView({
   server,
-  latencyMs,
   isCurrent,
   isExit,
   lanOnly,
@@ -188,6 +197,9 @@ export function NodeCard({
   onToggleSelect,
 }: NodeCardProps) {
   const { t } = useTranslation();
+  /* 只订**本节点**那一格（原始值 ⇒ `Object.is` 判等天然稳定）。别改回 `(s) => s.latencyMap`：
+     那样每次回包全部卡片的选择器都判不等，逐节点回包会退化成整表重渲（见文件头注）。 */
+  const latencyMs = useLatencyStore((s) => s.latencyMap[server.id]);
   /* 组网信息 ⓘ（Tailscale / WireGuard / WARP）：内网地址 / 路由 / 生效出口 / 对端在线。
      判据 `isMeshNode` —— 代理协议节点没有「内网地址/路由」这套概念，整颗不渲染；
      openconnect / openvpn-client 只在用户声明了内网段时才有。
@@ -506,5 +518,18 @@ export function NodeCard({
     </div>
   );
 }
+
+/**
+ * `memo` 是本组件的**必需接线**，不是可选优化（同 `home/ConnectionTopology.tsx` 的判据）。
+ *
+ * 单张卡的 DOM ≥22 个元素、含 10 处内联 `<svg>`；节点页常态就是几十到几百张。没有 memo 时，
+ * 父层任何一次重渲（搜索输入、批选勾选、`sortKey==='lat'` 下每一次测速回包）都要把整片网格的
+ * VDOM 重建一遍并整树 diff —— 而这些重渲里绝大多数与某一张具体的卡毫无关系。
+ *
+ * memo 只在 props 浅比较相等时 bail-out：调用点一旦塞回内联箭头 / 内联对象 / 内联数组，
+ * memo 会**恒失效且比不加还慢**（白多一层比较）。该不变式由 `nodes-render-budget.test.tsx`
+ * 「调用点零分配」那一节钉住。
+ */
+export const NodeCard = memo(NodeCardView);
 
 export default NodeCard;

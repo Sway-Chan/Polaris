@@ -111,6 +111,41 @@ describe('门 3 · 窄屏兜底列表不许无条件渲染', () => {
   });
 });
 
+/**
+ * 门 4 · 首页的 aggregate topic 只持**订阅令牌**，不挂帧监听。
+ *
+ * Tauri 只在「该 webview 对该事件有 JS 监听」时才向本窗口发一段 eval 脚本。首页原先给
+ * aggregate 挂了一条**回调体为空**的监听 —— 于是整条 eval 链每帧真实发生一遍：一份 UTF-16
+ * 源码字符串 + 一次 JSC parse/bytecode 分配（源码逐帧不同 ⇒ code cache 恒不命中）+ 一份 JS
+ * 对象图，随即全成垃圾。250ms 轮询下就是每秒 4 次白付，而首页没有任何读点消费这些帧。
+ *
+ * 但 `subscribe`/`unsubscribe` **必须留着**：三条 topic 共用一条 gRPC 连接流，后端按
+ * `should_stream_connections()`（aggregate ∪ detail ∪ closed）判需求，三者全零才停流；
+ * 撤掉令牌会在首页可见时误停整条流。令牌与数据帧是两件事，本门把两件事分别钉住。
+ */
+describe('门 4 · 首页 aggregate 只持订阅令牌，不挂帧监听', () => {
+  const CODE = HOME_SRC.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, '');
+
+  it('首页**不得**注册 aggregate 帧监听（空回调 = 每帧白付一条 eval 链）', () => {
+    // 变异对照：把 `onFrame: () => () => {}` 改回 `onFrame: (cb) => api.stats.onConnectionsAggregate(cb)`
+    // ⇒ 本条转红。注释里逐字写着旧形态，故必须扫去注释后的源码。
+    expect(CODE, '首页又挂回 aggregate 帧监听了').not.toContain('onConnectionsAggregate');
+    expect(CODE).toMatch(/onFrame:\s*\(\)\s*=>\s*\(\)\s*=>\s*\{\}/);
+  });
+
+  it('订阅令牌仍在（撤掉会误停三条 topic 共用的那条连接流）', () => {
+    expect(CODE).toContain("subscribe: () => api.stats.subscribe('aggregate')");
+    expect(CODE).toContain("unsubscribe: () => api.stats.unsubscribe('aggregate')");
+  });
+
+  it('正向对照：连接导航排名页自带真监听 —— 撤首页那条不影响它', () => {
+    // 事件按监听独立投递；这条断言的存在是为了让「撤掉首页监听会不会连累排名页」有据可查。
+    const conn = readFileSync(`${HERE}../connections/ConnectionsScreen.tsx`, 'utf8');
+    expect(conn).toContain('onFrame: (cb) => api.stats.onConnectionsAggregate(cb)');
+    expect(conn).toContain('setAggregate');
+  });
+});
+
 describe('准确性门 · 完整活动表投影与绘制预算解耦', () => {
   it('常态和搜索都等待完整表变化监听就绪，再走后端按槽位投影', () => {
     const ready = TOPO_SRC.indexOf('onConnectionsTopologyChangedReady');

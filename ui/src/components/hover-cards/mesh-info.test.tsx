@@ -251,7 +251,8 @@ const SELF = code(read('./MeshInfoHoverCard.tsx'));
 describe('G3 接线真的在（纯逻辑对了但没挂 = 全绿的缺陷）', () => {
   it('守卫自检：扫到的确实是 NodeCard 源码，且注释已剥掉', () => {
     expect(CARD_RAW.length).toBeGreaterThan(1000);
-    expect(CARD).toContain('export function NodeCard');
+    // 出口已是 `memo(NodeCardView)`（渲染预算门，见 screens/nodes/nodes-render-budget.test.tsx）。
+    expect(CARD).toContain('function NodeCardView');
     expect(CARD).not.toContain('1:1 提取自原型');
   });
 

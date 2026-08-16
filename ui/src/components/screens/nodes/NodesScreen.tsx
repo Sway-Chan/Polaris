@@ -75,7 +75,9 @@ import {
   type SubMenuItem,
   nodeUseAction,
   type NodeUseVia,
+  latencySortSelector,
 } from './nodes-logic';
+import { useScrollBatch } from '@/lib/use-scroll-batch';
 
 type SortKey = 'default' | 'name' | 'lat' | 'proto';
 
@@ -324,11 +326,42 @@ export function NodesScreen() {
     () => new Map(servers.map((s) => [s.id, s.name])),
     [servers]
   );
+  /**
+   * 「被覆盖」角标的**成品**（byId 已解析成显示名），按节点 id 索引。
+   *
+   * 为什么要 memo 到这一步、而不是在 `.map()` 里就地 `?.map(...)`：那样每次父层渲染都会给
+   * 每个有冲突的节点造一个新数组 ⇒ `shadowedCidrs` 这个 prop 每次都判不等 ⇒ 这些卡的 `memo`
+   * 恒失效。冲突节点少，但「少数卡片永远不 bail-out」正是最难被发现的那种回归。
+   */
+  const shadowedNamed = useMemo(() => {
+    const named = new Map<string, { cidr: string; by: string }[]>();
+    for (const [id, list] of shadowedIndex) {
+      named.set(
+        id,
+        list.map((s) => ({ cidr: s.cidr, by: serverNameById.get(s.byId) ?? s.byId }))
+      );
+    }
+    return named;
+  }, [shadowedIndex, serverNameById]);
 
   // 测速态。结果读**全局 store**、进度走**全局 toast**（两者订阅都在 App.tsx 顶层，切屏不丢）。
   // 本屏只留 `testing` 这一位灰态（按钮禁用），它是本屏控件的属性、天然是组件私有。
-  // 勿把 latencies 改回 useState，也勿把进度订阅搬回来——那正是「切屏即丢」的来源。
-  const latencies = useLatencyStore((s) => s.latencyMap);
+  // 勿把延迟改回 useState，也勿把进度订阅搬回来——那正是「切屏即丢」的来源。
+  /**
+   * 父层**只在按延迟排序时**才订整张表 —— 那时排序结果必须随每次回包同步重排（不变量①），
+   * 重渲是必要的；其余三档排序（默认/名称/协议）下父层根本不读延迟，订了就是每轮测速几十上百次
+   * 白重渲整片网格。
+   *
+   * 非 `lat` 档由 `latencySortSelector` 返回**模块级常量哨兵**（`EMPTY_LATENCY_MAP`）。
+   * 这一点是本改动成立的全部前提：zustand 默认按 `Object.is` 比较选择器结果，选择器里若写
+   * `: {}` 字面量，每次提交都是新对象、判不等，父层照样每次提交重渲 —— 改了等于白改。
+   * 判据与真断言见 `nodes-logic.ts` 的 `EMPTY_LATENCY_MAP` 头注 + `nodes-render-budget.test.tsx`。
+   *
+   * 单卡的延迟不再从这里灌下去：每张 `NodeCard` 按自身 id 细粒度订阅（见该文件头注）。
+   * 需要「此刻最新的整张表」的是三条**动作腿**（删/批删/注销 WARP 的兜底出口），它们在点击当刻
+   * 用 `useLatencyStore.getState()` 现取，既拿到最新快照，又不制造一条订阅。
+   */
+  const latencies = useLatencyStore(latencySortSelector(sortKey === 'lat'));
   const applyLatencyResults = useLatencyStore((s) => s.applyLatencyResults);
   const [testing, setTesting] = useState(false);
 
@@ -356,6 +389,62 @@ export function NodesScreen() {
     }
     return list;
   }, [activeGroup, search, protoFilter, sortKey, latencies]);
+
+  /* ── 节点网格的**渲染尾**分批（复用 `lib/use-scroll-batch`，本仓第三个消费方，零新依赖）──
+   *
+   * 只切渲染尾，不切数据：`visibleServers` 已是 search / protoFilter 作用后的**完整结果**，
+   * 全选、工具栏「测速」（可见集）、批选条三处**必须继续读它**。把切片回灌那三处，就是日志页
+   * 「500 行以外搜不到」那类回归的同型复发 —— 用户以为自己在对「筛出来的全部」操作，实际只对
+   * 屏幕上恰好画出来的那一批。该不变量由 `nodes-render-budget.test.tsx` 钉住。
+   *
+   * `resetKey` = 结果集身份（tab + 搜索 + 协议筛选 + 排序键）：一变即回首批，否则从窄结果切回
+   * 宽结果时会残留一个大计数，分批等于白做。分隔符用 `\u0000` 免得 `a|b` 与 `a` + `|b` 撞。 */
+  const gridRef = useRef<HTMLDivElement>(null);
+  const { count: renderCount, onScroll: onGridScroll } = useScrollBatch(
+    visibleServers.length,
+    `${activeTab}\u0000${search}\u0000${protoFilter}\u0000${sortKey}`
+  );
+  const renderedServers = useMemo(
+    () => visibleServers.slice(0, renderCount),
+    [visibleServers, renderCount]
+  );
+  /* hook 每次渲染都返回一个新的 onScroll 闭包（它捕获着当轮的 total）。用 latest-ref 转发，
+     使下面那条监听只在挂载/卸载时装拆一次，而不是每渲染一次就重挂一次。 */
+  const gridScrollRef = useRef(onGridScroll);
+  useEffect(() => {
+    gridScrollRef.current = onGridScroll;
+  });
+  /**
+   * 追加下一批的触发器。**滚动容器是 `AppShell` 的 `.main-scroll`**：本屏是普通 `.screen`
+   * （`flex:1 0 auto; display:block`），自己不滚，整页滚在那个祖先上。scroll 事件不冒泡、
+   * React 的 `onScroll` 也不做委派，故这里必须找到那个祖先自己挂原生监听 —— 把 `onScroll`
+   * 挂在 `.node-grid` 上是一行不会报错、也永远不会触发的死代码。
+   * 类名找不到（`AppShell` 改结构）时不静默降级成「永远只有首批」：那种情形由
+   * `nodes-render-budget.test.tsx` 的锚点自曝条目当场转红。
+   */
+  const topUpBatch = useCallback(() => {
+    const scroller = gridRef.current?.closest<HTMLElement>('.main-scroll');
+    if (scroller) gridScrollRef.current({ currentTarget: scroller });
+  }, []);
+  useEffect(() => {
+    const scroller = gridRef.current?.closest<HTMLElement>('.main-scroll');
+    if (!scroller) return;
+    scroller.addEventListener('scroll', topUpBatch, { passive: true });
+    // 窗口变大时网格改列数、内容反而变矮，可能从「溢出」跌回「不溢出」⇒ 再没有 scroll 事件可收。
+    window.addEventListener('resize', topUpBatch);
+    return () => {
+      scroller.removeEventListener('scroll', topUpBatch);
+      window.removeEventListener('resize', topUpBatch);
+    };
+  }, [topUpBatch]);
+  /**
+   * **初批必须覆盖视口**，否则整个分批是个陷阱：内容没撑出滚动条 ⇒ 永远收不到 scroll 事件 ⇒
+   * 剩下的节点再也出不来（而用户看不出少了 —— 没有滚动条就没有「还有更多」的暗示）。
+   * 每次提交后按同一条判据（距底不足 `SCROLL_BATCH_AHEAD_PX` 就再来一批）补批，收敛于
+   * 「撑出滚动条」或「取完」两者之一：`useScrollBatch` 在 `c >= total` 时返回同一个 count，
+   * React 就地 bail-out，不会自激。
+   */
+  useEffect(topUpBatch, [topUpBatch, renderCount, visibleServers.length]);
 
   const protoOptions = useMemo(() => {
     if (!activeGroup) return [];
@@ -693,6 +782,14 @@ export function NodesScreen() {
     [openDialog, enterSettings, requestSubDelete, t],
   );
 
+  /* 卡上「编辑」。此前是调用点的内联箭头 —— 那一个箭头就足以让**每张**卡的 `memo` 恒失效
+     （props 浅比较里恒有一个新函数引用），memo 反而只剩比较开销。卡片的其余回调
+     （测速/复制/克隆/设为出口/删除/勾选）本来就都是 useCallback，只差这一个。 */
+  const editNode = useCallback(
+    (server: ServerConfig) => openDialog(editDialogFor(server)),
+    [openDialog]
+  );
+
   const toggleSelect = useCallback((server: ServerConfig) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -738,7 +835,14 @@ export function NodesScreen() {
             server.id,
             // D4：兜底出口须是**剩余**节点里最快的。原先传 selectedServerId（=被删节点自身）→ 后端 viable
             // 校验恒假 → 恒落直连哨兵，删当前节点即静默裸奔。
-            fallbackExitAfterDelete(servers, selectedServerId, new Set([server.id]), latencies)
+            // 延迟表在**点击当刻**现取（`getState()`）：本屏已不再无条件订整张表，闭包里捕获的会是
+            // 上一次父层渲染时的陈旧快照 —— 用户刚测完速就删节点，兜底会选到过期的「最快」。
+            fallbackExitAfterDelete(
+              servers,
+              selectedServerId,
+              new Set([server.id]),
+              useLatencyStore.getState().latencyMap
+            )
           )
           // 原型 :4140 node-del 成功即 notify('节点已删除')（中性 kind，非 ok）——删除是用户已预期的结果，
           // 报的是「确实删掉了」而非「恭喜」。
@@ -749,7 +853,7 @@ export function NodesScreen() {
           });
       });
     },
-    [confirmTwice, servers, selectedServerId, latencies, stagedOnly, stagedEntries, revertStaged, t]
+    [confirmTwice, servers, selectedServerId, stagedOnly, stagedEntries, revertStaged, t]
   );
 
   /**
@@ -795,7 +899,13 @@ export function NodesScreen() {
             void api.server
               .delete(
                 node.id,
-                fallbackExitAfterDelete(servers, selectedServerId, new Set([node.id]), latencies),
+                // 同 requestDelete：延迟表点击当刻现取，不吃闭包里的陈旧快照。
+                fallbackExitAfterDelete(
+                  servers,
+                  selectedServerId,
+                  new Set([node.id]),
+                  useLatencyStore.getState().latencyMap,
+                ),
               )
               .then(() => {
                 toast.info(opts.okToast);
@@ -809,7 +919,7 @@ export function NodesScreen() {
         },
       });
     },
-    [openDialog, closeDialog, servers, selectedServerId, latencies, stagedOnly, stagedEntries, revertStaged, t],
+    [openDialog, closeDialog, servers, selectedServerId, stagedOnly, stagedEntries, revertStaged, t],
   );
 
   /**
@@ -860,9 +970,15 @@ export function NodesScreen() {
         try {
           // 同 D4：兜底出口从**删除集之外**的剩余节点里取最快（后端本批新增 fallback_selected_id 形参，
           // 此前该 key 被 Tauri 静默丢弃、批删掉当前出口恒落直连）。
+          // 同 requestDelete：延迟表点击当刻现取，不吃闭包里的陈旧快照。
           await api.server.deleteBatch(
             [...split.backend],
-            fallbackExitAfterDelete(servers, selectedServerId, ids, latencies)
+            fallbackExitAfterDelete(
+              servers,
+              selectedServerId,
+              ids,
+              useLatencyStore.getState().latencyMap
+            )
           );
           exitBatch();
           // 原型 :4137 batch-del 成功即 notify('已删除')（中性）。这里带上条数：批删同时退出批选模式、
@@ -874,7 +990,7 @@ export function NodesScreen() {
         }
       })();
     });
-  }, [selectedIds, confirmTwice, servers, selectedServerId, latencies, exitBatch, stagedOnly, stagedEntries, revertStaged, t]);
+  }, [selectedIds, confirmTwice, servers, selectedServerId, exitBatch, stagedOnly, stagedEntries, revertStaged, t]);
 
   // allSettled 而非 all：批选里混进一个无分享链接形态的协议（WG/TS/SSH/Custom），all 会整体 reject
   // → 本可成功的链接一条都进不了剪贴板。改为能复制的照常复制，跳过的如实报数。
@@ -1242,8 +1358,9 @@ export function NodesScreen() {
           </button>
         </div>
       )}
-      {/* 节点网格 */}
-      <div className="node-grid">
+      {/* 节点网格。`ref` 是分批的接线：滚动监听要靠它 `closest('.main-scroll')` 找到真正的
+          滚动容器（本屏自己不滚，见 topUpBatch 头注）。 */}
+      <div className="node-grid" ref={gridRef}>
         {visibleServers.length === 0 ? (
           <div className="stub" style={{ gridColumn: '1 / -1' }}>
             {/* 空态文案按**组的语义**分流：订阅组的节点由订阅拉取而来，用户在这里点右上「添加」
@@ -1260,7 +1377,8 @@ export function NodesScreen() {
             </p>
           </div>
         ) : (
-          visibleServers.map((server) => {
+          /* 只画渲染尾切片；全选 / 测可见 / 批选条读的仍是完整的 `visibleServers`（见上方判据）。 */
+          renderedServers.map((server) => {
             const isMesh = activeGroup?.isMesh || isMeshNode(server);
             // 「仅局域网」角标走 domain 谓词 `meshAllowsInternet`，不再自造
             // `wireguardSettings.allowInternet === false` 弱判定 —— 后者漏掉 Tailscale 这一族
@@ -1269,14 +1387,15 @@ export function NodesScreen() {
             // ⚡ 与延迟位的可测性：与页头/工具栏/批选**同一条**过滤线（`isSpeedTestable`）。
             const blockReason = speedTestBlockReason(server, speedTestCaps, stagedOnly.has(server.id));
             // byId → 显示名（节点可能已被删/不在本 tab；取不到就退回 id，别让 tooltip 变成空引号）。
-            const shadowed = shadowedIndex
-              .get(server.id)
-              ?.map((s) => ({ cidr: s.cidr, by: serverNameById.get(s.byId) ?? s.byId }));
+            // 成品在 `shadowedNamed` 里一次算好：在这里就地 map 会每渲染一次造一个新数组，
+            // 使这些卡的 memo 恒失效。
+            const shadowed = shadowedNamed.get(server.id);
             return (
               <NodeCard
                 key={server.id}
                 server={server}
-                latencyMs={latencies[server.id]}
+                /* 延迟**不再从这里灌**：每张卡按自身 id 细粒度订阅（NodeCard 头注）。
+                   灌 prop 意味着每次逐节点回包都要经父层重渲整片网格才能到达那一张卡。 */
                 isCurrent={server.id === selectedServerId}
                 isExit={isMesh}
                 lanOnly={lanOnly}
@@ -1290,7 +1409,7 @@ export function NodesScreen() {
                 onSpeedTest={testOne}
                 onCopy={copyLink}
                 onClone={cloneServer}
-                onEdit={(s) => openDialog(editDialogFor(s))}
+                onEdit={editNode}
                 onUse={useNode}
                 useConfirming={confirmArmed === `node-use:${server.id}`}
                 useWillRestart={willRestartOnSelect(pendingChanges, server.id)}

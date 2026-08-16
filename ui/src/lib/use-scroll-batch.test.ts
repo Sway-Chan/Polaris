@@ -25,6 +25,9 @@ import { SCROLL_BATCH_PAGE, SCROLL_BATCH_AHEAD_PX } from './use-scroll-batch';
 const CONSUMERS = [
   '../components/dialogs/AppAddDialog.tsx',
   '../components/dialogs/RuleDialog.tsx',
+  // 第三个消费方：节点网格。与前两个不同，它的滚动容器是 `AppShell` 的 `.main-scroll`（祖先元素），
+  // 故那边走原生 addEventListener 而不是 JSX 的 `onScroll=`，但用的是同一个 hook、同一份常量。
+  '../components/screens/nodes/NodesScreen.tsx',
 ] as const;
 
 const code = (src: string): string =>
