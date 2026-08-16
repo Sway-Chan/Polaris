@@ -1849,11 +1849,7 @@ describe('主窗最小尺寸契约', () => {
 });
 
 describe('规则资源表：列边界不得随「这一行有几颗按钮」漂移（2026-08-05 真机：大小列内置/外置错位）', () => {
-  /**
-   * 新规格让名称列自适应、动作贴右，但每个 `.res-row` 仍是独立 grid。为防行内按钮数量影响列边界，
-   * 所有动作格必须有相同最小宽度；宽窄两档的末轨统一用 max-content，表头与数据行都发出
-   * `.res-actions`。这里守的是这组关系，不把大小列钉死成旧像素。
-   */
+  /** 每行虽是独立 grid，但两份规范样式必须共享唯一轨道；index.css 不再承担事后修补。 */
   const protoCss = stripComments(read('./prototype.css'));
   const screensCss = stripComments(read('./screens.css'));
   const indexCss = stripComments(read('./index.css'));
@@ -1872,72 +1868,35 @@ describe('规则资源表：列边界不得随「这一行有几颗按钮」漂�
     if (!m) throw new Error('解析不到 .res-row 的宽档轨道定义');
     return m[1].trim();
   };
-  const overrideWideTracks = () => {
-    const m = indexCss.match(/\.res-row\s*\{\s*grid-template-columns:\s*([^;}]+)/);
-    if (!m) throw new Error('解析不到覆盖层 .res-row 的宽档轨道定义');
-    return m[1].trim();
-  };
-  /** 轨道串切成逐轨（`minmax(0,1fr)` 里有逗号，不能按逗号切）。 */
-  const tracksOf = (s: string): string[] => s.match(/minmax\([^)]*\)|[^\s]+/g) ?? [];
-  const flexible = (t: string) => /fr\b|auto|max-content|min-content|fit-content/.test(t);
-
-  it('自检：宽/窄两档在两份禁区文件里都解析到了（防扫空恒绿）', () => {
+  it('两份规范样式的宽档固定为 1fr / 80 / 132 / 60，窄档固定为 1fr / 80 / 60', () => {
     for (const [name, css] of [['prototype.css', protoCss], ['screens.css', screensCss]] as const) {
-      expect(tracksOf(wideTracks(css)).length, `${name} 宽档轨数`).toBe(4);
-      expect(tracksOf(narrowOf(css).tracks).length, `${name} 窄档轨数`).toBe(3);
+      expect(wideTracks(css), `${name} 宽档`).toBe('minmax(0,1fr) 80px 132px 60px');
+      expect(narrowOf(css), `${name} 窄档`).toEqual({
+        bp: 780,
+        tracks: 'minmax(0,1fr) 80px 60px',
+      });
+      expect(css).toMatch(/\.res-row\s*\{[^}]*column-gap:\s*12px/);
+      expect(css).toMatch(/\.res-actions\s*\{[^}]*justify-content:\s*flex-end/);
     }
   });
 
-  it('① 覆盖层宽档为四列：名称自适应、动作列贴右', () => {
-    const t = tracksOf(overrideWideTracks());
-    expect(t).toHaveLength(4);
-    expect(flexible(t[0]), '名称列应吃剩余宽度').toBe(true);
-    expect(t[3], '动作列应按统一动作格宽度收口').toBe('max-content');
-  });
-
-  it('② 前提：两份禁区文件的窄档末轨仍是 auto（泄漏源在 ⇒ 覆盖层的定宽不能删）', () => {
-    // 这条转红不代表出错，而是说明禁区文件自己已经把末轨钉死了 —— 那时下面的覆盖才可以撤。
-    for (const [name, css] of [['prototype.css', protoCss], ['screens.css', screensCss]] as const) {
-      const t = tracksOf(narrowOf(css).tracks);
-      expect(flexible(t[0]), `${name} 窄档首轨应为弹性（名称列吃余量）`).toBe(true);
-      expect(t[2], `${name} 窄档末轨`).toBe('auto');
-    }
-  });
-
-  it('③ 覆盖层窄档沿用同一断点，隐藏更新时间后仍把动作列放在末端', () => {
-    const proto = narrowOf(protoCss);
-    const over = narrowOf(indexCss);
-    expect(over.bp, '覆盖层与禁区文件的容器断点不一致').toBe(proto.bp);
-    const t = tracksOf(over.tracks);
-    expect(t).toHaveLength(3);
-    expect(flexible(t[0]), '窄档名称列应继续自适应').toBe(true);
-    expect(t[2], '窄档动作列不在末端').toBe('max-content');
-  });
-
-  it('④ 所有动作格共用足以容纳最宽按钮簇的最小宽度', () => {
+  it('60px 动作轨恰好容纳两颗图标按钮，并且组件不再以内联 margin 修补间距', () => {
     const btn = protoCss.match(/\.nd-a\s*\{[^}]*width:\s*(\d+)px/);
     const gap = protoCss.match(/\.res-row\s*>\s*span:last-child\s*\{[^}]*gap:\s*(\d+)px/);
-    const min = indexCss.match(/\.res-actions\s*\{[^}]*min-width:\s*(\d+)px/);
     expect(btn, '解析不到 .nd-a 宽度').not.toBeNull();
     expect(gap, '解析不到动作格 gap').not.toBeNull();
-    expect(min, '解析不到 .res-actions 的统一最小宽度').not.toBeNull();
     const widest = Number(btn![1]) * 2 + Number(gap![1]);
-    expect(Number(min![1]), `动作格至少应为 ${widest}px`).toBeGreaterThanOrEqual(widest);
+    expect(widest).toBe(60);
     expect(resourceScreen.match(/className="res-actions"/g)?.length ?? 0).toBeGreaterThanOrEqual(5);
     expect(resourceScreen).not.toContain("style={{ textAlign: 'right' }}");
+    expect(resourceScreen).not.toContain('style={{ marginLeft: 6 }}');
   });
 
-  it('⑤ 覆盖写在 index.css 的 @import 之后（写在前面会被 prototype.css 反压）', () => {
-    const at = indexCss.search(
-      /@container\s+mainc\s*\(\s*max-width:\s*\d+px\s*\)\s*\{[^{}]*\.res-row\s*\{[^{}]*grid-template-columns/
-    );
-    expect(at, '找不到覆盖规则').toBeGreaterThan(-1);
-    expect(at, '覆盖规则在 @import 之前 —— 同特异性时被后 import 的 prototype.css 覆盖').toBeGreaterThan(
-      indexCss.lastIndexOf('@import')
-    );
+  it('index.css 不得重新覆盖资源表轨道', () => {
+    expect(indexCss).not.toMatch(/\.res-row\s*\{[^}]*grid-template-columns/);
   });
 
-  it('⑥ 980px 最小窗口使用宽档，780px 窄档只作更窄窗口的防御性兜底', () => {
+  it('980px 最小窗口使用宽档，780px 窄档只作更窄窗口的防御性兜底', () => {
     const conf = JSON.parse(read('../../../src-tauri/tauri.conf.json'));
     const minW = conf.app.windows[0].minWidth;
     const side = protoCss.match(/\.side\s*\{\s*width:\s*(\d+)px/);

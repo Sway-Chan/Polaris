@@ -2,10 +2,10 @@
  * 连接拓扑（首页 Sankey）布局计算 —— 纯函数，无 React/Tauri 依赖，可单独 import。
  *
  * 几何与配色以 Polaris 原型为准（polaris-prototype.html:3506-3535 `renderSankey`）：
- * 条宽 8、三列 x = 0.12/0.50/0.88·W、列标签（设备/域名 TOP/出站）、左 aurora·中 flow·右 flow（直连 fg-faint）。
+ * 条宽 8、三列 x = 0.12/0.50/0.88·W、列标签（设备/活跃目标/出站）、左 aurora·中 flow·右 flow（直连 fg-faint）。
  *
  * 缩放算法取上游 issue #303 的定稿（vault 拓扑图那份记录的题 1B），不取原型：
- * 原型「按比例分配 + 最小 16px」只在 3 域名 mock 下成立。真实载荷是 Top-15 host —— 15×16 + 14×12 = 408px
+ * 原型「按比例分配 + 最小 16px」只在 3 个目标的 mock 下成立。默认 16 槽满载时，若仍用该算法会达到 408px
  * 会溢出 ~298px 画布；且原型左条满高时 N=1 出现「左 298 vs 中 16」失衡。issue303 经 5 轮出图定稿为
  * 三列各自独立 scale：左条恒 SOURCE_HEIGHT（设备只有一个，不表达流量），中/右列取 min(每条上限, 本列总量上限/总数)。
  *
@@ -24,11 +24,13 @@ export interface TopoNode {
   /** 条填充色（原型用 inline hsl(var(--token))：node.color 是运行时值，Tailwind 静态扫描不到 fill-* 类）。 */
   color: string;
   /**
-   * 该 host 是否为「其它」聚合 sentinel（Top-N 截断后合并组）。
+   * 该 host 是否为「其它」聚合 sentinel（超出当前画布容量后合并组）。
    * 组件据此禁掉右键「加规则」——它是聚合占位、名字是本地化文案而非真实域名，为它加 domainSuffix 规则会写垃圾。
    * 对齐 上游 护栏（issue303:199：仅中列 rule 节点、排除「其它」、名字须含 `.`/`:`）。source/outbound 恒 false。
    */
   isOthers: boolean;
+  /** 后端动态投影选出的最近活动目标；只可能出现在 host 列。 */
+  recent: boolean;
 }
 
 /**
@@ -71,11 +73,33 @@ const COL_X_OUTBOUND = 0.88; // 原型 xOut（条右缘）
 
 /* ── 缩放：issue #303 题 1B 定稿 ── */
 const SOURCE_HEIGHT = 80; // 左条恒定：设备只有一个，作视觉锚，不随流量缩放
-const PER_CONN_MAX = 80; // 每连接高度上限 → N=1 时三列等高 80
+const BAR_HEIGHT_MAX = 80; // 单个节点条高上限：少量高频目标也不拉满整列
 const MID_TOTAL_RATIO = 0.8; // 中列总高上限 = 可用高 × 此比例
 const OUT_TOTAL_SINGLE = 80; // 右列总高上限：单出口（与左条等高）
 const OUT_TOTAL_MULTI = 120; // 右列总高上限：多出口分列
 const MIN_BAR_HEIGHT = 2; // 条最小视觉高度（可细到 2px，命中区由 hitBox 兜底）
+/** 容量节距 = 视觉条/标签最低舒适占用 5px + 12px 固定间距；默认画布给出 16 槽。 */
+const NODE_SLOT_PITCH = 17;
+export const DEFAULT_TOPOLOGY_SLOTS = 16;
+/** 980×740 下五语种画布高度的上界档；默认密度不因文案换行而漂移。 */
+const DEFAULT_CANVAS_HEIGHT_CEILING = 340;
+
+/** 按 SVG 实测高度计算 host/outbound 列的绘制预算；宽度只影响标签，不改变纵向容量。 */
+export function topologySlotCapacity(canvasHeight: number): number {
+  if (!Number.isFinite(canvasHeight) || canvasHeight <= 0) return DEFAULT_TOPOLOGY_SLOTS;
+  const usableWithTrailingGap = canvasHeight - PAD_TOP - PAD_BOTTOM + NODE_GAP;
+  const physicalSlots = Math.max(4, Math.floor(usableWithTrailingGap / NODE_SLOT_PITCH));
+  if (canvasHeight <= DEFAULT_CANVAS_HEIGHT_CEILING) {
+    return Math.min(DEFAULT_TOPOLOGY_SLOTS, physicalSlots);
+  }
+  return DEFAULT_TOPOLOGY_SLOTS +
+    Math.floor((canvasHeight - DEFAULT_CANVAS_HEIGHT_CEILING) / NODE_SLOT_PITCH);
+}
+
+/** 少量高频目标也只长到 80px；连接数决定相对粗细，不得把单条目标拉满整列。 */
+function scaledBarHeight(value: number, scale: number): number {
+  return Math.min(BAR_HEIGHT_MAX, Math.max(MIN_BAR_HEIGHT, value * scale));
+}
 
 /* ── 命中区：与视觉尺寸解耦（issue303 题 2·②）── */
 /** 条随连接数反比缩水（50 连接时仅 2.6px），靶子太小右键戳不中 → 命中区不跟随视觉尺寸。 */
@@ -185,7 +209,7 @@ export function collectLinkedIds(links: TopoLink[], focusNodes: string[]): Set<s
  * 检索匹配：大小写不敏感子串，命中 host 节点名（域名或 IP —— 聚合侧本就是同一字段）与出口节点名。
  * source 节点不参与匹配（它是设备锚，非检索目标）。空 query → 空数组（调用方据此判定未检索）。
  *
- * 被 Top-N 合并进「其它」的 host，其名字在 stats-engine 聚合时即已丢弃，载荷里不存在 → 此处无从匹配。
+ * 后端已先用完整活动表过滤，再按画布容量投影；因此这里的匹配只负责当前投影的视觉高亮。
  */
 export function matchNodeIds(nodes: TopoNode[], query: string): string[] {
   const q = query.trim().toLowerCase();
@@ -215,9 +239,9 @@ export function getSankeyPath(
 
 /**
  * 把 stats-engine 已聚合好的连接快照摆成三列 Sankey（source / host / outbound）。
- * 聚合（Top-15 + others 合并 + 出口分布）已下沉 Rust 侧 `aggregate_connections` —— 本函数只做坐标布局。
+ * 聚合（主要/最近/其它 + 出口容量）已下沉 Rust 侧动态投影 —— 本函数只做坐标布局。
  *
- * @param canvasHeight 画布实测高度（`.sankey` 由 flex 撑开、CSS clamp 180–340，故必须传实测值而非固定值）
+ * @param canvasHeight 画布实测高度（`.sankey` 填满卡片剩余空间，故必须传实测值而非固定值）
  */
 export function computeTopologyLayout(
   aggregate: ConnectionsAggregate,
@@ -234,8 +258,14 @@ export function computeTopologyLayout(
     value: h.count,
     flows: new Map(h.flows.map((f) => [f.outbound, f.count])),
     isOthers: h.name === TOPOLOGY_OTHERS_KEY,
+    recent: h.recent,
   }));
-  const outbounds = aggregate.outbounds.map((o) => ({ name: o.name, value: o.count }));
+  const outbounds = aggregate.outbounds.map((o) => ({
+    key: o.name,
+    name: o.name === TOPOLOGY_OTHERS_KEY ? t('home.otherOutbounds') : o.name,
+    value: o.count,
+    isOthers: o.name === TOPOLOGY_OTHERS_KEY,
+  }));
 
   const contentTop = PAD_TOP;
   const available = Math.max(0, canvasHeight - PAD_TOP - PAD_BOTTOM);
@@ -245,12 +275,12 @@ export function computeTopologyLayout(
   const midGapTotal = Math.max(0, middle.length - 1) * NODE_GAP;
   const outGapTotal = Math.max(0, outbounds.length - 1) * NODE_GAP;
 
-  // 上限是天花板不是目标值：连接少时每条 PER_CONN_MAX，多了才被总量上限压下去。
-  const maxContentHeight = available - Math.max(midGapTotal, outGapTotal);
+  // 上限是天花板不是目标值：连接少时不超过 BAR_HEIGHT_MAX，多了才被总量上限压下去。
+  const maxContentHeight = Math.max(0, available - Math.max(midGapTotal, outGapTotal));
   const midCap = maxContentHeight * MID_TOTAL_RATIO;
   const outCap = outbounds.length === 1 ? OUT_TOTAL_SINGLE : OUT_TOTAL_MULTI;
-  const midScale = Math.min(PER_CONN_MAX, midCap / (totalConnections || 1));
-  const outScale = Math.min(PER_CONN_MAX, outCap / (totalConnections || 1));
+  const midScale = Math.min(BAR_HEIGHT_MAX, midCap / (totalConnections || 1));
+  const outScale = Math.min(BAR_HEIGHT_MAX, outCap / (totalConnections || 1));
 
   const nodes: TopoNode[] = [];
 
@@ -265,18 +295,19 @@ export function computeTopologyLayout(
     height: SOURCE_HEIGHT,
     color: COLOR_SOURCE,
     isOthers: false,
+    recent: false,
   };
   nodes.push(sourceNode);
 
-  /* ── 中列：域名 TOP ── */
+  /* ── 中列：活跃目标 ── */
   const midGroupHeight =
-    middle.reduce((acc, m) => acc + Math.max(MIN_BAR_HEIGHT, m.value * midScale), 0) + midGapTotal;
+    middle.reduce((acc, m) => acc + scaledBarHeight(m.value, midScale), 0) + midGapTotal;
   let cursor = contentMid - midGroupHeight / 2;
   const midNodes = new Map<string, TopoNode>();
   const hostX = width * COL_X_HOST;
 
   middle.forEach((m) => {
-    const height = Math.max(MIN_BAR_HEIGHT, m.value * midScale);
+    const height = scaledBarHeight(m.value, midScale);
     const node: TopoNode = {
       id: `mid-${m.name}`,
       name: m.name,
@@ -287,6 +318,7 @@ export function computeTopologyLayout(
       height,
       color: m.isOthers ? COLOR_MUTED : COLOR_HOST,
       isOthers: m.isOthers,
+      recent: m.recent,
     };
     nodes.push(node);
     midNodes.set(m.name, node);
@@ -295,28 +327,29 @@ export function computeTopologyLayout(
 
   /* ── 右列：出站 ── */
   const outGroupHeight =
-    outbounds.reduce((acc, o) => acc + Math.max(MIN_BAR_HEIGHT, o.value * outScale), 0) + outGapTotal;
+    outbounds.reduce((acc, o) => acc + scaledBarHeight(o.value, outScale), 0) + outGapTotal;
   cursor = contentMid - outGroupHeight / 2;
   const outNodes = new Map<string, TopoNode>();
   const outCursors = new Map<string, number>();
   const outboundX = width * COL_X_OUTBOUND - NODE_WIDTH; // 原型 xOut 是条右缘
 
   outbounds.forEach((o) => {
-    const height = Math.max(MIN_BAR_HEIGHT, o.value * outScale);
+    const height = scaledBarHeight(o.value, outScale);
     const node: TopoNode = {
-      id: `out-${o.name}`,
+      id: `out-${o.key}`,
       name: o.name,
       type: 'outbound',
       value: o.value,
       x: outboundX,
       y: cursor,
       height,
-      color: outboundColor(o.name),
-      isOthers: false,
+      color: o.isOthers ? COLOR_MUTED : outboundColor(o.name),
+      isOthers: o.isOthers,
+      recent: false,
     };
     nodes.push(node);
-    outNodes.set(o.name, node);
-    outCursors.set(o.name, cursor);
+    outNodes.set(o.key, node);
+    outCursors.set(o.key, cursor);
     cursor += height + NODE_GAP;
   });
 
@@ -354,13 +387,13 @@ export function computeTopologyLayout(
     let midCursor = midNode.y;
 
     outbounds.forEach((o) => {
-      const flowValue = m.flows.get(o.name);
+      const flowValue = m.flows.get(o.key);
       if (!flowValue) return;
 
-      const outNode = outNodes.get(o.name)!;
+      const outNode = outNodes.get(o.key)!;
       const heightSource = (flowValue / (m.value || 1)) * midNode.height;
       const heightTarget = (flowValue / (outNode.value || 1)) * outNode.height;
-      const outCursor = outCursors.get(o.name)!;
+      const outCursor = outCursors.get(o.key)!;
 
       links.push({
         id: linkId(midNode.id, outNode.id),
@@ -382,7 +415,7 @@ export function computeTopologyLayout(
       });
 
       midCursor += heightSource;
-      outCursors.set(o.name, outCursor + heightTarget);
+      outCursors.set(o.key, outCursor + heightTarget);
     });
   });
 

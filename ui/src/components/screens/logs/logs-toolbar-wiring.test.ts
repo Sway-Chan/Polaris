@@ -7,7 +7,7 @@ const read = (relative: string): string =>
 
 const SCREEN = read('./LogsScreen.tsx');
 const CSS = read('../../../styles/index.css');
-const SCREEN_CSS = read('../../../styles/screens.css');
+const PROTO_CSS = read('../../../styles/prototype.css');
 
 describe('日志工具栏布局不变量', () => {
   it('级别与来源统一使用 GUI 下拉，不再展开成 5+3 个按钮', () => {
@@ -17,40 +17,46 @@ describe('日志工具栏布局不变量', () => {
     expect(SCREEN).not.toMatch(/className="seg2"[\s\S]*?logs\.sourceAria/);
   });
 
-  it('筛选与诊断任务链固定成一行，诊断和诊断包在同一操作组', () => {
+  it('第一行按级别、来源、诊断模式、导出、日志目录排序', () => {
     expect(SCREEN).toMatch(
-      /className="log-tb-primary"[\s\S]*?log-level-filter[\s\S]*?log-source-filter[\s\S]*?className="log-diagnostic-actions"[\s\S]*?log-diagnostic-toggle[\s\S]*?logs\.exportDiag/,
+      /className="log-tb-primary"[\s\S]*?log-level-filter[\s\S]*?log-source-filter[\s\S]*?className="log-primary-actions"[\s\S]*?log-diagnostic-toggle[\s\S]*?className="log-export"[\s\S]*?logs\.exportReport[\s\S]*?logs\.exportLogsOnly[\s\S]*?logs\.openDir/,
     );
-    expect(CSS).toMatch(/\.log-tb-primary\s*\{[^}]*display:\s*grid[^}]*grid-template-columns/);
-    expect(CSS).toMatch(
-      /grid-template-columns:\s*repeat\(2,minmax\(124px,140px\)\)\s+minmax\(0,1fr\)/,
+    expect(PROTO_CSS).toMatch(/\.log-tb-primary\s*\{[^}]*display:grid[^}]*grid-template-columns/);
+    expect(PROTO_CSS).toMatch(
+      /grid-template-columns:minmax\(124px,160px\) minmax\(124px,160px\) minmax\(0,1fr\)/,
     );
-    expect(CSS).not.toMatch(/@container mainc \(max-width: 7\d\dpx\)[\s\S]*?\.log-tb-primary/);
+    expect(SCREEN).toContain('role="menu"');
+    expect(SCREEN).toContain('aria-haspopup="menu"');
   });
 
-  it('内核写盘级别属于诊断操作组，不再夹在级别与来源筛选之间', () => {
+  it('内核写盘级别仅在不一致或读取失败时以既有 pill 标签跟随级别下拉', () => {
     const levelFilter = SCREEN.indexOf('className="log-filter-field log-level-filter"');
     const sourceFilter = SCREEN.indexOf('className="log-filter-field log-source-filter"');
-    const actions = SCREEN.indexOf('className="log-diagnostic-actions"');
-    const badge = SCREEN.indexOf('className={`log-core-lvl');
-    const diagnostic = SCREEN.indexOf('log-diagnostic-toggle', actions);
+    const badge = SCREEN.indexOf('className="pill warn log-core-lvl"');
 
     expect(levelFilter).toBeGreaterThan(-1);
+    expect(badge).toBeGreaterThan(levelFilter);
+    expect(badge).toBeLessThan(sourceFilter);
     expect(sourceFilter).toBeGreaterThan(levelFilter);
-    expect(actions).toBeGreaterThan(sourceFilter);
-    expect(badge).toBeGreaterThan(actions);
-    expect(diagnostic).toBeGreaterThan(badge);
-    expect(SCREEN).toContain('runtimeLevelTone(runtimeView.level)');
-    expect(SCREEN_CSS).toMatch(/\.log-core-lvl\.tone-info\s*\{[^}]*--flow/);
-    expect(SCREEN_CSS).toMatch(/\.log-core-lvl\.tone-warn\s*\{[^}]*--warn/);
-    expect(SCREEN_CSS).toMatch(/\.log-core-lvl\.tone-error\s*\{[^}]*--err/);
+    expect(SCREEN).toContain("runtimeView.kind === 'known' && runtimeView.drift");
+    expect(SCREEN).toContain("runtimeView.kind === 'unavailable'");
+  });
+
+  it('第二行按搜索、自动滚动、脱敏、复制、清空排序，空结果禁用复制与清空', () => {
+    expect(SCREEN).toMatch(
+      /className="log-tb-main"[\s\S]*?log-tb-search[\s\S]*?toggleFollow[\s\S]*?toggleRedactLogs[\s\S]*?onCopy[\s\S]*?onClearClick/,
+    );
+    expect(SCREEN).toContain('disabled={visible.length === 0}');
+    expect(SCREEN).toContain('disabled={logs.length === 0 && pendingCount === 0 && visible.length === 0}');
+    expect(SCREEN).not.toContain('log-tb-utilities');
+    expect(PROTO_CSS).not.toContain('.log-tb-sep');
   });
 
   it('内核生命周期跃迁立即重读级别，5s 轮询只做兜底', () => {
     expect(SCREEN).toMatch(/api\.proxy\.onLifecycle\(\(\) => void refreshRuntimeLevel\(\)\)/);
     expect(SCREEN).toMatch(/setInterval\(\(\) => void refreshRuntimeLevel\(\), RUNTIME_LEVEL_POLL_MS\)/);
     expect(SCREEN).toContain('runtimeReadSeqRef');
-    expect(SCREEN).toContain("runtimeView.drift ? 'logs.coreLevelPending' : 'logs.coreLevelValue'");
+    expect(SCREEN).toContain("t('logs.coreLevelPending'");
   });
 
   it('底栏把直播、行数与恢复入口组成左侧流状态簇，避开右下 toast', () => {

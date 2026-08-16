@@ -1,14 +1,13 @@
 /**
  * Logs 屏 —— 逐字对齐原型 polaris-prototype.html #s-logs（L2041-2076）。
  *
- * DOM 结构 1:1：
+ * 页面结构：
  *  - .phead（h1 + .sub）
  *  - #log-privacy-note.mode-warn（隐私锁提示条，原型内联覆盖 flow 色而非默认 warn 色）
  *  - .card.log-toolbar：
- *      .log-tb-primary（日志级别 / 来源下拉 + 诊断任务组，最小窗口仍保持一行）
- *      .log-tb-main（搜索 + 常用开关 + 紧凑图标工具组）
- *    动作区的脱敏 / 自动滚动 / 清空三颗**只用底色表达状态、文案恒定**；状态的读屏通路改由
- *    `aria-pressed`（前两颗）与 `aria-label`（清空的武装态）承担，暂停期的缓冲行数改由 `.cnt` 徽标带。
+ *      .log-tb-primary（日志级别 / 来源 + 诊断模式 / 导出 / 日志目录）
+ *      .log-tb-main（搜索 + 自动滚动 / 脱敏 / 复制 / 清空）
+ *    开关态由底色与 `aria-pressed` 同时表达；清空使用原地二次确认，暂停缓冲数由 `.cnt` 徽标承载。
  *  - #log-view.log-view（动态行 = 原型 renderLogs() 的 .log-line 模板逐行 .map）
  *  - .log-foot（.log-live + 行数）
  *
@@ -16,7 +15,7 @@
  *  - useAppStore(config/saveConfig/privacyMode)
  *  - api.logs.get（初始水合 + 页面所有权登记）/ .onReceivedBatchReady（监听就绪后接 ~150ms 合批）/
  *    .unsubscribe（离页释放）/ .clear / .export（纯日志导出）
- *  - api.diagnostic.export（诊断包导出，与纯日志导出是两个不同产物，各自独立按钮）
+ *  - api.diagnostic.export（Markdown 诊断报告）与 api.logs.export（纯日志）收进同一个 GUI 导出菜单。
  *  - 级别：configApi.save 写 config.logLevel（核记录 + 视图显示同一级别，无独立视图侧级别）。
  *    后端经 config.rs::broadcast_config_changed → logging::set_level 即刻改 max_level，而**内核日志
  *    也由同一个 max_level 在客户端筛**（proxy.rs 的核日志 relay 订阅管理 API `SubscribeLog`，该流恒
@@ -26,22 +25,19 @@
  *    仍由内核状态标签如实显示（管理 API 没有 setter，不能伪装成已改变）。
  *  - 核在跑的真实级别：api.logs.runtimeLevel（管理 API `GetDefaultLogLevel`）→ `.log-core-lvl` 徽标。
  *    分段控件显示的是**我写下的值**，这颗徽标显示的是**核此刻实际在用的值**。
- *    **它管的是核写自己那份日志文件（`singbox.log`）时用的级别**，也就是「导出日志」「导出诊断包」
+ *    **它管的是核写自己那份日志文件（`singbox.log`）时用的级别**，也就是「纯日志」「诊断报告」
  *    两个产物里核的那一半；本页显示的核日志不受它影响（那一份恒按分段控件选的级别在客户端筛）。
  *    屏幕上那份不会骗人了之后，盘上那份就是唯一还会与设置不一致的东西 —— 徽标的职责因此从
  *    「守屏幕」变成「守导出物」。
- *    只在**核记得比控件选的少**时才报（反向无后果，见 runtime-level.ts「方向性」）；成因二分
- *    （暂存未应用 / 核没重启）与全部不变量同见该文件。
+ *    与控件相同、核未运行或首次读取中均不占位置；仅不一致或读取失败时显示，成因二分
+ *    （暂存未应用 / 核没重启）见 runtime-level.ts。
  *  - 来源：后端 logging.rs::ui_source 把 target 归一为 'sing-box' | 'app'（裸 log::info! 默认 target
  *    是 Rust 模块路径，不归一则「应用」筛选恒空）
  *  - follow：暂停时缓冲新行入 pendingRef，恢复回填（对齐原型 logPending + updateLogPausedLabel）；
  *    用户上滚脱离底部亦自动暂停 follow 并露出「回到底部」（契约：自动吸底跟随 + 回到底部）
  *  - 清空：confirmTwice 双击确认模式（对齐原型 L3211，2.6s 超时自动回退，非 onBlur）
  *
- * 明确偏离原型静态 markup 的两点（均为 vault 台账已决策，非本次自选设计）：
- *  1. 「打开目录」(open-log-dir) 按钮已整体移除 —— rebuild-plan C3：
- *     "⚠️上游 Logs 无「打开目录」（现状 stub 该删非补）"。无路径可传的禁用按钮不算真实功能。
- *  2. #log-view 空状态不渲染占位文案 —— 原型 renderLogs() 对空数组是 `[].map().join('')`＝空字符串，
+ * #log-view 空状态不渲染占位文案：原型 renderLogs() 对空数组是 `[].map().join('')`＝空字符串，
  *     无占位 markup；逐字复现故不额外发明空态提示。
  */
 
@@ -57,7 +53,7 @@ import { useLogRedactStore } from '@/store/use-log-redact-store';
 import { useConfirmTwice } from '@/lib/confirm-twice';
 import { redactSensitive, shouldRedactLogs } from '@/domain/privacy';
 import { mergeHydration, maxLogId, type LogRow } from './logs-buffer';
-import { runtimeLevelTone, runtimeLevelView } from './runtime-level';
+import { runtimeLevelView } from './runtime-level';
 import type { LogLevel, RuntimeLogLevel } from '@/contracts/types';
 import { Csel, type CselOption } from '@/components/dialogs/Csel';
 import { InfoIcon } from '@/components/InfoIcon';
@@ -141,6 +137,7 @@ export function LogsScreen() {
   /** `null` = 尚未从后端进程态水合；boolean = 本次应用运行是否临时抬到 DEBUG。 */
   const [diagnosticMode, setDiagnosticMode] = useState<boolean | null>(null);
   const [diagnosticBusy, setDiagnosticBusy] = useState(false);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [source, setSource] = useState<LogSource>('all');
   const [search, setSearch] = useState('');
   const [searchSnapshot, setSearchSnapshot] = useState<LogSearchSnapshot | null>(null);
@@ -166,6 +163,7 @@ export function LogsScreen() {
   const confirmClear = armed === CLEAR_KEY;
 
   const viewRef = useRef<HTMLDivElement>(null);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
 
   const level: LogLevel = config?.logLevel ?? 'info';
   /** 诊断模式不改持久级别控件，只临时把本页实际显示门槛抬到 DEBUG。 */
@@ -203,8 +201,13 @@ export function LogsScreen() {
       : runtimeView.kind === 'known' && runtimeView.drift === 'coreRestart'
         ? t('logs.coreLevelDriftRestart')
         : t('logs.coreLevelHint');
-  const runtimeTone =
-    runtimeView.kind === 'known' ? runtimeLevelTone(runtimeView.level) : 'neutral';
+  /** 相同、未运行与读取中的状态都不占工具栏；只有不一致或读取失败才需要用户注意。 */
+  const runtimeLevelNotice =
+    runtimeView.kind === 'known' && runtimeView.drift
+      ? t('logs.coreLevelPending', { level: runtimeView.level.toUpperCase() })
+      : runtimeView.kind === 'unavailable'
+        ? t('logs.coreLevelUnavailable')
+        : null;
 
   /**
    * 重读核内级别的单一入口。定时兜底、生命周期事件都走这里，避免各存一份错误处理。
@@ -396,6 +399,23 @@ export function LogsScreen() {
   /* 内核真跃迁后立即重读；事件只是信号，级别真值仍由 logs:runtimeLevel 回读。 */
   useEffect(() => api.proxy.onLifecycle(() => void refreshRuntimeLevel()), [refreshRuntimeLevel]);
 
+  /* 导出是 GUI 内动作菜单：点击外部 / Esc 收起，避免系统原生菜单在三平台呈现不同皮肤。 */
+  useEffect(() => {
+    if (!exportMenuOpen) return;
+    const onDown = (event: MouseEvent) => {
+      if (!exportMenuRef.current?.contains(event.target as Node)) setExportMenuOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setExportMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [exportMenuOpen]);
+
   const scrollToBottom = useCallback(() => {
     const el = viewRef.current;
     if (el) el.scrollTop = el.scrollHeight;
@@ -494,8 +514,7 @@ export function LogsScreen() {
     });
   }, [confirmTwice, t]);
 
-  /* ── 导出诊断包：diagnosticApi.export（弹出系统保存对话框）──
-   * 原型 :export-diag notify('已生成脱敏诊断包 polaris-diag.zip','ok')。取消保存对话框不算失败。 */
+  /* ── 导出 Markdown 诊断报告：配置、版本、运行态与脱敏日志。取消保存对话框不算失败。 */
   const onExportDiag = useCallback(async () => {
     try {
       const res = await api.diagnostic.export();
@@ -510,8 +529,7 @@ export function LogsScreen() {
     }
   }, [t]);
 
-  /* ── 导出纯日志：logsApi.export（logs_export），与导出诊断包（diagnostic.export）是两个不同产物 ──
-   * 原型 :log-export notify('已导出 polaris-logs.txt','ok')。取消保存对话框不算失败。 */
+  /* ── 导出纯日志：不含配置与运行态；与诊断报告是导出菜单里的两个明确产物。 */
   const onExportLogs = useCallback(async () => {
     try {
       const res = await api.logs.export();
@@ -658,8 +676,7 @@ export function LogsScreen() {
       )}
 
       <div className="card log-toolbar">
-        {/* 第一行只放“筛选 + 诊断”这一条任务链：两个筛选用 GUI 下拉压缩宽度；内核写盘级别、
-            诊断开关与诊断包相邻成组，让“确认运行态 → 临时提级 → 导出证据”连续。 */}
+        {/* 第一行：查看范围在左，诊断/导出/目录在右。筛选与操作同排但不混作同一字段。 */}
         <div className="log-tb-primary">
           <div className="log-filter-field log-level-filter">
             <span className="log-filter-label">
@@ -675,6 +692,11 @@ export function LogsScreen() {
                 options={LEVEL_SELECT_OPTIONS}
                 ariaLabel={t('logs.levelAria')}
               />
+              {runtimeLevelNotice && (
+                <span className="pill warn log-core-lvl" data-tip={coreLevelTip}>
+                  {runtimeLevelNotice}
+                </span>
+              )}
             </div>
           </div>
 
@@ -689,22 +711,7 @@ export function LogsScreen() {
             />
           </div>
 
-          <div className="log-diagnostic-actions">
-            {/* 这是内核自己的 singbox.log 写盘级别，不是筛选值；诊断模式也不会伪装它已经热切。 */}
-            {runtimeView.kind !== 'pending' && (
-              <span
-                className={`log-core-lvl ${runtimeView.kind} tone-${runtimeTone}${runtimeView.kind === 'known' && runtimeView.drift ? ' diverged' : ''}`}
-                data-tip={coreLevelTip}
-              >
-                {runtimeView.kind === 'known'
-                  ? t(runtimeView.drift ? 'logs.coreLevelPending' : 'logs.coreLevelValue', {
-                      level: runtimeView.level.toUpperCase(),
-                    })
-                  : runtimeView.kind === 'notRunning'
-                    ? t('logs.coreLevelNotRunning')
-                    : t('logs.coreLevelUnavailable')}
-              </span>
-            )}
+          <div className="log-primary-actions">
             <button
               type="button"
               className={`btn ghost sm log-diagnostic-toggle${diagnosticMode ? ' on' : ''}`}
@@ -719,38 +726,72 @@ export function LogsScreen() {
               </svg>
               <span>{t('logs.diagnosticMode')}</span>
             </button>
+            <div className="log-export" ref={exportMenuRef}>
+              <button
+                type="button"
+                className={`btn ghost sm${exportMenuOpen ? ' on' : ''}`}
+                onClick={() => setExportMenuOpen((open) => !open)}
+                aria-haspopup="menu"
+                aria-expanded={exportMenuOpen}
+              >
+                <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M12 3v11M8 10l4 4 4-4M4 19h16" />
+                </svg>
+                <span>{t('logs.export')}</span>
+                <svg className="log-export-chevron" viewBox="0 0 24 24" width="12" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </button>
+              {exportMenuOpen && (
+                <div className="log-export-menu" role="menu">
+                  <button
+                    type="button"
+                    className="log-export-option"
+                    role="menuitem"
+                    onClick={() => {
+                      setExportMenuOpen(false);
+                      void onExportDiag();
+                    }}
+                  >
+                    <span className="log-export-option-title">
+                      {t('logs.exportReport')}
+                      <span className="pill proto">{t('logs.recommended')}</span>
+                    </span>
+                    <span>{t('logs.exportReportDesc')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="log-export-option"
+                    role="menuitem"
+                    onClick={() => {
+                      setExportMenuOpen(false);
+                      void onExportLogs();
+                    }}
+                  >
+                    <span className="log-export-option-title">{t('logs.exportLogsOnly')}</span>
+                    <span>{t('logs.exportLogsOnlyDesc')}</span>
+                  </button>
+                </div>
+              )}
+            </div>
             <button
               type="button"
               className="btn ghost sm"
-              onClick={onExportDiag}
-              data-tip={t('logs.exportDiagTip')}
+              onClick={onOpenLogDir}
+              data-tip={t('logs.openDirTip')}
             >
               <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <path d="M3 7l2-3h5l2 3h7a1 1 0 011 1v11a1 1 0 01-1 1H3a1 1 0 01-1-1V8a1 1 0 011-1z" />
-                <path d="M12 11v6M9 14l3 3 3-3" />
+                <path d="M3 7a1 1 0 011-1h5l2 3h9a1 1 0 011 1v9a1 1 0 01-1 1H4a1 1 0 01-1-1z" />
               </svg>
-              <span>{t('logs.exportDiag')}</span>
+              <span>{t('logs.openDir')}</span>
             </button>
           </div>
         </div>
-        {/* 级别说明 + 生效范围如实标注：本页显示的两侧日志（应用 + 内核）都在改完那一刻就跟上 ——
-            应用侧是 logging.rs::set_level 跟随 config.logLevel，内核侧是 SubscribeLog 恒送全级别、
-            由同一个 max_level 在客户端筛。**仍需重启内核**的只有内核写进自己那份日志文件的级别
-            （起核时注入进生成配置，不追溯已在跑的核），那条由上面那颗 `i` 的浮窗说清楚。 */}
+
+        {/* 第二行：搜索与当前结果操作。复制/清空紧邻脱敏，所见、所复制和所清理的范围保持连贯。 */}
         <div className="log-tb-main">
-          {/* 搜索 */}
-          <label
-            className="input log-tb-search"
-            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 11px', cursor: 'text' }}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              width="15"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              style={{ color: 'hsl(var(--fg-faint))', flex: 'none' }}
-            >
+          <label className="input search-box log-tb-search">
+            <svg viewBox="0 0 24 24" width="15" fill="none" stroke="currentColor" strokeWidth="1.8">
               <circle cx="11" cy="11" r="7" />
               <path d="M20 20l-3-3" />
             </svg>
@@ -760,14 +801,23 @@ export function LogsScreen() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder={t('logs.searchPlaceholder')}
-              style={{ border: 0, background: 'none', outline: 'none', flex: 1, padding: '8px 0', font: 'inherit', color: 'inherit' }}
             />
           </label>
 
-          {/* 动作 */}
           <div className="log-tb-actions">
-            {/* C18 实时脱敏开关：开 → 常态对域名/IP 打码（复用 redactSensitive）。隐私锁开时恒脱敏，此开关
-                控的是「非锁定态是否也脱敏」的持久偏好（localStorage）。'on' 视觉随实际脱敏态（锁定或偏好）。 */}
+            <button
+              type="button"
+              className={`btn ghost sm${follow ? ' on' : ''}`}
+              onClick={toggleFollow}
+              data-tip={follow ? t('logs.followTipOn') : t('logs.followTipOff')}
+              aria-pressed={follow}
+            >
+              <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="M12 5v14M6 13l6 6 6-6" />
+              </svg>
+              <span id="log-follow-state">{t('logs.follow')}</span>
+              {pendingBadge !== null && <span className="cnt">{pendingBadge}</span>}
+            </button>
             <button
               type="button"
               className={`btn ghost sm${shouldRedactLogs(privacyMode, redactLogs) ? ' on' : ''}`}
@@ -783,70 +833,29 @@ export function LogsScreen() {
             </button>
             <button
               type="button"
-              className={`btn ghost sm${follow ? ' on' : ''}`}
-              onClick={toggleFollow}
-              /* 浮窗随态切换。原文案「暂停/恢复自动滚动」把两个态写在一句里 ⇒ 读完也不知道**当前**是哪态，
-                 而文字与 `aria-pressed` 都已经把状态收进底色/属性，浮窗是鼠标用户读到状态的唯一出口。 */
-              data-tip={follow ? t('logs.followTipOn') : t('logs.followTipOff')}
-              aria-pressed={follow}
+              className="btn ghost sm"
+              onClick={onCopy}
+              disabled={visible.length === 0}
+              data-tip={t('logs.copyTip')}
             >
               <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <path d="M12 5v14M6 13l6 6 6-6" />
+                <rect x="9" y="9" width="11" height="11" rx="2" />
+                <path d="M5 15V5a2 2 0 012-2h10" />
               </svg>
-              {/* 文案恒定「自动滚动」，开关态只由底色表达（陈先生 2026-07-29 裁定：切文字会让按钮
-                  宽度跳动，且「跟随中/已暂停」两个词还要用户读完才知道当前是哪态）。
-                  **`aria-pressed` 是补偿**：文字不再变 ⇒ 读屏失去唯一状态线索，必须由它承担。 */}
-              <span id="log-follow-state">{t('logs.follow')}</span>
-              {pendingBadge !== null && <span className="cnt">{pendingBadge}</span>}
+              <span>{t('common.copy')}</span>
             </button>
-            {/* 低频工具收成紧凑图标组，完整语义由 tooltip + aria-label 承担；不再用竖线切割。 */}
-            <div className="log-tb-utilities">
-              <button
-                type="button"
-                className={`btn ghost sm log-icon-action${confirmClear ? ' confirming' : ''}`}
-                onClick={onClearClick}
-                data-tip={confirmClear ? t('logs.clearConfirm') : t('home.clear')}
-                aria-label={confirmClear ? t('logs.clearConfirm') : t('home.clear')}
-              >
-                <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
-                  <path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className="btn ghost sm log-icon-action"
-                onClick={onCopy}
-                data-tip={t('common.copy')}
-                aria-label={t('common.copy')}
-              >
-                <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
-                  <rect x="9" y="9" width="11" height="11" rx="2" />
-                  <path d="M5 15V5a2 2 0 012-2h10" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className="btn ghost sm log-icon-action"
-                onClick={onExportLogs}
-                data-tip={t('logs.exportLogs')}
-                aria-label={t('logs.exportLogs')}
-              >
-                <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
-                  <path d="M12 3v11M8 10l4 4 4-4M4 19h16" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className="btn ghost sm log-icon-action"
-                onClick={onOpenLogDir}
-                data-tip={t('logs.openDirTip')}
-                aria-label={t('logs.openDir')}
-              >
-                <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
-                  <path d="M3 7a1 1 0 011-1h5l2 3h9a1 1 0 011 1v9a1 1 0 01-1 1H4a1 1 0 01-1-1z" />
-                </svg>
-              </button>
-            </div>
+            <button
+              type="button"
+              className={`btn ghost sm${confirmClear ? ' confirming' : ''}`}
+              onClick={onClearClick}
+              disabled={logs.length === 0 && pendingCount === 0 && visible.length === 0}
+              data-tip={confirmClear ? t('logs.clearConfirm') : t('logs.clearTip')}
+            >
+              <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" />
+              </svg>
+              <span>{confirmClear ? t('logs.clearConfirm') : t('logs.clear')}</span>
+            </button>
           </div>
         </div>
       </div>

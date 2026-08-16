@@ -1046,7 +1046,7 @@ pub async fn diagnostic_export(
     // 直接报 `config.logLevel` 会在两种常见情形下说谎：隐私锁开着时生成侧把 info/debug 抬到了
     // warn（`config-engine/src/builder/log.rs`），配置暂存态下改的级别根本没落盘。收报告的人
     // 据「当前级别 info」去判断「为什么日志里没有 DNS 明细」，会一路推到错的地方 ——
-    // 上游 issue #347 的诊断包上就实际发生过这件事（头部提示与日志内容对不上）。
+    // 上游 issue #347 的诊断报告上就实际发生过这件事（头部提示与日志内容对不上）。
     let configured_level = config
         .get("logLevel")
         .and_then(Value::as_str)
@@ -1158,17 +1158,17 @@ pub async fn diagnostic_export(
     })))
 }
 
-/// 上游 `LOGS_EXPORT`：导出**纯日志**（非诊断包）。
+/// 上游 `LOGS_EXPORT`：导出**纯日志**（非诊断报告）。
 ///
 /// 与 [`diagnostic_export`] 是**两种产物**（对齐原型 log 工具栏的两个按钮）：
 /// - 本命令 = app.log + singbox.log 原文拼接，**不含配置、不含版本号**。
-/// - `diagnostic_export` = 脱敏配置 + 版本号 + 运行态 + 日志的完整诊断包。
+/// - `diagnostic_export` = 脱敏配置 + 版本号 + 运行态 + 日志的 Markdown 诊断报告。
 ///
 /// # 脱敏边界（重要，勿误当等价物）
 ///
 /// 纯日志导出**只做节点身份打码**（域名/IP/SNI/节点名 → 占位符），因为它压根不含配置块，
-/// 没有密钥键可打。这是「给自己看/发给客服」的产物；**要贴公开 issue 请用诊断包**。
-/// 报告头已如实声明这一点，不让用户误以为它等同诊断包的脱敏强度。
+/// 没有密钥键可打。这是「给自己看/发给客服」的产物；**要贴公开 issue 请用诊断报告**。
+/// 报告头已如实声明这一点，不让用户误以为它等同诊断报告的脱敏强度。
 #[tauri::command]
 pub async fn logs_export(
     app: AppHandle,
@@ -1178,7 +1178,7 @@ pub async fn logs_export(
     let app_log = read_tail(&dir.join("logs").join("polaris.log"), LOG_TAIL_BYTES);
     let singbox_log = read_tail(&dir.join("singbox.log"), LOG_TAIL_BYTES);
 
-    // 节点身份打码：日志原文含节点域名/IP/节点名 —— 与诊断包共用同一套标识符收集 + 替换，不另写一份。
+    // 节点身份打码：日志原文含节点域名/IP/节点名 —— 与诊断报告共用同一套标识符收集 + 替换，不另写一份。
     let ids = match state.config().load_full() {
         Ok(cfg) => collect_node_identifiers(&cfg, &[]),
         Err(_) => Vec::new(),
@@ -1186,7 +1186,7 @@ pub async fn logs_export(
     let body = format!(
         "# Polaris 日志导出\n\n\
 > 纯日志（不含配置与版本号）。**节点身份已打码**，但本产物不含配置块、未做密钥脱敏。\
-要附到公开 issue 请改用「诊断包」导出。\n\n\
+要附到公开 issue 请改用「诊断报告」导出。\n\n\
 生成时间：{}\n\n\
 ## app.log（近期）\n\n```text\n{}\n```\n\n\
 ## singbox.log（近期）\n\n```text\n{}\n```\n",

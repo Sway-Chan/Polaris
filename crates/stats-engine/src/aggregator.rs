@@ -2,7 +2,8 @@
 //!
 //! 两层：
 //! 1. **纯函数聚合**（无状态）：[`trim_connection`]（gRPC → ConnectionEntry 裁剪）、
-//!    [`aggregate_connections`]（首页拓扑）、[`aggregate_signature`]（change-driven 内容签名）。
+//!    [`aggregate_connections`]（连接导航排名）、[`project_connections_topology`]（首页动态投影）、
+//!    [`aggregate_signature`]（change-driven 内容签名）。
 //! 2. **有状态聚合器** [`StatsAggregator`]：移植 `StatsService` 的 connMap 维护
 //!    （reset 清空 / NEW 加 / UPDATE 累加 delta + LRU / CLOSED 删 / OOM 上限驱逐）+ snapshot 更新。
 //!
@@ -24,7 +25,7 @@ use crate::types::{
     ConnectionAggFlow, ConnectionAggHost, ConnectionAggOutbound, ConnectionCounters,
     ConnectionEntry, ConnectionEventType, ConnectionMetadata, ConnectionsAggregate,
     SingBoxConnection, SingBoxConnectionEvent, SingBoxConnectionEvents, SingBoxStatus,
-    TrafficStats, TOPOLOGY_OTHERS_KEY, TOPOLOGY_TOP_N,
+    TrafficStats, CONNECTION_RANKING_LIMIT, TOPOLOGY_OTHERS_KEY,
 };
 
 /// 一帧连接事件应用到活动表后的净变化。reset 不携带全量连接；中继仅在真正 emit
@@ -290,14 +291,14 @@ pub fn outbound_of(c: &ConnectionEntry) -> String {
         .unwrap_or_else(|| "Direct".to_string())
 }
 
-/// 首页拓扑聚合（aggregateConnections，connections-aggregate.ts:41）。
+/// 连接导航排名聚合（aggregateConnections，connections-aggregate.ts:41）。
 ///
 /// - host 按 count 降序、截断 Top-N（剩余合并进 [`TOPOLOGY_OTHERS_KEY`]，最小者按 count 归并）。
 /// - outbound 计入所有连接（含无名，与原 layout outboundTotals 同口径——右列节点高度按全部连接算）。
 /// - 无名连接（host 名 trim 后空）计入 total/outbound 但不建 host 节点。
 /// - outbounds 按 count 降序。
 pub fn aggregate_connections(conns: &[ConnectionEntry], at: u64) -> ConnectionsAggregate {
-    aggregate_connections_with_topn(conns, at, TOPOLOGY_TOP_N)
+    aggregate_connections_with_topn(conns, at, CONNECTION_RANKING_LIMIT)
 }
 
 /// 同 [`aggregate_connections`]，可注入 top_n（测试用小 N 复现 Top-N + Others 合并）。
@@ -309,36 +310,34 @@ pub fn aggregate_connections_with_topn(
     aggregate_connections_iter(conns.iter(), at, top_n)
 }
 
-/// 在**完整活动连接集**上先按 host / outbound 过滤，再做 Top-N 聚合。
+/// 首页连接流向的动态投影：在**完整活动连接集**上先过滤，再按画布槽位选择
+/// 「主要目标约 2/3 + 最近目标约 1/3 + 其它（仅溢出时）」并限制出口列。
 ///
-/// 常态拓扑仍走 [`aggregate_connections`] 的固定 Top-N 小载荷；只有用户输入检索词时才调用本函数。
-/// 过滤必须发生在 Top-N 之前：若先聚合再搜，被归入「其他」的低频域名已经不可逆丢失，检索会把
-/// “不在绘制预算内”误报成“不存在”。空检索词等价于常态聚合。
-pub fn aggregate_connections_matching(
+/// `slots` 是中/右列各自最多可画的节点数；调用边界会再钳制，这里仍至少保留 4，保证
+/// 主要/最近/其它三种语义有可用空间。过滤必须发生在投影之前，搜索不会受常态绘制预算影响。
+pub fn project_connections_topology(
     conns: &[ConnectionEntry],
     query: &str,
     at: u64,
+    slots: usize,
 ) -> ConnectionsAggregate {
-    aggregate_connections_matching_iter(conns.iter(), query, at)
+    project_connections_topology_iter(conns.iter(), query, at, slots)
 }
 
-fn aggregate_connections_matching_iter<'a>(
+fn project_connections_topology_iter<'a>(
     conns: impl IntoIterator<Item = &'a ConnectionEntry>,
     query: &str,
     at: u64,
+    slots: usize,
 ) -> ConnectionsAggregate {
     let query = query.trim().to_lowercase();
-    if query.is_empty() {
-        return aggregate_connections_iter(conns, at, TOPOLOGY_TOP_N);
-    }
-    aggregate_connections_iter(
-        conns.into_iter().filter(|connection| {
+    let iter = conns.into_iter().filter(|connection| {
+        query.is_empty() || {
             host_name_of(connection).to_lowercase().contains(&query)
                 || outbound_of(connection).to_lowercase().contains(&query)
-        }),
-        at,
-        TOPOLOGY_TOP_N,
-    )
+        }
+    });
+    aggregate_connections_flow_iter(iter, at, slots.max(4))
 }
 
 /// 从借用迭代器聚合连接，避免拓扑刷新前先克隆整张连接表。
@@ -352,27 +351,8 @@ fn aggregate_connections_iter<'a>(
 ) -> ConnectionsAggregate {
     use std::collections::BTreeMap;
 
-    // host_name -> (count, outbound -> count)。BTreeMap 保证遍历序确定（便于稳定排序）。
-    let mut host_map: BTreeMap<String, HostAgg> = BTreeMap::new();
-    let mut outbound_totals: BTreeMap<String, u32> = BTreeMap::new();
-    let mut total = 0u32;
-
-    for c in conns {
-        total = total.saturating_add(1);
-        let ob = outbound_of(c);
-        *outbound_totals.entry(ob.clone()).or_insert(0) += 1;
-        let name = host_name_of(c);
-        if name.trim().is_empty() {
-            continue; // 无名：计 total/outbound，不建 host 节点
-        }
-        let h = host_map.entry(name).or_default();
-        h.count += 1;
-        *h.flows.entry(ob).or_insert(0) += 1;
-    }
-
-    // hosts 按 count 降序（稳定：等计数按 BTreeMap 的 name 升序——确定性，与展示序解耦）。
-    let mut sorted: Vec<(String, HostAgg)> = host_map.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.count.cmp(&a.1.count).then_with(|| a.0.cmp(&b.0)));
+    let (total, mut sorted, outbounds) = collect_connection_aggregates(conns);
+    sort_hosts_by_count(&mut sorted);
 
     let hosts: Vec<ConnectionAggHost> = if sorted.len() > top_n {
         let (top, rest) = sorted.split_at(top_n);
@@ -390,6 +370,7 @@ fn aggregate_connections_iter<'a>(
                 name: name.clone(),
                 count: d.count,
                 flows: flows_to_arr(&d.flows),
+                recent: false,
             })
             .collect();
         if others_count > 0 {
@@ -397,6 +378,7 @@ fn aggregate_connections_iter<'a>(
                 name: TOPOLOGY_OTHERS_KEY.to_string(),
                 count: others_count,
                 flows: flows_to_arr(&others_flows),
+                recent: false,
             });
         }
         out
@@ -407,15 +389,10 @@ fn aggregate_connections_iter<'a>(
                 name,
                 count: d.count,
                 flows: flows_to_arr(&d.flows),
+                recent: false,
             })
             .collect()
     };
-
-    let mut outbounds: Vec<ConnectionAggOutbound> = outbound_totals
-        .into_iter()
-        .map(|(name, count)| ConnectionAggOutbound { name, count })
-        .collect();
-    outbounds.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
 
     ConnectionsAggregate {
         total,
@@ -425,10 +402,168 @@ fn aggregate_connections_iter<'a>(
     }
 }
 
+/// 首页流向投影的本体。完整 host/outbound 聚合只做一次；随后按绘制预算裁剪，IPC 载荷与总连接数解耦。
+fn aggregate_connections_flow_iter<'a>(
+    conns: impl IntoIterator<Item = &'a ConnectionEntry>,
+    at: u64,
+    slots: usize,
+) -> ConnectionsAggregate {
+    use std::collections::BTreeMap;
+
+    let (total, mut sorted, mut outbounds) = collect_connection_aggregates(conns);
+    sort_hosts_by_count(&mut sorted);
+
+    let overflow = sorted.len() > slots;
+    let real_slots = if overflow {
+        slots.saturating_sub(1)
+    } else {
+        sorted.len()
+    };
+    // 默认 slots=16：可见真实目标 15 → 主要 10 + 最近 5；未溢出时「其它」槽由真实目标回收。
+    let planned_visible = slots.saturating_sub(1);
+    let planned_recent = (planned_visible + 1) / 3;
+    let planned_main = planned_visible.saturating_sub(planned_recent);
+    let main_count = planned_main.min(real_slots);
+    let recent_count = real_slots.saturating_sub(main_count);
+
+    let mut remainder = sorted.split_off(main_count);
+    remainder.sort_by(|a, b| {
+        b.1.last_opened
+            .cmp(&a.1.last_opened)
+            .then_with(|| b.1.count.cmp(&a.1.count))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    let hidden = if remainder.len() > recent_count {
+        remainder.split_off(recent_count)
+    } else {
+        Vec::new()
+    };
+
+    let mut hosts: Vec<ConnectionAggHost> = sorted
+        .into_iter()
+        .map(|(name, data)| host_to_output(name, data, false))
+        .collect();
+    hosts.extend(
+        remainder
+            .into_iter()
+            .map(|(name, data)| host_to_output(name, data, true)),
+    );
+
+    if !hidden.is_empty() {
+        let mut flows = BTreeMap::new();
+        let mut count = 0u32;
+        for (_, data) in hidden {
+            count = count.saturating_add(data.count);
+            for (outbound, flow_count) in data.flows {
+                *flows.entry(outbound).or_insert(0) += flow_count;
+            }
+        }
+        hosts.push(ConnectionAggHost {
+            name: TOPOLOGY_OTHERS_KEY.to_string(),
+            count,
+            flows: flows_to_arr(&flows),
+            recent: false,
+        });
+    }
+
+    cap_outbounds(&mut hosts, &mut outbounds, slots);
+    ConnectionsAggregate {
+        total,
+        hosts,
+        outbounds,
+        at,
+    }
+}
+
+fn collect_connection_aggregates<'a>(
+    conns: impl IntoIterator<Item = &'a ConnectionEntry>,
+) -> (u32, Vec<(String, HostAgg)>, Vec<ConnectionAggOutbound>) {
+    use std::collections::BTreeMap;
+
+    let mut host_map: BTreeMap<String, HostAgg> = BTreeMap::new();
+    let mut outbound_totals: BTreeMap<String, u32> = BTreeMap::new();
+    let mut total = 0u32;
+    for connection in conns {
+        total = total.saturating_add(1);
+        let outbound = outbound_of(connection);
+        *outbound_totals.entry(outbound.clone()).or_insert(0) += 1;
+        let name = host_name_of(connection);
+        if name.trim().is_empty() {
+            continue;
+        }
+        let host = host_map.entry(name).or_default();
+        host.count = host.count.saturating_add(1);
+        if let Some(start) = connection.start.as_ref().filter(|value| !value.is_empty()) {
+            if start > &host.last_opened {
+                host.last_opened.clone_from(start);
+            }
+        }
+        *host.flows.entry(outbound).or_insert(0) += 1;
+    }
+    let mut outbounds: Vec<ConnectionAggOutbound> = outbound_totals
+        .into_iter()
+        .map(|(name, count)| ConnectionAggOutbound { name, count })
+        .collect();
+    outbounds.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+    (total, host_map.into_iter().collect(), outbounds)
+}
+
+fn sort_hosts_by_count(hosts: &mut [(String, HostAgg)]) {
+    hosts.sort_by(|a, b| b.1.count.cmp(&a.1.count).then_with(|| a.0.cmp(&b.0)));
+}
+
+fn host_to_output(name: String, data: HostAgg, recent: bool) -> ConnectionAggHost {
+    ConnectionAggHost {
+        name,
+        count: data.count,
+        flows: flows_to_arr(&data.flows),
+        recent,
+    }
+}
+
+/// 右列也服从同一垂直预算；隐藏出口同时在每个 host 的 flows 中重映射到「其它」，保证缎带有落点。
+fn cap_outbounds(
+    hosts: &mut [ConnectionAggHost],
+    outbounds: &mut Vec<ConnectionAggOutbound>,
+    slots: usize,
+) {
+    use std::collections::{BTreeMap, BTreeSet};
+    if outbounds.len() <= slots {
+        return;
+    }
+    let keep = slots.saturating_sub(1);
+    let hidden_names: BTreeSet<String> = outbounds[keep..]
+        .iter()
+        .map(|item| item.name.clone())
+        .collect();
+    let hidden_count = outbounds[keep..]
+        .iter()
+        .fold(0u32, |sum, item| sum.saturating_add(item.count));
+    outbounds.truncate(keep);
+    outbounds.push(ConnectionAggOutbound {
+        name: TOPOLOGY_OTHERS_KEY.to_string(),
+        count: hidden_count,
+    });
+
+    for host in hosts {
+        let mut merged = BTreeMap::new();
+        for flow in host.flows.drain(..) {
+            let name = if hidden_names.contains(&flow.outbound) {
+                TOPOLOGY_OTHERS_KEY.to_string()
+            } else {
+                flow.outbound
+            };
+            *merged.entry(name).or_insert(0) += flow.count;
+        }
+        host.flows = flows_to_arr(&merged);
+    }
+}
+
 #[derive(Default)]
 struct HostAgg {
     count: u32,
     flows: std::collections::BTreeMap<String, u32>,
+    last_opened: String,
 }
 
 fn flows_to_arr(flows: &std::collections::BTreeMap<String, u32>) -> Vec<ConnectionAggFlow> {
@@ -467,6 +602,8 @@ pub fn aggregate_signature(agg: &ConnectionsAggregate) -> String {
         push_escaped(&mut s, &h.name);
         s.push_str("\",\"count\":");
         s.push_str(&h.count.to_string());
+        s.push_str(",\"recent\":");
+        s.push_str(if h.recent { "true" } else { "false" });
         s.push_str(",\"flows\":[");
         let mut flows_sorted: Vec<&ConnectionAggFlow> = h.flows.iter().collect();
         flows_sorted.sort_by(|a, b| a.outbound.cmp(&b.outbound));
@@ -582,17 +719,17 @@ impl StatsAggregator {
         self.conn_map.get(id)
     }
 
-    /// 当前连接表的**拓扑投影**（Top-N 聚合）。`at` = 调用时刻 epoch ms。
+    /// 当前连接表的连接导航排名投影。`at` = 调用时刻 epoch ms。
     ///
     /// 与 detail 增量是**同一张连接表的两种投影**：前者按 host/出口聚合，后者逐条列出。
     /// 轮询时代各拉一次全量表是重复劳动。
     pub fn aggregate(&self, at: u64) -> ConnectionsAggregate {
-        aggregate_connections_iter(self.conn_map.values(), at, TOPOLOGY_TOP_N)
+        aggregate_connections_iter(self.conn_map.values(), at, CONNECTION_RANKING_LIMIT)
     }
 
-    /// 当前完整活动表的检索投影：先过滤、后聚合，因而能命中常态 Top-N 之外的连接。
-    pub fn aggregate_matching(&self, query: &str, at: u64) -> ConnectionsAggregate {
-        aggregate_connections_matching_iter(self.conn_map.values(), query, at)
+    /// 当前完整活动表的首页流向投影：先过滤、再按实际画布槽位选择主要/最近目标。
+    pub fn project_topology(&self, query: &str, at: u64, slots: usize) -> ConnectionsAggregate {
+        project_connections_topology_iter(self.conn_map.values(), query, at, slots)
     }
 
     /// 归零 snapshot + 清空 connMap + **丢掉速率差分基线**（stop / resubscribe 重连窗口，
@@ -921,7 +1058,7 @@ mod tests {
     #[test]
     fn topology_search_filters_before_top_n_instead_of_searching_lossy_projection() {
         let mut conns = Vec::new();
-        for i in 0..TOPOLOGY_TOP_N {
+        for i in 0..CONNECTION_RANKING_LIMIT {
             conns.push(conn(
                 &format!("busy-{i}"),
                 Some(&format!("host-{i:02}.example")),
@@ -939,7 +1076,7 @@ mod tests {
             "等计数时 youtube 排在常态 Top-N 之外，先聚合再搜索必然丢失"
         );
 
-        let searched = aggregate_connections_matching(&conns, "YOUTUBE", 20);
+        let searched = project_connections_topology(&conns, "YOUTUBE", 20, 16);
         assert_eq!(searched.total, 1);
         assert_eq!(searched.hosts.len(), 1);
         assert_eq!(searched.hosts[0].name, "www.youtube.com");
@@ -952,19 +1089,19 @@ mod tests {
             conn("a", Some("a.example"), Some("direct")),
             conn("b", Some("b.example"), Some("Hk02-L7-H3")),
         ];
-        let searched = aggregate_connections_matching(&conns, "hk02", 20);
+        let searched = project_connections_topology(&conns, "hk02", 20, 16);
         assert_eq!(searched.total, 1);
         assert_eq!(searched.hosts[0].name, "b.example");
         assert_eq!(
-            aggregate_connections_matching(&conns, "  ", 30),
-            aggregate_connections(&conns, 30)
+            project_connections_topology(&conns, "  ", 30, 16),
+            project_connections_topology(&conns, "", 30, 16)
         );
     }
 
     #[test]
     fn hidden_connection_can_change_while_normal_top_n_signature_stays_equal() {
         let mut stable = Vec::new();
-        for i in 0..TOPOLOGY_TOP_N {
+        for i in 0..CONNECTION_RANKING_LIMIT {
             stable.push(conn(
                 &format!("top-{i}-a"),
                 Some(&format!("top-{i:02}.example")),
@@ -987,14 +1124,91 @@ mod tests {
             "Top-N + 其它 + total 都不变时，常态有损签名观察不到隐藏成员替换"
         );
         assert_eq!(
-            aggregate_connections_matching(&before, "youtube", 30).total,
+            project_connections_topology(&before, "youtube", 30, 16).total,
             0
         );
         assert_eq!(
-            aggregate_connections_matching(&after, "youtube", 40).total,
+            project_connections_topology(&after, "youtube", 40, 16).total,
             1,
             "搜索刷新不能依赖常态 Top-N 签名变化"
         );
+    }
+
+    #[test]
+    fn flow_projection_default_overflow_is_10_main_5_recent_1_others() {
+        let mut conns = Vec::new();
+        for i in 0..20 {
+            let mut entry = conn(
+                &format!("c-{i}"),
+                Some(&format!("host-{i:02}.example")),
+                Some("proxy"),
+            );
+            entry.start = Some(format!("2026-08-16T12:{i:02}:00.000000000Z"));
+            conns.push(entry);
+        }
+        let projection = project_connections_topology(&conns, "", 1, 16);
+        assert_eq!(projection.hosts.len(), 16);
+        assert_eq!(
+            projection.hosts.iter().filter(|host| host.recent).count(),
+            5
+        );
+        assert_eq!(
+            projection
+                .hosts
+                .iter()
+                .filter(|host| !host.recent && host.name != TOPOLOGY_OTHERS_KEY)
+                .count(),
+            10
+        );
+        assert_eq!(projection.hosts.last().unwrap().name, TOPOLOGY_OTHERS_KEY);
+        assert_eq!(projection.hosts.last().unwrap().count, 5);
+        assert_eq!(projection.hosts[10].name, "host-19.example");
+    }
+
+    #[test]
+    fn flow_projection_without_overflow_reclaims_others_slot_for_real_target() {
+        let conns: Vec<_> = (0..16)
+            .map(|i| {
+                conn(
+                    &format!("c-{i}"),
+                    Some(&format!("h-{i}.example")),
+                    Some("proxy"),
+                )
+            })
+            .collect();
+        let projection = project_connections_topology(&conns, "", 1, 16);
+        assert_eq!(projection.hosts.len(), 16);
+        assert!(!projection
+            .hosts
+            .iter()
+            .any(|host| host.name == TOPOLOGY_OTHERS_KEY));
+    }
+
+    #[test]
+    fn flow_projection_caps_outbounds_and_remaps_hidden_flows() {
+        let conns: Vec<_> = (0..8)
+            .map(|i| {
+                conn(
+                    &format!("c-{i}"),
+                    Some("example.com"),
+                    Some(&format!("out-{i}")),
+                )
+            })
+            .collect();
+        let projection = project_connections_topology(&conns, "", 1, 4);
+        assert_eq!(projection.outbounds.len(), 4);
+        let others = projection
+            .outbounds
+            .iter()
+            .find(|outbound| outbound.name == TOPOLOGY_OTHERS_KEY)
+            .unwrap();
+        assert_eq!(others.count, 5);
+        let flow = projection.hosts[0]
+            .flows
+            .iter()
+            .find(|flow| flow.outbound == TOPOLOGY_OTHERS_KEY)
+            .unwrap();
+        assert_eq!(flow.count, 5);
     }
 
     #[test]

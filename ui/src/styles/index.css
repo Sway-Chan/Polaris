@@ -336,97 +336,11 @@ dialog:focus-visible,
 h1[tabindex='-1']:focus,
 h1[tabindex='-1']:focus-visible { outline: none; }
 
-/* 日志工具栏：开关态按钮的底色 + 重排后的尺寸约束（2026-07-29 真机反馈）。
- *
- * **`.btn.on` 此前根本没有皮肤** —— 脱敏/自动滚动两颗一直挂着 `on` 类却零视觉变化，用户只能靠
- * 切换文案辨认当前态（这正是「用开关底色表示、不要切文字」这条反馈的由来）。
- * 取 `.icon-btn.on`（components.css:154）的逐属性同值：本仓「这颗开着」的既有语言就是它，
- * 不另造第三套。射程收在 `.log-tb-actions` 内，不动全局 `.btn`（别处的 `on` 语义未逐一核过）。 */
-.log-tb-actions .btn.on,
-.log-diagnostic-toggle.on {
-  color: hsl(var(--flow-hi));
-  background: hsl(var(--flow-weak));
-  border-color: hsl(var(--flow) / 0.4);
-}
-/* 暂停期缓冲行数徽标：沿用 `.nav-item .cnt` 的形态，尺寸压到与 sm 按钮同级。 */
-.log-tb-actions .btn .cnt {
-  margin-left: 5px;
-  padding: 0 5px;
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 660;
-  background: hsl(var(--flow) / 0.2);
-  color: hsl(var(--flow-hi));
-}
-/* 日志页第一行是一条完整任务链：筛选 → 确认内核运行态 → 临时提级 → 导出诊断。级别/来源统一
- * 使用 GUI 下拉；内核级别是状态，不占筛选列，与诊断动作固定成组。 */
-.log-tb-primary{
-  display:grid;
-  grid-template-columns:repeat(2,minmax(124px,140px)) minmax(0,1fr);
-  align-items:end;
-  gap:12px;
-  padding:12px 16px 13px;
-}
-.log-filter-field{ min-width:0; }
-.log-filter-label{
-  display:inline-flex;
-  align-items:center;
-  gap:6px;
-  min-width:0;
-  margin-bottom:6px;
-  color:hsl(var(--fg-faint));
-  font-size:10.5px;
-  font-weight:660;
-  letter-spacing:.04em;
-}
-.log-filter-value{ display:flex; align-items:center; gap:7px; min-width:0; }
-.log-level-select,
-.log-source-select{ width:124px; max-width:100%; }
-.log-diagnostic-actions{
-  display:inline-flex;
-  align-items:center;
-  justify-self:end;
-  gap:6px;
-  padding:3px;
-  border-radius:var(--r-sm);
-  background:hsl(var(--surface-2));
-}
-.log-diagnostic-actions .btn{ min-height:34px; white-space:nowrap; }
-.log-diagnostic-toggle{ flex:none; }
-
 /* 底栏按“流状态”重新成组并固定在左侧，右下角留给全局 toast。 */
 .log-foot { justify-content:flex-start; }
 .log-stream-state { display:inline-flex; align-items:center; flex-wrap:wrap; gap:8px 12px; min-width:0; }
 .log-count { color:hsl(var(--fg-dim)); white-space:nowrap; }
 .log-count b { color:hsl(var(--fg)); }
-
-/* 搜索是第二行主任务；脱敏/跟随保留文字，清空/复制/导出/目录/诊断包收成低频图标组。 */
-.log-tb-main { flex-wrap: nowrap; }
-.log-tb-actions { flex-wrap: nowrap; margin-left: 0; }
-.log-tb-utilities {
-  display: inline-flex;
-  align-items: stretch;
-  gap: 4px;
-  flex: none;
-  padding: 3px;
-  border-radius: var(--r-sm);
-  background: hsl(var(--surface-2));
-}
-.log-tb-actions .log-icon-action {
-  width: 31px;
-  min-width: 31px;
-  padding-left: 0;
-  padding-right: 0;
-  justify-content: center;
-}
-
-@container mainc (max-width: 620px) {
-  .log-tb-primary{ grid-template-columns:repeat(2,minmax(124px,1fr)); }
-  .log-diagnostic-actions{ grid-column:1 / -1; justify-self:start; }
-  .log-tb-main { flex-wrap: wrap; }
-  .log-tb-search { flex-basis: 100%; }
-  .log-tb-actions { width: 100%; justify-content: flex-end; }
-}
 
 /* 分段控件族（A 族）选中态文字统一为 flow-hi —— **反向修原型的两级设计**。
  *
@@ -855,13 +769,8 @@ body:has(.pending-bar.show) #toast-stack{
  * 虚线框没跟着变化」两轮真机反馈的合并落点）。
  *
  * 原型 `.stub`（prototype.css:1363）只有 padding、高度随内容 ⇒ 虚线框比图表区窄一大圈。
- * 第一版抄了 `.sankey` 的三个尺寸项（flex/min/max）让两态占同一信封，但**连 `max-height:340px`
- * 一起抄进来了**：卡片本身是 `flex:1 1 auto` 会随窗口长高，box 却卡在 340 ⇒ 窗口拉高后
- * 虚线框下方留一片死白，看起来就是「不跟着变」。
- *
- * 现在**只保留下限、不设上限**：断开态那一格里没有图表要对齐，stub 就是这块画布本身，填满即可。
- * 上限对 `.sankey` 有意义（viewBox 比例 + 布局算法按高度铺节点，过高会把连线拉得稀疏），
- * 对一个「图标 + 两行字居中」的空态没有任何意义 —— 抄尺寸不等于抄约束。 */
+ * 连接态与断开态现在都只保留下限、不设上限：连接态按实测高度增加绘制槽位，断开态让居中的
+ * 「图标 + 两行字」填满同一信封；两态随窗口共同增长，不再在大窗口下留下 340px 之后的死白。 */
 #sankey-stub{ flex:1 1 auto; min-height:180px; margin:0;
   display:flex; flex-direction:column; align-items:center; justify-content:center; }
 
@@ -1516,68 +1425,6 @@ body:has(.pending-bar.show) #toast-stack{
 .side .nav-item > span:not(.cnt){ min-width:0; white-space:normal; overflow-wrap:anywhere; }
 .side .nav-group{ white-space:normal; overflow-wrap:anywhere; }
 
-/* ══════════ 首页右列 seg2 三档在长语种下溢出（陈先生 2026-07-31 真机：ru/fa「接管方式」「分流策略」）══════════
- *
- * # 溢出的到底是什么（**不是**「文字画到按钮外」，是「按钮画到轨道外」）
- *
- * `.seg-wrap .seg2{width:100%}`（components.css:196）把基类的 `inline-flex`（= max-content，
- * components.css:77）钉成容器宽，`.seg-wrap .seg2 button{flex:1}`（:197）= `flex:1 1 0%` 想让三档均分。
- * 但 flex 项的 `min-width` 初始值是 `auto` ⇒ **自动最小尺寸 = min-content**，而 `.seg2 button` 是
- * `white-space:nowrap`（components.css:79）⇒ 每颗按钮的 min-content = 整串文字 + 30px 内边距，
- * **压不下去**。于是三颗按钮各自冻在自己的 min-content 上，总宽超过轨道内容宽时**整颗按钮**（连同它的
- * hover/选中底色）越过 `.seg2` 的边框往外画。全链路没有 overflow/ellipsis，所以既不裁也不省略。
- *
- * ⇒ 判「装不装得下」的算式是**三档 min-content 之和**，不是「3 × 最宽档」：`flex:1 1 0%` 先按均分派
- * 1/3，超了 min-content 的那颗冻结、剩余空间再分给没冻的 —— 只有**一颗**特别长时另外两颗会让宽给它。
- * （headless Chromium 实测确认：ru「接管方式」三档实测 106.0/56.9/94.1，正是不均分的冻结分配。）
- *
- * # 几何（逐项从 CSS 解析，headless Chromium 逐字复核过）
- *
- *   容器 C = `.main` 的 inline-size（`container:mainc/inline-size`）= 窗口宽 − `.side` 148px
- *   `.screen{padding:20px 24px}` −48 → `.card{border:1px}`+`.conn-card{padding:16px}` −34
- *   → `.cc-cols{minmax(0,3.4fr) minmax(0,1.7fr)}` 右列 = ⅓ → `.cc-col.right{padding-left:20px}` −20
- *   ⇒ 轨道外宽 = (C − 82) / 3 − 20；轨道内容宽 = 轨道外宽 − 2(border) − 6(padding)
- *   窗口 980px（`tauri.conf.json` 的 minWidth **同时也是默认宽**）⇒ C = 832 ⇒ 轨道 230 / 内容 222
- *   ⇒ 均分时每档 74px，扣掉 30px 内边距还剩 **44px 给文字**。
- *
- * 各语种「横排所需最小容器宽」（宽度模型算，模型对真机恒偏宽，见 text-fit.test.ts 文件头）：
- *   zh-CN / zh-TW **700.8** ✓（< 777，任何窗口都放得下）　en-US **886.8**　fa **1021.0**　ru **1158.6**
- * 也就是说 en / fa / ru **在默认窗口下仍会溢出**，不是「最小窗口附近一条窄带」。
- *
- * # 为什么是「按语种给阈值」，不是别的
- *
- * [不选 全语种恒纵向]：zh 在 832 容器下横排够用（需 700.8 < 832），原型基线就是横排；全局改是可见偏离，
- *   且纵向堆叠会让右列长高约 2×(2×33+6) ≈ 78px，白白挤掉首页拓扑卡的纵向空间。
- * [不选 单一语言无关阈值]：本仓容器**恒 ≥ 832**（窗口 minWidth 980 − 侧栏 148；侧栏折叠只会更宽）。
- *   阈值 ≤ 700.8 → 永不触发的死规则；阈值 > 832 → 连 zh 一起堆叠 = 上一条。两者之间没有第三个取值。
- *   故「规则 1（语言无关阈值）」在本仓几何下不成立，其职责改由门承担：门断言**未登记语种**的所需宽
- *   必须 ≤ 最小容器宽（最小容器宽由 tauri.conf.json 的 minWidth 与 `.side` 宽现算）。
- * [不选 缩写/换英文]：「Политика приложений→Политика」丢限定词、语义变了；英文自己也要 886.8 才够。
- * [不选 收 padding]：15→4 只把文字空间 35.9→57.9，ru 单档最宽仍要 111.5px，差得远。
- * [不选 flex-wrap]：en 会得到 2+1 的参差布局，既不是横排也不是纵排。
- * [不选 缩字号]：12.5px 再小影响可读性，且没有任何门管字号。
- *
- * # 阈值怎么定
- *
- * 阈值 = 该语种的「横排所需最小容器宽」向上取整。`max-width:T` 在 C ≤ T 时生效 ⇒ 横排只发生在 C > T，
- * 而 T ≥ 所需宽 ⇒ 横排时恒装得下。三个数由 `text-fit.test.ts` 的 ⑦ 逐语种重算并逐条比对，改翻译、
- * 改任何一环几何、加语种都会转红；名单里多一个不需要的语种同样转红（反向也管）。
- *
- * 射程收在 `.cc-col.right` 内：阈值是按首页右列那条几何链算的，别的 `.seg-wrap` 消费方（目前没有）
- * 几何不同，不该跟着这三个数走。
- *
- * 纯排版属性、零颜色/零 token ⇒ 深浅两档表现一致，不需要 `[data-theme]` 分支（style-invariants 的
- * 「主题条件规则必须成对」在此恒不触发）。 */
-@container mainc (max-width: 887px) {
-  :lang(en) .cc-col.right .seg-wrap .seg2 { flex-direction: column; }
-}
-@container mainc (max-width: 1021px) {
-  :lang(fa) .cc-col.right .seg-wrap .seg2 { flex-direction: column; }
-}
-@container mainc (max-width: 1159px) {
-  :lang(ru) .cc-col.right .seg-wrap .seg2 { flex-direction: column; }
-}
-
 /* ── 组网信息 hover 卡（`hover-cards/MeshInfoHoverCard.tsx`）+ 节点卡上的 ⓘ 触发器 ──────────────
  *
  * 本段存在的唯一理由是「**配置值与运行期值必须一眼分得开**」：用户填的 `exitNode` 与 tailnet 上
@@ -1732,21 +1579,6 @@ body:has(.pending-bar.show) #toast-stack{
 .tun-details summary{ display:flex; padding:9px 11px; background:hsl(var(--surface-2)/0.5); color:hsl(var(--fg-dim)); }
 .tun-details[open] summary{ color:hsl(var(--fg)); border-bottom:1px solid hsl(var(--line)); }
 .tun-details-body{ margin-top:0; padding:11px; }
-
-/* 规则资源表：名称吃剩余空间，大小/更新时间按比例收缩，动作始终贴住右缘。
- * 四列由表头与每行共享同一轨道定义；动作内容多少不再反向挤压前面的列。 */
-.res-row {
-  grid-template-columns:minmax(180px,1fr) minmax(72px,.28fr) minmax(112px,.48fr) max-content;
-  justify-content:stretch;
-  column-gap:clamp(12px,2.5cqw,28px);
-}
-.res-name { min-width:0; }
-.res-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.res-actions { min-width:60px; justify-content:flex-end; text-align:right; }
-@container mainc (max-width:780px) {
-  .res-row { grid-template-columns:minmax(0,1fr) 78px max-content; }
-  .res-actions { min-width:60px; }
-}
 
 /* ── 导入弹窗的解析结果预览（#83）─────────────────────────────────────────────────────────
  * 后端一直在返回 `stats`（imported / unsupported / skipped / failed）与 `warnings`，

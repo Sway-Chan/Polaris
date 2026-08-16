@@ -11,8 +11,8 @@
  * .card 无 overflow:hidden（components.css:42），故 absolute 挂 wrap 即可，无需 Portal。
  *
  * 高亮：hover 与检索共用 collectLinkedIds 的 BFS 焦点集（上游-topology-search.md 选 A）。hover 临时优先，
- * 指针离开恢复检索高亮。非空检索由后端在完整活动表上先过滤再聚合，常态 Top-15 只是绘制投影，
- * 不再充当检索数据源。
+ * 指针离开恢复检索高亮。常态与检索都由后端在完整活动表上按当前画布槽位投影；绘制预算从不充当
+ * 检索数据源，窗口放大也不需要把完整连接数组送进 WebView。
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -33,6 +33,7 @@ import {
   isRuleableHost,
   matchNodeIds,
   NODE_WIDTH,
+  topologySlotCapacity,
   type TopoLink,
   type TopoNode,
 } from './topology-layout';
@@ -40,8 +41,9 @@ import {
 const TIP_OFFSET = 12; // tooltip 相对指针偏移
 const SEARCH_DEBOUNCE_MS = 180;
 
-interface SearchProjection {
+interface TopologyProjection {
   query: string;
+  slots: number;
   aggregate: ConnectionsAggregate;
 }
 
@@ -52,12 +54,11 @@ interface ContextMenuState {
 }
 
 interface ConnectionTopologyProps {
-  aggregate: ConnectionsAggregate | null;
   /** 代理未运行 —— 断开态渲染原型的 stub 空态（见下方 `#sankey-stub`），而非「零连接」那行灰字。 */
   disconnected: boolean;
 }
 
-function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyProps) {
+function ConnectionTopologyView({ disconnected }: ConnectionTopologyProps) {
   const { t } = useTranslation();
   const stagingEnabled = useStagingActive();
   const stage = useStagedConfigStore((s) => s.stage);
@@ -69,7 +70,7 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
 
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [search, setSearch] = useState('');
-  const [searchProjection, setSearchProjection] = useState<SearchProjection | null>(null);
+  const [projection, setProjection] = useState<TopologyProjection | null>(null);
   const [hovered, setHovered] = useState<{ kind: 'node' | 'link'; id: string } | null>(null);
   const [tip, setTip] = useState<{ text: string; clientX: number; clientY: number } | null>(null);
   const [tipSize, setTipSize] = useState({ w: 0, h: 0 });
@@ -78,13 +79,15 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
 
   const normalizedSearch = search.trim().toLowerCase();
   const searching = normalizedSearch !== '';
-  const searchResolved = searchProjection?.query === normalizedSearch;
+  const projectionSlots = topologySlotCapacity(size.h);
+  const projectionResolved =
+    projection?.query === normalizedSearch && projection.slots === projectionSlots;
 
-  /* 非空检索：先等完整表变更监听真登记，再发首个查询；之后每个 250ms 合并后的变更信号重查。
-     请求世代守卫保证慢回包不能覆盖后发的新真值。常态不挂该监听、不增加第二份长驻索引。 */
+  /* 常态与检索共用完整表投影：先等变更监听真登记，再发首个查询；之后每个 250ms 合并信号重查。
+     画布高度跨过槽位边界也会重跑本 effect。请求世代守卫保证旧尺寸/旧搜索的慢回包不能覆盖新真值。 */
   useEffect(() => {
-    if (!searching || disconnected) {
-      setSearchProjection(null);
+    if (disconnected) {
+      setProjection(null);
       return;
     }
     let alive = true;
@@ -95,10 +98,10 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
     const refresh = () => {
       const sequence = ++requestSequence;
       void api.stats
-        .searchTopology(normalizedSearch)
+        .projectTopology(normalizedSearch, projectionSlots)
         .then((next) => {
           if (alive && sequence === requestSequence) {
-            setSearchProjection({ query: normalizedSearch, aggregate: next });
+            setProjection({ query: normalizedSearch, slots: projectionSlots, aggregate: next });
           }
         })
         .catch(() => {
@@ -118,11 +121,11 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
           return;
         }
         off = unlisten;
-        if (timer === null) schedule(SEARCH_DEBOUNCE_MS);
+        if (timer === null) schedule(searching ? SEARCH_DEBOUNCE_MS : 0);
       })
       .catch(() => {
-        // 监听故障时至少给出一次完整表快照；不能退回用 Top-15 断言“无结果”。
-        if (alive) schedule(SEARCH_DEBOUNCE_MS);
+        // 监听故障时至少给出一次完整表快照；后续尺寸变化仍会重跑 effect。
+        if (alive) schedule(searching ? SEARCH_DEBOUNCE_MS : 0);
       });
 
     return () => {
@@ -131,11 +134,10 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
       if (timer !== null) window.clearTimeout(timer);
       off?.();
     };
-  }, [disconnected, normalizedSearch, searching]);
+  }, [disconnected, normalizedSearch, projectionSlots, searching]);
 
-  const displayAggregate = searching && searchResolved
-    ? searchProjection.aggregate
-    : aggregate;
+  // 查询/缩放在飞时保留上一份已核实投影，避免图表闪空；“无命中”只认当前查询和槽位的新回包。
+  const displayAggregate = projection?.aggregate ?? null;
 
   /* SVG 实测尺寸：.sankey 有 contain:size（防 viewBox 比例把旧高度反馈回 flex 链造成「高度棘轮」），
      故 intrinsic 尺寸不可信，必须走 getBoundingClientRect + ResizeObserver。
@@ -353,7 +355,7 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
                 {t('home.topoColDevice')}
               </text>
               <text className="col-lbl" x={size.w * 0.5} y={16} textAnchor="middle">
-                {t('home.topoColDomain')}
+                {t('home.topoColActiveTarget')}
               </text>
               <text className="col-lbl" x={size.w * 0.88} y={16} textAnchor="middle">
                 {t('home.topoColOutbound')}
@@ -387,7 +389,7 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
             return (
               <g
                 key={n.id}
-                className={cn('node', ruleable && 'dnode', isHl(n.id) && 'hl')}
+                className={cn('node', ruleable && 'dnode', n.recent && 'recent', isHl(n.id) && 'hl')}
                 transform={`translate(${n.x}, ${n.y})`}
                 {...(ruleable
                   ? {
@@ -404,6 +406,15 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
                   : {})}
               >
                 <rect width={NODE_WIDTH} height={n.height} fill={n.color} />
+                {n.recent && (
+                  <circle
+                    className="recent-mark"
+                    cx={NODE_WIDTH / 2}
+                    cy={-4}
+                    r={2.2}
+                    pointerEvents="none"
+                  />
+                )}
                 <text
                   className="nlabel"
                   x={labelLeft ? -7 : NODE_WIDTH + 7}
@@ -422,7 +433,11 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
                   fill="transparent"
                   onMouseEnter={() => setHovered({ kind: 'node', id: n.id })}
                   onMouseMove={(e) =>
-                    setTip({ text: `${n.name} · ${n.value}`, clientX: e.clientX, clientY: e.clientY })
+                    setTip({
+                      text: `${n.name} · ${n.value}${n.recent ? ` · ${t('home.recentTarget')}` : ''}`,
+                      clientX: e.clientX,
+                      clientY: e.clientY,
+                    })
                   }
                   onMouseLeave={() => setTip(null)}
                   onContextMenu={
@@ -448,8 +463,8 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
           </div>
         )}
 
-        {/* 只有完整表查询已经回包且总数为零，才能断言“无命中”；等待期不拿 Top-15 猜。 */}
-        {searching && searchResolved && displayAggregate?.total === 0 && (
+        {/* 只有当前搜索词与槽位的完整表投影已经回包且总数为零，才能断言“无命中”。 */}
+        {searching && projectionResolved && displayAggregate?.total === 0 && (
           <div className="sk-nomatch">{t('home.searchTopologyNoMatch')}</div>
         )}
 
@@ -498,7 +513,7 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
         )}
 
         {/* 窄容器兜底（@container topo max-width:540px 时 .sankey 隐藏）：原型 renderSankeyFallback:3534-3540 单列条形。
-            **条件渲染而非常驻**：Top-15 满载帧下这块是 81 个 DOM 节点，占 `#topo-card` 全部 225 个后代的 36%
+            **条件渲染而非常驻**：默认 16 槽满载帧下这块是 81 个 DOM 节点，占 `#topo-card` 全部 225 个后代的 36%
             （Chromium/WebKit 双引擎实测），而宽屏下它自始至终 `display:none` —— 纯白付，且随 250ms 节拍 ×4。
 
             判据取 `size.w === 0` 而**不新引 ResizeObserver**：`.sankey` 被 container query 置 `display:none` 时，
@@ -546,13 +561,11 @@ function nodeName(nodes: TopoNode[], id: string): string {
  *
  * 宿主 `HomeScreen` 是个 1200+ 行的胖屏，自持十余个与拓扑无关的 state（uptime 每秒 tick、启停 busy、
  * 测速中、解锁冷却、出口选单开合…）外加多个 zustand 订阅与系统代理活态轮询 —— 其中任何一个变一下，
- * 无 memo 时整棵 Sankey（Top-15 满载帧 = 20 节点 + 47 缎带）就要重建一遍 VDOM 并整树 diff。
+ * 无 memo 时整棵 Sankey 就要随宿主无关状态重建一遍 VDOM 并整树 diff。
  * 拓扑节拍从 1s 提到 250ms（`AGGREGATE_POLL_INTERVAL`）后，帧本身的重渲已经是原来的 4 倍，
  * 再叠上这些白付的重渲就是 WebKit 侧 `Graphics and Media` 那 73MB / GPU 2.5% 的一部分来源。
  *
- * 生效前提是**两个 props 都引用稳定**，这不是巧合而是要保持的不变式：
- *  - `aggregate`：`HomeScreen` 的 `useState`，只在收到新 aggregate 帧时换引用（后端已按内容签名去重）；
- *  - `disconnected`：`!connected` 布尔量。
+ * 组件只接收稳定的 `disconnected` 布尔量；投影数据与尺寸监听均在组件内部收口。
  * 二者都不在渲染期新建对象/闭包，故默认浅比较即可，无需 `useMemo`/`useCallback` 包装。
  * 调用点若哪天塞进内联对象或箭头函数，memo 会恒失效、反而多一层比较 —— 该不变式由
  * `topology-render-budget.test.ts` 钉住。

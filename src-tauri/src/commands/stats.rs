@@ -48,16 +48,17 @@ pub fn stats_unsubscribe(
     ok_void()
 }
 
-/// 拓扑检索：在后端完整活动连接表上先过滤，再聚合 Top-N。
+/// 首页连接流向投影：在完整活动连接表上先过滤，再按实际画布槽位选择主要/最近目标。
 ///
-/// 这不是新的长驻订阅，也不复制第二份索引；仅用户输入非空检索词时按需执行。常态拓扑继续消费
-/// `event:connectionsAggregate` 的小载荷。空词也可安全调用，语义等价于当前常态聚合。
+/// 这不是新的长驻订阅，也不复制第二份索引。槽位由渲染端根据 SVG 实测高度计算；后端在命令边界
+/// 钳到 4..128，避免异常参数把有界 IPC 退化成全表传输。空检索词即常态流向，非空词仍先筛后投影。
 #[tauri::command]
-pub fn stats_search_topology(
+pub fn stats_project_topology(
     state: State<'_, AppRuntime>,
     query: String,
+    slots: usize,
 ) -> ApiResponse<ConnectionsAggregate> {
-    ApiResponse::from_result(state.stats().search_topology(&query))
+    ApiResponse::from_result(state.stats().project_topology(&query, slots.clamp(4, 128)))
 }
 
 /// 清空独立的已结束连接历史。水位由 runtime 记录，后续 gRPC reset 不会把已清的旧历史重新灌回。

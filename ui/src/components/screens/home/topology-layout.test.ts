@@ -8,7 +8,11 @@
  * 只断言「三类颜色互不相同 + block 用错误色」，不钉死具体 HSL 变量名（那是配色实现细节）。
  */
 import { describe, expect, it } from 'vitest';
-import { collectLinkedIds, computeTopologyLayout } from './topology-layout';
+import {
+  collectLinkedIds,
+  computeTopologyLayout,
+  topologySlotCapacity,
+} from './topology-layout';
 import type { ConnectionsAggregate } from '@/contracts/types';
 
 /** 单 host、多出口的最小 aggregate（host 名不走 TOPOLOGY_OTHERS_KEY，故 t 不会被调用到）。 */
@@ -24,6 +28,31 @@ function aggregateWith(outbounds: string[]): ConnectionsAggregate {
     outbounds: outbounds.map((o) => ({ name: o, count: 10 })),
   } as unknown as ConnectionsAggregate;
 }
+
+describe('视口容量与纵向对齐', () => {
+  it('默认窗口高度档稳定在 16 槽，超出默认档后再随高度增长', () => {
+    expect(topologySlotCapacity(303)).toBe(16);
+    expect(topologySlotCapacity(320)).toBe(16);
+    expect(topologySlotCapacity(337)).toBe(16);
+    expect(topologySlotCapacity(357)).toBe(17);
+    expect(topologySlotCapacity(425)).toBe(21);
+    expect(topologySlotCapacity(250)).toBeLessThan(16);
+    expect(topologySlotCapacity(0)).toBe(16);
+  });
+
+  it('三列内容组共享同一纵向中心线，少量数据不会被拉伸铺满', () => {
+    const result = computeTopologyLayout(aggregateWith(['HK', 'direct']), 800, (key) => key, 500);
+    const centers = (type: 'source' | 'host' | 'outbound') => {
+      const nodes = result.nodes.filter((node) => node.type === type);
+      const top = Math.min(...nodes.map((node) => node.y));
+      const bottom = Math.max(...nodes.map((node) => node.y + node.height));
+      return (top + bottom) / 2;
+    };
+    expect(centers('source')).toBeCloseTo(centers('host'), 5);
+    expect(centers('host')).toBeCloseTo(centers('outbound'), 5);
+    expect(result.nodes.find((node) => node.type === 'host')?.height).toBeLessThanOrEqual(80);
+  });
+});
 
 function outboundColors(outbounds: string[]): Record<string, string> {
   const { nodes } = computeTopologyLayout(aggregateWith(outbounds), 600, (k) => k, 400);

@@ -1786,7 +1786,7 @@ fn main() {
             // ── stats 订阅（stats:subscribe/unsubscribe）──
             stats_subscribe,
             stats_unsubscribe,
-            stats_search_topology,
+            stats_project_topology,
             stats_closed_clear,
             // ── 系统能力（system:listProcesses）──
             system_list_processes,

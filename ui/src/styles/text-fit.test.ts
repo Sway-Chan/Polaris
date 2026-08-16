@@ -44,7 +44,7 @@
  * 全部从 CSS 现场解析，不写死数字）：
  *   主窗   S1 主侧栏 nav 标签 / S2 设置侧栏 nav 标签 / S3 两侧栏的 nav-group 组头
  *          S4 连接表定宽列表头（c-dest / c-rule / c-chain / c-rate）
- *          S9 首页右列 seg2 三档（接管方式 / 分流策略）—— 见下方「S9 是一类形态」
+ *          S9 首页右列 seg2 三档（接管方式 / 分流策略）——五语种在默认窗口恒横排
  *          S11 节点弹窗（统一录入宽度 540px）的表单字段：`.fld-l` / `.swt-row` 标签与统一
  *              `#tip` 信息提示 —— 标签可换行且不截断，提示受 tooltip 宽度与行数预算约束
  *          S12 导入弹窗的解析结果预览（同一个 `.dlg` 定宽）：`.imp-stat` 三颗计数 pill /
@@ -61,8 +61,8 @@
  *
  * S1–S8 的判据是「容器有硬宽度上限」。S9 起加第二条判据：**基类本身没有宽度约束（`inline-flex` /
  * `max-content`），但某个变体选择器给它加了「均分或撑满」**——`.seg2` 是 `inline-flex`（= max-content，
- * 天然装得下），可 `.seg-wrap .seg2{width:100%}` + `.seg-wrap .seg2 button{flex:1}` 把它钉成容器宽并
- * 要求三档均分。只看基类会把它误判成「无上限、不用测」（本门 2026-07-31 初版就是这么漏的）。
+ * 天然装得下），可 `.seg-wrap .seg2{width:100%}` + `.seg-wrap .seg2 button{flex:1}` 把它钉成容器宽。
+ * 首页右列另有紧凑内边距变体，必须按变体的最终几何验算，不能只看基类。
  *
  * 全仓按此判据扫过一遍（`width:100%` 落在 inline-* / max-content 基类上、`minmax(0,…)` 网格轨道、
  * `flex:1`+`min-width:0` 的 flex 项），结论逐条记在下方「射程之外」的 h.。
@@ -763,7 +763,7 @@ const CONTAINER_MIN = TAURI_MIN_WIDTH - sideW;
 const screenPadX = padX(resolveSp(dupAgreed('.screen', 'padding')));
 const cardBorderX = px(dupAgreed('.card', 'border').split(/\s+/)[0]) * 2;
 const connCardPadX = padX(resolveSp(dupAgreed('.conn-card', 'padding')));
-/** `.cc-cols{grid-template-columns:minmax(0,3.4fr) minmax(0,1.7fr); gap:0}` → 右列占比。 */
+/** `.cc-cols` 两条 fr 轨道中的右列占比。 */
 const CC_RIGHT_SHARE = (() => {
   const v = dupAgreed('.cc-cols', 'grid-template-columns');
   const fr = [...v.matchAll(/([\d.]+)fr/g)].map((m) => parseFloat(m[1]));
@@ -775,18 +775,15 @@ const ccRightPadLeft = px(resolveSp(dupAgreed('.cc-col.right', 'padding-left')))
 const segPadX = padX(dupAgreed('.seg2', 'padding'));
 const segBorderX = px(dupAgreed('.seg2', 'border').split(/\s+/)[0]) * 2;
 const segGap = px(dupAgreed('.seg2', 'gap'));
-const segBtnPadX = padX(dupAgreed('.seg2 button', 'padding'));
+const homeSegBtnPadX = padX(dupAgreed('.cc-col.right .seg-wrap .seg2 button', 'padding'));
 const segBtnFont = px(dupAgreed('.seg2 button', 'font-size'));
 
 /** 容器宽 → `.seg2` 轨道外宽（`*{box-sizing:border-box}` ⇒ padding/border 都吃在各自宽度内）。 */
 const trackFromContainer = (c: number) =>
   (c - screenPadX - cardBorderX - connCardPadX) * CC_RIGHT_SHARE - ccRightPadLeft;
-/** 反函数：轨道外宽 → 所需容器宽。 */
-const containerFromTrack = (t: number) =>
-  (t + ccRightPadLeft) / CC_RIGHT_SHARE + screenPadX + cardBorderX + connCardPadX;
 /** 一组 n 档横排所需的轨道外宽 = Σ(文字 + 按钮内边距) + 档间 gap + 轨道 padding/border。 */
 const trackNeededFor = (labels: string[]) =>
-  labels.reduce((t, s) => t + textPx(s, { fontSize: segBtnFont }) + segBtnPadX, 0) +
+  labels.reduce((t, s) => t + textPx(s, { fontSize: segBtnFont }) + homeSegBtnPadX, 0) +
   segGap * (labels.length - 1) +
   segPadX +
   segBorderX;
@@ -802,39 +799,6 @@ function homeSegGroups(): { group: string; keys: string[] }[] {
     return { group, keys };
   });
 }
-
-/**
- * 解析 index.css 里的转纵向规则：`@container mainc (max-width:Npx){ :lang(X) …{flex-direction:column} }`。
- * 用花括号计数扫 at-rule 体（`rulesOf` 的扁平正则丢掉 at-rule 条件，拿不到阈值）。
- */
-function segStackRules(): { lang: string; maxWidth: number }[] {
-  const css = SRC.get('./index.css')!;
-  const out: { lang: string; maxWidth: number }[] = [];
-  const at = /@container\s+mainc\s*\(\s*max-width\s*:\s*([\d.]+)px\s*\)\s*\{/g;
-  for (let m = at.exec(css); m; m = at.exec(css)) {
-    let depth = 1;
-    let i = at.lastIndex;
-    for (; i < css.length && depth > 0; i++) {
-      if (css[i] === '{') depth++;
-      else if (css[i] === '}') depth--;
-    }
-    const body = css.slice(at.lastIndex, i - 1);
-    for (const r of body.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-      const sel = r[1].trim().replace(/\s+/g, ' ');
-      if (!/\.seg-wrap\s+\.seg2$/.test(sel)) continue;
-      if (!/flex-direction\s*:\s*column/.test(r[2]))
-        throw new Error(`\`${sel}\` 命中 seg2 却没有 flex-direction:column —— 修法被改？`);
-      const lang = sel.match(/:lang\(\s*([\w-]+)\s*\)/)?.[1];
-      if (!lang) throw new Error(`seg2 转纵向规则 \`${sel}\` 没有 :lang() —— 语言无关阈值会误伤 zh，见段注释`);
-      out.push({ lang, maxWidth: parseFloat(m[1]) });
-    }
-  }
-  return out;
-}
-/** CSS 的语言范围匹配：`:lang(en)` 命中 `en-US`（Selectors 3 §6.6.3）。 */
-const langMatches = (tag: string, locale: string) =>
-  locale.toLowerCase() === tag.toLowerCase() ||
-  locale.toLowerCase().startsWith(`${tag.toLowerCase()}-`);
 
 // ── S11 节点弹窗表单字段（`.fld` 一族）：几何链 ──────────────────────────────────────────
 //
@@ -1351,23 +1315,21 @@ describe('⑤ 托盘浮层（独立 webview，五语种）', () => {
 /**
  * ⑦ 首页右列 seg2 —— 「基类无约束、变体有约束」那一类（见文件头「S9 是一类形态」）。
  *
- * 本节同时是 `:lang()` 名单的**自维护门**：名单不由人记，由「各语种横排所需容器宽 vs 最小容器宽」
- * 逐条推出来。加第六个语种、改一条翻译、改这条几何链上的任何一个数，都会在这里转红并直接给出该填的阈值。
+ * 右列扩为 3:2 中的两份，两组三档使用紧凑内边距；不再按语种改变排版形态。
+ * 加语种、改翻译或改几何链都会重新校验默认窗口是否装得下。
  */
-describe('⑦ 首页右列 seg2（.cc-col.right .seg-wrap .seg2）：横排装不下的语种必须在 :lang() 名单里', () => {
+describe('⑦ 首页右列 seg2：五语种在默认窗口恒横排', () => {
   const groups = homeSegGroups();
-  /** 各语种「横排所需最小容器宽」。 */
+  /** 各语种两组控件中较宽一组需要的轨道外宽。 */
   const needOf = (loc: Locale) =>
     Math.max(
       ...groups.map(({ keys }) =>
-        containerFromTrack(
-          trackNeededFor(
-            keys.map((k) => {
-              const t = DICT[loc][k];
-              if (!t) throw new Error(`${loc} 缺键 ${k}（locale-parity 该先红）`);
-              return t;
-            }),
-          ),
+        trackNeededFor(
+          keys.map((k) => {
+            const t = DICT[loc][k];
+            if (!t) throw new Error(`${loc} 缺键 ${k}（locale-parity 该先红）`);
+            return t;
+          }),
         ),
       ),
     );
@@ -1375,85 +1337,32 @@ describe('⑦ 首页右列 seg2（.cc-col.right .seg-wrap .seg2）：横排装�
   it('几何链必须从 CSS / tauri.conf.json 现场解出（这些数变了，下面的阈值全部要重推）', () => {
     expect(groups.length).toBe(2);
     expect(groups.every((g) => g.keys.length === 3)).toBe(true);
-    expect(TAURI_MIN_WIDTH, 'tauri.conf.json 的 minWidth 变了 → 重新过一遍 :lang() 名单').toBe(980);
+    expect(TAURI_MIN_WIDTH, 'tauri.conf.json 的 minWidth 变了 → 重新校验首页横排几何').toBe(980);
     expect(CONTAINER_MIN).toBe(980 - 148); // 832
-    expect(CC_RIGHT_SHARE).toBeCloseTo(1 / 3, 6); // 1.7 / (3.4+1.7)
+    expect(CC_RIGHT_SHARE).toBeCloseTo(2 / 5, 6); // 2 / (3+2)
     expect(screenPadX + cardBorderX + connCardPadX).toBe(48 + 2 + 32); // 82
-    expect(trackFromContainer(CONTAINER_MIN)).toBeCloseTo(230, 2);
+    expect(trackFromContainer(CONTAINER_MIN)).toBeCloseTo(280, 2);
   });
 
-  it('修法的前提仍在位：轨道被钉成 100%、三档均分、按钮 nowrap 且无 ellipsis', () => {
-    // 这四条中任何一条没了，「溢出」的形态就变了（例如加了 ellipsis 就成了截断），
-    // 本节的算式与三个阈值都得重新推 —— 故让它们的消失直接转红，而不是继续用旧算式发绿。
+  it('横排前提仍在位：轨道 100%、三档弹性分配、首页紧凑内边距、nowrap 且无截断', () => {
     expect(dupAgreed('.seg-wrap .seg2', 'width')).toBe('100%');
     expect(dupAgreed('.seg-wrap .seg2 button', 'flex')).toBe('1');
+    expect(dupAgreed('.cc-col.right .seg-wrap .seg2 button', 'padding')).toBe('6px 4px');
     expect(wraps(['.seg2 button', '.seg-wrap .seg2 button']), '.seg2 button 不再是 nowrap').toBe(false);
     expect(clips(['.seg2 button', '.seg-wrap .seg2 button']), '.seg2 button 有了 ellipsis').toBe(false);
   });
 
-  it('横排装不下的语种必须登记，且阈值不得低于其所需容器宽（阳性方向）', () => {
-    const rules = segStackRules();
-    const bad: string[] = [];
+  it('接管方式与分流策略 × 5 语种在默认窗口全部装得下', () => {
+    const available = trackFromContainer(CONTAINER_MIN);
+    const over: string[] = [];
     for (const loc of LOCALES) {
       const need = needOf(loc);
-      if (need <= CONTAINER_MIN) continue; // 任何窗口都放得下 → 无需登记
-      const hit = rules.filter((r) => langMatches(r.lang, loc));
-      if (hit.length === 0) {
-        bad.push(
-          `  ${loc}：横排需容器 ${need.toFixed(1)}px > 最小容器 ${CONTAINER_MIN}px，但 index.css 的 :lang() 名单里没有它` +
-            ` —— 补 \`@container mainc (max-width:${Math.ceil(need)}px){ :lang(<tag>) .cc-col.right .seg-wrap .seg2{flex-direction:column} }\``,
-        );
-        continue;
-      }
-      // 阈值 T 生效于 C ≤ T ⇒ 横排只发生在 C > T ⇒ 需 T ≥ 所需宽。多条命中取最松的那条判。
-      const loosest = Math.min(...hit.map((r) => r.maxWidth));
-      if (loosest + 1e-6 < need)
-        bad.push(
-          `  ${loc}：阈值 ${loosest}px < 所需 ${need.toFixed(1)}px ⇒ 容器在 (${loosest}, ${need.toFixed(1)}] 之间会横排且溢出` +
-            ` —— 阈值至少要 ${Math.ceil(need)}px`,
-        );
+      if (need > available)
+        over.push(`  ${loc}：需 ${need.toFixed(1)}px / 可用 ${available.toFixed(1)}px`);
     }
-    expect(bad.length, `seg2 :lang() 名单不完整/阈值过小：\n${bad.join('\n')}`).toBe(0);
+    expect(over.length, `首页三档控件横排溢出：\n${over.join('\n')}`).toBe(0);
   });
 
-  it('名单里不得有多余语种，也不得有对不上任何 locale 的标签（反向）', () => {
-    const rules = segStackRules();
-    expect(rules.length, 'index.css 里一条 seg2 转纵向规则都没解析到 —— 修法被删？').toBeGreaterThan(0);
-    const bad: string[] = [];
-    for (const r of rules) {
-      const matched = LOCALES.filter((l) => langMatches(r.lang, l));
-      if (matched.length === 0) {
-        bad.push(`  :lang(${r.lang}) 对不上任何 locale 文件 —— 语种被删/改名后没清理？`);
-        continue;
-      }
-      const worst = Math.max(...matched.map(needOf));
-      if (worst <= CONTAINER_MIN)
-        bad.push(
-          `  :lang(${r.lang}) 已不需要：它命中的 ${matched.join('/')} 横排只需 ${worst.toFixed(1)}px ≤ 最小容器 ${CONTAINER_MIN}px` +
-            `（翻译改短了？）—— 删掉这条，让该语种回到原型的横排基线`,
-        );
-      else if (r.maxWidth > worst + 200)
-        bad.push(
-          `  :lang(${r.lang}) 阈值 ${r.maxWidth}px 比所需 ${worst.toFixed(1)}px 宽出 ${(r.maxWidth - worst).toFixed(0)}px` +
-            ` —— 白白在放得下的窗口里也堆叠（右列会长高），收到 ${Math.ceil(worst)}px 附近`,
-        );
-    }
-    expect(bad.length, `seg2 :lang() 名单有冗余：\n${bad.join('\n')}`).toBe(0);
-  });
-
-  it('兜底档必须真的兜得住：纵向堆叠后单档独占整条轨道，每个标签都要装得下', () => {
-    // 堆叠是本修法的唯一退路。若某个标签连整条轨道都放不下，堆叠也救不了它（那就得回到改文案/改布局）。
-    const avail = trackFromContainer(CONTAINER_MIN) - segBorderX - segPadX - segBtnPadX;
-    const over: string[] = [];
-    for (const loc of LOCALES)
-      for (const { keys } of groups)
-        for (const k of keys) {
-          const w = textPx(DICT[loc][k], { fontSize: segBtnFont });
-          if (w > avail)
-            over.push(`  ${loc}/${k} "${DICT[loc][k]}" 需 ${w.toFixed(1)}px / 纵向可用 ${avail.toFixed(1)}px`);
-        }
-    expect(over.length, `纵向堆叠后仍装不下：\n${over.join('\n')}`).toBe(0);
-  });
 });
 
 /**

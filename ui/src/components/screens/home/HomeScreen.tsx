@@ -6,7 +6,7 @@
  *  - .card.conn-card（统一连接控制卡 · 一卡两列）：
  *      左列 = 出口节点（trigger + 测速 + 连接/断开按钮）+ 解锁检测（ub 徽章 + 网络检测）
  *      右列 = 接管方式 seg2 + 分流策略 seg2
- *  - .card.pad.topo（流量拓扑 sankey：当前用 Top-N 条形 fallback 展示聚合连接，sankey SVG 后续批次补）
+ *  - .card.pad.topo（连接流向 Sankey：按实测画布容量展示主要/最近目标）
  *
  * 功能接 api-client（经 app-store）：
  *  - 连接/断开：startProxy / stopProxy（store 已封）
@@ -14,7 +14,7 @@
  *  - 解锁检测：unlockApi.run / onProgress / onUpdated / onInvalidated
  *  - 测速：「网络检测」按钮只测**当前选中出口**（见 `onSpeedTest`）；出口选单的「全部测速」才是全量
  *    入口（`onTestAllInMenu` 经 `speedTestableIds` 过滤）。结果读全局 `use-latency-store`
- *  - 拓扑：statsApi.subscribe('aggregate') + onConnectionsAggregate
+ *  - 连接流向：aggregate topic 持有后端连接流需求，子组件按画布槽位拉取投影
  *  - 状态：proxyApi.getStatus / onStarted / onStopped / onError + ipInfoApi
  */
 
@@ -244,7 +244,6 @@ export function HomeScreen() {
 
   const modeLine = useHomeModeLine();
 
-  const [aggregate, setAggregate] = useState<ConnectionsAggregate | null>(null);
   const [busy, setBusy] = useState(false);
   /** 启停失败（本地错误态，喂三态圆钮的 err 分支）：store/后端均无代理错误流可订阅，见 onConnectToggle。 */
   const [connectError, setConnectError] = useState(false);
@@ -399,14 +398,10 @@ export function HomeScreen() {
     return () => clearTimeout(id);
   }, [connected, unlock.lastRunAt]);
 
-  /* ── 拓扑聚合订阅：进 home 才订，离开退订（worker 逐级停机）──
-   * 真机反馈：切到别的窗口再切回主页，拓扑显示滞后。根因：后端 aggregate poller 按 1s 定时轮询 +
-   * 内容签名去重推送（不受窗口可见性门控——`should_stream` 门控逻辑在 stats-engine 定义了但从未接入
-   * poller），故切走期间若拓扑内容有变化本会正常推送；用户感知的「滞后」是等不及下一轮自然推送。
-   * 修法：窗口失焦 / 不可见时退订（省 gRPC 轮询），重新聚焦 / 可见时重订——重订会让后端重建 poller
-   * （签名基线复位为空），首轮无条件判定「变了」强制推最新帧，等于一次主动拉取，而非空等下一次内容
-   * 变化触发的推送。300ms 去抖：避免快速 alt-tab 把 poller 反复拆建。路由切回 home：ScreenRouter 按
-   * mainScreen 整体卸载/重挂 HomeScreen，mount 时的首次订阅已天然覆盖，无需额外挂路由监听。 */
+  /* ── 连接流需求生命周期 ──
+   * aggregate topic 在这里只持有共享连接流的需求令牌；ConnectionTopology 监听完整表变化信号，
+   * 并按当前 SVG 槽位拉取有界投影。失焦/隐藏 300ms 后退订，回到前台重订并取最新投影，
+   * 避免无人消费时仍保持 gRPC 连接流。 */
   useEffect(() => {
     let debounceId: ReturnType<typeof setTimeout> | null = null;
 
@@ -418,7 +413,9 @@ export function HomeScreen() {
         subscribe: () => api.stats.subscribe('aggregate'),
         unsubscribe: () => api.stats.unsubscribe('aggregate'),
       },
-      setAggregate
+      () => {
+        // 首页流向按自身实测高度拉取投影；aggregate 帧只维持既有订阅/兼容连接导航排名通道。
+      }
     );
     sub.setWanted(true);
 
@@ -1244,7 +1241,7 @@ export function HomeScreen() {
 
       {/* 流量拓扑（Sankey：几何取原型、缩放取 issue #303 定稿，见 topology-layout.ts） */}
       {/* 断开态 stub 不带 CTA：本页顶部圆钮（`onConnectToggle`）已是同一动作的唯一入口。 */}
-      <ConnectionTopology aggregate={aggregate} disconnected={!connected} />
+      <ConnectionTopology disconnected={!connected} />
     </section>
   );
 }

@@ -4,7 +4,7 @@
 //! - [`TrafficStats`] = runtime.ts:212 `TrafficStats`（首页速率/累计/活跃连接数）。
 //! - [`ConnectionEntry`] = runtime.ts:94 `ConnectionEntry`（main 裁剪后的单条连接）。
 //! - [`ConnectionsDetailUpdate`] = runtime.ts `ConnectionsDetailUpdate`（活动连接增量，detail topic）。
-//! - [`TOPOLOGY_OTHERS_KEY`] = runtime.ts:122 `'\u0000others'`（Top-N 截断后合并的 sentinel host 名）。
+//! - [`TOPOLOGY_OTHERS_KEY`] = runtime.ts:122 `'\u0000others'`（超过调用方绘制容量后合并的 sentinel 名）。
 //! - [`ConnectionsAggregate`] / [`ConnectionAggHost`] / [`ConnectionAggFlow`] / [`ConnectionAggOutbound`]
 //!   = runtime.ts:148/131/125/138（首页拓扑聚合，issue #227）。
 //!
@@ -197,8 +197,11 @@ pub struct ConnectionsClosedUpdate {
 /// i18n 文案 `t('home.others')`。导出为 `&str` 供聚合/签名/断言共享。
 pub const TOPOLOGY_OTHERS_KEY: &str = "\u{0}others";
 
-/// 拓扑列 host 节点上限（与渲染端原 MAX_NODES 对齐；connections-aggregate.ts:18 `TOPOLOGY_TOP_N`）。
-pub const TOPOLOGY_TOP_N: usize = 15;
+/// 连接导航「TOP」视图允许选择的最大排名数。
+///
+/// 首页连接流向已改为按画布高度请求动态投影，不再消费这个常量。这里保留 15 只因为连接导航的
+/// 显式选项是 5 / 10 / 15；把两种视图再次绑到同一个「拓扑上限」会让放大窗口仍拿不到更多目标。
+pub const CONNECTION_RANKING_LIMIT: usize = 15;
 
 /// 某目标（host）→ 单个出口的连接数分布项。1:1 `ConnectionAggFlow`（runtime.ts:125）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -213,6 +216,9 @@ pub struct ConnectionAggHost {
     pub name: String,
     pub count: u32,
     pub flows: Vec<ConnectionAggFlow>,
+    /// 首页连接流向的「最近目标」标记。连接导航排名投影恒为 false。
+    #[serde(default)]
+    pub recent: bool,
 }
 
 /// 按出口聚合的连接数（topology 右列节点）。1:1 `ConnectionAggOutbound`（runtime.ts:138）。
@@ -224,7 +230,7 @@ pub struct ConnectionAggOutbound {
 
 /// 连接聚合快照（首页拓扑专用）。1:1 `ConnectionsAggregate`（runtime.ts:148）。
 ///
-/// hosts 已按 count 降序、截断 Top-N（剩余并入 [`TOPOLOGY_OTHERS_KEY`]）。outbounds 按 count 降序。
+/// hosts/outbounds 已按调用方的绘制预算投影；溢出部分可并入 [`TOPOLOGY_OTHERS_KEY`]。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionsAggregate {
     /// 活跃连接总数。

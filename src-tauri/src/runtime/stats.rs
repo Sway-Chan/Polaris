@@ -99,7 +99,7 @@ use polaris_stats_engine::{
     ConnectionsClosedSnapshot, ConnectionsClosedUpdate, ConnectionsDetailChange,
     ConnectionsDetailUpdate, EmitGate, SingBoxConnection, SingBoxConnectionEvent,
     SingBoxConnectionEvents, SingBoxProcessInfo, SingBoxStatus, StatsAggregator,
-    SubscriptionRegistry, SubscriptionToken, Topic, TrafficStats, TOPOLOGY_TOP_N,
+    SubscriptionRegistry, SubscriptionToken, Topic, TrafficStats, CONNECTION_RANKING_LIMIT,
 };
 
 use crate::events::{
@@ -891,8 +891,8 @@ pub struct StatsRelay {
     /// （三者来自同一事件流，见 [`run_connections_stream`]）——
     /// 此前是两个各自轮询的独立槽位。
     connections: Mutex<Option<AggregatePoller>>,
-    /// 连接流维护的完整活动表。常态拓扑只从中导出 Top-N；用户检索时命令层按需借用同一张表，
-    /// 先过滤再聚合，避免复制第二份长驻 host 索引。
+    /// 连接流维护的完整活动表。连接导航从中导出有界排名；首页按画布槽位请求主要/最近目标投影，
+    /// 搜索同样先过滤再投影，三者共用此表而不复制第二份长驻 host 索引。
     active_connections: Arc<Mutex<StatsAggregator>>,
     /// 已结束连接独立历史环；命令清空与连接流写入共享。
     closed_history: Arc<Mutex<ClosedHistory>>,
@@ -1077,13 +1077,16 @@ impl StatsRelay {
         self.gate.cached_window_visible(app)
     }
 
-    /// 在完整活动连接表上先过滤、后聚合。只在拓扑搜索词非空时由命令层按需调用；常态流仍维持
-    /// Top-N 小载荷，不把 50,000 条活动表复制进 renderer。
-    pub fn search_topology(&self, query: &str) -> Result<ConnectionsAggregate, String> {
+    /// 在完整活动连接表上先过滤、再按首页实际画布槽位投影；返回载荷只随槽位增长。
+    pub fn project_topology(
+        &self,
+        query: &str,
+        slots: usize,
+    ) -> Result<ConnectionsAggregate, String> {
         match self.active_connections.lock() {
-            Ok(table) => Ok(table.aggregate_matching(query, now_ms())),
+            Ok(table) => Ok(table.project_topology(query, now_ms(), slots)),
             Err(error) => {
-                log::warn!("活动连接检索 lock: {error}");
+                log::warn!("活动连接流向投影 lock: {error}");
                 Err(format!("活动连接数据暂不可用：{error}"))
             }
         }
@@ -1383,7 +1386,7 @@ fn build_aggregate(conns: &[daemon::Connection], at: u64) -> ConnectionsAggregat
         .filter(|c| c.closed_at <= 0) // 丢弃历史环死连接（快照含之）
         .map(daemon_conn_to_entry)
         .collect();
-    aggregate_connections_with_topn(&entries, at, TOPOLOGY_TOP_N)
+    aggregate_connections_with_topn(&entries, at, CONNECTION_RANKING_LIMIT)
 }
 
 /// change-driven 去重：聚合内容签名相较上帧变了才返回 `Some(new_sig)`（应 emit）；同签名返回 `None`（去重）。

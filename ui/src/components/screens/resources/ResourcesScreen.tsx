@@ -494,7 +494,6 @@ function ResRow({
             <button
               type="button"
               className="nd-a res-cancel"
-              style={{ marginLeft: 6 }}
               onClick={onCancel}
               data-tip={t('resources.cancel')}
               aria-label={t('resources.cancel')}

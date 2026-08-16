@@ -237,17 +237,19 @@
 
 /* ═══════════ RESOURCES（L980-1014）═══════════ */
 .res-table{ border:1px solid hsl(var(--line)); border-radius:var(--r); overflow:hidden; }
-.res-row{ display:grid; grid-template-columns:248px 92px 132px auto;
-  justify-content:start; gap:20px; align-items:center; font-variant-numeric:tabular-nums;
+.res-row{ display:grid; grid-template-columns:minmax(0,1fr) 80px 132px 60px;
+  justify-content:stretch; column-gap:12px; align-items:center; font-variant-numeric:tabular-nums;
   padding:12px 14px; border-bottom:1px solid hsl(var(--hair)); font-size:12px; }
 .res-row > span:last-child{ display:flex; align-items:center; gap:6px; }
 .res-row.head{ background:hsl(var(--surface-2)/0.6); font-size:10.5px; font-weight:640; letter-spacing:.05em;
   text-transform:uppercase; color:hsl(var(--fg-faint)); }
 .res-row:last-child{ border-bottom:0; }
-.res-name{ font-weight:600; display:flex; align-items:center; gap:7px; }
+.res-name{ min-width:0; font-weight:600; display:flex; align-items:center; gap:7px; }
+.res-title{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.res-actions{ min-width:0; justify-content:flex-end; text-align:right; }
 .res-prog{ display:flex; align-items:center; gap:8px; }
 .res-prog .bar{ flex:1; min-width:60px; } .res-prog span{ font-size:10.5px; color:hsl(var(--fg-faint)); font-variant-numeric:tabular-nums; }
-@container mainc (max-width:780px){ .res-row{ grid-template-columns:minmax(0,1fr) 88px auto; } .res-row .rc-hide{ display:none; } }
+@container mainc (max-width:780px){ .res-row{ grid-template-columns:minmax(0,1fr) 80px 60px; } .res-row .rc-hide{ display:none; } }
 .res-grp{ display:flex; align-items:baseline; gap:8px; padding:9px 14px 7px; font-size:11px; font-weight:660;
   color:hsl(var(--fg-dim)); background:hsl(var(--surface-2)/0.4); border-bottom:1px solid hsl(var(--hair)); }
 .res-grp:not(:first-child){ border-top:1px solid hsl(var(--hair)); }
@@ -404,20 +406,3 @@
 .app-update-banner .btn{ flex:none; }
 /* dismiss 是纯图标按钮，收窄内边距使其呈方形（同 .cvb-dismiss）。 */
 .app-update-banner .aub-dismiss{ padding-left:7px; padding-right:7px; }
-
-/* ───── LOGS：「内核写盘级别」状态标签（LogsScreen `.log-core-lvl`）。
-   标签位于诊断操作组，显示核写进 `singbox.log`（两个导出产物里核的那一半）时用的实际级别；
-   它不再夹在级别与来源两个筛选之间。底色表达核的**实际级别**：DEBUG/TRACE 中性、INFO 蓝、WARN 橙、
-   ERROR/FATAL/PANIC 红。与控件不同时另叠 warn 边框，表达「待同步」；不用统一蓝底把级别信息抹平，
-   也不用 warn 底色覆盖核此刻真正跑的级别。
-   prototype.css / components.css 是禁区不可改，故同 `.core-ver-banner` 之例，在此补一族独立 class。───── */
-.log-core-lvl{ display:inline-flex; align-items:center; flex:none; min-height:34px; box-sizing:border-box;
-  white-space:nowrap; font-size:11px; font-weight:600; letter-spacing:.02em; padding:4px 9px;
-  border:1px solid hsl(var(--line)); border-radius:var(--r-xs); color:hsl(var(--fg-dim));
-  background:hsl(var(--surface-2)); cursor:default; }
-.log-core-lvl.tone-info{ border-color:hsl(var(--flow)/0.38); color:hsl(var(--flow-hi)); background:hsl(var(--flow-weak)); }
-.log-core-lvl.tone-warn{ border-color:hsl(var(--warn)/0.45); color:hsl(var(--warn)); background:hsl(var(--warn-weak)); }
-.log-core-lvl.tone-error{ border-color:hsl(var(--err)/0.42); color:hsl(var(--err)); background:hsl(var(--err-weak)); }
-.log-core-lvl.tone-neutral{ border-color:hsl(var(--line)); color:hsl(var(--fg-dim)); background:hsl(var(--surface-2)); }
-.log-core-lvl.unavailable{ border-color:hsl(var(--warn)/0.45); color:hsl(var(--warn)); background:hsl(var(--warn-weak)); }
-.log-core-lvl.diverged{ border-color:hsl(var(--warn)/0.72); box-shadow:inset 0 0 0 1px hsl(var(--warn)/0.22); }

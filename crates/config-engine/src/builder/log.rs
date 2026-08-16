@@ -45,7 +45,7 @@ pub struct LogConfigInput {
 ///
 /// 那条缺口现已由**另一条路**补上：核日志实时流走管理 API 的 `SubscribeLog`（不经 stderr、不经文件，
 /// 见 `src-tauri/runtime/proxy.rs` 的核日志 relay）。故这里继续写文件是**有意保留**的——它服务的是
-/// 「导出诊断包时附上核日志原文」，不再是实时日志的来源。改动这一格前请先确认那条 gRPC 腿仍在。
+/// 「导出诊断报告时附上核日志原文」，不再是实时日志的来源。改动这一格前请先确认那条 gRPC 腿仍在。
 pub fn build_log_config(input: &LogConfigInput, deps: &LogBuildDeps) -> LogConfig {
     // 1. level（隐私模式从源头不让 sing-box 记录连接明细）。
     let level = input.log_level.effective(deps.privacy_mode);

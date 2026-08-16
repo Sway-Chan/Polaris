@@ -9,7 +9,7 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import { runtimeLevelTone, runtimeLevelView } from './runtime-level';
+import { runtimeLevelView } from './runtime-level';
 
 describe('runtimeLevelView', () => {
   it('首次渲染（还没取回）是 pending，不冒充「读不到」', () => {
@@ -115,21 +115,6 @@ describe('未知级别名', () => {
       level: 'verbose',
       drift: 'coreRestart',
     });
-  });
-});
-
-describe('内核级别语义色', () => {
-  it.each([
-    ['debug', 'neutral'],
-    ['trace', 'neutral'],
-    ['info', 'info'],
-    ['warn', 'warn'],
-    ['error', 'error'],
-    ['fatal', 'error'],
-    ['panic', 'error'],
-    ['future-level', 'neutral'],
-  ] as const)('%s → %s', (level, tone) => {
-    expect(runtimeLevelTone(level)).toBe(tone);
   });
 });
 

@@ -6,7 +6,7 @@
  * 核日志改由管理 API 的 `SubscribeLog` 送达后，**本页显示的核日志已经不归它管**了：那条流恒是全级别，
  * 筛在客户端（`logging::set_level` 的 `max_level`），改完即刻跟上。于是这颗徽标唯一还管着的是
  * **核写进它自己那份日志文件时用的级别** —— 即 `<configDir>/singbox.log`，也就是
- * 「导出日志」与「导出诊断包」两个产物里核的那一半（`commands/misc.rs` 的 `read_tail`）。
+ * 「纯日志」与「诊断报告」两个产物里核的那一半（`commands/misc.rs` 的 `read_tail`）。
  *
  * 这不是把它降级成一句无关紧要的话，恰恰相反：屏幕上看得见的那份不会骗人了，**盘上那份才是唯一
  * 还会与你的设置不一致的东西**，而它偏偏是你要发给别人看的那份。徽标的职责因此从「守屏幕」变成
@@ -16,8 +16,8 @@
  *
  * 这颗徽标不只是「导出会不会缺行」的警报，也是用户核对「我刚选的级别是否已进核」的
  * 唯一运行态凭据。因此 INFO → WARN 时核仍在 INFO，即便只是多记了几行，也必须标「待同步」；
- * 否则界面看起来就是无解释地比下拉选项慢一拍。警示强度由样式层承担（等级底色 + 待同步边框），
- * 不再靠吞掉某一方向的不一致来降噪。
+ * 否则界面看起来就是无解释地比下拉选项慢一拍。显示层仅在分叉或读取失败时复用既有警示标签，
+ * 相同 / 未运行 / 读取中不额外占位。
  *
  * # 为什么「读不到」不能回落成某个级别
  *
@@ -70,25 +70,6 @@ export type RuntimeLevelView =
   | { kind: 'unavailable' }
   /** 读到了核在跑的级别。`drift` = 非 null 即分叉现形的时刻，取值说明见 [`RuntimeLevelDrift`]。 */
   | { kind: 'known'; level: string; drift: RuntimeLevelDrift | null };
-
-export type RuntimeLevelTone = 'neutral' | 'info' | 'warn' | 'error';
-
-/** 内核级别→状态标签语义色。七档上游值与本仓五档值在此单点归一。 */
-export function runtimeLevelTone(level: string): RuntimeLevelTone {
-  switch (level.toLowerCase()) {
-    case 'info':
-      return 'info';
-    case 'warn':
-      return 'warn';
-    case 'error':
-    case 'fatal':
-    case 'panic':
-      return 'error';
-    default:
-      // DEBUG / TRACE 以及将来未知档均用中性色；未知不冒充 INFO。
-      return 'neutral';
-  }
-}
 
 /**
  * 把后端回答 + 控件当前显示值 + 盘上值，投影成徽标要呈现的态。

@@ -110,12 +110,12 @@ export interface InvalidNodeInfo {
 }
 
 // ============================================================================
-// 连接快照（topology 统一供数：main 1s 轮询 clash_api /connections 留存裁剪后推送）
+// 连接快照（sing-box 长驻连接流：活动明细与有界聚合投影共享同一张权威表）
 // ============================================================================
 
 /**
- * clash /connections 单条连接（main 裁剪后子集）。
- * topology 只用 id/chains/rule/rulePayload/metadata{host,destinationIP}；连接信息页额外用扩展字段
+ * sing-box 连接流中的单条活动连接。
+ * 流向投影只用 id/chains/rule/metadata{host,destinationIP}；连接信息页额外用扩展字段
  * （network/type/sourceIP/sourcePort/destinationPort/processPath + upload/download/start）算速率/源/进程/时长。
  * 扩展字段全 optional → 向后兼容 topology（拿到更多字段但只读原有的）；含 sourceIP/processPath 隐私字段，
  * 故连接信息页须在隐私模式下屏蔽明细（见 connections-page）。
@@ -205,6 +205,8 @@ export interface ConnectionAggHost {
   name: string;
   count: number;
   flows: ConnectionAggFlow[];
+  /** 首页连接流向的最近目标；连接导航排名投影恒为 false。 */
+  recent: boolean;
 }
 
 /** 按出口聚合的连接数（topology 右列节点）。 */
@@ -214,9 +216,8 @@ export interface ConnectionAggOutbound {
 }
 
 /**
- * 连接聚合快照（首页拓扑专用）：StatsWorkerHost 每帧 O(N) 聚合后经 EVENT_CONNECTIONS_AGGREGATE 广播，载荷与连接
- * 总数解耦（恒 ~Top-N host + 出口数）。取代「每秒全量 ConnectionEntry[] relay」——连接风暴下渲染端不再被全量明细
- * 序列化 + 每秒 O(N) 重算拖死（issue #227）。hosts 已按 count 降序、截断 Top-N（剩余并入 TOPOLOGY_OTHERS_KEY）。
+ * 有界连接聚合快照。连接导航用固定排名投影；首页流向按当前画布槽位投影主要/最近目标。
+ * 两者都在后端完整活动表上聚合，IPC 载荷只随绘制预算增长，不随连接总数增长；溢出部分并入 TOPOLOGY_OTHERS_KEY。
  */
 export interface ConnectionsAggregate {
   total: number; // 活跃连接总数

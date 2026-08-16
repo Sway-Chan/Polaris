@@ -85,8 +85,8 @@ const CONNECTION_PAGE_SIZE = 50;
 /**
  * TOP 视图展示条数（原型 seg2 :2026，默认 10）。
  *
- * 上限对齐后端聚合真实能力：stats-engine `TOPOLOGY_TOP_N = 15`（types.rs:104）——
- * 后端只产出 Top-15 host + 1 个「其它」合并桶，20/50 永远填不满、纯误导，故砍到 5/10/15。
+ * 上限对齐连接导航排名投影 `CONNECTION_RANKING_LIMIT = 15`。首页流向另按画布高度动态投影，
+ * 两种视图不再共用一个“拓扑上限”；本页显式选项仍是 5/10/15。
  */
 const TOP_N_OPTIONS = [5, 10, 15] as const;
 interface SortState {

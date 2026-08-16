@@ -137,7 +137,7 @@ export const IPC_CHANNELS = {
   // 统计信息（batch3 §3.7：订阅驱动数据面。renderer 按 topic 声明订阅，main 据订阅集派生 worker demand + 精确 relay）
   STATS_SUBSCRIBE: 'stats_subscribe', // 订阅某 topic（stats|aggregate|detail|closed）
   STATS_UNSUBSCRIBE: 'stats_unsubscribe', // 退订某 topic（unmount/窗口隐藏/暂停）：无订阅者 → worker 逐级停机
-  STATS_SEARCH_TOPOLOGY: 'stats_search_topology', // 非空检索时在完整活动表过滤后再聚合，穿透常态 Top-15
+  STATS_PROJECT_TOPOLOGY: 'stats_project_topology', // 完整活动表先过滤，再按首页实际高度投影主要/最近目标
   STATS_CLOSED_CLEAR: 'stats_closed_clear', // 清空独立的已结束连接历史
   CONNECTIONS_CLOSE: 'connections_close', // 关单条连接（main 经 9090 DELETE /connections/{id}）
   CONNECTIONS_CLOSE_ALL: 'connections_close_all', // 关全部连接（main 经 9090 DELETE /connections，触发 ResetNetwork）
@@ -225,11 +225,11 @@ export const IPC_CHANNELS = {
   // 已删），削平 sing-box 启动期日志洪流对主线程的 IPC 冲击（每条一次 send → 撞 Windows 拖动 move 循环致拖动卡顿）。
   EVENT_LOG_RECEIVED_BATCH: 'event:logReceivedBatch',
   EVENT_STATS_UPDATED: 'event:statsUpdated',
-  // 首页拓扑连接聚合（StatsWorkerHost 每帧 O(N) 聚合后广播，载荷 ~Top-N host + 出口数，与连接总数解耦）。
+  // 连接导航的有界排名聚合；首页流向另按实测画布槽位通过 command 投影。
   // 取代旧 EVENT_CONNECTIONS_UPDATED（每秒全量 ConnectionEntry[] relay）——连接风暴下渲染端被全量明细拖死（issue #227）。
   // batch3 §3.7：兼作 aggregate topic 的初始帧 + 增量 push 通道（订阅即回缓存帧，之后 seq 变更才推）。
   EVENT_CONNECTIONS_AGGREGATE: 'event:connectionsAggregate',
-  // 完整活动表拓扑字段变化信号：检索态据此重查后端完整表，不把 Top-N 有损签名当真值变化。
+  // 完整活动表流向字段变化信号：常态/检索都据此重查后端完整表。
   EVENT_CONNECTIONS_TOPOLOGY_CHANGED: 'event:connectionsTopologyChanged',
   // 活动连接 detail：reset 帧给 generation 基线，常态只推 upsert/累计计数/删除 id；sequence 拒绝乱序。
   // 仅连接页活动视图订阅期流动，无订阅者时中继保留下一位订阅者所需的 reset 基线。

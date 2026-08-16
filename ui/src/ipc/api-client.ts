@@ -547,7 +547,7 @@ export const logsApi = {
     return invoke(IPC_CHANNELS.LOGS_CLEAR);
   },
 
-  /** 导出纯日志（弹出系统文件保存对话框，节点身份打码；不含配置块/密钥脱敏，区别于 diagnostic.export 的完整诊断包）。 */
+  /** 导出纯日志（节点身份打码；不含配置与运行态，区别于 diagnostic.export 的完整诊断报告）。 */
   async export(): Promise<{ success: boolean; filePath?: string; error?: string }> {
     return invoke(IPC_CHANNELS.LOGS_EXPORT);
   },
@@ -630,9 +630,9 @@ export const statsApi = {
     return invoke(IPC_CHANNELS.STATS_UNSUBSCRIBE, { topic });
   },
 
-  /** 在完整活动连接表上先过滤后聚合；只供拓扑非空检索词按需调用。 */
-  async searchTopology(query: string): Promise<ConnectionsAggregate> {
-    return invoke(IPC_CHANNELS.STATS_SEARCH_TOPOLOGY, { query });
+  /** 在完整活动连接表上先过滤，再按首页画布槽位投影；空 query 即常态流向。 */
+  async projectTopology(query: string, slots: number): Promise<ConnectionsAggregate> {
+    return invoke(IPC_CHANNELS.STATS_PROJECT_TOPOLOGY, { query, slots });
   },
 
   /** stats topic：流量统计推送。 */
@@ -640,14 +640,14 @@ export const statsApi = {
     return listen<TrafficStats>(STATS_TOPIC_EVENT.stats, listener);
   },
 
-  /** aggregate topic：首页拓扑连接聚合（Top-N host + 出口数）。 */
+  /** aggregate topic：连接导航的有界目标/出口排名。 */
   onConnectionsAggregate(
     listener: (data: ConnectionsAggregate) => void
   ): () => void {
     return listen<ConnectionsAggregate>(STATS_TOPIC_EVENT.aggregate, listener);
   },
 
-  /** 完整活动表拓扑字段变化；检索态据此重查，常态无需订阅。 */
+  /** 完整活动表流向字段变化；常态/检索投影共用该信号。 */
   onConnectionsTopologyChangedReady(listener: () => void): Promise<() => void> {
     return listenReady<number>(IPC_CHANNELS.EVENT_CONNECTIONS_TOPOLOGY_CHANGED, listener);
   },

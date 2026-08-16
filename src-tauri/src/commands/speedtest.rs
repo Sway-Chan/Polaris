@@ -662,7 +662,7 @@ fn temp_core_none_testable_message(
 /// 临时核日志级别：跟随用户配置的诊断档，其余一律 `warn`（免得每次测速往 app.log 灌一堆核的 info）。
 ///
 /// **`trace` 档不得漏抬**：用户把日志级别拨到 trace 正是为了复现最难的那一类问题，临时核却降回 warn
-/// ⇒ 导出的日志/诊断包里独独缺测速核这一段，而那正是要看的东西。抬的是**用户选的那一档**（不折成 debug）。
+/// ⇒ 导出的日志/诊断报告里独独缺测速核这一段，而那正是要看的东西。抬的是**用户选的那一档**（不折成 debug）。
 fn temp_core_log_level(config: &Value) -> &str {
     match config.get("logLevel").and_then(Value::as_str) {
         Some(lv @ ("debug" | "trace")) => lv,

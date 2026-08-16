@@ -11,7 +11,7 @@
  * 隐藏的兜底列表照样看不见），只是悄悄多烧 CPU/GPU —— 也就是说没有任何人工验收路径会发现，
  * 只能靠门。
  *
- * # 本机实测口径（Playwright Chromium 149 + WebKit 26.5，**双引擎数字完全一致**，Top-15 满载帧、topo 容器 1052px）
+ * # 本机实测口径（Playwright Chromium 149 + WebKit 26.5，**双引擎数字完全一致**，默认 16 槽满载帧、topo 容器 1052px）
  *
  * | 指标 | 加固前 | 加固后 |
  * |---|---:|---:|
@@ -84,8 +84,8 @@ describe('门 2 · memo 的前提：调用点两个 props 都必须引用稳定'
       name,
       expr.trim(),
     ]);
-    // 正向对照：props 一个都没解析出来时上面的断言恒真，故先钉住已知的两个。
-    expect(props.map(([n]) => n).sort()).toEqual(['aggregate', 'disconnected']);
+    // 正向对照：props 一个都没解析出来时上面的断言恒真，故先钉住唯一入口 prop。
+    expect(props.map(([n]) => n)).toEqual(['disconnected']);
     for (const [name, expr] of props) {
       expect(`${name}=${expr}`).toMatch(new RegExp(`^${name}=${STABLE_EXPR.source.slice(1, -1)}$`));
     }
@@ -111,17 +111,20 @@ describe('门 3 · 窄屏兜底列表不许无条件渲染', () => {
   });
 });
 
-describe('准确性门 · 常态 Top-N 只负责绘制，不得充当搜索真值', () => {
-  it('非空查询等待完整表变化监听就绪，再走后端过滤投影', () => {
+describe('准确性门 · 完整活动表投影与绘制预算解耦', () => {
+  it('常态和搜索都等待完整表变化监听就绪，再走后端按槽位投影', () => {
     const ready = TOPO_SRC.indexOf('onConnectionsTopologyChangedReady');
-    const search = TOPO_SRC.indexOf('searchTopology(normalizedSearch)');
+    const project = TOPO_SRC.indexOf('projectTopology(normalizedSearch, projectionSlots)');
     expect(ready).toBeGreaterThan(0);
-    expect(search).toBeGreaterThan(0);
-    expect(TOPO_SRC).toContain('searchProjection.aggregate');
+    expect(project).toBeGreaterThan(0);
+    expect(TOPO_SRC).toContain('projection?.aggregate');
+    expect(TOPO_SRC).toContain('topologySlotCapacity(size.h)');
     expect(TOPO_SRC).toContain("t('home.connectionFlow')");
   });
 
-  it('完整表零结果回包前不得用 Top-N 猜测“无命中”', () => {
-    expect(TOPO_SRC).toContain('searching && searchResolved && displayAggregate?.total === 0');
+  it('当前查询和槽位的回包抵达前不得用旧投影猜测“无命中”', () => {
+    expect(TOPO_SRC).toContain(
+      'searching && projectionResolved && displayAggregate?.total === 0'
+    );
   });
 });

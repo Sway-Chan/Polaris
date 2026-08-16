@@ -137,7 +137,7 @@
 /* ═══════════════ HOME（L326-513）═══════════════ */
 /* 统一连接控制卡（§D）：一卡两列 — 左=出口节点+检测，右=接管方式+分流策略 */
 .conn-card{ padding:var(--sp-4); margin-bottom:7px; }
-.cc-cols{ display:grid; grid-template-columns:minmax(0,3.4fr) minmax(0,1.7fr); gap:0; align-items:stretch; }
+.cc-cols{ display:grid; grid-template-columns:minmax(0,3fr) minmax(0,2fr); gap:0; align-items:stretch; }
 .cc-col{ display:flex; flex-direction:column; min-width:0; }
 .cc-col.left{ gap:var(--sp-4); padding-right:var(--sp-5); }
 .cc-col.right{ position:relative; gap:var(--sp-4); padding-left:var(--sp-5); justify-content:space-between; }
@@ -209,6 +209,7 @@
 .seg-wrap{ display:flex; }
 .seg-wrap .seg2{ display:flex; width:100%; }
 .seg-wrap .seg2 button{ flex:1; }
+.cc-col.right .seg-wrap .seg2 button{ padding:6px 4px; }
 .seg-gear{ display:grid; place-items:center; width:20px; height:20px; margin-left:auto; color:hsl(var(--fg-faint));
   border:0; background:none; cursor:pointer; transition:color .12s; }
 .seg-gear:hover{ color:hsl(var(--fg)); }
@@ -231,7 +232,7 @@
 /* 检索框 240×30：上游 三档实测定稿（200 挤 placeholder / 280 视觉重量压过标题 / 240 兼顾） */
 .topo-search{ width:240px; height:30px; flex:none; padding:0 9px; }
 .sankey-wrap{ padding:12px 2px 2px; position:relative; }
-.sankey{ width:100%; flex:1 1 auto; min-height:180px; max-height:340px; display:block; contain:size; }
+.sankey{ width:100%; flex:1 1 auto; min-height:180px; display:block; contain:size; }
 .sankey .col-lbl{ font-size:11px; font-weight:600; fill:hsl(var(--fg-faint)); }
 .sankey .node rect{ rx:3; }
 .sankey .nlabel{ font-size:11.5px; fill:hsl(var(--fg)); font-weight:540; }
@@ -241,6 +242,7 @@
 .sankey .link:hover, .sankey .link.hl{ opacity:.92; }
 .sankey.dim .node{ opacity:.28; transition:opacity .16s; }
 .sankey .node.hl{ opacity:1; }
+.sankey .node.recent .recent-mark{ fill:hsl(var(--aurora)); stroke:hsl(var(--surface)); stroke-width:1; }
 .sankey .dnode{ cursor:pointer; outline:none; }
 .sankey .dnode:focus-visible rect:first-of-type{ stroke:hsl(var(--ring)); stroke-width:2; }
 /* tooltip：位置与翻转由 JS 算（clamp 在 .sankey-wrap 内），故不带原型的 transform —— 它无边界感知会溢出卡片 */
@@ -308,10 +310,42 @@
 .app-ico .brand-svg{ padding:3px; box-sizing:border-box; }
 
 /* ═══════════════ LOGS（L1086-1107）═══════════════ */
-.log-toolbar{ margin-bottom:14px; flex:none; overflow:hidden; }
-.log-tb-main{ display:flex; align-items:center; gap:11px; flex-wrap:wrap; padding:12px 16px 13px; border-top:1px solid hsl(var(--hair)); }
-.log-tb-search{ flex:1; min-width:150px; }
-.log-tb-actions{ display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap; margin-left:auto; }
+.log-toolbar{ margin-bottom:14px; flex:none; overflow:visible; }
+.log-tb-primary{ display:grid; grid-template-columns:minmax(124px,160px) minmax(124px,160px) minmax(0,1fr);
+  align-items:end; gap:12px; padding:12px 16px 13px; }
+.log-filter-field{ min-width:0; }
+.log-filter-label{ display:inline-flex; align-items:center; gap:6px; min-width:0; margin-bottom:6px;
+  color:hsl(var(--fg-faint)); font-size:10.5px; font-weight:660; letter-spacing:.04em; }
+.log-filter-value{ display:flex; align-items:center; gap:7px; min-width:0; }
+.log-level-select,.log-source-select{ width:124px; max-width:100%; }
+.log-core-lvl{ flex:none; white-space:nowrap; }
+.log-primary-actions{ display:inline-flex; align-items:center; justify-self:end; gap:8px; min-width:0; }
+.log-primary-actions .btn,.log-tb-actions .btn{ min-height:36px; white-space:nowrap; }
+.log-diagnostic-toggle.on,.log-primary-actions .btn.on,.log-tb-actions .btn.on{
+  color:hsl(var(--flow-hi)); background:hsl(var(--flow-weak)); border-color:hsl(var(--flow)/0.4); }
+.log-export{ position:relative; flex:none; }
+.log-export-chevron{ transition:transform .15s ease; }
+.log-export > .btn[aria-expanded="true"] .log-export-chevron{ transform:rotate(180deg); }
+.log-export-menu{ position:absolute; z-index:40; top:calc(100% + 6px); right:0; width:min(290px,calc(100vw - 32px));
+  padding:5px; border:1px solid hsl(var(--line)); border-radius:var(--r-md); background:hsl(var(--surface));
+  box-shadow:0 12px 30px hsl(var(--shadow)/0.22); }
+.log-export-option{ display:flex; flex-direction:column; align-items:stretch; gap:4px; width:100%; padding:9px 10px;
+  border-radius:var(--r-sm); text-align:left; color:hsl(var(--fg-dim)); }
+.log-export-option:hover,.log-export-option:focus-visible{ background:hsl(var(--surface-2)); color:hsl(var(--fg)); }
+.log-export-option-title{ display:flex; align-items:center; justify-content:space-between; gap:8px; color:hsl(var(--fg)); font-size:12px; font-weight:640; }
+.log-export-option > span:last-child{ font-size:10.5px; line-height:1.45; color:hsl(var(--fg-faint)); }
+.log-tb-main{ display:flex; align-items:center; gap:11px; padding:12px 16px 13px; border-top:1px solid hsl(var(--hair)); }
+.log-tb-search{ flex:1; min-width:180px; }
+.log-tb-actions{ display:inline-flex; align-items:stretch; gap:8px; flex:none; }
+.log-tb-actions .btn .cnt{ margin-left:5px; padding:0 5px; border-radius:999px; font-size:10px; font-weight:660;
+  background:hsl(var(--flow)/0.2); color:hsl(var(--flow-hi)); }
+@container mainc (max-width:620px){
+  .log-tb-primary{ grid-template-columns:repeat(2,minmax(124px,1fr)); }
+  .log-primary-actions{ grid-column:1 / -1; justify-self:start; }
+  .log-tb-main{ flex-wrap:wrap; }
+  .log-tb-search{ flex-basis:100%; }
+  .log-tb-actions{ width:100%; justify-content:flex-end; }
+}
 .log-live{ display:inline-flex; align-items:center; gap:7px; }
 .log-live-dot{ width:7px; height:7px; border-radius:50%; background:hsl(var(--ok)); box-shadow:0 0 0 3px hsl(var(--ok)/0.16); flex:none; }
 .log-view{ font-family:var(--mono); font-size:12px; line-height:1.75; background:hsl(var(--bg)/0.6); border:1px solid hsl(var(--line));
