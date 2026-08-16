@@ -234,8 +234,9 @@ export function useConfig(): UseConfigResult {
 
   // 别处改了 config（托盘切模式/切节点、其它屏保存、后端自愈）→ 静默重拉。
   // Settings 这份 config 是**独立于 app-store 的第二副本**（本 hook 自持 state），不订阅就会一直
-  // 停在打开那一刻的快照。事件 payload 里的 newValue 不能直接拿来用：它经 strip_privacy_secrets
-  // 脱敏、且没走 config_get 那侧的 bypassLANList 补齐，与本 hook 的契约不同源 —— 故重拉而非取 payload。
+  // 停在打开那一刻的快照。事件是**无载荷信号**（后端 emit `{}`）：曾经带过的 newValue 经
+  // strip_privacy_secrets 脱敏、且没走 config_get 那侧的 bypassLANList 补齐，与本 hook 的契约不同源，
+  // 四个消费方因此没有一个读它 —— 既然全员重拉，那份载荷就是纯白做的深拷贝，已在后端删掉。
   useEffect(() => {
     const off = configApi.onChanged(() => void load(true));
     return off;

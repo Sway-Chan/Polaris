@@ -95,6 +95,7 @@ use polaris_system_integration::proxy_ops::{
 use polaris_system_integration::route_ops::{
     verify_exit_captured, ExitCaptureOutcome, SystemRouteOps, PROBE_IP as ROUTE_PROBE_IP,
 };
+use serde::Deserialize;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
@@ -7198,7 +7199,11 @@ impl ProxyRuntime {
         let Some(raw) = self.current_config.read().ok().and_then(|g| g.clone()) else {
             return;
         };
-        let Ok(config) = serde_json::from_value::<UserConfig>(raw.clone()) else {
+        // 借用反序列化而非 `from_value(raw.clone())`：`raw` 在下一行的 `login_fallback_eligible`
+        // 里还要用，所以上面那份 clone 省不掉；但 `from_value` 要的是 owned `Value` ⇒ 只能再深拷
+        // 一整棵配置树（含全部节点），拷完立刻丢。`UserConfig` 无 borrow 字段，两条路等价：
+        // 反序列化失败仍落同一条 `else { return; }`。
+        let Ok(config) = UserConfig::deserialize(&raw) else {
             return;
         };
         let sel_id = config.selected_server_id.clone().filter(|s| !s.is_empty());

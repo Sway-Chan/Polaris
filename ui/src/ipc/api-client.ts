@@ -316,9 +316,15 @@ export const configApi = {
     return invoke(IPC_CHANNELS.CONFIG_SET_VALUE, { key, value });
   },
 
-  onChanged(
-    listener: (data: { key?: string; oldValue?: unknown; newValue?: unknown }) => void
-  ): () => void {
+  /**
+   * 配置变更的**无载荷信号**：后端 emit `{}`（`commands/config.rs` 的
+   * `broadcast_config_changed_with`），收到即各自重拉，没有任何消费方读 payload。
+   *
+   * 签名收成零参不是文档性质的：它让「想读 newValue」在类型层就编不过。此前那份
+   * `{ key?, oldValue?, newValue? }` 是照搬 Electron 侧的形状，而 `newValue` 经脱敏、
+   * 也没走 `config_get` 那侧的 bypassLANList 补齐 —— 直接拿来用是错的（见 `useConfig.ts`）。
+   */
+  onChanged(listener: () => void): () => void {
     return listen(IPC_CHANNELS.EVENT_CONFIG_CHANGED, listener);
   },
 

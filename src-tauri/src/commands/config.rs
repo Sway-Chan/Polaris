@@ -1066,12 +1066,20 @@ pub(crate) fn broadcast_config_changed_with(
     defer_restart: bool,
 ) {
     // F29 defense-in-depth：隐私密码（legacy 明文 + salted hash）绝不经**任何**前端可见路径下发。
-    // `config_get` 已剥同键，但本广播是配置写的另一出口——储 hash 后必须在此同样剥除，
-    // 否则任一后续配置写都会经 `configChanged` 把 hash 送进渲染端。剥后 config 供前端 store +
-    // 运行核（隐私密码不参与代理配置生成，剥除对热切换无影响）。
+    // 本事件已不带载荷（见下），故这份剥离服务的是**入核**那一份 —— `cfg` 一路 move 进
+    // `switch_mode_with`；剥在源头，将来谁把它接回某条前端可见路径也带不出 hash。
+    // （隐私密码不参与代理配置生成，剥除对热切换无影响。）
     let mut cfg = new_value.clone();
     strip_privacy_secrets(&mut cfg);
-    let _ = app.emit(EVENT_CONFIG_CHANGED, json!({ "newValue": cfg }));
+    // **无载荷信号**。四个消费方一个都不读 payload，收到即各自重拉：`App.tsx` → `loadConfig(true)`、
+    // `TrayMenu.tsx` → `hydrate()`、`settings/useConfig.ts` → `load(true)`（该处还专门注明「payload 的
+    // newValue 不能直接用」——它经脱敏、且没走 `config_get` 那侧的 bypassLANList 补齐，与其契约不同源）、
+    // `main.rs` 的 `listen_any` → `reconcile_tray`（回调签名 `|_|` 直接丢弃）。
+    //
+    // 而 `cfg` 在这行之后仍要用（logLevel / uiTheme / move 进 `switch_mode_with`）⇒ 载荷里写 `cfg`
+    // 只能借用 ⇒ `json!` 展开成 `to_value(&cfg)`，在上面那次 clone 之外**再深拷贝一整棵配置树**，
+    // 外加整份 JSON 序列化、按 webview 拼注入脚本、`NSString` 构造与 Rust 侧监听各自一份 —— 全白做。
+    let _ = app.emit(EVENT_CONFIG_CHANGED, json!({}));
     // 应用侧日志级别跟随 config.logLevel —— 同 switch_mode 的道理接在**唯一**的配置变更路径上：
     // 此前 `log::set_max_level` 只在 sink 装配时设一次，日志页选 DEBUG 对应用侧毫无效果（核侧另算，
     // 级别在生成配置时注入，须经下方 switch_mode 重启才生效，UI 已如实标注）。
@@ -1100,6 +1108,115 @@ pub(crate) fn broadcast_config_changed_with(
         tauri::async_runtime::spawn(async move {
             proxy.switch_mode_with(cfg, defer_restart).await;
         });
+    }
+}
+
+/// P0-1 **无载荷守卫**：`event:configChanged` 是纯信号 —— 发射点不带配置内容，四个消费方一个都不读。
+///
+/// # 为什么只能是结构守卫
+///
+/// 发射点要 `AppHandle`（本仓未引 `tauri::test`），四个消费方里三个在渲染端 —— 没有任何一条行为
+/// 断言能同时站在两侧。而这条不变式破掉时的症状是**纯性能回退**：`cfg` 在 emit 之后仍被使用
+/// （logLevel / uiTheme / move 进 `switch_mode_with`）⇒ 载荷里写 `cfg` 只能借用 ⇒ `json!` 展开成
+/// `to_value(&cfg)`，在既有 clone 之外再深拷一整棵配置树，外加整份 JSON 序列化、按 webview 拼注入
+/// 脚本、`NSString` 构造各一份。行为面**完全看不出来**，只能锁结构。
+///
+/// # 射程为什么是五个点（发射点 + 四个消费方），缺一不可
+///
+/// 少了发射点 = 载荷可以悄悄加回来；少了任一消费方 = 有人开始读 `{}` 里不存在的字段，拿到
+/// `undefined` 后走出一条静默错路。`newValue` 恰恰是「看着能用、其实不能用」的那类字段：它经
+/// `strip_privacy_secrets` 脱敏、也没走 `config_get` 那侧的 bypassLANList 补齐（见 `useConfig.ts`）。
+#[cfg(test)]
+mod config_changed_payload_tests {
+    use crate::commands::guard_scan::{strip_line_comments, top_level_fn_body};
+
+    /// 三个渲染端消费点（仓内相对路径 → 源码）。
+    ///
+    /// 用 `include_str!` 而不是运行期读盘：文件被挪走 = **编译失败**，而不是守卫静默扫了个空串
+    /// 然后断言恒真。仓内已有同款先例（本文件的 `config-version.fixture.json`）。
+    const TS_CONSUMERS: [(&str, &str); 3] = [
+        ("ui/src/App.tsx", include_str!("../../../ui/src/App.tsx")),
+        (
+            "ui/src/tray/TrayMenu.tsx",
+            include_str!("../../../ui/src/tray/TrayMenu.tsx"),
+        ),
+        (
+            "ui/src/components/screens/settings/useConfig.ts",
+            include_str!("../../../ui/src/components/screens/settings/useConfig.ts"),
+        ),
+    ];
+
+    /// 发射点：`app.emit(EVENT_CONFIG_CHANGED, …)` 的实参里不得再出现配置内容。
+    ///
+    /// 牙：把载荷改回 `json!({ "newValue": cfg })` → 转红。
+    #[test]
+    fn emit_site_carries_no_config_content() {
+        let body = top_level_fn_body(
+            include_str!("config.rs"),
+            "pub(crate) fn broadcast_config_changed_with(",
+        );
+        // 切点自检①：扫到的确实是那个生产函数体。
+        assert!(
+            body.contains("strip_privacy_secrets(&mut cfg)"),
+            "扫到的不是 broadcast_config_changed_with 的函数体 —— 守卫已失去判据"
+        );
+        // 切点自检②：判据词（`newValue` / `cfg`）在本文件的测试代码里也各有一份，切片若漏封顶
+        // 就会被自己喂饱 —— 那正是「源码级判据被自己污染」的形态。
+        assert!(
+            !body.contains("config_changed_payload_tests"),
+            "切片切进了本测试模块，判据会被自己写的字面量喂饱"
+        );
+
+        let at = body
+            .find("app.emit(EVENT_CONFIG_CHANGED,")
+            .expect("变异锁：configChanged 的发射点没了");
+        let tail = &body[at..];
+        let args = &tail[..tail.find(");").expect("发射调用未闭合")];
+        assert!(
+            !args.contains("cfg") && !args.contains("newValue"),
+            "configChanged 又带上配置载荷了（实参：`{args}`）——\
+             `cfg` 在 emit 之后仍被使用 ⇒ 载荷只能借用 ⇒ 每次配置写都额外深拷一整棵配置树 + 整份序列化，\
+             而四个消费方一个都不读它"
+        );
+    }
+
+    /// 四个消费方（三个渲染端 + Rust 侧托盘汇流）必须全部丢弃 payload。
+    ///
+    /// 牙：任一 `onChanged(() => …)` 改成 `onChanged((data) => …)`、或 `listen_any` 的 `move |_|`
+    /// 改成读事件的形态 → 逐条转红。
+    #[test]
+    fn every_consumer_discards_the_payload() {
+        const CALL: &str = ".onChanged(";
+        for (path, src) in TS_CONSUMERS {
+            // 剥整行注释：注释里出现调用形态会喂饱/顶红判据（与 Rust 侧同一理由）。
+            let src = strip_line_comments(src);
+            let mut sites = 0usize;
+            for (i, _) in src.match_indices(CALL) {
+                sites += 1;
+                let rest = &src[i + CALL.len()..];
+                assert!(
+                    rest.trim_start().starts_with("() =>"),
+                    "{path} 的 configChanged 订阅读了 payload —— 事件已是无载荷信号，读到的只会是 `{{}}`。\
+                     实处：`{}`",
+                    &rest[..rest.len().min(60)]
+                );
+            }
+            // 数量断言：订阅点增减必须停下来显式裁定，不许守卫自适应放行（多了 = 新消费方没过判据；
+            // 少了 = 这一腿已删，判据表该同步改）。
+            assert_eq!(sites, 1, "{path} 的 configChanged 订阅点数变了");
+        }
+
+        // Rust 侧第四腿：`TRAY_SYNC_EVENTS` 含 `EVENT_CONFIG_CHANGED`（订阅面由 `main.rs` 自己的
+        // `tray_icon_events_are_the_proxy_lifecycle_channels` 钉住），本条只钉**回调丢弃 payload**。
+        let main_body = top_level_fn_body(include_str!("../main.rs"), "fn main() {");
+        assert!(
+            main_body.contains("wire_tray_icon_sync("),
+            "扫到的不是 main() 的函数体 —— 守卫已失去判据"
+        );
+        assert!(
+            main_body.contains("handle.listen_any(ev, move |_| reconcile_tray(&h));"),
+            "托盘汇流的事件回调不再是丢弃形态 —— configChanged 已无载荷，读它只会拿到空对象"
+        );
     }
 }
 
