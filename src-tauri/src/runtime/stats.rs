@@ -106,7 +106,7 @@ use crate::events::{
     broadcast,
     channel::{
         EVENT_CONNECTIONS_AGGREGATE, EVENT_CONNECTIONS_CLOSED, EVENT_CONNECTIONS_DETAIL,
-        EVENT_STATS_UPDATED,
+        EVENT_CONNECTIONS_TOPOLOGY_CHANGED, EVENT_STATS_UPDATED,
     },
 };
 use crate::runtime::config::ConfigManager;
@@ -891,6 +891,9 @@ pub struct StatsRelay {
     /// （三者来自同一事件流，见 [`run_connections_stream`]）——
     /// 此前是两个各自轮询的独立槽位。
     connections: Mutex<Option<AggregatePoller>>,
+    /// 连接流维护的完整活动表。常态拓扑只从中导出 Top-N；用户检索时命令层按需借用同一张表，
+    /// 先过滤再聚合，避免复制第二份长驻 host 索引。
+    active_connections: Arc<Mutex<StatsAggregator>>,
     /// 已结束连接独立历史环；命令清空与连接流写入共享。
     closed_history: Arc<Mutex<ClosedHistory>>,
     /// stats topic（上下行速率 + 累计 + 连接数）的 `SubscribeStatus` 长驻流 relay（`Some` = 在跑）。
@@ -909,6 +912,7 @@ impl StatsRelay {
             gate: Arc::new(StreamGateState::new()),
             subs: Mutex::new(Vec::new()),
             connections: Mutex::new(None),
+            active_connections: Arc::new(Mutex::new(StatsAggregator::new())),
             closed_history: Arc::new(Mutex::new(ClosedHistory::default())),
             stats_poller: Mutex::new(None),
         }
@@ -1073,6 +1077,18 @@ impl StatsRelay {
         self.gate.cached_window_visible(app)
     }
 
+    /// 在完整活动连接表上先过滤、后聚合。只在拓扑搜索词非空时由命令层按需调用；常态流仍维持
+    /// Top-N 小载荷，不把 50,000 条活动表复制进 renderer。
+    pub fn search_topology(&self, query: &str) -> Result<ConnectionsAggregate, String> {
+        match self.active_connections.lock() {
+            Ok(table) => Ok(table.aggregate_matching(query, now_ms())),
+            Err(error) => {
+                log::warn!("活动连接检索 lock: {error}");
+                Err(format!("活动连接数据暂不可用：{error}"))
+            }
+        }
+    }
+
     /// 清空已结束历史并设置重放水位，返回应立即广播给当前页面的空快照。
     pub fn clear_closed_history(&self) -> ConnectionsClosedSnapshot {
         match self.closed_history.lock() {
@@ -1141,6 +1157,7 @@ impl StatsRelay {
             config,
             stop.clone(),
             StreamGate::connections(self.gate.clone()),
+            self.active_connections.clone(),
             self.closed_history.clone(),
         ));
         *slot = Some(AggregatePoller { stop, handle });
@@ -1168,6 +1185,10 @@ impl StatsRelay {
         if let Some(p) = slot.take() {
             p.stop.store(true, Ordering::Relaxed);
             p.handle.abort();
+            self.active_connections
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .reset();
             log::debug!("连接流 relay 已停止");
         }
     }
@@ -1510,13 +1531,13 @@ async fn run_connections_stream(
     config: Arc<ConfigManager>,
     stop: Arc<AtomicBool>,
     mut gate: StreamGate,
+    active_connections: Arc<Mutex<StatsAggregator>>,
     closed_history: Arc<Mutex<ClosedHistory>>,
 ) {
     let visible = visibility_source(gate.state.clone(), app.clone());
     // 节流用**单调**时钟，不是 `now_ms()`（墙钟）：NTP 校时会让墙钟跳变，往前跳一小时 =
     // 一次无节制 emit，往后跳 = emit 被饿死一小时。墙钟只用来填帧里的 `at` 字段（那是给渲染端看的时刻）。
     let clock = Instant::now();
-    let mut table = StatsAggregator::new();
     let mut agg_emit = EmitGate::new(AGGREGATE_EMIT_MIN_INTERVAL);
     let mut detail_emit = EmitGate::new(DETAIL_EMIT_MIN_INTERVAL);
     let mut closed_emit = EmitGate::new(CLOSED_EMIT_MIN_INTERVAL);
@@ -1540,7 +1561,10 @@ async fn run_connections_stream(
                 }) {
                     last_sig = Some(sig);
                 }
-                table.reset();
+                active_connections
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .reset();
                 detail_pending.begin_generation();
                 offline_sent = true;
             }
@@ -1551,6 +1575,9 @@ async fn run_connections_stream(
                 detail_pending.begin_generation();
             }
             if detail_open {
+                let table = active_connections
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(update) = detail_pending.take_update(&table, now_ms()) {
                     broadcast(&app, EVENT_CONNECTIONS_DETAIL, update);
                 }
@@ -1575,7 +1602,10 @@ async fn run_connections_stream(
         let mut stream = client
             .subscribe_connections(CONNECTIONS_STREAM_INTERVAL_NS, ReconnectConfig::default());
         // 新流 = 新的一份真相：旧连接表在此刻作废，等首帧 reset 重建。
-        table.reset();
+        active_connections
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reset();
         detail_pending.begin_generation();
         agg_emit.reset();
         detail_emit.reset();
@@ -1608,11 +1638,15 @@ async fn run_connections_stream(
                 frame = stream.recv() => match frame {
                     Some(ev) => {
                         let events = daemon_events_to_engine(&ev);
+                        let mut table = active_connections
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         let closed_change = closed_history
                             .lock()
                             .map(|mut history| history.apply_events(&events, &table))
                             .unwrap_or(None);
                         let detail_change = table.on_connection_events(&events, 0);
+                        drop(table);
                         let topology_changed = detail_change.affects_topology();
                         detail_pending.merge(detail_change);
                         if topology_changed {
@@ -1647,7 +1681,14 @@ async fn run_connections_stream(
                 // 该 topic 没订阅者时**照样 mark**：不消费掉这次待推标志的话，`wait_for` 会恒返回
                 // ZERO，select 的定时器分支退化成 0 延迟 → 忙转烧一个 tokio worker。
                 if gate.topic_open(Topic::Connections) {
-                    let agg = table.aggregate(now_ms());
+                    // 搜索态不能拿有损 Top-N 的签名当完整表变更信号：两条隐藏连接一进一出时，
+                    // total 与 Top-N 都可能不变。单独发一个小信号，让前端仅在非空查询时重查完整表；
+                    // 正常图仍由下方签名去重，不增加 Sankey 重渲。
+                    broadcast(&app, EVENT_CONNECTIONS_TOPOLOGY_CHANGED, now_ms());
+                    let agg = active_connections
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .aggregate(now_ms());
                     // 签名去重（issue #227）：拓扑载荷是 host/出口计数，连接风暴下内容常不变。
                     // 闸门挡的是频率，去重挡的是「频率之内但内容没变」的那些帧，两者不重叠。
                     if let Some(sig) = signature_changed(&agg, &last_sig) {
@@ -1659,6 +1700,9 @@ async fn run_connections_stream(
             }
             if detail_emit.should_emit(now) {
                 if gate.topic_open(Topic::Detail) {
+                    let table = active_connections
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     if let Some(update) = detail_pending.take_update(&table, now_ms()) {
                         broadcast(&app, EVENT_CONNECTIONS_DETAIL, update);
                     }
@@ -1688,6 +1732,12 @@ async fn run_connections_stream(
                 break;
             }
         }
+        // 断流 / 隐藏 / 换核后的旧表不再是真值。立即清空，避免搜索命令在下一条 reset 到达前读到
+        // 上一代连接；正常聚合签名仍由下一条流的 reset 重建。
+        active_connections
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reset();
         log::debug!("连接流已断开（待重订阅）");
     }
     log::debug!("连接流 relay 已退出");
@@ -3232,6 +3282,23 @@ mod tests {
                 && body.contains("if gate.topic_open(Topic::Detail) {")
                 && body.contains("if gate.topic_open(Topic::Closed) {"),
             "每条投影 emit 前须各自看自己的订阅门（只订了拓扑就别推活动明细增量）"
+        );
+    }
+
+    #[test]
+    fn 完整表变化信号不得受top_n签名去重() {
+        let src = include_str!("stats.rs");
+        let body =
+            crate::commands::guard_scan::top_level_fn_body(src, "async fn run_connections_stream(");
+        let signal = body
+            .find("broadcast(&app, EVENT_CONNECTIONS_TOPOLOGY_CHANGED, now_ms())")
+            .expect("完整活动表变化必须有独立小信号");
+        let lossy_signature = body
+            .find("signature_changed(&agg, &last_sig)")
+            .expect("常态聚合仍须保留签名去重");
+        assert!(
+            signal < lossy_signature,
+            "先发完整表变化信号，再对常态 Top-N 投影去重；否则隐藏成员替换时搜索不会刷新"
         );
     }
 

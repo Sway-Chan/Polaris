@@ -1786,6 +1786,7 @@ fn main() {
             // ── stats 订阅（stats:subscribe/unsubscribe）──
             stats_subscribe,
             stats_unsubscribe,
+            stats_search_topology,
             stats_closed_clear,
             // ── 系统能力（system:listProcesses）──
             system_list_processes,
@@ -1838,6 +1839,7 @@ fn main() {
             fatal_retry,
             // ── 杂项（logs/shell/singbox-dashboard/backup/diagnostic/autostart/ipinfo）──
             logs_get,
+            logs_search,
             logs_unsubscribe,
             logs_clear,
             logs_runtime_level,

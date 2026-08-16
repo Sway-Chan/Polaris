@@ -97,6 +97,7 @@ export const IPC_CHANNELS = {
 
   // 日志管理
   LOGS_GET: 'logs_get',
+  LOGS_SEARCH: 'logs_search',
   LOGS_UNSUBSCRIBE: 'logs_unsubscribe',
   LOGS_CLEAR: 'logs_clear',
   LOGS_EXPORT: 'logs_export', // 纯日志导出（节点身份打码，无配置块/密钥脱敏）——与 DIAGNOSTIC_EXPORT 是两个不同产物
@@ -136,6 +137,7 @@ export const IPC_CHANNELS = {
   // 统计信息（batch3 §3.7：订阅驱动数据面。renderer 按 topic 声明订阅，main 据订阅集派生 worker demand + 精确 relay）
   STATS_SUBSCRIBE: 'stats_subscribe', // 订阅某 topic（stats|aggregate|detail|closed）
   STATS_UNSUBSCRIBE: 'stats_unsubscribe', // 退订某 topic（unmount/窗口隐藏/暂停）：无订阅者 → worker 逐级停机
+  STATS_SEARCH_TOPOLOGY: 'stats_search_topology', // 非空检索时在完整活动表过滤后再聚合，穿透常态 Top-15
   STATS_CLOSED_CLEAR: 'stats_closed_clear', // 清空独立的已结束连接历史
   CONNECTIONS_CLOSE: 'connections_close', // 关单条连接（main 经 9090 DELETE /connections/{id}）
   CONNECTIONS_CLOSE_ALL: 'connections_close_all', // 关全部连接（main 经 9090 DELETE /connections，触发 ResetNetwork）
@@ -227,6 +229,8 @@ export const IPC_CHANNELS = {
   // 取代旧 EVENT_CONNECTIONS_UPDATED（每秒全量 ConnectionEntry[] relay）——连接风暴下渲染端被全量明细拖死（issue #227）。
   // batch3 §3.7：兼作 aggregate topic 的初始帧 + 增量 push 通道（订阅即回缓存帧，之后 seq 变更才推）。
   EVENT_CONNECTIONS_AGGREGATE: 'event:connectionsAggregate',
+  // 完整活动表拓扑字段变化信号：检索态据此重查后端完整表，不把 Top-N 有损签名当真值变化。
+  EVENT_CONNECTIONS_TOPOLOGY_CHANGED: 'event:connectionsTopologyChanged',
   // 活动连接 detail：reset 帧给 generation 基线，常态只推 upsert/累计计数/删除 id；sequence 拒绝乱序。
   // 仅连接页活动视图订阅期流动，无订阅者时中继保留下一位订阅者所需的 reset 基线。
   EVENT_CONNECTIONS_DETAIL: 'event:connectionsDetail',

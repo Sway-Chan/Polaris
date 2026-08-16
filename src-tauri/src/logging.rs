@@ -29,7 +29,7 @@
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -138,6 +138,55 @@ fn collect_from(r: &VecDeque<LogRecord>, from_seq: u64) -> (Vec<LogRecord>, u64)
     (recs, next)
 }
 
+fn search_level_weight(level: &str) -> Option<u8> {
+    match level {
+        "trace" | "debug" => Some(0),
+        "info" => Some(1),
+        "warn" => Some(2),
+        "error" => Some(3),
+        "fatal" => Some(4),
+        _ => None,
+    }
+}
+
+/// 在后端保留历史上过滤，结果按时间正序返回并只保留最新 `limit` 条匹配。
+///
+/// `limit` 是结果 / DOM 预算，不是查询域：始终扫描完整环。这样 UI 仍只绘制 500 行，但一条位于
+/// 第 501—2000 行的诊断记录不会因为“没在当前尾部”而被误报为不存在。
+fn collect_search(
+    r: &VecDeque<LogRecord>,
+    query: &str,
+    min_level: &str,
+    source: &str,
+    limit: usize,
+) -> Result<Vec<LogRecord>, &'static str> {
+    let Some(min_weight) = search_level_weight(min_level) else {
+        return Err("invalid log level");
+    };
+    if !matches!(source, "all" | "sing-box" | "app") {
+        return Err("invalid log source");
+    }
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let query = query.trim().to_lowercase();
+    let mut matches: Vec<LogRecord> = r
+        .iter()
+        .rev()
+        .filter(|record| {
+            search_level_weight(record.level).is_some_and(|weight| weight >= min_weight)
+                && (source == "all" || record.target == source)
+                && (query.is_empty()
+                    || record.message.to_lowercase().contains(&query)
+                    || record.level.contains(&query))
+        })
+        .take(limit)
+        .cloned()
+        .collect();
+    matches.reverse();
+    Ok(matches)
+}
+
 /// 把 UI 长驻正文裁到固定字节预算，保持 UTF-8 边界并在发生裁剪时附加省略号。
 ///
 /// 超限时构造新的有界 allocation，不能在原巨型 `String` 上只做 `truncate`：后者会保留原 capacity，
@@ -205,6 +254,17 @@ pub fn records_from(from_seq: u64) -> (Vec<LogRecord>, u64) {
     collect_from(&r, from_seq)
 }
 
+/// 在完整后端日志环上检索；锁毒化与非法筛选值都显式报错，不能把“读不到”伪装成“零命中”。
+pub fn search_snapshot(
+    query: &str,
+    min_level: &str,
+    source: &str,
+    limit: usize,
+) -> Result<Vec<LogRecord>, &'static str> {
+    let r = ring().lock().map_err(|_| "log ring unavailable")?;
+    collect_search(&r, query, min_level, source, limit)
+}
+
 /// 清空环形缓冲（`logs:clear`）。发号器不复位（seq 全局单调，避免游标错位）。
 pub fn clear() {
     if let Ok(mut r) = ring().lock() {
@@ -214,7 +274,13 @@ pub fn clear() {
 
 struct PolarisLogger {
     /// None = 文件不可用（只写 stderr）。日志绝不能因为落盘失败而影响主流程。
-    file: Mutex<Option<File>>,
+    file: Mutex<Option<LogFileState>>,
+}
+
+struct LogFileState {
+    file: File,
+    log_dir: PathBuf,
+    bytes: u64,
 }
 
 impl log::Log for PolarisLogger {
@@ -242,10 +308,7 @@ impl log::Log for PolarisLogger {
         eprintln!("{line}");
         // 文件：打包后用户唯一能捞到的痕迹。写失败一律吞（日志失败不得反噬主流程）。
         if let Ok(mut guard) = self.file.lock() {
-            if let Some(f) = guard.as_mut() {
-                let _ = writeln!(f, "{line}");
-                let _ = f.flush();
-            }
+            append_log_line_with_limit(&mut guard, &line, MAX_LOG_BYTES);
         }
         // 内存环形缓冲：供日志页 logs:get 水合 + EVENT_LOG_RECEIVED_BATCH 流式推送。
         push_ring(
@@ -258,8 +321,8 @@ impl log::Log for PolarisLogger {
 
     fn flush(&self) {
         if let Ok(mut guard) = self.file.lock() {
-            if let Some(f) = guard.as_mut() {
-                let _ = f.flush();
+            if let Some(state) = guard.as_mut() {
+                let _ = state.file.flush();
             }
         }
     }
@@ -423,18 +486,70 @@ pub fn set_level(level: &str) {
     log::info!("应用日志级别已切到 {effective}（sing-box 侧需重启内核生效）");
 }
 
-/// 打开日志文件（append）；超限先轮转一次。任何 IO 失败 → None（退化成只写 stderr，绝不 panic）。
-fn open_log_file(log_dir: &Path) -> Option<File> {
+/// 把当前日志移到 `.1`。目标已存在时先删旧轮转文件；任一步失败都由调用方降级为继续 append。
+fn rotate_log_file(log_dir: &Path) -> bool {
+    let path = log_dir.join("polaris.log");
+    let rotated = log_dir.join("polaris.log.1");
+    if !path.exists() {
+        return true;
+    }
+    if rotated.exists() && std::fs::remove_file(&rotated).is_err() {
+        return false;
+    }
+    std::fs::rename(path, rotated).is_ok()
+}
+
+/// 打开日志文件（append）；启动时已超限则先轮转。任何 IO 失败 → None（只写 stderr，绝不 panic）。
+fn open_log_file_with_limit(log_dir: &Path, max_bytes: u64) -> Option<LogFileState> {
     std::fs::create_dir_all(log_dir).ok()?;
     let path = log_dir.join("polaris.log");
-    if std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_LOG_BYTES) {
-        let _ = std::fs::rename(&path, log_dir.join("polaris.log.1"));
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > max_bytes) {
+        let _ = rotate_log_file(log_dir);
     }
-    OpenOptions::new()
+    let file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
-        .ok()
+        .ok()?;
+    let bytes = file.metadata().map_or(0, |metadata| metadata.len());
+    Some(LogFileState {
+        file,
+        log_dir: log_dir.to_path_buf(),
+        bytes,
+    })
+}
+
+fn open_log_file(log_dir: &Path) -> Option<LogFileState> {
+    open_log_file_with_limit(log_dir, MAX_LOG_BYTES)
+}
+
+/// 追加一行并在**本次运行中**执行大小轮转。
+///
+/// 轮转判据看“写入后的投影大小”，所以常规行不会把当前文件推过预算；单行本身大于预算时保留整行，
+/// 下一次写入前再轮转，不能为了磁盘预算截断唯一的诊断证据。
+fn append_log_line_with_limit(slot: &mut Option<LogFileState>, line: &str, max_bytes: u64) {
+    let append_bytes = u64::try_from(line.len())
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let should_rotate = slot.as_ref().is_some_and(|state| {
+        state.bytes > 0 && state.bytes.saturating_add(append_bytes) > max_bytes
+    });
+    if should_rotate {
+        let log_dir = slot.as_ref().map(|state| state.log_dir.clone());
+        // Windows 不能 rename 正被本进程打开的文件，必须先 drop File。
+        *slot = None;
+        if let Some(log_dir) = log_dir {
+            let _ = rotate_log_file(&log_dir);
+            *slot = open_log_file_with_limit(&log_dir, max_bytes);
+        }
+    }
+    let Some(state) = slot.as_mut() else {
+        return;
+    };
+    if writeln!(state.file, "{line}").is_ok() {
+        state.bytes = state.bytes.saturating_add(append_bytes);
+        let _ = state.file.flush();
+    }
 }
 
 /// 装 sink。**须在 setup 最早处调用一次**；重复调用（`set_boxed_logger` 返回 Err）静默忽略。
@@ -458,6 +573,47 @@ pub fn init(config_dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn record(seq: u64, level: &'static str, target: &str, message: &str) -> LogRecord {
+        LogRecord {
+            seq,
+            ts_ms: u128::from(seq),
+            level,
+            target: target.to_string(),
+            message: message.to_string(),
+        }
+    }
+
+    #[test]
+    fn search_scans_full_retained_ring_not_only_result_limit() {
+        let mut records = VecDeque::new();
+        records.push_back(record(0, "info", "sing-box", "youtube target"));
+        for seq in 1..1_000 {
+            records.push_back(record(seq, "info", "app", "ordinary line"));
+        }
+
+        let found = collect_search(&records, "youtube", "debug", "all", 500).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].seq, 0, "结果上限不能反向缩小查询域");
+    }
+
+    #[test]
+    fn search_applies_level_source_and_keeps_latest_results_in_time_order() {
+        let records = VecDeque::from([
+            record(1, "debug", "sing-box", "needle debug"),
+            record(2, "warn", "app", "needle app"),
+            record(3, "error", "sing-box", "needle old"),
+            record(4, "fatal", "sing-box", "needle newest"),
+        ]);
+
+        let found = collect_search(&records, "needle", "warn", "sing-box", 2).unwrap();
+        assert_eq!(
+            found.iter().map(|entry| entry.seq).collect::<Vec<_>>(),
+            [3, 4]
+        );
+        assert!(collect_search(&records, "", "invalid", "all", 10).is_err());
+        assert!(collect_search(&records, "", "debug", "kernel", 10).is_err());
+    }
 
     #[test]
     fn ui_log_message_keeps_small_allocation_unchanged() {
@@ -494,6 +650,30 @@ mod tests {
         ));
         assert!(open_log_file(&dir).is_some());
         assert!(dir.join("polaris.log").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn log_file_rotates_during_same_process_lifetime() {
+        let dir = std::env::temp_dir().join(format!(
+            "polaris-log-runtime-rotate-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        let mut slot = open_log_file_with_limit(&dir, 8);
+        append_log_line_with_limit(&mut slot, "1234", 8);
+        append_log_line_with_limit(&mut slot, "5678", 8);
+        drop(slot);
+
+        assert_eq!(
+            std::fs::read_to_string(dir.join("polaris.log.1")).unwrap(),
+            "1234\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("polaris.log")).unwrap(),
+            "5678\n"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

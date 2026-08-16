@@ -171,6 +171,28 @@ export function listen<T = unknown>(event: string, handler: EventHandler<T>): ()
 }
 
 /**
+ * 等到 Tauri 事件监听真正登记完成后再返回退订函数。
+ *
+ * 普通页面可继续使用同步外观的 [`listen`]；需要“监听已就绪 → 取初始快照”的数据面使用本入口，
+ * 否则 `listen()` 内部 Promise 尚未 resolve 时生产端已推进游标，会在登记窗口里丢掉首个变化。
+ */
+export async function listenReady<T = unknown>(
+  event: string,
+  handler: EventHandler<T>
+): Promise<() => void> {
+  if (!isTauri()) {
+    console.warn(`[ipc] listenReady("${event}") called outside Tauri — no-op subscription.`);
+    return () => {};
+  }
+  try {
+    return await tauriListen<T>(event, (e) => handler(e.payload));
+  } catch (err) {
+    console.error(`[ipc] listenReady("${event}") failed to register:`, err);
+    throw err;
+  }
+}
+
+/**
  * IPC 客户端类（保留 Polaris 的 IpcClient 形态，供渐进迁移期老代码 `new IpcClient()` 或 `ipcClient.on` 用）。
  * 内部全部转发到上面的函数式 API。
  */

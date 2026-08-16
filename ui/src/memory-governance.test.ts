@@ -15,8 +15,8 @@ function source(relative: string): string {
 describe('长期内存所有权接线', () => {
   it('日志页以 mount token 成对登记与退订，且监听先于水合', () => {
     const logs = source('./components/screens/logs/LogsScreen.tsx');
-    const listenAt = logs.indexOf('api.logs.onReceivedBatch(');
-    const getAt = logs.indexOf('.get(subscriptionId, MAX_BUFFER)');
+    const listenAt = logs.indexOf('api.logs.onReceivedBatchReady(onBatch)');
+    const getAt = logs.indexOf('.get(subscriptionId, MAX_RENDERED_ROWS)');
     expect(listenAt).toBeGreaterThan(0);
     expect(getAt).toBeGreaterThan(listenAt);
     expect(logs).toContain('api.logs.unsubscribe(subscriptionId)');
@@ -65,12 +65,15 @@ describe('长期内存所有权接线', () => {
     expect(app).toContain('useRef<Map<string, string>>(new Map())');
   });
 
-  it('日志 API 的 get/unsubscribe 跨层通道成对存在', () => {
+  it('日志 API 的 get/search/unsubscribe 跨层通道成对存在', () => {
     const channels = source('./domain/ipc-channels.ts');
     const client = source('./ipc/api-client.ts');
     const main = source('../../src-tauri/src/main.rs');
     expect(channels).toContain("LOGS_UNSUBSCRIBE: 'logs_unsubscribe'");
+    expect(channels).toContain("LOGS_SEARCH: 'logs_search'");
     expect(client).toContain('invoke(IPC_CHANNELS.LOGS_UNSUBSCRIBE, { subscriptionId })');
+    expect(client).toContain('invoke(IPC_CHANNELS.LOGS_SEARCH, { query, level, source, limit })');
     expect(main).toContain('logs_unsubscribe,');
+    expect(main).toContain('logs_search,');
   });
 });

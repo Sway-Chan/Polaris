@@ -794,7 +794,7 @@ export function ConnectionsScreen() {
             aria-selected={view === 'top'}
             onClick={() => setView('top')}
           >
-            <span>{t('home.connectionTopology')}</span>
+            <span>{t('connections.topologyTab')}</span>
           </button>
           <button
             className={view === 'active' ? 'on' : ''}

@@ -38,9 +38,9 @@ pub mod types;
 
 // 顶层便利重导出（常用类型/函数无需写全路径）。
 pub use aggregator::{
-    aggregate_connections, aggregate_connections_with_topn, aggregate_signature,
-    created_at_to_rfc3339, host_name_of, outbound_of, split_host_port, trim_connection,
-    ConnectionsDetailChange, StatsAggregator, MAX_CONN_MAP_SIZE,
+    aggregate_connections, aggregate_connections_matching, aggregate_connections_with_topn,
+    aggregate_signature, created_at_to_rfc3339, host_name_of, outbound_of, split_host_port,
+    trim_connection, ConnectionsDetailChange, StatsAggregator, MAX_CONN_MAP_SIZE,
 };
 pub use diagnostic::{
     DiagnosticCounters, StartAttempt, MAX_RESTART_COUNT as DIAG_MAX_RESTART_COUNT,

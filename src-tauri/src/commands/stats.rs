@@ -13,7 +13,9 @@ use tauri::{AppHandle, State, WebviewWindow};
 use crate::events::{broadcast, channel::EVENT_CONNECTIONS_CLOSED};
 use crate::response::{ok_void, ApiResponse};
 use crate::runtime::AppRuntime;
-use polaris_stats_engine::{ConnectionsClosedSnapshot, ConnectionsClosedUpdate};
+use polaris_stats_engine::{
+    ConnectionsAggregate, ConnectionsClosedSnapshot, ConnectionsClosedUpdate,
+};
 
 /// 上游 `STATS_SUBSCRIBE`：订阅某 topic（main 挂订阅 + 即回初始帧）。
 ///
@@ -44,6 +46,18 @@ pub fn stats_unsubscribe(
 ) -> ApiResponse<()> {
     state.stats().unsubscribe(window.label(), &topic);
     ok_void()
+}
+
+/// 拓扑检索：在后端完整活动连接表上先过滤，再聚合 Top-N。
+///
+/// 这不是新的长驻订阅，也不复制第二份索引；仅用户输入非空检索词时按需执行。常态拓扑继续消费
+/// `event:connectionsAggregate` 的小载荷。空词也可安全调用，语义等价于当前常态聚合。
+#[tauri::command]
+pub fn stats_search_topology(
+    state: State<'_, AppRuntime>,
+    query: String,
+) -> ApiResponse<ConnectionsAggregate> {
+    ApiResponse::from_result(state.stats().search_topology(&query))
 }
 
 /// 清空独立的已结束连接历史。水位由 runtime 记录，后续 gRPC reset 不会把已清的旧历史重新灌回。

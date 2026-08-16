@@ -110,3 +110,18 @@ describe('门 3 · 窄屏兜底列表不许无条件渲染', () => {
     expect(CODE.match(/new ResizeObserver/g)?.length).toBe(1);
   });
 });
+
+describe('准确性门 · 常态 Top-N 只负责绘制，不得充当搜索真值', () => {
+  it('非空查询等待完整表变化监听就绪，再走后端过滤投影', () => {
+    const ready = TOPO_SRC.indexOf('onConnectionsTopologyChangedReady');
+    const search = TOPO_SRC.indexOf('searchTopology(normalizedSearch)');
+    expect(ready).toBeGreaterThan(0);
+    expect(search).toBeGreaterThan(0);
+    expect(TOPO_SRC).toContain('searchProjection.aggregate');
+    expect(TOPO_SRC).toContain("t('home.connectionFlow')");
+  });
+
+  it('完整表零结果回包前不得用 Top-N 猜测“无命中”', () => {
+    expect(TOPO_SRC).toContain('searching && searchResolved && displayAggregate?.total === 0');
+  });
+});

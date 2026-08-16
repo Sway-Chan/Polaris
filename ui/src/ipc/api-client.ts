@@ -23,7 +23,7 @@
  * backup / diagnostic / helper / app / window。与 Polaris api-client.ts 全方法对齐（933 行 → 同语义）。
  */
 
-import { invoke, invokeScalar, listen } from './ipc-client';
+import { invoke, invokeScalar, listen, listenReady } from './ipc-client';
 import { IPC_CHANNELS } from '../domain/ipc-channels';
 import type {
   UserConfig,
@@ -529,6 +529,16 @@ export const logsApi = {
     return invoke(IPC_CHANNELS.LOGS_GET, { subscriptionId, limit });
   },
 
+  /** 在后端保留历史中检索；返回数量受绘制预算限制，但查询域不受前端 500 行尾部限制。 */
+  async search(
+    query: string,
+    level: LogEntry['level'],
+    source: 'all' | 'sing-box' | 'app',
+    limit?: number,
+  ): Promise<LogEntry[]> {
+    return invoke(IPC_CHANNELS.LOGS_SEARCH, { query, level, source, limit });
+  },
+
   async unsubscribe(subscriptionId: string): Promise<void> {
     return invoke(IPC_CHANNELS.LOGS_UNSUBSCRIBE, { subscriptionId });
   },
@@ -574,12 +584,9 @@ export const logsApi = {
     return invoke(IPC_CHANNELS.LOGS_SET_DIAGNOSTIC, { enabled });
   },
 
-  /**
-   * 监听批量日志接收事件：后端 ~150ms coalesce 多条日志为一次数组推送，
-   * 渲染端单次 setState 批量追加。
-   */
-  onReceivedBatch(listener: (logs: LogEntry[]) => void): () => void {
-    return listen(IPC_CHANNELS.EVENT_LOG_RECEIVED_BATCH, listener);
+  /** 等待批量日志监听真正登记完成；水合必须在此之后启动，才能保证快照与直播无缝。 */
+  onReceivedBatchReady(listener: (logs: LogEntry[]) => void): Promise<() => void> {
+    return listenReady(IPC_CHANNELS.EVENT_LOG_RECEIVED_BATCH, listener);
   },
 };
 
@@ -623,6 +630,11 @@ export const statsApi = {
     return invoke(IPC_CHANNELS.STATS_UNSUBSCRIBE, { topic });
   },
 
+  /** 在完整活动连接表上先过滤后聚合；只供拓扑非空检索词按需调用。 */
+  async searchTopology(query: string): Promise<ConnectionsAggregate> {
+    return invoke(IPC_CHANNELS.STATS_SEARCH_TOPOLOGY, { query });
+  },
+
   /** stats topic：流量统计推送。 */
   onStatsUpdated(listener: (data: TrafficStats) => void): () => void {
     return listen<TrafficStats>(STATS_TOPIC_EVENT.stats, listener);
@@ -633,6 +645,11 @@ export const statsApi = {
     listener: (data: ConnectionsAggregate) => void
   ): () => void {
     return listen<ConnectionsAggregate>(STATS_TOPIC_EVENT.aggregate, listener);
+  },
+
+  /** 完整活动表拓扑字段变化；检索态据此重查，常态无需订阅。 */
+  onConnectionsTopologyChangedReady(listener: () => void): Promise<() => void> {
+    return listenReady<number>(IPC_CHANNELS.EVENT_CONNECTIONS_TOPOLOGY_CHANGED, listener);
   },
 
   /** detail topic：活动连接 reset 基线 + 常态增量。 */

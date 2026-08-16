@@ -3,7 +3,8 @@
 //! singbox-dashboard / shell 相关）。
 //!
 //! 映射 channel：
-//! - `logs:get` / `logs:unsubscribe` / `logs:clear` → [`logs_get`] / [`logs_unsubscribe`] / [`logs_clear`]
+//! - `logs:get` / `logs:search` / `logs:unsubscribe` / `logs:clear` → [`logs_get`] / [`logs_search`] /
+//!   [`logs_unsubscribe`] / [`logs_clear`]
 //! - `logs:runtimeLevel` → [`logs_runtime_level`]（读回核在跑的真实日志级别，不是盘上写的那个）
 //! - `logs:diagnosticState` / `logs:setDiagnostic` → 会话级 DEBUG（只活到本次应用退出）
 //! - `shell:openExternal` → [`shell_open_external`]（tauri-plugin-shell）
@@ -150,6 +151,9 @@ const LOG_BATCH_INTERVAL_MS: u64 = 150;
 /// 白白多一次序列化 + 一次 webview 唤醒。**只截 UI 直播流**——落盘与环形缓冲不受影响，
 /// 下一次 `logs:get` 水合仍能取到（且截断条数会 warn 出来，不静默）。
 const MAX_PENDING_LOG_BATCH: usize = 500;
+
+/// 后端检索最多回传多少条结果。它只限制 IPC / DOM 载荷，不限制检索域；检索始终扫描完整日志环。
+const MAX_LOG_SEARCH_RESULTS: usize = 500;
 
 /// 批量日志推送任务的单次启动闸（首个日志页订阅时惰性起，进程内幂等）。
 static LOG_BATCH_STARTED: AtomicBool = AtomicBool::new(false);
@@ -386,6 +390,25 @@ pub fn logs_get(
     }
     let entries: Vec<Value> = recs.iter().map(log_record_to_entry).collect();
     ApiResponse::ok(entries)
+}
+
+/// 在后端完整保留历史上检索日志，而不是只过滤渲染端当前 500 行。
+///
+/// `limit` 是返回结果预算；实际查询域由 logging 的保留环决定，不能把两者混成一个数字。
+#[tauri::command]
+pub fn logs_search(
+    query: String,
+    level: String,
+    source: String,
+    limit: Option<usize>,
+) -> ApiResponse<Vec<Value>> {
+    let limit = limit
+        .unwrap_or(MAX_LOG_SEARCH_RESULTS)
+        .min(MAX_LOG_SEARCH_RESULTS);
+    match crate::logging::search_snapshot(&query, &level, &source, limit) {
+        Ok(records) => ApiResponse::ok(records.iter().map(log_record_to_entry).collect()),
+        Err(error) => ApiResponse::err(error),
+    }
 }
 
 /// 释放当前 LogsScreen mount 的直播流所有权。陈旧 token 不会误删后来的页面实例。

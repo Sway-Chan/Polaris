@@ -14,7 +14,7 @@
  *
  * 接线（保留，见 vault ~/docs/polaris/design/polaris-ui-rebuild-plan.md C3 台账）：
  *  - useAppStore(config/saveConfig/privacyMode)
- *  - api.logs.get（初始水合 + 页面所有权登记）/ .onReceivedBatch（~150ms 合批）/
+ *  - api.logs.get（初始水合 + 页面所有权登记）/ .onReceivedBatchReady（监听就绪后接 ~150ms 合批）/
  *    .unsubscribe（离页释放）/ .clear / .export（纯日志导出）
  *  - api.diagnostic.export（诊断包导出，与纯日志导出是两个不同产物，各自独立按钮）
  *  - 级别：configApi.save 写 config.logLevel（核记录 + 视图显示同一级别，无独立视图侧级别）。
@@ -75,7 +75,9 @@ const LEVEL_SELECT_OPTIONS: CselOption[] = LEVEL_OPTS.map((value) => ({
   value,
   label: value.toUpperCase(),
 }));
-const MAX_BUFFER = 500; // 渲染端缓冲上限（防日志风暴拖死 DOM）
+/** 单次绘制 / IPC 结果上限。它不是检索历史上限；非空搜索由后端扫描完整保留环。 */
+const MAX_RENDERED_ROWS = 500;
+const SEARCH_DEBOUNCE_MS = 180;
 let logSubscriptionSeq = 0;
 
 /** 同一 renderer 内单调唯一即可；后端按 window + token 防陈旧 cleanup 误退新页面。 */
@@ -91,6 +93,23 @@ const AT_BOTTOM_PX = 30;
 const RUNTIME_LEVEL_POLL_MS = 5000;
 
 type LogSource = 'all' | 'sing-box' | 'app';
+
+interface LogSearchSnapshot {
+  key: string;
+  rows: LogRow[];
+}
+
+function searchKey(query: string, level: LogLevel, source: LogSource): string {
+  return `${level}\u0000${source}\u0000${query}`;
+}
+
+function matchesLog(row: LogRow, threshold: number, source: LogSource, query: string): boolean {
+  return (
+    LVL[row.level] >= threshold &&
+    (source === 'all' || row.source === source) &&
+    (!query || (row.message + row.level).toLowerCase().includes(query))
+  );
+}
 
 /* `LogRow` 与两条腿的合并语义已下沉 `./logs-buffer.ts`（纯函数 + 单测），见该文件模块头。 */
 
@@ -124,6 +143,8 @@ export function LogsScreen() {
   const [diagnosticBusy, setDiagnosticBusy] = useState(false);
   const [source, setSource] = useState<LogSource>('all');
   const [search, setSearch] = useState('');
+  const [searchSnapshot, setSearchSnapshot] = useState<LogSearchSnapshot | null>(null);
+  const [logStreamReady, setLogStreamReady] = useState(false);
   const [follow, setFollow] = useState(true);
   /** 直播监听只在 mount 时建立一次；用 ref 读取最新 follow，避免每次暂停都退订、重水合。 */
   const followRef = useRef(follow);
@@ -149,6 +170,22 @@ export function LogsScreen() {
   const level: LogLevel = config?.logLevel ?? 'info';
   /** 诊断模式不改持久级别控件，只临时把本页实际显示门槛抬到 DEBUG。 */
   const displayLevel: LogLevel = diagnosticMode ? 'debug' : level;
+  const threshold = LVL[displayLevel];
+  const query = search.trim().toLowerCase();
+  const activeSearchKey = searchKey(query, displayLevel, source);
+  /** 直播回调只挂载一次，经 ref 读取当前查询，避免每次键入都重建底层事件监听。 */
+  const searchCriteriaRef = useRef({
+    key: activeSearchKey,
+    query,
+    threshold,
+    source,
+  });
+  searchCriteriaRef.current = {
+    key: activeSearchKey,
+    query,
+    threshold,
+    source,
+  };
   /**
    * 核在跑的真实级别徽标（纯投影）。第三参取**盘上**那份 logLevel（非 staged 合并值），
    * 用来区分「改动还在暂存区」与「已落盘但核没重启」—— 两者补救动作不同。
@@ -214,47 +251,105 @@ export function LogsScreen() {
   useEffect(() => {
     let alive = true;
     const subscriptionId = nextLogSubscriptionId();
-    const off = api.logs.onReceivedBatch((raw) => {
+    let off: (() => void) | null = null;
+    const onBatch = (raw: LogRow[]) => {
       if (!Array.isArray(raw) || raw.length === 0) return;
       const batch = dedupe(raw);
       if (batch.length === 0) return;
+      const criteria = searchCriteriaRef.current;
+      if (criteria.query) {
+        const matched = batch.filter((row) =>
+          matchesLog(row, criteria.threshold, criteria.source, criteria.query)
+        );
+        if (matched.length > 0) {
+          setSearchSnapshot((previous) => ({
+            key: criteria.key,
+            rows: mergeHydration(
+              previous?.key === criteria.key ? previous.rows : [],
+              matched,
+              MAX_RENDERED_ROWS
+            ),
+          }));
+        }
+      }
       if (followRef.current) {
         setLogs((prev) => {
           const next = [...prev, ...batch];
-          return next.length > MAX_BUFFER ? next.slice(-MAX_BUFFER) : next;
+          return next.length > MAX_RENDERED_ROWS ? next.slice(-MAX_RENDERED_ROWS) : next;
         });
       } else {
         pendingRef.current.push(...batch);
-        if (pendingRef.current.length > MAX_BUFFER) {
-          pendingRef.current = pendingRef.current.slice(-MAX_BUFFER);
+        if (pendingRef.current.length > MAX_RENDERED_ROWS) {
+          pendingRef.current = pendingRef.current.slice(-MAX_RENDERED_ROWS);
         }
         setPendingCount(pendingRef.current.length);
       }
-    });
+    };
 
-    api.logs
-      .get(subscriptionId, MAX_BUFFER)
-      .then((batch) => {
-        if (!alive) {
-          // invoke 可能晚于 React cleanup 返回；token 退订只会删除这个陈旧实例。
-          void api.logs.unsubscribe(subscriptionId);
-          return;
-        }
-        if (!Array.isArray(batch)) return;
-        const snapshot = batch.slice(-MAX_BUFFER);
-        const top = maxLogId(snapshot);
-        if (top !== null && top > lastIdRef.current) lastIdRef.current = top;
-        setLogs((prev) => mergeHydration(prev, snapshot, MAX_BUFFER));
-      })
+    void (async () => {
+      // Tauri 的 listen 是异步登记：必须等监听真就绪后才让 logs_get 唤醒 emitter，消除首批丢失窗口。
+      off = await api.logs.onReceivedBatchReady(onBatch);
+      if (!alive) {
+        off();
+        off = null;
+        return;
+      }
+      setLogStreamReady(true);
+      const batch = await api.logs.get(subscriptionId, MAX_RENDERED_ROWS);
+      if (!alive) {
+        // invoke 可能晚于 React cleanup 返回；token 退订只会删除这个陈旧实例。
+        void api.logs.unsubscribe(subscriptionId);
+        return;
+      }
+      if (!Array.isArray(batch)) return;
+      const snapshot = batch.slice(-MAX_RENDERED_ROWS);
+      const top = maxLogId(snapshot);
+      if (top !== null && top > lastIdRef.current) lastIdRef.current = top;
+      setLogs((prev) => mergeHydration(prev, snapshot, MAX_RENDERED_ROWS));
+    })()
       .catch(() => {
         /* 非 Tauri 忽略 */
       });
     return () => {
       alive = false;
-      off();
+      off?.();
+      off = null;
       void api.logs.unsubscribe(subscriptionId);
     };
   }, [dedupe]);
+
+  /* 非空查询走后端完整保留环；结果上限只约束 IPC/DOM。直播匹配行由上方 onBatch 同步并入同一快照。 */
+  useEffect(() => {
+    if (!query) {
+      setSearchSnapshot(null);
+      return;
+    }
+    if (!logStreamReady) return;
+    let alive = true;
+    const key = activeSearchKey;
+    const timer = window.setTimeout(() => {
+      void api.logs
+        .search(query, displayLevel, source, MAX_RENDERED_ROWS)
+        .then((batch) => {
+          if (!alive || !Array.isArray(batch)) return;
+          setSearchSnapshot((previous) => ({
+            key,
+            rows: mergeHydration(
+              previous?.key === key ? previous.rows : [],
+              batch,
+              MAX_RENDERED_ROWS
+            ),
+          }));
+        })
+        .catch(() => {
+          /* 保持直播已命中的结果；IPC 失败会由收口层记录。 */
+        });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [activeSearchKey, displayLevel, logStreamReady, query, source]);
 
   /* 会话诊断态由后端进程持有：换屏会卸载本组件，但不能因此误关诊断；重挂时读回即可。 */
   useEffect(() => {
@@ -384,6 +479,7 @@ export function LogsScreen() {
         try {
           await api.logs.clear();
           setLogs([]);
+          setSearchSnapshot(null);
           pendingRef.current = [];
           setPendingCount(0);
           toast.info(t('logs.clearDone'));
@@ -445,18 +541,17 @@ export function LogsScreen() {
     }
   }, [t]);
 
-  /* ── 过滤：级别阈值 + 来源 + 搜索（对齐原型 renderLogs 的 filter 条件）── */
-  const thr = LVL[displayLevel];
-  const q = search.trim().toLowerCase();
+  /* 空搜索过滤当前绘制尾部；非空搜索消费后端完整保留环返回的独立结果集。 */
   const visible = useMemo(
-    () =>
-      logs.filter(
-        (l) =>
-          LVL[l.level] >= thr &&
-          (source === 'all' || l.source === source) &&
-          (!q || (l.message + l.level).toLowerCase().includes(q))
-      ),
-    [logs, thr, source, q]
+    () => {
+      const rows = query
+        ? searchSnapshot?.key === activeSearchKey
+          ? searchSnapshot.rows
+          : []
+        : logs;
+      return rows.filter((row) => matchesLog(row, threshold, source, query));
+    },
+    [activeSearchKey, logs, query, searchSnapshot, source, threshold]
   );
 
   /** 是否对日志正文脱敏（隐私锁 或 C18 常态脱敏偏好）—— 渲染与复制**同一判定、同一函数**。 */
@@ -495,7 +590,7 @@ export function LogsScreen() {
       setPendingCount(0);
       setLogs((prev) => {
         const merged = [...prev, ...pending];
-        return merged.length > MAX_BUFFER ? merged.slice(-MAX_BUFFER) : merged;
+        return merged.length > MAX_RENDERED_ROWS ? merged.slice(-MAX_RENDERED_ROWS) : merged;
       });
     }
     setFollow(true);
@@ -510,18 +605,18 @@ export function LogsScreen() {
   /* ── 搜索高亮：转义正则，<mark> 包裹命中（对齐原型 renderLogs 的 mark 替换）── */
   const highlight = useCallback(
     (msg: string) => {
-      if (!q) return msg;
+      if (!query) return msg;
       try {
-        const esc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const esc = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const parts = msg.split(new RegExp(`(${esc})`, 'ig'));
         return parts.map((p, i) =>
-          p.toLowerCase() === q ? <mark key={i}>{p}</mark> : <span key={i}>{p}</span>
+          p.toLowerCase() === query ? <mark key={i}>{p}</mark> : <span key={i}>{p}</span>
         );
       } catch {
         return msg;
       }
     },
-    [q]
+    [query]
   );
 
   /* follow 按钮的文案已固定为「自动滚动」（态由底色表达），但**暂停期间缓冲了多少行**这条信息

@@ -92,6 +92,9 @@ pub mod channel {
     // stats 订阅驱动数据面（topic → 推送通道）
     pub const EVENT_STATS_UPDATED: &str = "event:statsUpdated";
     pub const EVENT_CONNECTIONS_AGGREGATE: &str = "event:connectionsAggregate";
+    /// 完整活动表的拓扑相关字段发生变化（小信号，不携带有损 Top-N 投影）。
+    /// 首页“连接流向”处于检索态时据此重查后端完整表；常态图仍只消费 aggregate 小载荷。
+    pub const EVENT_CONNECTIONS_TOPOLOGY_CHANGED: &str = "event:connectionsTopologyChanged";
     pub const EVENT_CONNECTIONS_DETAIL: &str = "event:connectionsDetail";
     pub const EVENT_CONNECTIONS_CLOSED: &str = "event:connectionsClosed";
 

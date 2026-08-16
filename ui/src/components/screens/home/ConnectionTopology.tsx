@@ -11,7 +11,8 @@
  * .card 无 overflow:hidden（components.css:42），故 absolute 挂 wrap 即可，无需 Portal。
  *
  * 高亮：hover 与检索共用 collectLinkedIds 的 BFS 焦点集（上游-topology-search.md 选 A）。hover 临时优先，
- * 指针离开恢复检索高亮；检索非空但零命中 → 焦点集为空 → 全图淡出 + 卡头提示（「其它」内条目聚合侧已丢弃，不可搜）。
+ * 指针离开恢复检索高亮。非空检索由后端在完整活动表上先过滤再聚合，常态 Top-15 只是绘制投影，
+ * 不再充当检索数据源。
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -37,6 +38,12 @@ import {
 } from './topology-layout';
 
 const TIP_OFFSET = 12; // tooltip 相对指针偏移
+const SEARCH_DEBOUNCE_MS = 180;
+
+interface SearchProjection {
+  query: string;
+  aggregate: ConnectionsAggregate;
+}
 
 interface ContextMenuState {
   x: number; // 相对 .sankey-wrap
@@ -62,11 +69,73 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
 
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [search, setSearch] = useState('');
+  const [searchProjection, setSearchProjection] = useState<SearchProjection | null>(null);
   const [hovered, setHovered] = useState<{ kind: 'node' | 'link'; id: string } | null>(null);
   const [tip, setTip] = useState<{ text: string; clientX: number; clientY: number } | null>(null);
   const [tipSize, setTipSize] = useState({ w: 0, h: 0 });
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
   const [menuSize, setMenuSize] = useState({ w: 0, h: 0 });
+
+  const normalizedSearch = search.trim().toLowerCase();
+  const searching = normalizedSearch !== '';
+  const searchResolved = searchProjection?.query === normalizedSearch;
+
+  /* 非空检索：先等完整表变更监听真登记，再发首个查询；之后每个 250ms 合并后的变更信号重查。
+     请求世代守卫保证慢回包不能覆盖后发的新真值。常态不挂该监听、不增加第二份长驻索引。 */
+  useEffect(() => {
+    if (!searching || disconnected) {
+      setSearchProjection(null);
+      return;
+    }
+    let alive = true;
+    let off: (() => void) | null = null;
+    let timer: number | null = null;
+    let requestSequence = 0;
+
+    const refresh = () => {
+      const sequence = ++requestSequence;
+      void api.stats
+        .searchTopology(normalizedSearch)
+        .then((next) => {
+          if (alive && sequence === requestSequence) {
+            setSearchProjection({ query: normalizedSearch, aggregate: next });
+          }
+        })
+        .catch(() => {
+          /* IPC 收口层已记录；保留上一份已核实投影，不编造空结果。 */
+        });
+    };
+    const schedule = (delay: number) => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(refresh, delay);
+    };
+
+    void api.stats
+      .onConnectionsTopologyChangedReady(() => schedule(0))
+      .then((unlisten) => {
+        if (!alive) {
+          unlisten();
+          return;
+        }
+        off = unlisten;
+        if (timer === null) schedule(SEARCH_DEBOUNCE_MS);
+      })
+      .catch(() => {
+        // 监听故障时至少给出一次完整表快照；不能退回用 Top-15 断言“无结果”。
+        if (alive) schedule(SEARCH_DEBOUNCE_MS);
+      });
+
+    return () => {
+      alive = false;
+      requestSequence += 1;
+      if (timer !== null) window.clearTimeout(timer);
+      off?.();
+    };
+  }, [disconnected, normalizedSearch, searching]);
+
+  const displayAggregate = searching && searchResolved
+    ? searchProjection.aggregate
+    : aggregate;
 
   /* SVG 实测尺寸：.sankey 有 contain:size（防 viewBox 比例把旧高度反馈回 flex 链造成「高度棘轮」），
      故 intrinsic 尺寸不可信，必须走 getBoundingClientRect + ResizeObserver。
@@ -87,14 +156,13 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
 
   const { nodes, links } = useMemo(
     () =>
-      aggregate
-        ? computeTopologyLayout(aggregate, size.w, t, size.h)
+      displayAggregate
+        ? computeTopologyLayout(displayAggregate, size.w, t, size.h)
         : { nodes: [] as TopoNode[], links: [] as TopoLink[] },
-    [aggregate, size.w, size.h, t]
+    [displayAggregate, size.w, size.h, t]
   );
 
   const searchMatches = useMemo(() => matchNodeIds(nodes, search), [nodes, search]);
-  const searching = search.trim() !== '';
 
   /* 焦点集：hover 临时优先于检索（指针离开自动恢复检索高亮）。null = 未激活（全图正常）。
      检索零命中 → 空焦点集 → collectLinkedIds 返回空集 → 全图淡出，与「未激活」区分开。 */
@@ -216,7 +284,7 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
     [t, stagingEnabled, stage]
   );
 
-  const hosts = aggregate?.hosts ?? [];
+  const hosts = displayAggregate?.hosts ?? [];
   const maxHost = hosts.reduce((m, h) => Math.max(m, h.count), 0) || 1;
   const hostLabel = (n: string) => (n === TOPOLOGY_OTHERS_KEY ? t('home.others') : n);
 
@@ -226,9 +294,9 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
   return (
     <div className={cn('card pad topo', disconnected && 'disconnected')} id="topo-card">
       <div className="topo-head">
-        <h3 data-tip={t('home.topologyHint')}>{t('home.connectionTopology')}</h3>
+        <h3 data-tip={t('home.topologyHint')}>{t('home.connectionFlow')}</h3>
         <span className="tw">
-          {t('home.connections')}: {aggregate?.total ?? 0}
+          {t('home.connections')}: {displayAggregate?.total ?? 0}
         </span>
         {/* 检索框：复用 .input + .search-box 通用皮肤（icon + borderless input + focus ring），.topo-search 仅覆盖尺寸。
             .topo-search 必须定义在 .input 之后 —— 同特异性下 .input 的 width:100% 会反压把卡头挤成竖排（上游 真机实证）。 */}
@@ -265,7 +333,7 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
           className={cn('sankey', dim && 'dim')}
           viewBox={`0 0 ${size.w} ${size.h}`}
           role="img"
-          aria-label={t('home.connectionTopology')}
+          aria-label={t('home.connectionFlow')}
           onMouseLeave={() => {
             setHovered(null);
             setTip(null);
@@ -380,8 +448,8 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
           </div>
         )}
 
-        {/* 检索零命中提示：「其它」内的条目在 stats-engine 聚合时已合并丢弃，渲染端不可达 */}
-        {searching && searchMatches.length === 0 && nodes.length > 0 && (
+        {/* 只有完整表查询已经回包且总数为零，才能断言“无命中”；等待期不拿 Top-15 猜。 */}
+        {searching && searchResolved && displayAggregate?.total === 0 && (
           <div className="sk-nomatch">{t('home.searchTopologyNoMatch')}</div>
         )}
 
@@ -389,7 +457,7 @@ function ConnectionTopologyView({ aggregate, disconnected }: ConnectionTopologyP
             `@container topo (max-width:540px)` 锁死（prototype.css:522），宽屏下 `display:none`
             ⇒ 拓扑是首页视觉主体，零连接时整块纯白，与「加载中/坏了」无从区分。提到 SVG 同级，
             并由 `.sankey-empty` 在窄容器下隐藏，避免与 fallback 那句重复。 */}
-        {nodes.length === 0 && !disconnected && (
+        {nodes.length === 0 && !disconnected && !searching && (
           <div className="sankey-empty">{t('home.noActiveConnections')}</div>
         )}
 

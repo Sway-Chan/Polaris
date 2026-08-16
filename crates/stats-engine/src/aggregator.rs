@@ -309,6 +309,38 @@ pub fn aggregate_connections_with_topn(
     aggregate_connections_iter(conns.iter(), at, top_n)
 }
 
+/// 在**完整活动连接集**上先按 host / outbound 过滤，再做 Top-N 聚合。
+///
+/// 常态拓扑仍走 [`aggregate_connections`] 的固定 Top-N 小载荷；只有用户输入检索词时才调用本函数。
+/// 过滤必须发生在 Top-N 之前：若先聚合再搜，被归入「其他」的低频域名已经不可逆丢失，检索会把
+/// “不在绘制预算内”误报成“不存在”。空检索词等价于常态聚合。
+pub fn aggregate_connections_matching(
+    conns: &[ConnectionEntry],
+    query: &str,
+    at: u64,
+) -> ConnectionsAggregate {
+    aggregate_connections_matching_iter(conns.iter(), query, at)
+}
+
+fn aggregate_connections_matching_iter<'a>(
+    conns: impl IntoIterator<Item = &'a ConnectionEntry>,
+    query: &str,
+    at: u64,
+) -> ConnectionsAggregate {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return aggregate_connections_iter(conns, at, TOPOLOGY_TOP_N);
+    }
+    aggregate_connections_iter(
+        conns.into_iter().filter(|connection| {
+            host_name_of(connection).to_lowercase().contains(&query)
+                || outbound_of(connection).to_lowercase().contains(&query)
+        }),
+        at,
+        TOPOLOGY_TOP_N,
+    )
+}
+
 /// 从借用迭代器聚合连接，避免拓扑刷新前先克隆整张连接表。
 ///
 /// 公共函数继续接收 slice 以保持 API 稳定；长驻流内部直接把 `IndexMap::values()` 交给这里，
@@ -556,6 +588,11 @@ impl StatsAggregator {
     /// 轮询时代各拉一次全量表是重复劳动。
     pub fn aggregate(&self, at: u64) -> ConnectionsAggregate {
         aggregate_connections_iter(self.conn_map.values(), at, TOPOLOGY_TOP_N)
+    }
+
+    /// 当前完整活动表的检索投影：先过滤、后聚合，因而能命中常态 Top-N 之外的连接。
+    pub fn aggregate_matching(&self, query: &str, at: u64) -> ConnectionsAggregate {
+        aggregate_connections_matching_iter(self.conn_map.values(), query, at)
     }
 
     /// 归零 snapshot + 清空 connMap + **丢掉速率差分基线**（stop / resubscribe 重连窗口，
@@ -878,6 +915,85 @@ mod tests {
                 outbound: "P".into(),
                 count: 1
             }]
+        );
+    }
+
+    #[test]
+    fn topology_search_filters_before_top_n_instead_of_searching_lossy_projection() {
+        let mut conns = Vec::new();
+        for i in 0..TOPOLOGY_TOP_N {
+            conns.push(conn(
+                &format!("busy-{i}"),
+                Some(&format!("host-{i:02}.example")),
+                Some("busy-out"),
+            ));
+        }
+        conns.push(conn("youtube", Some("www.youtube.com"), Some("Hk02-L7-H3")));
+
+        let normal = aggregate_connections(&conns, 10);
+        assert!(
+            !normal
+                .hosts
+                .iter()
+                .any(|host| host.name == "www.youtube.com"),
+            "等计数时 youtube 排在常态 Top-N 之外，先聚合再搜索必然丢失"
+        );
+
+        let searched = aggregate_connections_matching(&conns, "YOUTUBE", 20);
+        assert_eq!(searched.total, 1);
+        assert_eq!(searched.hosts.len(), 1);
+        assert_eq!(searched.hosts[0].name, "www.youtube.com");
+        assert_eq!(searched.outbounds[0].name, "Hk02-L7-H3");
+    }
+
+    #[test]
+    fn topology_search_matches_outbound_and_empty_query_preserves_normal_projection() {
+        let conns = vec![
+            conn("a", Some("a.example"), Some("direct")),
+            conn("b", Some("b.example"), Some("Hk02-L7-H3")),
+        ];
+        let searched = aggregate_connections_matching(&conns, "hk02", 20);
+        assert_eq!(searched.total, 1);
+        assert_eq!(searched.hosts[0].name, "b.example");
+        assert_eq!(
+            aggregate_connections_matching(&conns, "  ", 30),
+            aggregate_connections(&conns, 30)
+        );
+    }
+
+    #[test]
+    fn hidden_connection_can_change_while_normal_top_n_signature_stays_equal() {
+        let mut stable = Vec::new();
+        for i in 0..TOPOLOGY_TOP_N {
+            stable.push(conn(
+                &format!("top-{i}-a"),
+                Some(&format!("top-{i:02}.example")),
+                Some("proxy"),
+            ));
+            stable.push(conn(
+                &format!("top-{i}-b"),
+                Some(&format!("top-{i:02}.example")),
+                Some("proxy"),
+            ));
+        }
+        let mut before = stable.clone();
+        before.push(conn("hidden-old", Some("zzz.hidden"), Some("proxy")));
+        let mut after = stable;
+        after.push(conn("hidden-new", Some("www.youtube.com"), Some("proxy")));
+
+        assert_eq!(
+            aggregate_signature(&aggregate_connections(&before, 10)),
+            aggregate_signature(&aggregate_connections(&after, 20)),
+            "Top-N + 其它 + total 都不变时，常态有损签名观察不到隐藏成员替换"
+        );
+        assert_eq!(
+            aggregate_connections_matching(&before, "youtube", 30).total,
+            0
+        );
+        assert_eq!(
+            aggregate_connections_matching(&after, "youtube", 40).total,
+            1,
+            "搜索刷新不能依赖常态 Top-N 签名变化"
         );
     }
 
