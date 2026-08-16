@@ -695,7 +695,8 @@ async fn run_download_and_stage(
     let asset_name = url.rsplit('/').next().unwrap_or("core-asset").to_string();
 
     // ── 真下载（重定向 / 完整性 / 停滞看门狗 / 镜像回退全在既有适配器里）。
-    let dl = crate::commands::updater_downloader(state);
+    // 内核腿整包入内存（解归档要用）⇒ 闸就是内存闸，逐字沿用形参化之前的 16 MiB。
+    let dl = crate::commands::updater_downloader(state, crate::runtime::http::MAX_DOWNLOAD_BYTES);
     let url_owned = url.to_string();
     let bytes = tokio::task::spawn_blocking(move || dl.download(&url_owned))
         .await

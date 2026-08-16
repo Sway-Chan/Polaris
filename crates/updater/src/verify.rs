@@ -47,27 +47,146 @@ pub fn sha256_hex_lower(bytes: &[u8]) -> String {
 // `polaris_helper_proto::codec` re-export，故 `crate::verify::is_valid_sha256_hex`（manifest.rs 的调用路径）继续可用。
 // 用 `//` 而非 `///`：doc 注释必须挂在 item 上，此处后面并无 item（原为悬空 doc → clippy `empty_line_after_doc_comments`）。
 
+/// 比对**已经算好**的实际摘要与期望摘要 —— 全 crate 摘要判定的**单点**。
+///
+/// # 为什么必须是单点（这不是洁癖）
+///
+/// 判定本身只有两行，但它有**两个变体**（[`VerifyError::InvalidExpectedHash`] =
+/// 发布方把摘要写坏了 / [`VerifyError::HashMismatch`] = 包与摘要对不上），而两者的**处置相反**：
+/// 前者重下一万次也不会好，后者才值得让用户重试。手搓一份
+/// `!is_valid_sha256_hex(..) || !eq_ignore_ascii_case(..)` 就把这条分野压成了一个 bool ——
+/// 调用方只能报一句「可能被截断或篡改」，把发布方的失误显示成投毒警告（生产的
+/// `update_download` 腿此前正是这个形态）。
+///
+/// [`verify_bytes`] 与 [`Sha256Stream::verify`] 都委托本函数：三处各写一份必然在
+/// 「大小写敏不敏感」「先验格式还是先比对」上分叉，而分叉只在真机大包上暴露。
+///
+/// # Errors
+///
+/// - [`VerifyError::InvalidExpectedHash`]：`expected_hex` 非 64 字符 hex。
+/// - [`VerifyError::HashMismatch`]：实际 hash 与期望不符（大小写不敏感比对）。
+pub fn verify_hex_digest(actual_hex: &str, expected_hex: &str) -> Result<(), VerifyError> {
+    if !is_valid_sha256_hex(expected_hex) {
+        return Err(VerifyError::InvalidExpectedHash(expected_hex.len()));
+    }
+    if actual_hex.eq_ignore_ascii_case(expected_hex) {
+        Ok(())
+    } else {
+        Err(VerifyError::HashMismatch {
+            expected: expected_hex.to_string(),
+            actual: actual_hex.to_string(),
+        })
+    }
+}
+
 /// 校验字节流的 SHA256 是否等于期望（大小写不敏感，对齐 Polaris Go `strings.EqualFold`）。
 ///
 /// 移植自 `CoreUpdateService.installCoreFromDir` 经 helper install-core 路径的 sha256 校验
 /// （`helper-linux/core_installer.rs:99` 同款 `eq_ignore_ascii_case`）。
+///
+/// 判定委托 [`verify_hex_digest`]（单点），本函数只负责「把字节算成 hex」。
 ///
 /// # Errors
 ///
 /// - [`VerifyError::InvalidExpectedHash`]：`expected_hex` 非 64 字符 hex。
 /// - [`VerifyError::HashMismatch`]：实际 hash 与期望不符。
 pub fn verify_bytes(bytes: &[u8], expected_hex: &str) -> Result<(), VerifyError> {
-    if !is_valid_sha256_hex(expected_hex) {
-        return Err(VerifyError::InvalidExpectedHash(expected_hex.len()));
+    // 先验格式再算摘要：期望值本身非法时不白算一遍几十 MiB 的 sha256
+    // （= 委托单点之前的行为，逐字保留）。
+    verify_hex(expected_hex)?;
+    verify_hex_digest(&sha256_hex(bytes), expected_hex)
+}
+
+/// **增量** SHA-256：边收边算，不要求把整个负载留在内存里。
+///
+/// # 为什么与 [`verify_bytes`] 并存而不是取代它
+///
+/// [`verify_bytes`] 吃 `&[u8]` —— 它的调用方（staged 换核周期）本来就持着整包字节（解归档要用），
+/// 换成流式只会平白多一次拷贝。真正需要流式的是 **App 安装包腿**：几十 MiB 到上百 MiB 的包
+/// 「整包入内存再校验落盘」把内存峰值与包体积绑死。故此处新增累加式能力，
+/// **既有函数签名一个不动**。
+///
+/// 语义与 [`verify_bytes`] 逐字一致：[`Self::verify`] 同样先验期望 hex 的格式
+/// （[`VerifyError::InvalidExpectedHash`]）、再做大小写不敏感比对
+/// （[`VerifyError::HashMismatch`]）—— 两条腿判出来的结论必须是同一个，
+/// 否则「内存校验过、流式校验不过」这类分叉没人能解释。
+#[derive(Debug, Clone, Default)]
+pub struct Sha256Stream {
+    hasher: Sha256,
+    len: u64,
+}
+
+impl Sha256Stream {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
     }
-    let actual = sha256_hex(bytes);
-    if actual.eq_ignore_ascii_case(expected_hex) {
-        Ok(())
-    } else {
-        Err(VerifyError::HashMismatch {
-            expected: expected_hex.to_string(),
-            actual,
-        })
+
+    /// 喂一段字节（可调任意多次；分片方式不影响最终摘要）。
+    pub fn update(&mut self, bytes: &[u8]) {
+        self.hasher.update(bytes);
+        self.len += bytes.len() as u64;
+    }
+
+    /// 已喂入的累计字节数。
+    ///
+    /// **生产消费点**：流式下载腿拿它与网络侧独立维护的 `received` 互校
+    /// （`runtime/http.rs` 的 `HashingSink::finish` → `download_to_sink_with_progress`）。
+    /// 两个计数分别由「网络收了多少」与「sink 真吃下多少」维护，对不上就说明
+    /// 中间有一段字节没进 hasher —— 那会让摘要算在一份与盘上不同的内容上。
+    #[must_use]
+    pub const fn len(&self) -> u64 {
+        self.len
+    }
+
+    /// 是否一个字节都没喂过。
+    ///
+    /// 无生产调用点（如实登记）：clippy 的 `len_without_is_empty` 要求与 [`Self::len`] 配对，
+    /// 单测也用它断言「空输入」。**不删**是因为删了 `len` 就得一并抑制那条 lint。
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// 结束累加，返回小写 hex 摘要（与 [`sha256_hex`] 同口径）。
+    #[must_use]
+    pub fn finish(self) -> String {
+        hex::encode(self.hasher.finalize())
+    }
+
+    /// 结束累加并与期望摘要比对（大小写不敏感）。
+    ///
+    /// 判定委托 [`verify_hex_digest`]（与 [`verify_bytes`] 同一个单点）——「内存校验过、
+    /// 流式校验不过」这类分叉没人能解释，故两条腿不许各留一份比较逻辑。
+    ///
+    /// # Errors
+    ///
+    /// - [`VerifyError::InvalidExpectedHash`]：`expected_hex` 非 64 字符 hex。
+    /// - [`VerifyError::HashMismatch`]：实际 hash 与期望不符。
+    pub fn verify(self, expected_hex: &str) -> Result<(), VerifyError> {
+        verify_hex_digest(&self.finish(), expected_hex)
+    }
+}
+
+/// 流式计算一个 reader 的 SHA-256 hex（**不把内容整块读进内存**）。
+///
+/// 用于「文件已在盘、只想知道它的摘要」的场景（如复用判定）：`std::fs::read` + [`sha256_hex`]
+/// 会为一次判定把整包搬进内存，而判定本身只需要 64 字节的结论。
+///
+/// # Errors
+///
+/// 透传 reader 的 IO 错误。
+pub fn sha256_reader_hex<R: std::io::Read>(mut reader: R) -> std::io::Result<String> {
+    // 64 KiB：足够摊薄 syscall 开销，又不会在栈/堆上占显眼的一块。
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut stream = Sha256Stream::new();
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => return Ok(stream.finish()),
+            Ok(n) => stream.update(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
     }
 }
 
@@ -108,6 +227,31 @@ pub fn atomic_replace(fs: &dyn UpdateFs, dest: &Path, bytes: &[u8]) -> Result<()
     // 2. 原子 rename。失败 → 删 tmp 残件后抛出（防残件累积；清理失败无害）。
     if let Err(e) = fs.rename(&tmp, dest) {
         let _ = fs.remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// 把**已经在盘**的临时文件提升为 `dest`：只做一次同目录 rename，**绝不把内容读回内存**。
+///
+/// # 为什么不能用 [`atomic_replace`] 代替
+///
+/// [`atomic_replace`] 吃 `&[u8]`。对「刚流式写完一个几十 MiB 的临时文件」的调用方，
+/// 它意味着**把整个文件读回内存再写一遍** —— 正好抵消掉流式下载省下的内存与一次全量写。
+/// 故落位路径分成两个入口：字节还在内存里 → [`atomic_replace`]；字节已在盘 → 本函数。
+///
+/// `tmp` 必须由 [`tmp_name`] 生成（保证与 `dest` **同目录同卷** —— 跨卷 rename 不是原子操作，
+/// 在 Windows 上还会直接失败）。
+///
+/// 失败语义与 [`atomic_replace`] 第 3 步一致：rename 失败即删 tmp 残件后抛出
+/// （残件清理失败被吞）。dest 要么保持原样、要么是完整的新内容，**不存在半截态**。
+///
+/// # Errors
+///
+/// 透传 [`UpdateFs::rename`] 的 IO 错误。
+pub fn promote_staged(fs: &dyn UpdateFs, tmp: &Path, dest: &Path) -> Result<(), std::io::Error> {
+    if let Err(e) = fs.rename(tmp, dest) {
+        let _ = fs.remove_file(tmp);
         return Err(e);
     }
     Ok(())
@@ -181,9 +325,23 @@ pub fn atomic_replace_multi(
 /// 上游 原名是 `${dest}.polaris-new`（`CoreUpdateService.ts:462`）；此处刻意分叉并留档。
 ///
 /// **已知代价（如实登记）**：进程在 write 与 rename 之间被硬杀会留下带唯一后缀的残件
-/// （固定名那版会被下一次写入覆盖掉）。两条正常失败路径（write / rename 报错）都会主动删，
-/// 故只在硬崩时残留；换核的暂存目录每次 `stage` 都整目录重建，也会一并清掉。
-fn tmp_name(dest: &Path) -> std::path::PathBuf {
+/// （固定名那版会被下一次写入覆盖掉）。两条正常失败路径（write / rename 报错）都会主动删。
+///
+/// 残件的兜底回收**分腿不同，别把换核腿的兜底当成全仓的**（2026-08-16 订正：本段原写
+/// 「换核的暂存目录每次 `stage` 都整目录重建，也会一并清掉」，那句话只对换核腿成立）：
+///  - **换核腿**：暂存目录每次 `stage` 整目录重建 ⇒ 残件确实被一并清掉；
+///  - **App 更新腿**：落在 `<cache>/updates/`，**没有任何整目录重建**。且它的主触发器不是硬崩 ——
+///    `update_download` 是 async command，tmp 建立后唯一的 await 点是 `spawn_blocking(...).await`，
+///    下载途中退出 App 会让 tauri runtime **drop 掉那个 future**，三处清理全被绕过，
+///    而 blocking 线程仍可能把 tmp 写完。故该腿必须自带清扫
+///    （`commands/updater.rs` 的 `sweep_orphan_downloads`），不能指望本段的「硬崩才残留」。
+///
+/// `pub`：流式下载腿要**先**拿到 tmp 路径（下载直接写它）、再交 [`promote_staged`] 提升，
+/// 而不是像 [`atomic_replace`] 那样在函数内部一手包办。两条腿共用本函数是硬要求 ——
+/// 各造一份 tmp 命名必然在「是否与 dest 同目录」上分叉，而那正是原子性的前提
+/// （由 `tmp_name_is_unique_per_call` 的同目录断言锁死）。
+#[must_use]
+pub fn tmp_name(dest: &Path) -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     /// 进程内单调序号：同一毫秒内的多次调用也不会撞名。
     static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -196,7 +354,7 @@ fn tmp_name(dest: &Path) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::StdFs;
+    use crate::traits::{MockFailOp, MockFs, StdFs};
 
     // 已知内容的标准 SHA256（用 echo -n | sha256sum 验证）：
     //   sha256(b"")     = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
@@ -245,12 +403,167 @@ mod tests {
         assert_eq!(err, VerifyError::InvalidExpectedHash(64));
     }
 
+    /// 🟡 **摘要判定是单点，且两个变体必须可分辨（二者处置相反）。**
+    ///
+    /// 生产的 `update_download` 腿此前手搓 `!is_valid_sha256_hex(..) || !eq_ignore_ascii_case(..)`，
+    /// 把「发布方 digest 写坏了」与「包被截断/篡改」压成一个 bool ⇒ 用户被引导去反复重下一个
+    /// 永远不会好的包。本条钉住：判据分变体，且三个入口结论**逐字一致**。
+    ///
+    /// **变异探针**：删掉 [`verify_hex_digest`] 的 `InvalidExpectedHash` 早退（非法 hex 落进
+    /// `eq_ignore_ascii_case` → 报成 HashMismatch）⇒ 第 1 条转红；把 [`verify_bytes`] 或
+    /// [`Sha256Stream::verify`] 任一改回自己手搓比较 ⇒ 一致性断言转红。
+    #[test]
+    fn digest_verdict_is_single_sourced_and_splits_by_variant() {
+        // 格式非法 ≠ 摘要不符。
+        assert_eq!(
+            verify_hex_digest(HELLO_SHA, "not-a-hash"),
+            Err(VerifyError::InvalidExpectedHash(10))
+        );
+        assert!(matches!(
+            verify_hex_digest(HELLO_SHA, EMPTY_SHA),
+            Err(VerifyError::HashMismatch { .. })
+        ));
+        assert!(verify_hex_digest(HELLO_SHA, HELLO_SHA).is_ok());
+        // 大小写不敏感（实际值侧与期望值侧都是）。
+        assert!(verify_hex_digest(&HELLO_SHA.to_uppercase(), HELLO_SHA).is_ok());
+        assert!(verify_hex_digest(HELLO_SHA, &HELLO_SHA.to_uppercase()).is_ok());
+
+        // 三个入口的结论（含错误变体与其载荷）必须逐字相同。
+        for expected in [HELLO_SHA, EMPTY_SHA, "not-a-hash"] {
+            let by_bytes = verify_bytes(b"hello", expected);
+            let by_stream = {
+                let mut s = Sha256Stream::new();
+                s.update(b"hello");
+                s.verify(expected)
+            };
+            let by_hex = verify_hex_digest(HELLO_SHA, expected);
+            assert_eq!(
+                by_bytes, by_hex,
+                "verify_bytes 与单点判据分叉了（expected={expected}）"
+            );
+            assert_eq!(
+                by_stream, by_hex,
+                "Sha256Stream::verify 与单点判据分叉了（expected={expected}）"
+            );
+        }
+    }
+
     #[test]
     fn verify_hex_only_format() {
         assert!(verify_hex(HELLO_SHA).is_ok());
         assert_eq!(
             verify_hex("abc").unwrap_err(),
             VerifyError::InvalidExpectedHash(3)
+        );
+    }
+
+    /// 增量 hash 与整包 hash **必须**给出同一个摘要，且与分片方式无关。
+    ///
+    /// 这是流式腿敢换掉 `verify_bytes` 的全部依据：分片一变结论就变的话，
+    /// 「本地算出来的摘要」与「发布方公布的摘要」永远对不上，且只在真机大包上才暴露。
+    #[test]
+    fn incremental_sha256_equals_one_shot_for_any_chunking() {
+        let payload: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
+        let one_shot = sha256_hex(&payload);
+        // 分片长度刻意取互质/极端值（1 字节、素数、超过总长）。
+        for chunk in [1usize, 7, 997, 4096, payload.len(), payload.len() * 2] {
+            let mut s = Sha256Stream::new();
+            for part in payload.chunks(chunk.max(1)) {
+                s.update(part);
+            }
+            assert_eq!(s.len(), payload.len() as u64, "累计字节数必须等于喂入总量");
+            assert_eq!(s.finish(), one_shot, "分片大小 {chunk} 改变了摘要");
+        }
+        // 空输入与 `sha256_hex(b"")` 同口径。
+        let empty = Sha256Stream::new();
+        assert!(empty.is_empty());
+        assert_eq!(Sha256Stream::new().finish(), EMPTY_SHA);
+    }
+
+    /// `Sha256Stream::verify` 与 `verify_bytes` 的判定必须逐字一致（含错误变体）。
+    #[test]
+    fn stream_verify_matches_verify_bytes_semantics() {
+        let mut ok = Sha256Stream::new();
+        ok.update(b"hel");
+        ok.update(b"lo");
+        assert!(ok.verify(HELLO_SHA).is_ok());
+        // 大小写不敏感（对齐 verify_bytes 的 eq_ignore_ascii_case）。
+        let mut upper = Sha256Stream::new();
+        upper.update(b"hello");
+        assert!(upper.verify(&HELLO_SHA.to_uppercase()).is_ok());
+        // 不符 → HashMismatch，且 actual 与 verify_bytes 算出的一致。
+        let mut bad = Sha256Stream::new();
+        bad.update(b"hello");
+        assert_eq!(bad.verify(EMPTY_SHA), verify_bytes(b"hello", EMPTY_SHA));
+        // 期望 hex 格式非法 → InvalidExpectedHash（**不能**降级成「没校验」放行）。
+        let mut invalid = Sha256Stream::new();
+        invalid.update(b"hello");
+        assert_eq!(
+            invalid.verify("abc"),
+            Err(VerifyError::InvalidExpectedHash(3))
+        );
+    }
+
+    #[test]
+    fn sha256_reader_hex_matches_one_shot() {
+        let payload: Vec<u8> = (0..200_000u32).map(|i| (i % 97) as u8).collect();
+        let got = sha256_reader_hex(std::io::Cursor::new(payload.clone())).unwrap();
+        assert_eq!(got, sha256_hex(&payload));
+        assert_eq!(
+            sha256_reader_hex(std::io::Cursor::new(Vec::new())).unwrap(),
+            EMPTY_SHA
+        );
+    }
+
+    /// 🟡 **提升路径只 rename，不读内容** —— 且 tmp 必须与 dest 同目录。
+    ///
+    /// **变异探针**：把 [`promote_staged`] 改回 `atomic_replace(fs, dest, &fs.read(tmp)?)`
+    /// ⇒ 「dest 落位后 tmp 必须消失且目录里只剩 dest」仍绿，但 `promote_staged` 就重新
+    /// 需要一次全量读 —— 故另配 `MockFailOp::Read` 注入：本函数**一次 read 都不能有**。
+    #[test]
+    fn promote_staged_renames_without_reading_the_payload() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let dest = StdFs.join(tmpdir.path(), "update.pkg");
+        let tmp = tmp_name(&dest);
+        assert_eq!(
+            tmp.parent(),
+            dest.parent(),
+            "tmp 必须与 dest 同目录（跨卷 rename 不是原子操作）"
+        );
+        std::fs::write(&tmp, b"streamed-bytes").unwrap();
+
+        // 注入「read 一律失败」：若实现里还藏着一次读回内存，本条立刻转红。
+        let mut fs = MockFs::new(tmpdir.path());
+        fs.fail_next(MockFailOp::Read);
+        promote_staged(&fs, &tmp, &dest).unwrap();
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"streamed-bytes");
+        assert_eq!(
+            StdFs.list_files(tmpdir.path()).unwrap(),
+            vec!["update.pkg".to_string()],
+            "提升后不得留 tmp 残件"
+        );
+    }
+
+    /// rename 失败 → 删 tmp 残件后抛出，**dest 保持原样**（不出现半截态）。
+    #[test]
+    fn promote_staged_cleans_the_tmp_when_rename_fails() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let dest = StdFs.join(tmpdir.path(), "update.pkg");
+        std::fs::write(&dest, b"old-and-complete").unwrap();
+        let tmp = tmp_name(&dest);
+        std::fs::write(&tmp, b"partial").unwrap();
+
+        let mut fs = MockFs::new(tmpdir.path());
+        fs.fail_next(MockFailOp::Rename);
+        let err = promote_staged(&fs, &tmp, &dest).unwrap_err();
+        assert!(err.to_string().contains("Rename"));
+
+        assert!(!tmp.exists(), "rename 失败必须删掉 tmp 残件");
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            b"old-and-complete",
+            "落位失败不得动 dest"
         );
     }
 
