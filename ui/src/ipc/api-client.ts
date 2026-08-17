@@ -1005,9 +1005,22 @@ export const updateApi = {
     return invoke(IPC_CHANNELS.UPDATE_CHECK, { includePrerelease });
   },
 
-  async download(
-    updateInfo: UpdateInfo
-  ): Promise<{ success: boolean; filePath?: string; verified?: boolean; error?: string }> {
+  /**
+   * 下载更新包。
+   *
+   * `verified` 特指**摘要**这一级：`true` = 有期望 sha256 且逐字相符；`false` = 该 release 没给
+   * 摘要（旧 release 的正常形态，不拒装），此时后端仍做了「清单 `fileSize` 等值 + Content-Length」
+   * 两级弱校验。`digestSource` 如实标注摘要是谁给的（当前只有 `'githubAssetDigest'`），
+   * 无摘要时为 `null` —— 出事时据它追责到具体信任根。复用本地已有包的那条路径同样带这个字段
+   * （它恰恰是靠这条摘要比中的）。
+   */
+  async download(updateInfo: UpdateInfo): Promise<{
+    success: boolean;
+    filePath?: string;
+    verified?: boolean;
+    digestSource?: string | null;
+    error?: string;
+  }> {
     return invoke(IPC_CHANNELS.UPDATE_DOWNLOAD, { updateInfo });
   },
 
