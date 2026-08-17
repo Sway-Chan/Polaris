@@ -143,7 +143,8 @@ impl StartedService for MockService {
 
     /// 发送侧尚未接线（客户端无对应方法）。这里**明确报 Unimplemented 而不是假装成功**：
     /// 一个静默返回 Ok 的 mock 会让将来接线时的第一版测试恒绿。
-    type SendTaildropFilesStream = ReceiverStream<Result<daemon::TaildropSendServerMessage, Status>>;
+    type SendTaildropFilesStream =
+        ReceiverStream<Result<daemon::TaildropSendServerMessage, Status>>;
     async fn send_taildrop_files(
         &self,
         _req: Request<tonic::Streaming<daemon::TaildropSendClientMessage>>,
@@ -200,11 +201,11 @@ impl StartedService for MockService {
     ) -> Result<Response<Empty>, Status> {
         check_auth(&req, &self.secret)?;
         let r = req.into_inner();
-        self.state
-            .taildrop_cancel_calls
-            .lock()
-            .unwrap()
-            .push((r.endpoint_tag, r.sender_id, r.name));
+        self.state.taildrop_cancel_calls.lock().unwrap().push((
+            r.endpoint_tag,
+            r.sender_id,
+            r.name,
+        ));
         Ok(Response::new(Empty {}))
     }
 
@@ -1028,8 +1029,10 @@ async fn taildrop_inbox_stream_resubscribes_with_the_same_tag() {
     let client = SingBoxApiClient::connect(Endpoint::new("127.0.0.1", addr.port()), SECRET)
         .await
         .unwrap();
-    let mut stream = client
-        .subscribe_taildrop_inbox("ts-node", ReconnectConfig::with_backoff(Duration::from_millis(20)));
+    let mut stream = client.subscribe_taildrop_inbox(
+        "ts-node",
+        ReconnectConfig::with_backoff(Duration::from_millis(20)),
+    );
     use tokio_stream::StreamExt;
     for _ in 0..2 {
         tokio::time::timeout(Duration::from_secs(2), stream.next())
@@ -1038,7 +1041,10 @@ async fn taildrop_inbox_stream_resubscribes_with_the_same_tag() {
             .expect("frame present");
     }
     let tags = state.taildrop_subscribe_tags.lock().unwrap().clone();
-    assert!(tags.len() >= 2, "应至少订阅两次（首连 + 重连），实得 {tags:?}");
+    assert!(
+        tags.len() >= 2,
+        "应至少订阅两次（首连 + 重连），实得 {tags:?}"
+    );
     assert!(
         tags.iter().all(|t| t == "ts-node"),
         "重连必须重发同一个 tag，实得 {tags:?}"

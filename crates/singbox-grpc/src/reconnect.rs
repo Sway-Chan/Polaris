@@ -184,7 +184,8 @@ impl Reconnect<daemon::TaildropInbox> for TaildropInboxReconnect {
         target: String,
         secret: Option<String>,
         _interval_ns: i64,
-    ) -> Pin<Box<dyn Future<Output = Result<Streaming<daemon::TaildropInbox>, String>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Streaming<daemon::TaildropInbox>, String>> + Send>>
+    {
         let endpoint_tag = self.endpoint_tag.clone();
         Box::pin(async move {
             let channel = h2c::connect_h2c(&target)

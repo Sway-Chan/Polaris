@@ -115,11 +115,8 @@ type RecordedLayout = (SymbolKind, &'static str, &'static [(&'static str, u32)])
 /// `daemon/started_service.proto` 逐行 diff（beta.14 里这四个 message 根本不存在，故是纯新增、
 /// 无「改号」风险面），随后由 `vendored_proto_matches_every_bundled_core` 对随包 beta.15
 /// 二进制的 descriptor 复核通过。
-const RECORDED_BETA15_TAILDROP_INBOX: &[(&str, u32)] = &[
-    ("endpointTag", 1),
-    ("files", 2),
-    ("receiving", 3),
-];
+const RECORDED_BETA15_TAILDROP_INBOX: &[(&str, u32)] =
+    &[("endpointTag", 1), ("files", 2), ("receiving", 3)];
 const RECORDED_BETA15_TAILDROP_FILE: &[(&str, u32)] = &[
     ("name", 1),
     ("size", 2),
