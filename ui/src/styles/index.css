@@ -780,6 +780,18 @@ body:has(.pending-bar.show) #toast-stack{
  * 同时仍配一条 toast（NodesScreen），两个通道一起给：鼠标用户看描边，视线在别处的用户看 toast。 */
 .nd-card.confirming{ outline:2px solid hsl(var(--flow)); outline-offset:-2px; }
 
+/* `.nd-card` transition 收窄覆盖层——**必须**落在这里，改 screens.css 那份声明本身不够生效。
+ * 根因：`prototype.css:682` 有逐字同选择器的 `.nd-card{ …transition:.14s; … }`（原型逐字镜像、禁改），
+ * 与 `screens.css:75` 那条同选择器同特异性 (0,1,0)。index.css 的 @import 顺序是
+ * components → screens → prototype（本文件头 :14-16），同特异性下**后 @import 者胜** —— 于是不管
+ * screens.css 把 `transition` 改成什么，prototype.css 那份未收窄的 `transition:.14s`（= 无 property
+ * 限定 ⇒ `transition-property:all`）都会把它压回去。真正让收窄生效的只能是位于全部 `@import` 之后
+ * 的这条覆盖层（(0,1,0) 同特异性，源序更晚 ⇒ 胜出）。
+ *
+ * 收窄到这四个属性的判据、以及「为什么视图档切换因此变瞬切、采样器③为何仍要留着」，
+ * 完整写在 screens.css:61 的姊妹注释里，此处不复述，只保证两处同值。 */
+.nd-card{ transition:border-color .14s, box-shadow .14s, background .14s, outline .14s; }
+
 /* 能力检测徽章合并成一行（陈先生 2026-07-30：腾一行给连接拓扑）。
  * 原本 AI / 流媒体各占一行、各带一个 `.ul-lbl` 文字标签；现在两组同排、用一个 `·` 分隔。
  * `.ub-grp` 自己也是 flex 且**可换行**：窄窗口下徽章仍要能折行，只是折行发生在组内而不是

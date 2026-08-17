@@ -132,7 +132,7 @@ function warnMissingScroller(): void {
  *    读反了 `grid-auto-rows:1fr`：它的效果是**所有行等于全局最高卡**（prototype.css:679 自己的
  *    注释就写着「stretch+auto-rows:1fr=全卡跨行统一等高(全局最高卡)」），故总幅度 = **行数 × Δ**。
  *    k=60、N=4 ⇒ 15 行，一排 chip ≈ 20~25px ⇒ 300~375px，**直接跨过 240px 余量**。
- *    这行结论今天侥幸成立，靠的是 `.nd-card{min-height:141px}`（screens.css:62）这个地板把一排
+ *    这行结论今天侥幸成立，靠的是 `.nd-card{min-height:141px}`（screens.css:77）这个地板把一排
  *    chip 的自然高吃掉了 —— 而地板只在自然高 < 141px 时有效，原表从头到尾没提过它。
  *    更要命的是漏项：`selectedServerId`（点卡设为出口，本屏最高频动作）会把 `.nd-cur` chip 从 A 卡
  *    挪到 B 卡；A 卡若原本是唯一最高卡、且正因这颗 chip 排到 3 行，掉回 2 行 ⇒ 15 行各矮 ~23px
@@ -151,27 +151,37 @@ function warnMissingScroller(): void {
  *     它取代了原来的 `window.addEventListener('resize')`：今天所有改窗口几何的路径都落在这个盒子上，
  *     旧监听是它的子集。（**不写「必然」**：Windows per-monitor DPI 迁移会给出等逻辑尺寸的新 rect，
  *     CSS px 不变、RO 不发；那一档也不改 auto-fill 列数，无害，但断言不能过强。）
- *  ③ **委派 `transitionend` on `.main-scroll`** —— 覆盖**带 CSS 过渡的内容高度**变化。
- *     今天在用的只有一条：视图档切换。`.nd-card{transition:.14s}` 是简写、无 property 限定
- *     ⇒ `transition-property:all`（screens.css:62），而列表档把 `min-height` 141→0、`padding`、
- *     `border-width` 一并改掉（:301）⇒ 切档那一次，①量到的是**过渡前**的卡高，而②只看容器盒子、
- *     内容变矮不改它。少了③，`view` 这一维就只有一次可能陈旧的采样 —— 与侧栏那条 High 同型。
- *     （今天两个方向都恰好落在安全侧，我逐个核过：**card→list** 时 `display` 瞬切成 flex 列而
- *     `min-height` 还停在 141px ⇒ 量到 60×141 ≈ 8460px，远超任何视口 ⇒ 判「不推进」，而终态
- *     60×40 = 2400px 本来也不该推进，结论一致；**list→card** 时 `min-height` 还停在 0 ⇒ 量到的比
- *     终态矮 ⇒ 只会多推进，是过渡渲染而非漏渲染。但这是两条**量级不等式**，不是机制。给 `.nd-card`
- *     加任何影响高度的样式、或把列表行做厚，它立刻变成第三个同型缺陷 —— 故按机制补，不靠不等式。）
+ *  ③ **委派 `transitionend` on `.main-scroll`** —— 覆盖**带 CSS 过渡的内容高度**变化，纯防御性保留。
+ *     **2026-08-17 更新**：曾经在用的那一条（视图档切换）已被收窄掉，今天没有已知的活跃触发案例。
+ *     `.nd-card` 的 transition 原是无 property 限定的简写 `.14s`（⇒ `transition-property:all`），
+ *     列表档把 `min-height` 141→0、`padding`、`border-width` 一并改掉（screens.css:316）⇒ 切档
+ *     那一次，①量到的是**过渡前**的卡高，而②只看容器盒子、内容变矮不改它 —— 那一维在两者之间
+ *     是个洞，与侧栏那条 High 同型。现在 `.nd-card` 的 transition 已收窄到
+ *     border-color/box-shadow/background/outline（screens.css:77 + index.css 的收窄覆盖层，均不
+ *     参与盒模型），几何属性随切档瞬切 ⇒ ①单次采样即是终值，`view` 这一维不再需要③补。
+ *     **仍不删的理由**：③守的是「`.main-scroll` 内任何带 CSS 过渡的内容高度变化」这整条机制，不是
+ *     `view` 这一个案例——给 `.nd-card` 或本屏其它元素今后新加任何动画化几何属性的样式，它立刻
+ *     重新变成非它不可。删掉它等于把「今天没有已知触发案例」误判成「以后也用不到」，是本屏刚放弃
+ *     的「枚举触发面」思路（见上方「为什么补批放弃枚举触发面」整段）从「布局向量」换个马甲搬回
+ *     「过渡属性」。成本极低（一条委派监听 + 无匹配时零回调），不值得省。
  *
- * **未解的上游问题（需产品决策，本批未动）**：`.nd-card` 的 `transition:.14s` 写成 `all`，本意只是
- * `:hover` 的 `border-color`/`box-shadow`/`background`。收窄成那三个属性可以从根上消掉内容高度过渡
- * （采样器③对 `view` 这一维随之变成冗余），还省掉 60+ 张卡的 `min-height` 动画。但那是**用户可见的
- * 动效变化**（卡片↔列表从渐变morph 变成瞬切），且偏离原型 SoT，需陈先生拍板，不在本批自行决定。
+ * **已收窄（2026-08-17，陈先生拍板执行）**：`.nd-card` 的 `transition:.14s` 曾写成无 property 限定
+ * 的简写（= `all`），本意只是 `:hover`/`.cur` 的 `border-color`/`box-shadow`，以及列表档 hover 的
+ * `background`、`.confirming`（index.css:781）的 `outline`。现已收窄到这四个属性
+ * （screens.css:77 + index.css 的收窄覆盖层——`screens.css` 那份声明单独存在不生效，理由见该处
+ * 注释：prototype.css:682 有逐字同选择器、同特异性的未收窄声明，且是 `index.css` 的最后一个
+ * `@import` ⇒ 同特异性后者胜）。四个属性均不参与盒模型，故视图档切换的几何变化（`min-height`/
+ * `padding`/`border-width`）随之变回瞬切 ⇒ 采样器③对 `view` 这一维随之变成冗余（仍保留，见上方
+ * 该采样器条目——它守的是机制，不是这一个案例）。
+ * **用户可见的取舍（如实记）**：卡片↔列表切换从渐变 morph 变成瞬切。渐变的代价是 60+ 张卡的
+ * `min-height` 逐帧参与布局重算（本屏这份分批基础设施的存在理由之一），换来的是切档动效的连续感；
+ * 瞬切换回来的是零几何动画开销、且从根上消掉「过渡中途采样陈旧几何」这整类缺陷的触发面。
  *
  * 下表是**留档**，不再是判据来源（像素取自各自 CSS 盒模型，量级判定非精确测绘）：
  *
  * | 向量 | 改的是 | 幅度 | 曾经的判定 | 现在由谁收 |
  * |---|---|---|---|---|
- * | 视图档 `view`（卡片↔列表） | 内容，**带 140ms 过渡**（`transition:all`） | 行高 141px ↔ ~40px；60 条差 2~3 倍 scrollHeight | 会卡死 → 进依赖 | ③ transitionend（①量到的是过渡前的值） |
+ * | 视图档 `view`（卡片↔列表，**2026-08-17 起瞬切**，见上方「已收窄」段） | 内容 | 行高 141px ↔ ~40px；60 条差 2~3 倍 scrollHeight | 收窄前：会卡死 → 进依赖（`transition:all`，③ transitionend 补） | ① 每次 commit（无过渡，一采即真值；③ 仍挂着，对这一维是无害空转） |
  * | 侧栏折叠 | 主区宽 ±92px / mac ±68px → 列数 ±1 | 窄窗 N=4、k=60 时 15→12 行 = 3×141 + 3×12(gap) ≈ 459px | 会卡死 → 进依赖（**读到的是旧几何，实际没收住**） | ② RO（过渡全程连续回报） |
  * | 窗口 resize / 缩放 / 全屏 | 可视区 + 内容 | 无界 | `window resize` 监听 | ② RO（旧监听已撤；per-monitor DPI 迁移那一档 RO 不发，见上） |
  * | **出口切换 `selectedServerId`** | 内容（`.nd-cur` chip 换卡 → 最高卡行数变 → **每行**跟着变） | 15 行 × ~23px = 345px | **整条漏列** | ① 每次 commit（无过渡，一采即真值） |
@@ -568,17 +578,25 @@ export function NodesScreen() {
        （同值 ⇒ React 就地停），外加 `shouldAdvance` 的 `clientHeight <= 0` 短路。 */
     const ro = new ResizeObserver(topUpBatch);
     ro.observe(scroller);
-    /* 采样器③：**带 CSS 过渡的内容高度变化**。`transitionend` 冒泡，故一条委派监听即可。
-       非它不可的理由：`.nd-card` 写的是 `transition:.14s`（简写、无 property 限定 ⇒
-       `transition-property:all`，screens.css:62），而列表档把 `min-height` 141→0、`padding`、
-       `border-width` 一并改掉（:301）⇒ 切视图档那一次，commit 后立刻量到的是**过渡前**的卡高。
-       采样器①（每次 commit）只有那一次采样，采样器②又只看容器盒子（内容变高矮不改它）——
-       这一维在两者之间是个洞，与侧栏那条 High 同型。140ms 后过渡结束，这条把它补上。
+    /* 采样器③：**带 CSS 过渡的内容高度变化**，纯防御性保留（2026-08-17 更新，详见文件头注）。
+       `transitionend` 冒泡，故一条委派监听即可。
 
-       成本如实记账：一次切档 60 张卡 × 若干属性 ≈ 一两百个事件，集中落在过渡结束那一帧。
-       但 `min-height` 过渡本身每帧就在让浏览器算布局，这里多出来的是同一帧内的 `scrollHeight`
-       读；第一次读强制一次 layout，其余读命中干净布局。不做 propertyName 过滤：过滤就是又一张
-       要维护的枚举表，正是本屏刚放弃的那条路。 */
+       曾经非它不可的那个案例已被消掉：`.nd-card` 原写的是 `transition:.14s`（简写、无 property
+       限定 ⇒ `transition-property:all`），列表档把 `min-height` 141→0、`padding`、`border-width`
+       一并改掉（screens.css:316）⇒ 切视图档那一次，commit 后立刻量到的是**过渡前**的卡高。现在
+       `.nd-card` 的 transition 已收窄到 border-color/box-shadow/background/outline
+       （screens.css:77 + index.css 的收窄覆盖层，均不参与盒模型）⇒ 几何属性随切档瞬切，
+       采样器①单次采样即是终值。
+
+       **仍不删的理由**：这条守的是「`.main-scroll` 内任何带 CSS 过渡的内容高度变化」这整条机制，
+       不是 `view` 这一个案例——给 `.nd-card` 或本屏其它元素今后新加任何动画化几何属性的样式，它
+       立刻重新变成非它不可，删掉等于把「今天没有已知触发案例」误判成「以后也用不到」。
+
+       成本如实记账：收窄后 card↔list 切换仍会触发 `transitionend`——`background`/`border-color`
+       在两档间的静态值本就不同（surface↔transparent、line↔currentcolor），只是不再影响几何 ⇒
+       事件仍到，但此刻量到的和采样器①已经一致，`advanceBatch` 同值 bail-out，是一次无副作用的
+       空转，不是错误重算。不做 propertyName 过滤：过滤就是又一张要维护的枚举表，正是本屏刚
+       放弃的那条路。 */
     scroller.addEventListener('transitionend', topUpBatch);
     return () => {
       scroller.removeEventListener('scroll', topUpBatch);
