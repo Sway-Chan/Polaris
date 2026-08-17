@@ -458,6 +458,9 @@ export default function App() {
   // 落盘，其回声被合并进写 1 那次 get；若该 get 携带的是写 2 之前的快照，store 就停在旧值，而写 2 的
   // 回声已被消费掉、不会再有刷新 → 与磁盘持久分叉（表现：开关点了弹回、拖拽回跳一拍）。
   // force 自带代际失效（invalidateLoadConfig），旧在飞载的回填会被丢弃。代价只是每次广播一次 get。
+  // 回调必须零参（不得读 payload——事件已无载荷）：Rust 侧 `commands/config.rs` 的
+  // `config_changed_payload_tests` 把本文件 include_str! 进测试判据锁住这条形态，改成读参数的
+  // 形态会让 `cargo test -p polaris` 转红。
   useEffect(() => {
     const off = api.config.onChanged(() => void loadConfig(true));
     return off;

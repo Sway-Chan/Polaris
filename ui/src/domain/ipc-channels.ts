@@ -218,6 +218,8 @@ export const IPC_CHANNELS = {
   // 覆盖全部路径。上面两条**保留不动**（后端两个 scheduler 仍听它们：订阅补更会真联网、
   // 换核会排队，收口过去等于每次内部重启都多跑一遍）。
   EVENT_PROXY_LIFECYCLE: 'event:proxyLifecycle',
+  // 无载荷：payload 恒为 {}，本文件三个订阅方（App.tsx / TrayMenu.tsx / useConfig.ts）全部丢弃，
+  // 详见后端 commands/config.rs::broadcast_config_changed_with 与其调用点守卫。
   EVENT_CONFIG_CHANGED: 'event:configChanged',
   // 订阅后台自动更新结果（scheduler 发；渲染端仅失败态 toast，成功静默——对齐 上游 后台更新只入日志）。
   // 手动刷新走 SUBSCRIPTION_UPDATE_SERVERS 命令的三态 toast，不经本通道。payload={subscriptionId,name,success,error?,addedServers,updatedServers,deletedServers,unchanged}

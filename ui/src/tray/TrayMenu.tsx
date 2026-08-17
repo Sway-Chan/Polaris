@@ -219,6 +219,9 @@ export default function TrayMenu() {
       // （主动停会清掉它，崩溃则根本不发这个事件）—— 少了这次回读，状态点会停在旧的错误态。
       void hydrate();
     });
+    // 回调必须零参（不得读 payload——事件已无载荷）：Rust 侧 `commands/config.rs` 的
+    // `config_changed_payload_tests` 把本文件 include_str! 进测试判据锁住这条形态，改成读参数的
+    // 形态会让 `cargo test -p polaris` 转红。
     const offConfig = api.config.onChanged(() => void hydrate());
     // 浮层每次弹出（获焦）先**同步**按已知 uiTheme 校正主题：浮层窗常驻，隐藏期间系统可能切了明暗，
     // show 首帧 DOM 还挂着旧 data-theme 会「闪一下旧主题」；同步先校正、再异步 hydrate 拉真值。

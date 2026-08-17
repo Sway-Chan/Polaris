@@ -1106,11 +1106,38 @@ fn icon_gallery_cache() -> &'static Mutex<Option<IconGalleryCache>> {
     CACHE.get_or_init(|| Mutex::new(None))
 }
 
-/// 读缓存：命中且未过 TTL → 克隆返回；否则 None。锁中毒 → 视作未命中（不 panic，回退重拉）。
+/// 读缓存：命中且未过 TTL → 克隆返回；过期 → **就地驱逐**后返回 None（见 [`take_fresh_icon_items`]）。
+/// 锁中毒 → 视作未命中（不 panic，回退重拉）—— `ok()?` 这条腿的语义不变。
 fn read_fresh_icon_cache() -> Option<Vec<IconGalleryItem>> {
-    let guard = icon_gallery_cache().lock().ok()?;
-    let cache = guard.as_ref()?;
-    (cache.fetched_at.elapsed() < ICON_GALLERY_CACHE_TTL).then(|| cache.items.clone())
+    let mut guard = icon_gallery_cache().lock().ok()?;
+    take_fresh_icon_items(&mut guard, ICON_GALLERY_CACHE_TTL)
+}
+
+/// [`read_fresh_icon_cache`] 的判定半边：新鲜 → 克隆返回；**过期 → 就地置 `None` 再返回 `None`**。
+///
+/// # 为什么过期必须驱逐，而不是只返回 `None`
+///
+/// 判过期的那一刻，就是那份清单最后一次被看见 —— 它此后没有任何读者，却会一直躺在进程级静态
+/// 缓存里，等下一次**成功**拉取来覆盖、或用户点刷新、或进程退出。而三图库并发拉取是「全失败就
+/// 一份都不写」（见 [`fetch_and_store_icon_galleries`]），所以离线 / CDN 不可达 / SSRF guard 拒绝
+/// 时，旧清单是**无限期**驻留：3000~4000 条，每条 url 恒带 71 字节 CDN 前缀，约 0.3~0.8 MiB。
+///
+/// # 为什么 TTL 从参数进来
+///
+/// 为了让「已过期」在单测里可构造。`Instant` 造不出可靠的过去时刻：Windows 上它是 QPC 计数，
+/// 机器 uptime 不足 TTL 时 `checked_sub` 直接返回 `None`（CI 矩阵含 windows-2022）⇒ 那种测试会在
+/// 新开的 runner 上变成假红或静默跳过。改用 `ttl = ZERO` 表达「一切皆已过期」，跨平台恒定，
+/// 且不必在 `cfg(test)` 下偷改生产常量（测试环境比生产宽容的绿没有信息量）。
+fn take_fresh_icon_items(
+    slot: &mut Option<IconGalleryCache>,
+    ttl: Duration,
+) -> Option<Vec<IconGalleryItem>> {
+    let cache = slot.as_ref()?;
+    if cache.fetched_at.elapsed() < ttl {
+        return Some(cache.items.clone());
+    }
+    *slot = None;
+    None
 }
 
 /// 写缓存。**仅在结果非空时由调用方调用** —— 空结果（瞬时全断）不缓存，下次开弹窗即重试，不卡死 TTL。
@@ -3842,6 +3869,50 @@ mod icon_gallery_tests {
         );
         assert!(!stub.exists(), "磁盘腿没清 —— 图标本体仍是旧的");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P0-4：TTL 过期时必须**就地驱逐**那份清单，而不是只返回 `None` 把它继续留在缓存里。
+    ///
+    /// 只判不驱逐的后果不是「多占一会儿」：后续拉取只要持续失败就一份都不写（全失败不缓存），
+    /// 那份 0.3~0.8 MiB 的旧清单便无限期驻留，而它在判过期的那一刻已经没有任何读者。
+    ///
+    /// 走 [`take_fresh_icon_items`] 而不是进程级静态缓存：① 后者被上面那条用例独占，本条不该去争用；
+    /// ② `ttl = ZERO` 是「一切皆已过期」的跨平台构造法，不必去造一个过去的 `Instant`
+    /// （Windows 上 uptime 不足 TTL 时 `Instant::checked_sub` 返回 `None`）。
+    ///
+    /// 牙：删掉 `take_fresh_icon_items` 里的 `*slot = None;` → 第二条断言转红；
+    /// 把驱逐提到新鲜判定之前（无条件清） → 最后一条转红。
+    #[test]
+    fn expired_icon_cache_is_evicted_not_just_missed() {
+        let item = || IconGalleryItem {
+            name: "stale".to_string(),
+            url: "https://cdn.example.com/stale.png".to_string(),
+        };
+
+        let mut expired = Some(IconGalleryCache {
+            fetched_at: Instant::now(),
+            items: vec![item()],
+        });
+        assert!(
+            take_fresh_icon_items(&mut expired, Duration::ZERO).is_none(),
+            "自检：ttl=0 必须判过期，否则下面那条断言恒绿"
+        );
+        assert!(
+            expired.is_none(),
+            "过期条目没被驱逐 —— 拉取持续失败时它会无限期驻留，且已无任何读者"
+        );
+
+        // 反向对照：未过期不得误驱逐，且照常返回内容 —— 少了这一半，「每次读都清」也能让上面全绿。
+        let mut fresh = Some(IconGalleryCache {
+            fetched_at: Instant::now(),
+            items: vec![item()],
+        });
+        let got = take_fresh_icon_items(&mut fresh, ICON_GALLERY_CACHE_TTL).expect("未过期须命中");
+        assert_eq!(names_of(&got), vec!["stale"], "未过期须原样返回内容");
+        assert!(
+            fresh.is_some(),
+            "未过期不得驱逐（否则退化成「每次读都清」）"
+        );
     }
 }
 
