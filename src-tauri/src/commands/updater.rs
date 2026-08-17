@@ -447,9 +447,18 @@ pub(crate) fn is_portable_layout(exe_path: &std::path::Path) -> bool {
 /// **同一次改动还会引爆一处今天豁免的消费点**：`SettingsUpdate.tsx` 的 `downloaded` / `manual`
 /// 两条腿用 `updateInfo?.isPrerelease` 渲染预发布徽标，而**别的窗口**发起的下载（本文件
 /// [`update_popup_action`] 的「更新/重试」、`startup_tasks::spawn_auto_download`）会把设置页推进
-/// `downloaded`，此时本页的 `updateInfo` 是 `null` ⇒ 徽标静默缺席。今天不构成缺陷 —— 能推本页的
-/// 那两条腿恰恰都由本常量钉死只下正式版，**豁免依赖的就是这里的 `false`**。通道一开，那两条腿
-/// 能下预发布，安装屏就会对一份预发布只字不提。届时那两条腿要么自带档次、要么改由事件带过来。
+/// `downloaded`。那份 `updateInfo` 与刚落盘的包**没有任何因果关系**，两个方向都会出错：
+///
+///  - **漏报**（方向安全）：`updateInfo` 为 `null`（本页压根没查过）⇒ 徽标静默缺席；
+///  - **误报**（方向相反，用户可见的假话）：`updateInfo` 是**上一次检查**留下的陈旧值 ⇒ 卡片会举着
+///    那次查到的版本号与预发布徽标，去描述盘上这份**别人下的**包。
+///
+/// 误报那一格已由 `settings-logic.ts::progressInvalidatesUpdateInfo` **止血**（非本页发起的下载
+/// 一律作废本页的检查结果，宁可少说不说错），但那只是不说假话，不是把话说全 —— 正解是让那两条腿
+/// 把随行事实随事件带过来（W5 射程）。
+///
+/// 漏报那一格今天不构成缺陷：能推本页的那两条腿恰恰都由本常量钉死只下正式版，**豁免依赖的就是
+/// 这里的 `false`**。通道一开，那两条腿能下预发布，安装屏就会对一份预发布只字不提。
 pub(crate) const PUSH_UPDATE_INCLUDE_PRERELEASE: bool = false;
 
 /// 上游 `UPDATE_CHECK`：检查应用更新。
@@ -4861,13 +4870,82 @@ mod tests {
             SRC,
             "pub async fn update_popup_action(",
         );
-        let arm_at = body
-            .find("PopupAction::ManualDownload =>")
-            .expect("锚点消失：ManualDownload 分支没了");
-        let arm = &body[arm_at..];
+        const NEEDLE: &str = "update_open_releases(app, popup.version.clone())";
+        const HEAD: &str = "PopupAction::ManualDownload =>";
+        let arm_at = body.find(HEAD).expect("锚点消失：ManualDownload 分支没了");
+        // **切片必须封到下一个 match 臂**：切到函数体尾时，`ViewLog` 臂里有一句**逐字相同**的
+        // 调用会替本条作证 —— 实测把 ManualDownload 臂整体移到 ViewLog 之前、实参保持 `None`，
+        // 编译通过、全仓测试全绿，而用户行为退回 #311 原形。射程由臂顺序决定 = 判据不在自己手里。
+        //
+        // 按**臂头形状**切，不按缩进宽度切：写死 `"\n            PopupAction::"`（12 空格）时，
+        // 实际臂缩进是 8 ⇒ needle 恒不命中 ⇒ 切片恒到函数体尾，封顶那行代码**本身是哑的**
+        // （本门第一版正是这样，靠下面的计数断言才没漏过去）。
+        let rest = &body[arm_at + HEAD.len()..];
+        let mut arm = String::new();
+        for line in rest.lines() {
+            let t = line.trim_start();
+            if t.starts_with("PopupAction::") && t.contains("=>") {
+                break;
+            }
+            arm.push_str(line);
+            arm.push('\n');
+        }
+        // 切片自检：封顶若失效（needle 变了 / 臂头写法变了），下面那条 `contains` 会被**别的臂**
+        // 喂饱。切出来的片段里不该再有任何臂头 —— 这条一红就说明封顶哑了，而不是判据没过。
         assert!(
-            arm.contains("update_open_releases(app, popup.version.clone())"),
+            !arm.contains("PopupAction::"),
+            "臂切片里还有下一个臂头 —— 封顶失效，本门已退化成「函数体里有没有这句话」"
+        );
+        assert!(
+            arm.contains(NEEDLE),
             "ManualDownload 没有把会话记住的版本喂给 release 页 —— 用户会掉回泛列表页（#311 的原形）"
+        );
+        // 位置判据 + 计数判据合起来才闭合：位置判据挡「臂被搬走」，计数判据挡「某一臂的调用被删」
+        // （ViewLog 与 ManualDownload 各一处，两者都得在）。单用计数挡不住「两处都在同一臂里」，
+        // 单用位置挡不住「另一臂悄悄丢了」。
+        assert_eq!(
+            body.matches(NEEDLE).count(),
+            2,
+            "`{NEEDLE}` 应恰好两处（ViewLog + ManualDownload），实得 {}",
+            body.matches(NEEDLE).count()
+        );
+    }
+
+    /// 🟡 **调用点守卫：复查之前必须先把弹窗**强制**推进 progress(0)。**
+    ///
+    /// 两件事都压在这一行上：
+    ///  1. **窗内反馈**：复查可跑满 15s，其间没有任何进度事件 ⇒ 用户点完「更新」看着 remind 发呆；
+    ///  2. **后续所有 `push_popup_state` 的前提**：闸 [`should_mirror_to_popup`] 只放行 `Progress`。
+    ///     这一发若换成带闸的 `push_popup_state`，phase 会停在 `Remind` ⇒ 闸对之后每一发都判否
+    ///     ⇒ 对账退回 remind、两条复查失败早退推 error、下载进度镜像**全部变成 no-op**，
+    ///     而 `PopupAction::Cancel`（仅 Progress 合法）结构性不可达。
+    ///
+    /// 本批删掉全局广播之后，这条的后果被放大了：改动前设置页至少还会亮一条（虽然那条本身是误报），
+    /// 现在两条复查失败腿在任何地方都不再有反馈。
+    ///
+    /// **此前唯一拦住它的是偶然**：改成 `push_popup_state` 会让 `force_popup_state` 变成零调用点
+    /// ⇒ clippy `-D warnings` 报 never used。那是**夹具级**保护 —— 再多一处 `force_popup_state`
+    /// 调用它就消失。实测：直接改成 `push_popup_state` ⇒ 编译通过、全仓测试全绿。
+    ///
+    /// **变异探针**：改成 `push_popup_state` / 删掉这一行 / 把它挪到 `update_check(` 之后 ⇒ 逐条转红。
+    #[test]
+    fn the_user_action_forces_the_popup_into_progress_before_rechecking() {
+        let body = crate::commands::guard_scan::top_level_fn_body(
+            SRC,
+            "pub async fn update_popup_action(",
+        );
+        let force_at = body
+            .find("force_popup_state(&app, UpdatePopupState::progress(0))")
+            .expect(
+                "复查前那发强制 progress(0) 没了 —— 窗内 15s 零反馈，且之后每一发状态推送都会被闸拦掉",
+            );
+        let check_at = body
+            .find("update_check(")
+            .expect("锚点消失：守卫已失去判据");
+        assert!(
+            force_at < check_at,
+            "强制 progress(0) 必须在复查**之前**（实得 force={force_at} / check={check_at}）：\
+             之后才推等于那 15s 里窗内仍是零反馈"
         );
     }
 

@@ -37,6 +37,7 @@ import {
   MAX_LISTEN_PORT,
   releaseShipsDigest,
   appDownloadIntegrity,
+  progressInvalidatesUpdateInfo,
   progressResetsIntegrity,
 } from './settings-logic';
 import type { UpdateProgress } from '@/ipc/api-client';
@@ -909,21 +910,62 @@ describe('progressResetsIntegrity —— 对整个 status 联合闭合的真值�
 });
 
 /**
- * `SettingsUpdate.tsx` 取材器 —— **先剥注释**再断言。
+ * `progressInvalidatesUpdateInfo` —— 同一张 status 表，多一个「是不是本页发起」的限定词。
  *
- * 本仓已被这一格坑过一次（跨批复审 Low：「TS 取材器不剥块注释 ⇒ 注释伪造订阅 + 真订阅
- * 被删仍全绿」）。两个方向都被注释污染过：正向断言可以被一句注释假装满足，
- * 负向断言（「不得直接读 `.sha256`」）会被一句解释该字段的注释误判成违规。
- * 用 TS 自己的 parser 逐 token 取注释区间并抹成空格（保留换行与偏移，行号不漂）。
+ * 防的是一句**用户可见的假话**：设置页查到 `v1.3.0-beta.1`（全仓唯一含预发布的入口）却不下载，
+ * 随后别的窗口下了 `v1.2.0` 正式包 ⇒ 广播把本页翻到 `downloaded`，而 `updateInfo` 还是那份 beta
+ * ⇒ 卡片举着 beta 的版本号 + **预发布徽标**，去描述一份正式包。
  *
- * **2026-08-17 由「无摘要明示」describe 内提到模块作用域**（原地不动地搬，行为零变化）：
- * 预发布档次那道门要断言的也是这张更新卡的分状态结构。两份取材器 + 两份「什么算一个 `us`
- * 态分支」的定义早晚会对不上，而它们对不上时**两边都还是绿的** —— 那正是本文件反复在防的形态。
+ * 限定词不能省：`updateInfo` 在 `downloading` 态就要渲染（版本号 + 总字节），无条件清会把本页
+ * 自己点的下载清成空白 —— 把别人的 bug 换成自己的。
  */
+describe('progressInvalidatesUpdateInfo —— status 表 × 是否本页发起', () => {
+  const STATUSES: UpdateProgress['status'][] = [
+    'idle',
+    'checking',
+    'no-update',
+    'update-available',
+    'downloading',
+    'downloaded',
+    'error',
+  ];
+
+  it('本页发起的下载：任何 status 都不作废自己的检查结果', () => {
+    expect(STATUSES.length, '联合是 7 个成员').toBe(7);
+    for (const s of STATUSES) {
+      expect(
+        progressInvalidatesUpdateInfo(s, true),
+        `${s}：本页自己下的包，清掉 updateInfo 会把进度卡上的版本号与体积一并清空`,
+      ).toBe(false);
+    }
+  });
+
+  it('别的窗口发起的下载：恰好在「真有字节在动」的两条 status 上作废', () => {
+    const invalidating = STATUSES.filter((s) => progressInvalidatesUpdateInfo(s, false));
+    expect(invalidating.sort()).toEqual(['downloaded', 'downloading']);
+  });
+
+  it('「哪些 status 算有字节在动」与 progressResetsIntegrity 单点同源，不另立一份枚举', () => {
+    // 两个判据只差那个限定词。各写一份枚举 ⇒ 联合加成员时只有一边被补，而两边都不会红。
+    for (const s of STATUSES) {
+      expect(
+        progressInvalidatesUpdateInfo(s, false),
+        `${s}：非本页发起时，两个判据必须逐格相同`,
+      ).toBe(progressResetsIntegrity(s));
+    }
+  });
+});
+
 /**
  * 剥注释内核：用 TS 自己的 parser 逐 token 取注释区间并抹成空格（保留换行与偏移，行号不漂）。
  *
- * 2026-08-17 由 [`readTsx`] 内提出来，因为「全仓 `updateApi.check(` 普查」那道门要对**任意**
+ * # 为什么本文件所有源码级判据都必须先剥注释
+ *
+ * 本仓已被这一格坑过一次（跨批复审 Low：「TS 取材器不剥块注释 ⇒ 注释伪造订阅 + 真订阅被删仍
+ * 全绿」）。两个方向都被污染过：正向断言可以被一句注释**假装满足**；负向断言（「不得直接读
+ * `.sha256`」）会被一句解释该字段的注释**误判成违规**。
+ *
+ * 2026-08-17 由 [`readTsx`] 内提出来：「全仓 `updateApi.check(` 普查」那道门要对**任意**
  * `ui/src` 下的源码剥注释，而 `readTsx` 的自检是给单个组件文件量身做的（要求含块注释、要求
  * `export default function <Component>`）。两份剥法早晚会漂，且漂的时候两边都还是绿的。
  */
@@ -944,6 +986,17 @@ function stripTsComments(file: string, raw: string): string {
   return out.join('');
 }
 
+/**
+ * 单个组件文件的取材器（缺省 `SettingsUpdate.tsx`）：读盘 → [`stripTsComments`] → 三条自检。
+ *
+ * 自检存在的理由与判据本身同等重要：路径漂走 / 剥过头都会让下游断言在**空串**上「恰好」通过 =
+ * 假绿。故断言「文件够长」「剥完与原文不同」「注释标记没了」「代码骨架还在」四件事，其中骨架那条
+ * 按 `rel` 推出组件名走，参数化之后才不会恒真。
+ *
+ * **2026-08-17 由「无摘要明示」describe 内提到模块作用域**（原地不动地搬，行为零变化）：预发布
+ * 档次那道门要断言的也是这张更新卡的分状态结构。两份取材器 + 两份「什么算一个 `us` 态分支」的
+ * 定义早晚会对不上，而它们对不上时**两边都还是绿的** —— 那正是本文件反复在防的形态。
+ */
 async function readTsx(rel = 'SettingsUpdate.tsx') {
   const fs = await import('node:fs');
   const path = await import('node:path');
@@ -1198,6 +1251,36 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
    * 是两件不同的事（「将要取回未署摘要的包」vs「即将执行未经校验的字节」），而档次的说明三处一字
    * 不差 —— 抄三遍只是噪声。档次这个**事实**由徽标在三条腿上持续持有，**解释**留在做决定的那屏。
    */
+  /**
+   * 徽标的**数据源**必须与它描述的那份包同源，否则徽标本身再对也是在说假话。
+   *
+   * `onProgress` 收到别的窗口发起的下载完成时，本页的 `updateInfo` 描述的是上一次检查的结果，
+   * 与刚落盘那份包毫无因果关系 ⇒ 必须作废。判据走 `progressInvalidatesUpdateInfo`（真值表另有门），
+   * 调用点只此一处，不在下面的 status 分支里各补一次。
+   *
+   * 认领旗（`startedHereRef`）两端都要钉：只置位不交还 ⇒ 本页会把之后**所有**外部下载都当成
+   * 自己的，作废逻辑等于没写。
+   *
+   * **变异探针**：删掉作废调用 / 删掉 `finally` 里的交还 ⇒ 逐条转红。
+   */
+  it('外部窗口下完包时，本页作废自己那份陈旧的检查结果（徽标不贴到别人的包上）', async () => {
+    const src = await readTsx();
+    expect(
+      src.includes('progressInvalidatesUpdateInfo(p.status, startedHereRef.current)'),
+      '进度监听器没有作废陈旧的 updateInfo —— 预发布徽标会贴到一份正式包上',
+    ).toBe(true);
+    expect(
+      /progressInvalidatesUpdateInfo\([^)]*\)\)\s*setUpdateInfo\(null\)/.test(src),
+      '判定结果没有真的落到 setUpdateInfo(null) 上',
+    ).toBe(true);
+    // 认领旗：置位在 invoke 之前，交还在 finally（成败都要还）。
+    expect(src.includes('startedHereRef.current = true'), '本页下载没有认领').toBe(true);
+    expect(
+      /finally\s*\{[\s\S]{0,400}?startedHereRef\.current = false/.test(src),
+      '认领旗没有在 finally 里交还 —— 一次失败就会让本页永久把别人的下载当成自己的',
+    ).toBe(true);
+  });
+
   it('说明文案挂在决策那一屏', async () => {
     const src = await readTsx();
     expect(stateBlock(src, 'available').includes('prereleaseNote'), 'available 态缺档次说明').toBe(
@@ -1206,27 +1289,31 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
   });
 
   /**
-   * 第 4 条「推」腿：顶部常驻横幅（`AppUpdateBanner`）。
-   *
-   * 它在 TS 侧写死 `.check(false)`，而 `updater.rs` 的常量文档、`SettingsUpdate` 的 `checkUpdate`
-   * 头注、本 describe 的头注**三处都声称它「同口径」** —— 声称有，判据无。它同样是产出邀请的腿
-   * （`bannerTitle` 把版本号直接举给用户看），且横幅上**没有**预发布徽标。有人把它改成
-   * `check(true)`，横幅就会零标注地举着一条 beta，全仓照样全绿。
-   *
-   * 判据先去掉全部空白：源码里是 `updateApi\n  .check(false)` 的折行写法，单行字面匹配抓不到。
-   *
-   * **变异探针**：改成 `.check(true)` ⇒ 转红。
-   */
-  /**
    * 前端「推」面的**普查**，不是点名。
    *
    * 上一版只 `readTsx('../../layout/AppUpdateBanner.tsx')` 点名横幅一个文件 —— 覆盖面由夹具定，
    * 不由判据定：**新增第三个推面写 `check(true)`，前端全绿，Rust 那道门也管不着（它只扫 `.rs`）**。
    * 这与 Rust 侧刚修掉的「按函数名点三条腿」是同一条教训的另一条腿，故同形修：递归 `ui/src`
-   * 收全部 `updateApi.check(`，断言**恰好一处**传 `true` 且位于设置页，其余一律 `false` / 空参。
+   * 收全部 `updateApi.check(`，断言**恰好一处**传 `true` 且位于设置页，其余一律「看得出是正式版」。
    *
    * 缺省值 `check(includePrerelease = false)` 只挡得住裸调用，挡不住显式 `true`，所以判据看实参。
    * 折行写法（源码里是 `updateApi\n  .check(false)`）由 `\s*` 接住。
+   *
+   * # ⚠️ 与后端同名门的方向**相反**，别改宽
+   *
+   * Rust 侧 `every_update_check_call_site_uses_the_shared_prerelease_scope` **要求**写共享常量、
+   * 拒收字面量；本门恰好反过来 —— 因为两边的处境不同：后端三条腿共用一个口径，常量是**单点真值**；
+   * 前端两处口径**天生不同**（横幅是推、设置页是拉），没有可共用的常量，能静态读出的只有字面量。
+   *
+   * 但「只认字面量」会挡住一次正当重构：前端真长出第三条推腿、按后端那条纪律提一个共享常量出来时，
+   * `updateApi.check(PUSH_INCLUDE_PRERELEASE)` 会被判 murky 而转红。故留一个**具名白名单**
+   * [`ALLOWED_SCOPE_IDENTS`]：要新增一个名字，就得来这里加一行——判据面显式扩张，而不是把门改宽。
+   *
+   * # 射程自曝
+   *
+   * needle 是 `updateApi.check(`，**绕得过去**：直接 `invoke(IPC_CHANNELS.UPDATE_CHECK, {...})`
+   * 不经这层封装（今天全仓没有这种写法，`api-client.ts` 是唯一拆包点）。同理，运行期拼出来的实参
+   * （`check(cond ? a : b)`）会被判 murky 转红而不是放行 —— 方向安全，但那是拒收不是识别。
    *
    * **变异探针**：横幅改 `check(true)` / 任意新文件里写一处 `check(true)` ⇒ 转红。
    */
@@ -1265,10 +1352,16 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
     expect(withTrue, '含预发布的 App 检查必须**恰好**只有设置页那一处「拉」').toEqual([
       'components/screens/settings/SettingsUpdate.tsx',
     ]);
-    // 其余一律显式 false 或空参（缺省即 false）。`check(someVar)` 这类看不出口径的写法同样拒收：
-    // 判据要能一眼读出这条腿推的是什么。
-    const murky = sites.filter((s) => !['true', 'false', ''].includes(s.arg));
-    expect(murky, '有调用点的预发布口径不是字面量，无法静态判定').toEqual([]);
+    // 其余一律「看得出是正式版」：显式 `false`、空参（缺省即 false），或白名单里的具名常量。
+    // 白名单今天是空的 —— 前端还没有可共用的口径常量（横幅是推、设置页是拉，两处天生不同）。
+    // 真要提一个出来，在这里加一行即可；**判据面显式扩张，不许把 murky 那条改宽**。
+    const ALLOWED_SCOPE_IDENTS: readonly string[] = [];
+    const murky = sites.filter(
+      (s) => !['true', 'false', ''].includes(s.arg) && !ALLOWED_SCOPE_IDENTS.includes(s.arg),
+    );
+    expect(murky, '有调用点的预发布口径既不是字面量、也不在具名白名单里，无法静态判定').toEqual(
+      [],
+    );
   });
 
   it('两个键在五个语种里都非空，且说明都点名 alpha/beta/rc（档次不可从 tag 反推）', async () => {
