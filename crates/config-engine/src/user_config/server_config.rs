@@ -256,6 +256,43 @@ pub struct TailscaleSettings {
 
 /// 节点配置（上游 `ServerConfig` 全字段）。buildOutbounds 消费。
 /// CustomSettings 含 serde_json::Value（非 Eq）→ 不 derive Eq。
+///
+/// # 为什么少数几个 `*_settings` 是 `Option<Box<T>>` 而其余是 `Option<T>`
+///
+/// 本结构体是**按值**装进 `UserConfig::servers: Vec<ServerConfig>` 的，故 `size_of::<Self>()`
+/// 直接乘以节点数：每次 `from_value::<UserConfig>` 都要为这个 `Vec` 连续分配 `n × size_of`
+/// （Vec 增长期峰值再翻一倍），每次 `ServerConfig::clone` 都要按这个宽度 memcpy。而 20+ 个协议
+/// 设置子结构**全部内联**时，一个节点无论实际用哪个协议都得背上全部协议的宽度。
+///
+/// 装箱的判据是 **体积大 × 极少出现**（2026-08-17 实测 `size_of` 逐个量过，牙在本文件的
+/// `server_config_stays_narrow`）：openvpnClient 280 B / ssh 264 B / openconnect 232 B /
+/// hysteria2 184 B / hysteria 160 B / tor 120 B —— 合计 1240 B，占装箱前 3096 B 的 40%，
+/// 而它们对应的协议在真实配置里近乎不出现。装箱后各占 8 B，只有真正带该协议设置的节点才付
+/// 一次堆分配。
+///
+/// **`tlsSettings` 刻意不装箱**（176 B）：它是**最常出现**的那个 —— 绝大多数 vless/trojan/vmess
+/// 节点都带它。装箱后每个 TLS 节点省下 168 B 内联却多付 176 B 堆加一次 malloc，字节上近乎打平
+/// 甚至更差，且它的调用面（78 处）是这批里最大的一个。判据是「大 × 罕见」，不是「大」。
+/// 它在**本文件 + `protocol_settings.rs` 全部 21 个子结构**里排第 7，只在 `protocol_settings.rs`
+/// 单独排序时才是第 5 —— 别引用后一个排名做取舍。
+///
+/// 🔴 **两个比它更大、也更该装箱的候选本批没做**：[`WireGuardSettings`] 216 B 与
+/// [`TailscaleSettings`] 192 B。它们同样满足「大 × 罕见」（复审 2026-08-17 在真机配置上实测
+/// 出现率 0/60），装箱可再省 `(216−8)+(192−8) = 392 B/节点`，把 1904 B 压到 1512 B ——
+/// 比本批装的 tor（省 112 B）大得多。**没做的原因不是判断，是取样面漏了**：它俩定义在本文件
+/// 而非 `protocol_settings.rs`，最初按模块枚举候选时整个漏掉。已单独立项（调用面 42 / 32 处，
+/// 是独立工作量，不宜顺手夹带）。下一个人做取舍时按这份排序，别按上一段那个残缺清单。
+///
+/// 装箱**不改变任何序列化产物**：`Box<T>` 的 `Serialize`/`Deserialize` 逐字转发给 `T`，
+/// `skip_serializing_if = "Option::is_none"` 语义不变，`Debug`/`PartialEq` 同样转发。
+///
+/// ⚠️ **钉住这件事的只有本文件那条 `boxed_protocol_settings_serialize_transparently`**，
+/// 别以为「反正还有几道既有门兜着」就可以删它 —— 2026-08-17 逐条实测过那三道的射程：
+/// `tests/serde_roundtrip.rs` 全文件只碰 `singbox::*`，`UserConfig`/`ServerConfig` **零出现**；
+/// `tests/user_config_key_contract.rs` 的夹具是 `"servers": []`，六个键 **0 命中**；
+/// `tests/golden_config_snapshot.rs` 的 `fixtures/config-snapshot.json`（37 case）只有
+/// `hysteria2Settings` × 1 与 `sshSettings` × 1，另外四个键 **0 命中**。
+/// 即：两道射程为零、一道覆盖 6 个里的 2 个。删掉本文件那条 = 保护归零。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub id: String,
@@ -343,28 +380,29 @@ pub struct ServerConfig {
     pub vmess_security: Option<String>,
     // 协议设置子结构
     #[serde(rename = "hysteria2Settings", skip_serializing_if = "Option::is_none")]
-    pub hysteria2_settings: Option<crate::user_config::protocol_settings::Hysteria2Settings>,
+    pub hysteria2_settings: Option<Box<crate::user_config::protocol_settings::Hysteria2Settings>>,
     #[serde(rename = "tuicSettings", skip_serializing_if = "Option::is_none")]
     pub tuic_settings: Option<crate::user_config::protocol_settings::TuicSettings>,
     /// Hysteria **v1**（与 `hysteria2_settings` 是两个协议，不是同一协议的版本字段）。
     #[serde(rename = "hysteriaSettings", skip_serializing_if = "Option::is_none")]
-    pub hysteria_settings: Option<crate::user_config::protocol_settings::HysteriaSettings>,
+    pub hysteria_settings: Option<Box<crate::user_config::protocol_settings::HysteriaSettings>>,
     /// 内嵌 Tor（无 server/port）。
     #[serde(rename = "torSettings", skip_serializing_if = "Option::is_none")]
-    pub tor_settings: Option<crate::user_config::protocol_settings::TorSettings>,
+    pub tor_settings: Option<Box<crate::user_config::protocol_settings::TorSettings>>,
     /// OpenConnect（端点族，非组网）。
     #[serde(
         rename = "openconnectSettings",
         skip_serializing_if = "Option::is_none"
     )]
-    pub openconnect_settings: Option<crate::user_config::protocol_settings::OpenconnectSettings>,
+    pub openconnect_settings:
+        Option<Box<crate::user_config::protocol_settings::OpenconnectSettings>>,
     /// OpenVPN 客户端（端点族，非组网）。
     #[serde(
         rename = "openvpnClientSettings",
         skip_serializing_if = "Option::is_none"
     )]
     pub openvpn_client_settings:
-        Option<crate::user_config::protocol_settings::OpenvpnClientSettings>,
+        Option<Box<crate::user_config::protocol_settings::OpenvpnClientSettings>>,
     #[serde(rename = "wireguardSettings", skip_serializing_if = "Option::is_none")]
     pub wireguard_settings: Option<WireGuardSettings>,
     #[serde(rename = "tailscaleSettings", skip_serializing_if = "Option::is_none")]
@@ -383,7 +421,7 @@ pub struct ServerConfig {
     #[serde(rename = "snellSettings", skip_serializing_if = "Option::is_none")]
     pub snell_settings: Option<crate::user_config::protocol_settings::SnellSettings>,
     #[serde(rename = "sshSettings", skip_serializing_if = "Option::is_none")]
-    pub ssh_settings: Option<crate::user_config::protocol_settings::SshSettings>,
+    pub ssh_settings: Option<Box<crate::user_config::protocol_settings::SshSettings>>,
     #[serde(rename = "shadowTlsSettings", skip_serializing_if = "Option::is_none")]
     pub shadow_tls_settings: Option<crate::user_config::protocol_settings::ShadowTlsSettings>,
     // 传输层
@@ -703,6 +741,159 @@ mod tests {
             serde_json::from_value::<SecurityMode>(serde_json::json!("REALITY")).unwrap(),
             SecurityMode::from_raw("reality"),
             "对照：SecurityMode 是大小写不敏感的（两者刻意不同口径，别统一）"
+        );
+    }
+
+    // ── 装箱协议设置的两道门（结构体头注给的是判据，这里是它的牙）──────────────
+
+    /// 🟡 **宽度门**：`ServerConfig` 是**按值**装进 `UserConfig::servers: Vec<ServerConfig>` 的，
+    /// 它的 `size_of` 直接乘节点数 —— 每次 `from_value::<UserConfig>` 都要为那个 `Vec` 连续分配
+    /// `n × size_of`（增长期峰值再翻一倍），每次 `ServerConfig::clone` 都按这个宽度 memcpy。
+    /// 于是「又内联进来一个 200 B 的协议设置」这件事的代价是 `200 × 节点数`，而它**不会让任何
+    /// 行为测试转红**：序列化产物一个字节不变、全仓功能照常。本门就是补这个盲区。
+    ///
+    /// 基线（2026-08-17 实测）：装箱前 3096 B，把 6 个「体积大 × 极少出现」的协议设置改
+    /// `Option<Box<T>>` 后 1904 B；按真机 119 节点算，单次反序列化的 `Vec` 底层分配
+    /// 368,424 B → 226,576 B。
+    ///
+    /// **红了不等于有 bug，红了等于「该看一眼」**。字段尺寸之和 = 1900 B，`size_of` = 1904 B ⇒
+    /// **只剩 4 B 尾隙**，所以两种情形都会让它红，处方**完全相反**，先分清是哪一种：
+    ///
+    /// - **本仓有意新增了一个小标量 / 字符串字段**（`Option<u32>` 8 B、`Option<String>` 24 B ——
+    ///   `meshRoutes` / `disableChromeParrot` 就是这个形态，也是本结构体最常见的演进方式）：
+    ///   4 B 尾隙一个都吃不下，**必红**。实测：加一个 `Option<u32>` ⇒ 1904 → 1912。
+    ///   处方是**重新实测 `size_of` 并连同日期更新常量** —— 不是把那个 24 B 的 String 装箱
+    ///   （那毫无意义，只多一次 malloc）。工具链换版改了布局而本仓一字未动，同理。
+    /// - **有人又内联了一个大结构体**（几十上百 B 的协议设置）：这才是本门要拦的那一类。
+    ///   按结构体头注的判据（体积大 × 罕见）决定它该不该装箱，**不得为了让它过门而调大常量**。
+    ///
+    /// 只在 64 位靶子上断言：指针宽度直接进 `Option<Box<_>>` / `String` / `Vec` 的尺寸，32 位上
+    /// 这个常量没有意义。本仓四条打包腿（mac-arm64 / mac-x64 / linux-x64 / win-x64）全是 64 位。
+    ///
+    /// # 为什么还有第二条断言（上界单独一条是**会奖励错误做法**的）
+    ///
+    /// 上界只守判据的「大」那一半：把 `tlsSettings` 装箱能让 `size_of` 掉到 1736 B，上界**更绿** ——
+    /// 而按判据那恰恰不该做（它 60/60 出现，装箱等于每个节点多一次 malloc 换字节打平）。
+    /// 只有上界的门不但不拦这种「压数字」的改法，还给它发绿灯。故第二条钉住高频字段**保持内联**。
+    ///
+    /// **变异探针**：把任一 `Option<Box<T>>` 改回 `Option<T>` ⇒ 上界转红；
+    /// 反过来把 `tls_settings` 改成 `Option<Box<TlsSettings>>` ⇒ 上界照绿（1736 ≤ 1904），
+    /// 由第二条转红接住。
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn server_config_stays_narrow() {
+        /// 2026-08-17 实测值（装箱前 3096 B）。
+        const MEASURED: usize = 1904;
+        let actual = std::mem::size_of::<ServerConfig>();
+        assert!(
+            actual <= MEASURED,
+            "size_of::<ServerConfig>() = {actual} B > {MEASURED} B。\
+             若这是本仓有意新增的小标量/字符串字段 ⇒ 重新实测并连同日期更新 MEASURED；\
+             若是又内联了一个大结构体 ⇒ 按 ServerConfig 头注的判据（大 × 罕见）装箱它，\
+             不得为此调大常量。两者的分辨方法见本测试的文档注释。"
+        );
+
+        // 「罕见」那一半：高频字段必须保持内联，不得靠装箱它们来压上面那个数字。
+        // `Option<Box<_>>` 恒为 8 B（指针 + niche），故 `> 8` 精确等价于「没被装箱」，
+        // 且不随子结构增删字段漂移 —— 不写死 176 就是为了不要一条会自己过期的断言。
+        let s = ServerConfig::default();
+        assert!(
+            std::mem::size_of_val(&s.tls_settings) > 8,
+            "tlsSettings 被装箱了 —— 它 60/60 出现，装箱只是把内联宽度换成每节点一次 malloc，\
+             字节上打平甚至更差。上界断言看不见这件事（size 反而变小 ⇒ 更绿），故由本条接住。\
+             判据是「体积大 × 极少出现」，不是「体积大」。"
+        );
+    }
+
+    /// 🔴 **透明门**：`Option<Box<T>>` 的序列化产物必须与 `Option<T>` **逐字节相同**。
+    ///
+    /// 这是宽度门成立的前提：装箱只是内存布局手术，磁盘配置、订阅导入导出、下发给内核的载荷
+    /// 一个字节都不该变。裸 `Box<T>` 的 `Serialize`/`Deserialize` 确实逐字转发给 `T` —— 但那是
+    /// **当前**这个类型的性质，不是本仓写下的契约。若日后有人把它换成自己的包装类型（挂懒加载 /
+    /// 版本迁移 / 引用计数），转发就没了，磁盘上的配置会**静默**多出一层 `{"inner": …}`：
+    /// 老配置读不回来，新配置内核不认，而这条链路上没有任何行为测试会因此转红。
+    ///
+    /// 断言逐键写死（而非 round-trip 自证）：round-trip 对「两侧一起改坏」是瞎的。
+    ///
+    /// ⚠️ **首条断言的射程比标题大**：它是**整份 JSON 相等**，于是顺带钉住了 `ServerConfig`
+    /// **全部**字段的 skip 行为。将来有人加一个不带 `skip_serializing_if` 的字段，红的会是这一条，
+    /// 而它的失败文案说的是装箱 —— 指向错误方向。文案里已就此留了分辨提示。
+    ///
+    /// **变异探针**：给任一装箱字段套一层非 `transparent` 的 newtype、或删掉它的
+    /// `skip_serializing_if` / `rename` ⇒ 下面的整份 JSON 断言转红。
+    #[test]
+    fn boxed_protocol_settings_serialize_transparently() {
+        use crate::user_config::protocol_settings as ps;
+        let s = ServerConfig {
+            id: "s1".into(),
+            name: "n1".into(),
+            protocol: Protocol::Vless,
+            address: "a.com".into(),
+            port: 443,
+            hysteria2_settings: Some(Box::new(ps::Hysteria2Settings {
+                up_mbps: Some(50),
+                ..Default::default()
+            })),
+            hysteria_settings: Some(Box::new(ps::HysteriaSettings {
+                auth_str: Some("hy1".into()),
+                ..Default::default()
+            })),
+            tor_settings: Some(Box::new(ps::TorSettings {
+                executable_path: Some("/usr/bin/tor".into()),
+                ..Default::default()
+            })),
+            openconnect_settings: Some(Box::new(ps::OpenconnectSettings {
+                server: Some("vpn.example.com:443".into()),
+                ..Default::default()
+            })),
+            openvpn_client_settings: Some(Box::new(ps::OpenvpnClientSettings {
+                server_port: Some(1194),
+                ..Default::default()
+            })),
+            ssh_settings: Some(Box::new(ps::SshSettings {
+                private_key: Some("KEY".into()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&s).expect("节点应可序列化");
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "id": "s1",
+                "name": "n1",
+                "protocol": "vless",
+                "address": "a.com",
+                "port": 443,
+                "hysteria2Settings": { "upMbps": 50 },
+                "hysteriaSettings": { "authStr": "hy1" },
+                "torSettings": { "executablePath": "/usr/bin/tor" },
+                "openconnectSettings": { "server": "vpn.example.com:443" },
+                "openvpnClientSettings": { "server_port": 1194 },
+                "sshSettings": { "privateKey": "KEY" },
+            }),
+            "装箱字段的键名/嵌套形状必须与未装箱时逐字节一致 —— 多一层包装 = 老配置读不回来。\
+             ⚠️ 本条是整份 JSON 相等，射程覆盖全部字段：若红在一个**新增字段**上（左侧多出一个键），\
+             那不是装箱问题 —— 先确认该字段该不该带 `skip_serializing_if`，再更新下面的期望 JSON。"
+        );
+        let back: ServerConfig = serde_json::from_value(v).expect("应能读回");
+        assert_eq!(back, s, "反序列化侧同样必须透明");
+        // 缺席仍不进 JSON：装箱不该让 `skip_serializing_if = "Option::is_none"` 失效
+        // （`Option<Box<T>>` 的 `is_none` 与 `Option<T>` 同义，但这条得有牙）。
+        let bare = ServerConfig {
+            id: "s2".into(),
+            name: "n2".into(),
+            protocol: Protocol::Vless,
+            address: "b.com".into(),
+            port: 443,
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&bare).expect("节点应可序列化"),
+            serde_json::json!({
+                "id": "s2", "name": "n2", "protocol": "vless", "address": "b.com", "port": 443
+            }),
+            "六个装箱字段缺席时一个键都不该出现"
         );
     }
 

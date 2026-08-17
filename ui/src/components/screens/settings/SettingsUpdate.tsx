@@ -55,11 +55,15 @@ import { toast } from '@/lib/error-handler';
 import { useConfirmTwice } from '@/lib/confirm-twice';
 import { revealOnToggle } from '@/components/reveal';
 import {
+  appDownloadIntegrity,
   backgroundIntervalSelectValue,
   isPortableZipUpdate,
+  progressResetsIntegrity,
+  releaseShipsDigest,
   ruleResourceAutoStatus,
   ruleResourceAutoUpdateChecked,
   subscriptionAutoUpdateStatus,
+  type AppDownloadIntegrity,
 } from './settings-logic';
 
 export interface SettingsUpdateProps {
@@ -141,6 +145,28 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
   const [progress, setProgress] = useState(0);
   const [errMsg, setErrMsg] = useState('');
   const [downloadedPath, setDownloadedPath] = useState<string | null>(null);
+  /**
+   * 本次下载的摘要校验结果（`update_download` 回包的 `verified`）。
+   *
+   * 它是**上一次**下载的事实，跨包沿用就是拿旧结论给新包背书。故凡是「一次新的下载可能开始」
+   * 的入口都必须先回 `unknown`，而那样的入口有**三个**（只堵前两个不够）：
+   *  1. 本页 `checkUpdate()` —— 查到的可能是另一个版本；
+   *  2. 本页 `downloadUpdate()` —— 本会话自己发起；
+   *  3. **`onProgress` 监听器** —— 别的窗口发起的下载会把本页推进下载生命周期，而本页
+   *     **拿不到那次 invoke 的回包**。`emit_progress` 走 `events::broadcast`（`events.rs:213`
+   *     的 `handle.emit`）fan-out 给所有窗口，可达来源有两条：`startup_tasks::spawn_auto_download`
+   *     的启动自动下载，以及 `update_popup_action` 的「更新/重试」（`updater.rs:1526-1545`：
+   *     用户点弹窗按钮 → 复查 → 直调 `update_download`，回包只回弹窗窗口）。
+   *     不复位就会出现「设置页对一个已逐字节校验过的包举着上一次的『未提供校验摘要』」。
+   *
+   * 第 3 个入口**不按 status 分支各补一次**：哪些 status 要复位由 `progressResetsIntegrity`
+   * 的真值表单点回答（含「复用本地已有包那条腿只发 `downloaded`、不发 `downloading`」这一格），
+   * 监听器只留一个调用点。按分支补是枚举型判据，联合里多一个取值就会静默漏掉一格。
+   *
+   * 失效方向安全：万一 invoke 回包早于事件到达，最坏是被事件盖回 `unknown`（少一条警告），
+   * 绝不会凭空造出一条假警告。只有确知 `unverified` 才提示 —— 判据见 `appDownloadIntegrity`。
+   */
+  const [downloadIntegrity, setDownloadIntegrity] = useState<AppDownloadIntegrity>('unknown');
   const [coreVer, setCoreVer] = useState<{
     current: string;
     hasBackup: boolean;
@@ -204,6 +230,11 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
   // 订阅下载进度
   useEffect(() => {
     const off = updateApi.onProgress((p: UpdateProgress) => {
+      // 第三个「新下载可能开始」的入口：事件可能来自别的窗口（弹窗腿 / 启动自动下载腿），
+      // 本页拿不到那次回包 ⇒ 不复位就会把上一次的结论盖到这个新包头上。
+      // **唯一调用点**：该不该复位由 `progressResetsIntegrity` 的真值表单点回答，不在下面的
+      // status 分支里各补一次 —— 那是枚举型判据，联合里多一个取值就会静默漏掉一格。
+      if (progressResetsIntegrity(p.status)) setDownloadIntegrity('unknown');
       if (p.status === 'downloading') {
         setUs('downloading');
         setProgress(p.percentage);
@@ -225,9 +256,17 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
    * 共用后端 `commands/updater.rs::PUSH_UPDATE_INCLUDE_PRERELEASE`，顶部常驻横幅同口径
    * （`AppUpdateBanner` 的 `check(false)`）。我们主动推到用户脸上的东西不能是预发布，因为 App 侧
    * **没有**任何「更新通道」开关（`coreUpdateChannel` 只管内核）。
+   *
+   * # 如实登记：一处**故意不修**的残留不一致
+   *
+   * 顶部横幅可能举着 `v1.2.0`（正式版），用户点「去更新」进到本页、再点「检查更新」，拿到的却是
+   * `v1.3.0-beta.1`。这与弹窗那条缺陷**不同形**：中间隔着一次用户主动点击，不是我们替他换的包；
+   * 且拿到的那份会带预发布徽标，用户看得见。真要消除得给 App 加更新通道设置，属独立一批。
    */
   async function checkUpdate() {
     setUs('checking');
+    // 上一轮下载的校验结论对新查到的版本不成立，先清空再查。
+    setDownloadIntegrity('unknown');
     try {
       const r = await updateApi.check(true);
       if (r.hasUpdate && r.updateInfo) {
@@ -261,8 +300,13 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
     if (!updateInfo) return;
     setUs('downloading');
     setProgress(0);
+    setDownloadIntegrity('unknown');
     try {
       const r = await updateApi.download(updateInfo);
+      // 走到这里必是成功回包：业务失败在 `ipc-client.invoke` 拆信封时 throw IpcError
+      // （`api-client.ts` 头注第 3 条，拆包点唯一），一律落进下面的 catch —— 那里
+      // `downloadIntegrity` 保持函数开头那次复位的 `unknown`，不出提示。
+      setDownloadIntegrity(appDownloadIntegrity(r));
       if (r.success) {
         setDownloadedPath(r.filePath ?? null);
       } else {
@@ -469,6 +513,21 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
    * `unknown`（探测失败）后端并不拦，跟着置灰就会把能用的功能误锁死。
    */
   const coreForkBlocked = coreVer?.build === 'fork';
+  /**
+   * 「无校验摘要」的两处常驻明示 —— **两个字段、两个时机，不合并**：
+   *  - `available` 态用 `updateInfo.sha256`（检查阶段就已知）：这是**预测**，且是它还能改变
+   *    用户决定的最后一刻；
+   *  - `downloaded` 态用回包 `verified`（下载之后才有）：这是**既成事实**，也是唯一覆盖
+   *    「复用本地已有包」那条腿的字段。
+   * 合并成一个状态必然要么在 check 阶段替下载腿说话、要么把明示推迟到风险已承担之后。
+   *
+   * 文案只讲**缺什么**（无 sha256 摘要 ⇒ 无法逐字节核对），不去枚举「还剩哪些弱校验」：
+   * 剩下那两级（清单 `fileSize` 等值判据 / Content-Length）都**有条件**——前者只在
+   * `fileSize > 0` 时生效、后者只在服务端给了该头时生效，写进文案就成了一句会在边界上变假的断言。
+   * 把缺口精确限定在「摘要」这一级，既不说成「完全没校验」，也不暗示「已校验」。
+   */
+  const releaseDigestMissing = !releaseShipsDigest(updateInfo);
+  const downloadUnverified = downloadIntegrity === 'unverified';
 
   return (
     <section className="screen" data-sec="update">
@@ -612,7 +671,12 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
                     不标出来的话，用户在这里点「下载」拿到的是什么档次的版本只能靠 tag 文本自己猜 ——
                     而「是不是预发布」在 GitHub 上是一个**独立的布尔**，与 tag 怎么命名无关
                     （`updater.rs` 的内核通道注释同样点过这一条：档次不可从字符串反推）。
-                    `isPrerelease` 一路从 `AppUpdateInfo` 传到这里，此前零消费。 */}
+                    `isPrerelease` 一路从 `AppUpdateInfo` 传到这里，此前零消费。
+
+                    **与「无摘要」徽标的位置约定**（两者同为 `Pill variant="warn"`，会同框出现）：
+                    徽标紧挨着它限定的那个东西。**预发布 = 版本档次** ⇒ 贴在版本号后面；
+                    **无摘要 = 这份字节的校验状态** ⇒ 留在行尾（摘要腿既有的槽位，本批不动它）。
+                    两枚都堆到行尾就成了一坨警告色，看不出谁在说谁。 */}
                 {updateInfo.isPrerelease && (
                   <>
                     {' '}
@@ -623,10 +687,25 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
                   {new Date(updateInfo.publishedAt).toLocaleDateString()} ·{' '}
                   {(updateInfo.fileSize / 1024 / 1024).toFixed(1)} MB
                 </CardSub>
+                {/* 两条明示**语义正交，可以同时出现**：版本档次（这个版本成不成熟）与校验状态
+                    （这份字节能不能验真）是两回事，一个版本完全可能既是预发布又没带摘要。
+                    顺序按「先版本、后这份下载」：上一行说的就是版本号，紧跟着谈它的档次，
+                    再谈即将取回的那份字节。样式沿用摘要腿那份（marginTop/lineHeight），
+                    两条叠在一起时行距一致，不会看出是两批人写的。 */}
                 {updateInfo.isPrerelease && (
-                  <CardSub>{t('settings.update.prereleaseNote')}</CardSub>
+                  <CardSub style={{ marginTop: 4, lineHeight: 1.7 }}>
+                    {t('settings.update.prereleaseNote')}
+                  </CardSub>
+                )}
+                {releaseDigestMissing && (
+                  <CardSub style={{ marginTop: 4, lineHeight: 1.7 }}>
+                    {t('settings.update.digestMissingBefore')}
+                  </CardSub>
                 )}
               </div>
+              {releaseDigestMissing && (
+                <Pill variant="warn">{t('settings.update.digestMissingTag')}</Pill>
+              )}
             </div>
             {updateInfo.releaseNotes && (
               <details className="us-notes" onToggle={revealOnToggle}>
@@ -673,8 +752,28 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
               <Dot variant="ok" />
               <div style={{ flex: 1 }}>
                 <b>{t('settings.update.downloadDone')}</b> <span className="cv-tag">{updateInfo?.version}</span>
+                {/* 姊妹腿（与摘要腿同一条纪律，理由也同源）：`available` 是「要不要下」的决策点，
+                    这里是「要不要重启装上去」的决策点 —— 后者不可逆，离用户真的跑这些字节最近。
+                    只挂在 `available` 就等于：用户下完包、切个屏回来，界面上再没有任何字说这是预发布。
+                    **说明文案不跟着重复三遍**：摘要腿的 before/after 说的是两件不同的事
+                    （「将要取回未署摘要的包」vs「即将执行未经校验的字节」），而预发布的说明三处一字不差，
+                    抄三遍只是噪声；档次这个事实由徽标持续持有，解释留在做决定的那一屏。 */}
+                {updateInfo?.isPrerelease && (
+                  <>
+                    {' '}
+                    <Pill variant="warn">{t('settings.update.prereleaseTag')}</Pill>
+                  </>
+                )}
                 <CardSub>{t('settings.update.restartToInstall')}</CardSub>
+                {downloadUnverified && (
+                  <CardSub style={{ marginTop: 4, lineHeight: 1.7 }}>
+                    {t('settings.update.digestMissingAfter')}
+                  </CardSub>
+                )}
               </div>
+              {downloadUnverified && (
+                <Pill variant="warn">{t('settings.update.digestMissingTag')}</Pill>
+              )}
               <Button variant="flow" size="sm" onClick={() => void installUpdate()}>
                 <span>{t('settings.update.restartAndInstall')}</span>
               </Button>
@@ -689,8 +788,27 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
               <Dot variant="ok" />
               <div style={{ flex: 1 }}>
                 <b>{t('settings.update.downloadedManual')}</b> <span className="cv-tag">{updateInfo?.version}</span>
+                {/* 第三条腿：`manual` 与 `downloaded` 互斥，转 manual 后上面那枚徽标整块消失，
+                    而这里恰是「你自己解压覆盖当前程序」的一刻 —— 与摘要腿完全同形的理由。 */}
+                {updateInfo?.isPrerelease && (
+                  <>
+                    {' '}
+                    <Pill variant="warn">{t('settings.update.prereleaseTag')}</Pill>
+                  </>
+                )}
                 <CardSub style={{ lineHeight: 1.7, wordBreak: 'break-all' }}>{errMsg}</CardSub>
+                {/* 姊妹腿：`manual` 与 `downloaded` 是**互斥**的两个态，一旦转 manual，
+                    `downloaded` 那条明示就整块消失 —— 而这里恰恰是「你自己去解压覆盖」的那一刻，
+                    离用户真的执行这些字节最近。同一个判据必须两条腿都挂。 */}
+                {downloadUnverified && (
+                  <CardSub style={{ marginTop: 4, lineHeight: 1.7 }}>
+                    {t('settings.update.digestMissingAfter')}
+                  </CardSub>
+                )}
               </div>
+              {downloadUnverified && (
+                <Pill variant="warn">{t('settings.update.digestMissingTag')}</Pill>
+              )}
             </div>
           </div>
         )}

@@ -15,6 +15,10 @@
  * 必须统一走 `defaultOn`。
  */
 
+// 仅类型（编译期擦除）：本文件必须能在 node 环境被 vitest 直接 import，
+// 而 `api-client` 的值侧会牵进 `@tauri-apps/api`。
+import type { UpdateProgress } from '@/ipc/api-client';
+
 /* ────────────────────────────────────────────────────────────────────────────
  * 通用：缺省为开的三态布尔
  * ──────────────────────────────────────────────────────────────────────────── */
@@ -562,6 +566,116 @@ export function isPortableZipUpdate(downloadedPath: string | null | undefined): 
   if (!downloadedPath) return false;
   const base = downloadedPath.split(/[\\/]/).pop() ?? '';
   return base.startsWith(PORTABLE_ZIP_PREFIX) && base.endsWith('.zip');
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * 更新包的摘要校验状态：「这版有没有摘要」与「这次下载校没校」是**两件事**
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * 该 release 是否随包给了期望 sha256 摘要（⇒ 下载腿会做逐字节强校验）。
+ *
+ * # 判据与后端同口径的那一格，以及**故意不对齐**的那一格
+ *
+ * 对齐（`commands/updater.rs::resolve_expected_digest`）：字段缺失 → 无摘要；trim 后空串 /
+ * 纯空白 → 无摘要（后端 `hex.trim()` 后 `is_empty()` 即 `continue`）。写成 `!!raw` 会把 `"   "`
+ * 判成有摘要 ⇒ 后端不校验、UI 却不提示，正是本判据要堵的静默腿。
+ *
+ * **不对齐（如实登记，不粉饰成「保守方向」）**：字段在、但不是字符串时后端返 `Err` ⇒ 这次下载
+ * **直接拒装**；本函数判 false ⇒ `available` 卡片会说「未附带摘要、更新不会因此被阻断」，
+ * 而用户点下去立刻被证伪。之所以仍判 false 而不抛，是因为本函数唯一的替代品是让渲染期崩掉；
+ * 代价是那句「不阻断」在这一格失真。
+ *
+ * **刻意不校验 hex 形态**：后端对「有值但写坏了」的处理是照常进校验、然后
+ * `verify_hex_digest` 的 `InvalidExpectedHash` 分支**拒装**，不是当成「本来就没摘要」放行。
+ * 这里若自作主张把坏 hex 判成「无摘要」，方向就反了。
+ *
+ * # 上面两格在生产链路上都**不可达**（射程如实写窄，别让注释暗示得比事实宽）
+ *
+ * `crates/updater/src/github.rs:186` 的 `parse_asset_digest` 只放行 `sha256:` + 恰好 64 位 hex，
+ * 否则回 `None`；`AppUpdateInfo.sha256` 带 `skip_serializing_if = "Option::is_none"`。
+ * ⇒ 真实回包里 `updateInfo.sha256` **只可能是「缺失」或「合法的 64 位小写 hex」**。
+ * 「非字符串」与「坏 hex」两格都只会来自破损/伪造回包，故上面两段讲的是判据方向，不是日常输入。
+ *
+ * # 时机：这是**下载开始前**就能算出的判断
+ *
+ * `UpdateInfo.sha256` 与 `hasUpdate` 同一次 `update_check` 回包到手，故「这个版本有没有摘要」
+ * 在用户还能选择「下不下」的那一刻就已知 —— 等到装机环节才说，是在风险已经承担之后才告知。
+ * 它与 [`appDownloadIntegrity`] 不是一个状态：后者是下载**之后**的既成事实，两者可用时机不同，
+ * 合并成一个布尔就必然要么提前撒谎、要么迟到。
+ */
+export function releaseShipsDigest(
+  updateInfo: { sha256?: string } | null | undefined,
+): boolean {
+  const raw = updateInfo?.sha256;
+  return typeof raw === 'string' && raw.trim() !== '';
+}
+
+/** 一次 `update_download` 回包的摘要校验结果。`unknown` ≠ `unverified`，成因见下。 */
+export type AppDownloadIntegrity = 'verified' | 'unverified' | 'unknown';
+
+/**
+ * 从 `updateApi.download()` 的回包读出摘要校验**结果**（下载之后才存在的事实）。
+ *
+ * # 为什么是三态而不是布尔
+ *
+ * 设置页的 `downloaded` 态有**两条**到达路径，只有一条带着回包：
+ *  - 用户在本卡点「下载」→ `updateApi.download()` 的返回值里有 `verified`；
+ *  - 启动腿 `runtime/startup_tasks.rs::spawn_auto_download` 在后台下完 → 本卡只收到
+ *    `update:progress` 的 `downloaded` 事件（`emit_progress`），**拿不到任何回包**。
+ *
+ * 后一条路径上本地无从得知校没校。把「不知道」折叠进 `unverified` 会凭空造一条警告；
+ * 折叠进 `verified` 则是假绿。故只在**确知未校验**（`verified === false`）时才提示。
+ */
+export function appDownloadIntegrity(
+  result: { verified?: boolean | null } | null | undefined,
+): AppDownloadIntegrity {
+  const verified = result?.verified;
+  if (verified === true) return 'verified';
+  if (verified === false) return 'unverified';
+  return 'unknown';
+}
+
+/**
+ * 每个进度 status 是否意味着「一次**新的**下载可能已经开始」⇒ 上一次的
+ * [`appDownloadIntegrity`] 结论作废，必须复位回 `unknown`。
+ *
+ * # 为什么是一张表，而不是在监听器里按分支各补一次
+ *
+ * 按分支补是**枚举型判据**：它把「今天有几个 status 需要复位」钉死在调用点的形状上，将来联合里
+ * 多出一个该复位的取值时，它会变成「第三个没人补的分支」而没有任何门会响。本仓这一轮已经在
+ * 同一个失效模式上连出过两条 High（前端渲染批的触发面枚举漏项）。
+ *
+ * 表的形态是 `Record<UpdateProgress['status'], boolean>` ⇒ **联合加成员就 tsc 红在这张表上**，
+ * 漏一格是编译错误而不是静默放行；监听器那边只留一个调用点，没有可漏的分支。
+ *
+ * # 逐格判据
+ *
+ *  - `downloading` / `downloaded` → **复位**。这两条是唯一由真实下载腿发出的进度
+ *    （`commands/updater.rs::emit_progress`），而事件走 `events::broadcast`（`events.rs` 的
+ *    `handle.emit`）fan-out 给**所有窗口** ⇒ 本页收到的可能是别的窗口发起的下载
+ *    （`startup_tasks::spawn_auto_download` 的启动腿、`update_popup_action` 的「更新/重试」），
+ *    那些下载的 invoke 回包不回本页 ⇒ 不复位就会把上一次的结论盖到这个新包头上。
+ *    两条**都要**：复用本地已有包那条腿只发 `downloaded`，根本不发 `downloading`。
+ *  - `error` → **不复位**。下载失败不落位（临时文件由 RAII 清掉，`dest` 一个字节没动），
+ *    盘上那份旧包与它的结论都还成立；且 `error` 态本就不渲染明示。
+ *  - `idle` / `checking` / `no-update` / `update-available` → **不复位**。它们一个字节都不下载。
+ *    （后端 `emit_progress` 今天只发上面三个 status，这四格是联合里有、事件里没有的取值；
+ *    列出来是为了让这张表对**整个类型**闭合，而不是对「今天恰好发什么」闭合。）
+ */
+const PROGRESS_RESETS_INTEGRITY: Record<UpdateProgress['status'], boolean> = {
+  idle: false,
+  checking: false,
+  'no-update': false,
+  'update-available': false,
+  downloading: true,
+  downloaded: true,
+  error: false,
+};
+
+/** 见 [`PROGRESS_RESETS_INTEGRITY`]。监听器的**唯一**调用点，不得在调用侧再抄一份分支判断。 */
+export function progressResetsIntegrity(status: UpdateProgress['status']): boolean {
+  return PROGRESS_RESETS_INTEGRITY[status];
 }
 
 /* ────────────────────────────────────────────────────────────────────────────

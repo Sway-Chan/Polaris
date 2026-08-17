@@ -6,6 +6,7 @@
  * 「开」跑 —— UI 与后台分叉是本批要根治的最恶劣缺陷。
  */
 import { describe, it, expect } from 'vitest';
+import ts from 'typescript';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { USER_CONFIG_FIELDS } from '@/contracts/user-config-fields';
@@ -34,7 +35,11 @@ import {
   MIN_LISTEN_PORT,
   STAGED_SETTING_SECTION_LABELS,
   MAX_LISTEN_PORT,
+  releaseShipsDigest,
+  appDownloadIntegrity,
+  progressResetsIntegrity,
 } from './settings-logic';
+import type { UpdateProgress } from '@/ipc/api-client';
 
 describe('defaultOn —— 缺省为开的三态布尔', () => {
   it('仅显式 false 判关', () => {
@@ -777,6 +782,402 @@ describe('STAGED_SETTING_SECTION_LABELS', () => {
           .reduce<unknown>((node, seg) => (node as Record<string, unknown> | undefined)?.[seg], json);
         expect(value, `${loc} 缺 ${path}`).toBeTypeOf('string');
       }
+    }
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 无摘要明示（U4 轻方案）—— 两个字段、两个时机，不许合并
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+describe('releaseShipsDigest —— 逐条对齐 commands/updater.rs::resolve_expected_digest', () => {
+  it('有非空 sha256 ⇒ 有摘要（下载腿会做强校验）', () => {
+    expect(releaseShipsDigest({ sha256: 'a'.repeat(64) })).toBe(true);
+  });
+
+  it('字段缺失 ⇒ 无摘要（后端 `let Some(raw) = .. else { continue }`）', () => {
+    expect(releaseShipsDigest({})).toBe(false);
+  });
+
+  it('空串 / 纯空白 ⇒ 无摘要（后端 `hex.trim()` 后 `is_empty()` 即 continue）', () => {
+    // 写成 `!!raw` 会把 "   " 判成有摘要 ⇒ 后端不校验、UI 却不提示 = 本批要消掉的静默腿。
+    expect(releaseShipsDigest({ sha256: '' })).toBe(false);
+    expect(releaseShipsDigest({ sha256: '   ' })).toBe(false);
+    expect(releaseShipsDigest({ sha256: '\t\n ' })).toBe(false);
+  });
+
+  it('null / undefined 的 updateInfo ⇒ 无摘要（尚未查到版本时不得误报「有」）', () => {
+    // 不测 `{ sha256: null }`：后端对「字段在、非字符串」是**拒装**，本函数判 false 与它
+    // 故意不对齐（成因见 releaseShipsDigest 文档）。把它写成通过用例等于把一格已知失真
+    // 登记成「支持的行为」，而签名也不再接纳 null。
+    expect(releaseShipsDigest(null)).toBe(false);
+    expect(releaseShipsDigest(undefined)).toBe(false);
+  });
+
+  it('**不校验 hex 形态**：坏 hex 仍算「有摘要」', () => {
+    // 后端对坏 hex 的处理是照常进 `verify_hex_digest` 然后 `InvalidExpectedHash` **拒装**，
+    // 不是当成「本来就没摘要」放行。这里若判 false，就会在一次注定失败的下载前先讲一段
+    // 不成立的「该版本没有摘要」。
+    expect(releaseShipsDigest({ sha256: 'not-a-hex' })).toBe(true);
+    expect(releaseShipsDigest({ sha256: 'ABC' })).toBe(true);
+  });
+});
+
+describe('appDownloadIntegrity —— unknown 与 unverified 必须分得开', () => {
+  it('verified:true ⇒ verified', () => {
+    expect(appDownloadIntegrity({ verified: true })).toBe('verified');
+  });
+
+  it('verified:false ⇒ unverified（唯一该出提示的那一格）', () => {
+    expect(appDownloadIntegrity({ verified: false })).toBe('unverified');
+  });
+
+  it('回包里没有 verified ⇒ unknown，**不是** unverified', () => {
+    // 自动下载腿（startup_tasks::spawn_auto_download）只推 `downloaded` 事件、没有回包，
+    // 折叠成 unverified 会凭空造一条警告，折叠成 verified 则是假绿。
+    expect(appDownloadIntegrity({})).toBe('unknown');
+    expect(appDownloadIntegrity(null)).toBe('unknown');
+    expect(appDownloadIntegrity(undefined)).toBe('unknown');
+    expect(appDownloadIntegrity({ verified: null })).toBe('unknown');
+  });
+
+  it('穷尽性：任何输入都落在三态里，且只有布尔 false 落 unverified', () => {
+    // 真穷尽 —— 输入面里带上会绕过 `=== true` / `=== false` 的**类真/类假**值：
+    // 判据若被抄成 `verified ? .. : 'unverified'`，`0` / `''` / `'false'` 就会错落。
+    const inputs: unknown[] = [
+      { verified: true },
+      { verified: false },
+      {},
+      null,
+      undefined,
+      { verified: undefined },
+      { verified: 0 },
+      { verified: 1 },
+      { verified: '' },
+      { verified: 'false' },
+    ];
+    const verdicts = inputs.map((v) => appDownloadIntegrity(v as { verified?: boolean }));
+    for (const [i, verdict] of verdicts.entries()) {
+      expect(['verified', 'unverified', 'unknown'], `第 ${i} 个输入落到三态之外`).toContain(verdict);
+    }
+    // 只有布尔 false 那一个输入配得上 unverified（= 唯一会出警告的那一格）。
+    expect(verdicts.filter((v) => v === 'unverified')).toHaveLength(1);
+    expect(verdicts[1]).toBe('unverified');
+    expect(verdicts.filter((v) => v === 'verified')).toHaveLength(1);
+    expect(verdicts[0]).toBe('verified');
+  });
+});
+
+describe('progressResetsIntegrity —— 对整个 status 联合闭合的真值表', () => {
+  /**
+   * 期望表也写成 `Record<UpdateProgress['status'], boolean>`：**两侧都靠类型强制全键**。
+   * `UpdateProgress['status']` 将来加一个成员 ⇒ 实现那张表与这张期望表**同时 tsc 红**，
+   * 而不是变成「监听器里第三个没人补的分支」这种运行期静默漏项。
+   */
+  const EXPECTED: Record<UpdateProgress['status'], boolean> = {
+    idle: false,
+    checking: false,
+    'no-update': false,
+    'update-available': false,
+    // 唯一两条由真实下载腿发出的进度；事件是 app 级广播，可能来自别的窗口发起的下载。
+    downloading: true,
+    // 复用本地已有包那条腿**只发这一条**，不发 downloading ⇒ 少了它就漏掉整条复用路径。
+    downloaded: true,
+    // 失败不落位（tmp 由 RAII 清掉，dest 未动）⇒ 盘上旧包与它的结论都还成立。
+    error: false,
+  };
+
+  it('逐个 status 断言该不该复位（键由类型穷尽，不是手写数组）', () => {
+    const statuses = Object.keys(EXPECTED) as UpdateProgress['status'][];
+    // 取材自检：键集空/塌缩会让下面的循环 0 次断言而「恰好」全绿。
+    expect(statuses.length, '期望表键数不对（联合是 7 个成员）').toBe(7);
+    for (const status of statuses) {
+      expect(progressResetsIntegrity(status), `${status} 的复位判定与真值表不符`).toBe(
+        EXPECTED[status],
+      );
+    }
+  });
+
+  it('恰好两条 status 触发复位，且正是下载腿真会发的那两条', () => {
+    // 「全 false」和「全 true」两个方向都要说话：恒 false ⇒ 跨包污染回来；
+    // 恒 true ⇒ 每次检查/失败都把结论抹掉，明示在该出现时静默缺席。
+    const resetting = (Object.keys(EXPECTED) as UpdateProgress['status'][]).filter((s) =>
+      progressResetsIntegrity(s),
+    );
+    expect(resetting.sort()).toEqual(['downloaded', 'downloading']);
+  });
+});
+
+/**
+ * `SettingsUpdate.tsx` 取材器 —— **先剥注释**再断言。
+ *
+ * 本仓已被这一格坑过一次（跨批复审 Low：「TS 取材器不剥块注释 ⇒ 注释伪造订阅 + 真订阅
+ * 被删仍全绿」）。两个方向都被注释污染过：正向断言可以被一句注释假装满足，
+ * 负向断言（「不得直接读 `.sha256`」）会被一句解释该字段的注释误判成违规。
+ * 用 TS 自己的 parser 逐 token 取注释区间并抹成空格（保留换行与偏移，行号不漂）。
+ *
+ * **2026-08-17 由「无摘要明示」describe 内提到模块作用域**（原地不动地搬，行为零变化）：
+ * 预发布档次那道门要断言的也是这张更新卡的分状态结构。两份取材器 + 两份「什么算一个 `us`
+ * 态分支」的定义早晚会对不上，而它们对不上时**两边都还是绿的** —— 那正是本文件反复在防的形态。
+ */
+async function readTsx() {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { fileURLToPath: toPath } = await import('node:url');
+  const dir = path.dirname(toPath(import.meta.url));
+  const file = path.join(dir, 'SettingsUpdate.tsx');
+  const raw = fs.readFileSync(file, 'utf8');
+  // 取材自检：路径漂走会让下面全部断言在空串上「恰好」通过 = 假绿。
+  expect(raw.length, `取材文件太短或不对：${file}`).toBeGreaterThan(2000);
+
+  const sf = ts.createSourceFile(file, raw, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const out = [...raw];
+  const blank = (pos: number, end: number) => {
+    for (let i = pos; i < end; i++) if (out[i] !== '\n') out[i] = ' ';
+  };
+  // `forEachChild` 跳过 token 节点，而 `{/* … */}` 这类 JSX 注释正挂在 token 的前导上，
+  // 故必须走 `getChildren`（含 token）。
+  const walk = (n: ts.Node) => {
+    for (const r of ts.getLeadingCommentRanges(raw, n.getFullStart()) ?? []) blank(r.pos, r.end);
+    for (const r of ts.getTrailingCommentRanges(raw, n.getEnd()) ?? []) blank(r.pos, r.end);
+    for (const c of n.getChildren(sf)) walk(c);
+  };
+  walk(sf);
+  const src = out.join('');
+  // 剥注释自检（正负对照）：本文件必有块注释 ⇒ 剥完必须**真的不一样**，且注释标记没了、
+  // 代码骨架还在（不能把整份剥成空白还一路绿）。
+  // 不写 `src.length === raw.length`：`blank()` 是原地单字符替换，那条恒真、零信息量。
+  expect(src, '剥注释后与原文逐字相同 ⇒ 什么都没剥掉').not.toBe(raw);
+  expect(raw.includes('/**'), '取材文件本应含块注释（否则本自检无信息量）').toBe(true);
+  expect(src.includes('/**'), '注释未被剥掉').toBe(false);
+  expect(src.includes('export default function SettingsUpdate'), '剥过头，代码骨架没了').toBe(true);
+  return src;
+}
+
+/** 抽出 `{us === 'X' && (` 起、到下一个 `{us === ` 为止的那一段 JSX。 */
+function stateBlock(src: string, state: string): string {
+  const start = src.indexOf(`{us === '${state}'`);
+  expect(start, `SettingsUpdate 里找不到 ${state} 态分支`).toBeGreaterThan(-1);
+  const rest = src.slice(start + 1);
+  const nextIdx = rest.indexOf('{us === ');
+  const block = nextIdx === -1 ? rest : rest.slice(0, nextIdx);
+  expect(block.length, `${state} 态分支取材为空`).toBeGreaterThan(200);
+  return block;
+}
+
+describe('无摘要明示：接线面 + 五语文案', () => {
+  it('组件消费两个判据本身，不并行复刻字段读法', async () => {
+    const src = await readTsx();
+    expect(src.includes('releaseShipsDigest'), '必须消费 releaseShipsDigest').toBe(true);
+    expect(src.includes('appDownloadIntegrity'), '必须消费 appDownloadIntegrity').toBe(true);
+    // 单点判据：直接读 `.sha256` / `.verified` 就是在组件里另写一份口径，
+    // 后端 `resolve_expected_digest` 的 trim/空串语义会在那份复刻里丢掉。
+    expect(src.includes('.sha256'), '不得在组件里直接读 sha256').toBe(false);
+    // `.verified` 这条是**前瞻守卫**：本文件今天连注释里都没有它，取材器就算完全不剥注释
+    // 它也是绿的 ⇒ 它证明不了取材器有效，不算进本批的变异收据。留着是为挡将来那次复刻。
+    expect(src.includes('.verified'), '不得在组件里直接读 verified').toBe(false);
+  });
+
+  it('两处明示各由**各自那个字段**驱动，不得对调或合并', async () => {
+    const src = await readTsx();
+    // 检查阶段那一格只能来自 updateInfo.sha256（经 releaseShipsDigest）。
+    expect(src).toMatch(/const releaseDigestMissing = !releaseShipsDigest\(updateInfo\)/);
+    // 下载之后那一格只能来自回包 verified（经 appDownloadIntegrity），且只认 unverified。
+    expect(src).toMatch(/const downloadUnverified = downloadIntegrity === 'unverified'/);
+    expect(src).toMatch(/setDownloadIntegrity\(appDownloadIntegrity\(r\)\)/);
+
+    const available = stateBlock(src, 'available');
+    expect(available.includes('digestMissingBefore'), 'available 态缺下载前明示').toBe(true);
+    expect(available.includes('releaseDigestMissing'), 'available 态必须由 sha256 判据驱动').toBe(true);
+    expect(available.includes('downloadUnverified'), 'available 态不得用下载后的 verified').toBe(false);
+    expect(available.includes('digestMissingAfter'), 'available 态不得用下载后的文案').toBe(false);
+
+    // `downloaded` 与 `manual` 是**互斥**的两个「包已在盘、下一步就是装/解压」态：
+    // 便携腿转 manual 后 downloaded 整块不渲染，只挂一条腿等于在便携用户那里静默撤掉明示。
+    for (const state of ['downloaded', 'manual'] as const) {
+      const block = stateBlock(src, state);
+      expect(block.includes('digestMissingAfter'), `${state} 态缺下载后明示`).toBe(true);
+      expect(block.includes('downloadUnverified'), `${state} 态必须由 verified 判据驱动`).toBe(true);
+      expect(block.includes('releaseDigestMissing'), `${state} 态不得用检查期的 sha256`).toBe(false);
+      expect(block.includes('digestMissingBefore'), `${state} 态不得用下载前的文案`).toBe(false);
+    }
+  });
+
+  it('**三个**入口都必须把上次的校验结论清回 unknown，且第三个走真值表而非内联枚举', async () => {
+    const src = await readTsx();
+    // 不清 ⇒ 换了个包还举着上一次的「未校验」（或反过来，把旧的「已校验」当新包的背书）。
+    // 第三个入口最容易漏：`onProgress` 收到的事件可能来自**别的窗口**发起的下载
+    // （`update_popup_action` 的「更新/重试」、`spawn_auto_download`），本页拿不到那次回包。
+    const between = (from: string, to: string) => {
+      const a = src.indexOf(from);
+      const b = src.indexOf(to);
+      expect(a, `取材锚点不在了：${from}`).toBeGreaterThan(-1);
+      expect(b, `取材锚点不在了：${to}`).toBeGreaterThan(a);
+      return src.slice(a, b);
+    };
+
+    const checkFn = between('async function checkUpdate(', 'async function skipVersion(');
+    const dlFn = between('async function downloadUpdate(', 'async function installUpdate(');
+    expect(checkFn.includes("setDownloadIntegrity('unknown')"), 'checkUpdate 未复位').toBe(true);
+    expect(dlFn.includes("setDownloadIntegrity('unknown')"), 'downloadUpdate 未复位').toBe(true);
+
+    // 监听器：判据必须**经谓词**下达，且只有一个调用点。
+    // 谓词提到纯逻辑层之后，接线这半失守的形态有二，两条都要挡：
+    //  ① 谓词根本没被调（有人把它抄成内联 `p.status === 'downloading' || ...`）；
+    //  ② 谓词调了、但下面的 status 分支里**又**补了一次 —— 枚举又长回来了。
+    const listener = between('updateApi.onProgress(', 'async function checkUpdate(');
+    expect(
+      listener.includes('progressResetsIntegrity(p.status)'),
+      '监听器必须经 progressResetsIntegrity 判定，不得内联复刻 status 枚举',
+    ).toBe(true);
+    // 那唯一一次必须挂在谓词上，而不是躺在某个 status 分支里。
+    expect(listener).toMatch(
+      /if \(progressResetsIntegrity\(p\.status\)\) setDownloadIntegrity\('unknown'\);/,
+    );
+    // 反向：status 分支体内不得再出现复位（谓词是唯一判据）。
+    // **这条排在计数之前**：分支里多补一次同样会让计数不符，若计数先报，本条就永远不是首个
+    // 失败者 = 一条报不出话的装饰断言。排在前面它才能指出「多的那次在哪个分支」。
+    for (const arm of ['downloading', 'downloaded', 'error'] as const) {
+      const armStart = listener.indexOf(`p.status === '${arm}'`);
+      expect(armStart, `监听器缺 ${arm} 分支`).toBeGreaterThan(-1);
+      const armBody = listener.slice(armStart, listener.indexOf('}', armStart + 20));
+      expect(armBody.length, `${arm} 分支取材为空`).toBeGreaterThan(20);
+      expect(
+        armBody.includes("setDownloadIntegrity('unknown')"),
+        `${arm} 分支里不得再内联复位（判据只有真值表一处）`,
+      ).toBe(false);
+    }
+    const listenerResets = listener.match(/setDownloadIntegrity\('unknown'\)/g) ?? [];
+    expect(listenerResets.length, '监听器只许有一个复位调用点（多于一个 = 枚举又长回来了）').toBe(1);
+
+    // 全局计数收尾：三个入口各一次，多一次少一次都说话。
+    const resets = src.match(/setDownloadIntegrity\('unknown'\)/g) ?? [];
+    expect(resets.length, 'checkUpdate / downloadUpdate / 监听器 = 3 处复位').toBe(3);
+  });
+
+  it('三个键在五个语种里都非空，且都点名 sha256（把缺口限定在「摘要」这一级）', async () => {
+    const fs = await import('node:fs');
+    const keys = ['digestMissingTag', 'digestMissingBefore', 'digestMissingAfter'] as const;
+    for (const loc of ['zh-CN', 'zh-TW', 'en-US', 'ru', 'fa']) {
+      const json = JSON.parse(
+        fs.readFileSync(fileURLToPath(new URL(`../../../i18n/locales/${loc}.json`, import.meta.url)), 'utf8'),
+      ) as { settings: { update: Record<string, string> } };
+      for (const k of keys) {
+        const v = json.settings.update[k];
+        expect(v, `${loc} 缺 settings.update.${k}`).toBeTypeOf('string');
+        expect(v.trim().length, `${loc} 的 ${k} 是空串`).toBeGreaterThan(0);
+      }
+      // 两条说明必须写出「缺的是 sha256 摘要」——只写「未校验」会被读成「什么都没查」，
+      // 而实际还有清单体积 / Content-Length 两级弱校验（虽都有条件，不写进文案）。
+      expect(json.settings.update.digestMissingBefore, `${loc} 下载前文案未点名 sha256`).toContain('sha256');
+      expect(json.settings.update.digestMissingAfter, `${loc} 下载后文案未点名 sha256`).toContain('sha256');
+    }
+  });
+
+  it('文案不得暗示「已校验」，也不得把它写成一次失败', async () => {
+    const fs = await import('node:fs');
+    const read = (loc: string) =>
+      (
+        JSON.parse(
+          fs.readFileSync(fileURLToPath(new URL(`../../../i18n/locales/${loc}.json`, import.meta.url)), 'utf8'),
+        ) as { settings: { update: Record<string, string> } }
+      ).settings.update;
+    const zh = read('zh-CN');
+    const en = read('en-US');
+    for (const k of ['digestMissingBefore', 'digestMissingAfter'] as const) {
+      expect(zh[k], `zh-CN ${k} 不得声称已校验`).not.toMatch(/已校验|校验通过/);
+      // 无摘要不是错误、不阻断安装：写成「失败」会把一次正常更新描述成故障。
+      expect(zh[k], `zh-CN ${k} 不得写成失败`).not.toMatch(/失败|错误/);
+      expect(en[k], `en-US ${k} 不得声称 verified`).not.toMatch(/\bverified\b/i);
+      expect(en[k], `en-US ${k} 不得写成 failed`).not.toMatch(/\bfail(ed|ure)?\b/i);
+    }
+    // 下载前那条必须明说不阻断（用户此刻要决定的正是「还下不下」）。
+    expect(zh.digestMissingBefore, 'zh-CN 未说明不阻断更新').toMatch(/不会因此被阻断|不阻断/);
+    expect(en.digestMissingBefore, 'en-US 未说明不阻断更新').toMatch(/not blocked/i);
+  });
+});
+
+/**
+ * 预发布档次明示：接线面 + 五语文案。
+ *
+ * # 为什么必须有这道门
+ *
+ * 本页的手动「检查更新」是**全仓唯一**会返回预发布的 App 更新入口（`updateApi.check(true)`）——
+ * 启动自动检查、托盘检查更新（连同弹窗点「更新」时的复查）共用后端
+ * `PUSH_UPDATE_INCLUDE_PRERELEASE` 恒只看正式版，顶部常驻横幅同口径。于是「用户手里这份是不是
+ * 预发布」这件事，只有在这张卡上说得出来。
+ *
+ * 不说的话，用户只能从 tag 文本里猜档次 —— 而 GitHub 的 `prerelease` 是一个与 tag 命名**无关**的
+ * 独立布尔，一个打成 `v1.3.0` 的 release 完全可以是预发布。`isPrerelease` 一路从 `AppUpdateInfo`
+ * 传到前端却零消费，正是这个缺口的形态。
+ *
+ * # 与「无摘要明示」正交
+ *
+ * 那道门管**校验状态**（这份字节能不能验真），本门管**版本档次**（这个版本成不成熟）。一个版本
+ * 完全可能既是预发布又没带摘要，两条明示会同框出现 —— 故本门只断言自己那一半，不碰对方的判据。
+ */
+describe('预发布档次明示：接线面 + 五语文案', () => {
+  it('前提自检：本页确实还在拉预发布（否则本门无的放矢）', async () => {
+    const src = await readTsx();
+    // 前提没了要连同标注一并复核，而不是让本门恒绿空转。
+    expect(src.includes('updateApi.check(true)'), '本页不再以 check(true) 拉预发布').toBe(true);
+    // 反向：真值源必须是后端那个布尔，不是从版本号字符串里猜档次。
+    expect(src.includes('isPrerelease'), '拿得到 isPrerelease 却不消费').toBe(true);
+    expect(
+      /includes\(['"`]beta|match\(\/.*(alpha|beta|rc)/.test(src),
+      '不得从 tag 文本反推档次 —— GitHub 的 prerelease 与 tag 命名无关',
+    ).toBe(false);
+  });
+
+  /**
+   * 三条腿必须都挂徽标：`available` 是「要不要下」的决策点，`downloaded` 是「要不要重启装上去」
+   * （不可逆，离真的执行这些字节最近），`manual` 与 `downloaded` **互斥** —— 便携腿转 manual 后
+   * `downloaded` 整块不渲染，只挂两条等于在便携用户那里静默撤掉标注。判据与「无摘要」那条同源。
+   *
+   * **变异探针**：任删一条腿的徽标 ⇒ 该腿转红。
+   */
+  it('徽标挂在三条腿上（available / downloaded / manual），不只挂决策那一屏', async () => {
+    const src = await readTsx();
+    for (const state of ['available', 'downloaded', 'manual'] as const) {
+      const block = stateBlock(src, state);
+      expect(block.includes('isPrerelease'), `${state} 态缺档次判据`).toBe(true);
+      expect(block.includes('prereleaseTag'), `${state} 态缺预发布徽标`).toBe(true);
+    }
+  });
+
+  /**
+   * 说明文案只挂在 `available`：那是用户决定「要不要拿一份预发布」的那一屏。
+   *
+   * **刻意不跟着重复三遍**（与「无摘要」腿的处置不同，这里如实记下差异）：那边 before/after 说的
+   * 是两件不同的事（「将要取回未署摘要的包」vs「即将执行未经校验的字节」），而档次的说明三处一字
+   * 不差 —— 抄三遍只是噪声。档次这个**事实**由徽标在三条腿上持续持有，**解释**留在做决定的那屏。
+   */
+  it('说明文案挂在决策那一屏', async () => {
+    const src = await readTsx();
+    expect(stateBlock(src, 'available').includes('prereleaseNote'), 'available 态缺档次说明').toBe(
+      true,
+    );
+  });
+
+  it('两个键在五个语种里都非空，且说明都点名 alpha/beta/rc（档次不可从 tag 反推）', async () => {
+    const fs = await import('node:fs');
+    for (const loc of ['zh-CN', 'zh-TW', 'en-US', 'ru', 'fa']) {
+      const json = JSON.parse(
+        fs.readFileSync(
+          fileURLToPath(new URL(`../../../i18n/locales/${loc}.json`, import.meta.url)),
+          'utf8',
+        ),
+      ) as { settings: { update: Record<string, string> } };
+      for (const k of ['prereleaseTag', 'prereleaseNote'] as const) {
+        const v = json.settings.update[k];
+        expect(v, `${loc} 缺 settings.update.${k}`).toBeTypeOf('string');
+        expect(v.trim().length, `${loc} 的 ${k} 是空串`).toBeGreaterThan(0);
+      }
+      // 只写「预发布版」等于把解释权推回给 tag 文本；必须说出这是 alpha / beta / rc 那一档。
+      expect(
+        json.settings.update.prereleaseNote,
+        `${loc} 的说明未点名 alpha / beta / rc`,
+      ).toMatch(/alpha/i);
     }
   });
 });

@@ -879,7 +879,7 @@ fn map_node(
                     || hy2.server_ports.is_some()
                     || hy2.hop_interval.is_some()
                 {
-                    config.hysteria2_settings = Some(hy2);
+                    config.hysteria2_settings = Some(Box::new(hy2));
                 }
             }
             Protocol::Tuic => {
@@ -1121,7 +1121,7 @@ fn map_node(
                     || ssh.host_key_algorithms.is_some()
                     || ssh.client_version.is_some()
                 {
-                    config.ssh_settings = Some(ssh);
+                    config.ssh_settings = Some(Box::new(ssh));
                 }
             }
             _ => {
