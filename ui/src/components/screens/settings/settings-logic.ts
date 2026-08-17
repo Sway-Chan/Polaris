@@ -15,6 +15,10 @@
  * 必须统一走 `defaultOn`。
  */
 
+// 仅类型（编译期擦除）：本文件必须能在 node 环境被 vitest 直接 import，
+// 而 `api-client` 的值侧会牵进 `@tauri-apps/api`。
+import type { UpdateProgress } from '@/ipc/api-client';
+
 /* ────────────────────────────────────────────────────────────────────────────
  * 通用：缺省为开的三态布尔
  * ──────────────────────────────────────────────────────────────────────────── */
@@ -630,6 +634,48 @@ export function appDownloadIntegrity(
   if (verified === true) return 'verified';
   if (verified === false) return 'unverified';
   return 'unknown';
+}
+
+/**
+ * 每个进度 status 是否意味着「一次**新的**下载可能已经开始」⇒ 上一次的
+ * [`appDownloadIntegrity`] 结论作废，必须复位回 `unknown`。
+ *
+ * # 为什么是一张表，而不是在监听器里按分支各补一次
+ *
+ * 按分支补是**枚举型判据**：它把「今天有几个 status 需要复位」钉死在调用点的形状上，将来联合里
+ * 多出一个该复位的取值时，它会变成「第三个没人补的分支」而没有任何门会响。本仓这一轮已经在
+ * 同一个失效模式上连出过两条 High（前端渲染批的触发面枚举漏项）。
+ *
+ * 表的形态是 `Record<UpdateProgress['status'], boolean>` ⇒ **联合加成员就 tsc 红在这张表上**，
+ * 漏一格是编译错误而不是静默放行；监听器那边只留一个调用点，没有可漏的分支。
+ *
+ * # 逐格判据
+ *
+ *  - `downloading` / `downloaded` → **复位**。这两条是唯一由真实下载腿发出的进度
+ *    （`commands/updater.rs::emit_progress`），而事件走 `events::broadcast`（`events.rs` 的
+ *    `handle.emit`）fan-out 给**所有窗口** ⇒ 本页收到的可能是别的窗口发起的下载
+ *    （`startup_tasks::spawn_auto_download` 的启动腿、`update_popup_action` 的「更新/重试」），
+ *    那些下载的 invoke 回包不回本页 ⇒ 不复位就会把上一次的结论盖到这个新包头上。
+ *    两条**都要**：复用本地已有包那条腿只发 `downloaded`，根本不发 `downloading`。
+ *  - `error` → **不复位**。下载失败不落位（临时文件由 RAII 清掉，`dest` 一个字节没动），
+ *    盘上那份旧包与它的结论都还成立；且 `error` 态本就不渲染明示。
+ *  - `idle` / `checking` / `no-update` / `update-available` → **不复位**。它们一个字节都不下载。
+ *    （后端 `emit_progress` 今天只发上面三个 status，这四格是联合里有、事件里没有的取值；
+ *    列出来是为了让这张表对**整个类型**闭合，而不是对「今天恰好发什么」闭合。）
+ */
+const PROGRESS_RESETS_INTEGRITY: Record<UpdateProgress['status'], boolean> = {
+  idle: false,
+  checking: false,
+  'no-update': false,
+  'update-available': false,
+  downloading: true,
+  downloaded: true,
+  error: false,
+};
+
+/** 见 [`PROGRESS_RESETS_INTEGRITY`]。监听器的**唯一**调用点，不得在调用侧再抄一份分支判断。 */
+export function progressResetsIntegrity(status: UpdateProgress['status']): boolean {
+  return PROGRESS_RESETS_INTEGRITY[status];
 }
 
 /* ────────────────────────────────────────────────────────────────────────────

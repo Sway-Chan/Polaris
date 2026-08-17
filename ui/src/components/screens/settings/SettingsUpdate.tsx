@@ -58,6 +58,7 @@ import {
   appDownloadIntegrity,
   backgroundIntervalSelectValue,
   isPortableZipUpdate,
+  progressResetsIntegrity,
   releaseShipsDigest,
   ruleResourceAutoStatus,
   ruleResourceAutoUpdateChecked,
@@ -158,8 +159,9 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
    *     用户点弹窗按钮 → 复查 → 直调 `update_download`，回包只回弹窗窗口）。
    *     不复位就会出现「设置页对一个已逐字节校验过的包举着上一次的『未提供校验摘要』」。
    *
-   * `downloading` 与 `downloaded` **两个分支都要复位**：复用本地已有包那条腿（`updater.rs:1141`）
-   * 只发 `downloaded`、根本不发 `downloading`。
+   * 第 3 个入口**不按 status 分支各补一次**：哪些 status 要复位由 `progressResetsIntegrity`
+   * 的真值表单点回答（含「复用本地已有包那条腿只发 `downloaded`、不发 `downloading`」这一格），
+   * 监听器只留一个调用点。按分支补是枚举型判据，联合里多一个取值就会静默漏掉一格。
    *
    * 失效方向安全：万一 invoke 回包早于事件到达，最坏是被事件盖回 `unknown`（少一条警告），
    * 绝不会凭空造出一条假警告。只有确知 `unverified` 才提示 —— 判据见 `appDownloadIntegrity`。
@@ -228,16 +230,16 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
   // 订阅下载进度
   useEffect(() => {
     const off = updateApi.onProgress((p: UpdateProgress) => {
+      // 第三个「新下载可能开始」的入口：事件可能来自别的窗口（弹窗腿 / 启动自动下载腿），
+      // 本页拿不到那次回包 ⇒ 不复位就会把上一次的结论盖到这个新包头上。
+      // **唯一调用点**：该不该复位由 `progressResetsIntegrity` 的真值表单点回答，不在下面的
+      // status 分支里各补一次 —— 那是枚举型判据，联合里多一个取值就会静默漏掉一格。
+      if (progressResetsIntegrity(p.status)) setDownloadIntegrity('unknown');
       if (p.status === 'downloading') {
         setUs('downloading');
         setProgress(p.percentage);
-        // 第三个「新下载可能开始」的入口：事件可能来自别的窗口（弹窗腿 / 启动自动下载腿），
-        // 本页拿不到那次回包 ⇒ 不复位就会把上一次的结论盖到这个新包头上。成因见 downloadIntegrity。
-        setDownloadIntegrity('unknown');
       } else if (p.status === 'downloaded') {
         setUs('downloaded');
-        // 复用本地已有包那条腿只发 downloaded、不发 downloading，故这里必须**各补一次**。
-        setDownloadIntegrity('unknown');
       } else if (p.status === 'error') {
         setUs('error');
         setErrMsg(p.error ?? p.message ?? t('settings.update.downloadInterrupted'));

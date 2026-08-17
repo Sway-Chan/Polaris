@@ -37,7 +37,9 @@ import {
   MAX_LISTEN_PORT,
   releaseShipsDigest,
   appDownloadIntegrity,
+  progressResetsIntegrity,
 } from './settings-logic';
+import type { UpdateProgress } from '@/ipc/api-client';
 
 describe('defaultOn —— 缺省为开的三态布尔', () => {
   it('仅显式 false 判关', () => {
@@ -866,6 +868,46 @@ describe('appDownloadIntegrity —— unknown 与 unverified 必须分得开', (
   });
 });
 
+describe('progressResetsIntegrity —— 对整个 status 联合闭合的真值表', () => {
+  /**
+   * 期望表也写成 `Record<UpdateProgress['status'], boolean>`：**两侧都靠类型强制全键**。
+   * `UpdateProgress['status']` 将来加一个成员 ⇒ 实现那张表与这张期望表**同时 tsc 红**，
+   * 而不是变成「监听器里第三个没人补的分支」这种运行期静默漏项。
+   */
+  const EXPECTED: Record<UpdateProgress['status'], boolean> = {
+    idle: false,
+    checking: false,
+    'no-update': false,
+    'update-available': false,
+    // 唯一两条由真实下载腿发出的进度；事件是 app 级广播，可能来自别的窗口发起的下载。
+    downloading: true,
+    // 复用本地已有包那条腿**只发这一条**，不发 downloading ⇒ 少了它就漏掉整条复用路径。
+    downloaded: true,
+    // 失败不落位（tmp 由 RAII 清掉，dest 未动）⇒ 盘上旧包与它的结论都还成立。
+    error: false,
+  };
+
+  it('逐个 status 断言该不该复位（键由类型穷尽，不是手写数组）', () => {
+    const statuses = Object.keys(EXPECTED) as UpdateProgress['status'][];
+    // 取材自检：键集空/塌缩会让下面的循环 0 次断言而「恰好」全绿。
+    expect(statuses.length, '期望表键数不对（联合是 7 个成员）').toBe(7);
+    for (const status of statuses) {
+      expect(progressResetsIntegrity(status), `${status} 的复位判定与真值表不符`).toBe(
+        EXPECTED[status],
+      );
+    }
+  });
+
+  it('恰好两条 status 触发复位，且正是下载腿真会发的那两条', () => {
+    // 「全 false」和「全 true」两个方向都要说话：恒 false ⇒ 跨包污染回来；
+    // 恒 true ⇒ 每次检查/失败都把结论抹掉，明示在该出现时静默缺席。
+    const resetting = (Object.keys(EXPECTED) as UpdateProgress['status'][]).filter((s) =>
+      progressResetsIntegrity(s),
+    );
+    expect(resetting.sort()).toEqual(['downloaded', 'downloading']);
+  });
+});
+
 describe('无摘要明示：接线面 + 五语文案', () => {
   /**
    * 取材器**先剥注释**再断言。
@@ -959,14 +1001,11 @@ describe('无摘要明示：接线面 + 五语文案', () => {
     }
   });
 
-  it('**三个**入口都必须把上次的校验结论清回 unknown（监听器两个分支各算一处）', async () => {
+  it('**三个**入口都必须把上次的校验结论清回 unknown，且第三个走真值表而非内联枚举', async () => {
     const src = await readTsx();
     // 不清 ⇒ 换了个包还举着上一次的「未校验」（或反过来，把旧的「已校验」当新包的背书）。
     // 第三个入口最容易漏：`onProgress` 收到的事件可能来自**别的窗口**发起的下载
     // （`update_popup_action` 的「更新/重试」、`spawn_auto_download`），本页拿不到那次回包。
-    const resets = src.match(/setDownloadIntegrity\('unknown'\)/g) ?? [];
-    expect(resets.length, 'checkUpdate / downloadUpdate / 监听器两分支 = 4 处复位').toBe(4);
-
     const between = (from: string, to: string) => {
       const a = src.indexOf(from);
       const b = src.indexOf(to);
@@ -980,27 +1019,38 @@ describe('无摘要明示：接线面 + 五语文案', () => {
     expect(checkFn.includes("setDownloadIntegrity('unknown')"), 'checkUpdate 未复位').toBe(true);
     expect(dlFn.includes("setDownloadIntegrity('unknown')"), 'downloadUpdate 未复位').toBe(true);
 
-    // 监听器：`downloading` 与 `downloaded` **各**要一次 —— 复用本地已有包那条腿
-    // （`updater.rs` 的 reuse 分支）只发 `downloaded`，不发 `downloading`。
-    const listener = between('updateApi.onProgress(', "async function checkUpdate(");
-    const downloadingArm = listener.slice(
-      listener.indexOf("p.status === 'downloading'"),
-      listener.indexOf("p.status === 'downloaded'"),
-    );
-    const downloadedArm = listener.slice(
-      listener.indexOf("p.status === 'downloaded'"),
-      listener.indexOf("p.status === 'error'"),
-    );
-    expect(downloadingArm.length, 'downloading 分支取材为空').toBeGreaterThan(20);
-    expect(downloadedArm.length, 'downloaded 分支取材为空').toBeGreaterThan(20);
+    // 监听器：判据必须**经谓词**下达，且只有一个调用点。
+    // 谓词提到纯逻辑层之后，接线这半失守的形态有二，两条都要挡：
+    //  ① 谓词根本没被调（有人把它抄成内联 `p.status === 'downloading' || ...`）；
+    //  ② 谓词调了、但下面的 status 分支里**又**补了一次 —— 枚举又长回来了。
+    const listener = between('updateApi.onProgress(', 'async function checkUpdate(');
     expect(
-      downloadingArm.includes("setDownloadIntegrity('unknown')"),
-      '监听器 downloading 分支未复位',
+      listener.includes('progressResetsIntegrity(p.status)'),
+      '监听器必须经 progressResetsIntegrity 判定，不得内联复刻 status 枚举',
     ).toBe(true);
-    expect(
-      downloadedArm.includes("setDownloadIntegrity('unknown')"),
-      '监听器 downloaded 分支未复位（复用腿只发这一条）',
-    ).toBe(true);
+    // 那唯一一次必须挂在谓词上，而不是躺在某个 status 分支里。
+    expect(listener).toMatch(
+      /if \(progressResetsIntegrity\(p\.status\)\) setDownloadIntegrity\('unknown'\);/,
+    );
+    // 反向：status 分支体内不得再出现复位（谓词是唯一判据）。
+    // **这条排在计数之前**：分支里多补一次同样会让计数不符，若计数先报，本条就永远不是首个
+    // 失败者 = 一条报不出话的装饰断言。排在前面它才能指出「多的那次在哪个分支」。
+    for (const arm of ['downloading', 'downloaded', 'error'] as const) {
+      const armStart = listener.indexOf(`p.status === '${arm}'`);
+      expect(armStart, `监听器缺 ${arm} 分支`).toBeGreaterThan(-1);
+      const armBody = listener.slice(armStart, listener.indexOf('}', armStart + 20));
+      expect(armBody.length, `${arm} 分支取材为空`).toBeGreaterThan(20);
+      expect(
+        armBody.includes("setDownloadIntegrity('unknown')"),
+        `${arm} 分支里不得再内联复位（判据只有真值表一处）`,
+      ).toBe(false);
+    }
+    const listenerResets = listener.match(/setDownloadIntegrity\('unknown'\)/g) ?? [];
+    expect(listenerResets.length, '监听器只许有一个复位调用点（多于一个 = 枚举又长回来了）').toBe(1);
+
+    // 全局计数收尾：三个入口各一次，多一次少一次都说话。
+    const resets = src.match(/setDownloadIntegrity\('unknown'\)/g) ?? [];
+    expect(resets.length, 'checkUpdate / downloadUpdate / 监听器 = 3 处复位').toBe(3);
   });
 
   it('三个键在五个语种里都非空，且都点名 sha256（把缺口限定在「摘要」这一级）', async () => {
