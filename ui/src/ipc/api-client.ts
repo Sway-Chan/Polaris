@@ -1010,15 +1010,23 @@ export const updateApi = {
    *
    * `verified` 特指**摘要**这一级：`true` = 有期望 sha256 且逐字相符；`false` = 该 release 没给
    * 摘要（旧 release 的正常形态，不拒装），此时后端仍做了「清单 `fileSize` 等值 + Content-Length」
-   * 两级弱校验。`digestSource` 如实标注摘要是谁给的（当前只有 `'githubAssetDigest'`），
-   * 无摘要时为 `null` —— 出事时据它追责到具体信任根。复用本地已有包的那条路径同样带这个字段
-   * （它恰恰是靠这条摘要比中的）。
+   * 两级弱校验。`digestSource` 如实标注摘要是谁给的，无摘要时为 `null` —— 出事时据它追责到具体
+   * 信任根。复用本地已有包的那条路径同样带这个字段（它恰恰是靠这条摘要比中的）。
+   *
+   * 类型写成**字面量联合**而不是 `string`：后端的信任根是闭集（`DigestSource` 枚举，当前只有
+   * `updater.rs` 的 `Self::GithubAssetDigest => "githubAssetDigest"` 一个变体）。将来 U3 的
+   * `SHA256SUMS` 落地时会多一个来源，届时所有按来源分流的调用点必须被编译器点名——用 `string`
+   * 就等于把那一刻本该编不过的地方全放过去。
+   *
+   * **本字段的后端实现在 `fix(updater): stream the app package to disk instead of buffering it`
+   * 那一批**：本文件必须合在它之后，否则这段 JSDoc 是一份假契约（字段声明成可选 ⇒ tsc 全绿，
+   * 而运行期拿到的是 `undefined` 不是 `null`，任何 `=== null` 的分支恒不成立）。
    */
   async download(updateInfo: UpdateInfo): Promise<{
     success: boolean;
     filePath?: string;
     verified?: boolean;
-    digestSource?: string | null;
+    digestSource?: 'githubAssetDigest' | null;
     error?: string;
   }> {
     return invoke(IPC_CHANNELS.UPDATE_DOWNLOAD, { updateInfo });
