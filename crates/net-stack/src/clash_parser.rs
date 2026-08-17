@@ -391,7 +391,7 @@ fn apply_transport_and_tls(
                     || ws.max_early_data.is_some()
                     || ws.early_data_header_name.is_some()
                 {
-                    config.ws_settings = Some(ws);
+                    config.ws_settings = Some(Box::new(ws));
                 }
                 // mihomo HTTPUpgrade = network:ws + ws-opts.v2ray-http-upgrade:true。
                 if ws_opts
@@ -456,7 +456,7 @@ fn apply_transport_and_tls(
                     http_settings.host = Some(vec![host]);
                 }
                 if http_settings.path.is_some() || http_settings.host.is_some() {
-                    config.http_settings = Some(http_settings);
+                    config.http_settings = Some(Box::new(http_settings));
                 }
             }
             "tcp" => {
@@ -798,7 +798,7 @@ fn map_node(
                         });
                     }
                 }
-                config.shadowsocks_settings = Some(ss);
+                config.shadowsocks_settings = Some(Box::new(ss));
                 apply_transport_and_tls(&mut config, m, false)?;
             }
             Protocol::Hysteria2 => {
@@ -1053,7 +1053,7 @@ fn map_node(
                         }
                     }
                 }
-                config.snell_settings = Some(snell);
+                config.snell_settings = Some(Box::new(snell));
             }
             Protocol::Socks => {
                 config.username = m.get("username").and_then(str);

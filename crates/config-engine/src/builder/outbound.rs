@@ -244,8 +244,21 @@ pub fn build_proxy_outbound(
             // 而非已复现的线上缺陷。但落点是「整核起不来」，与 `Protocol::Http` 那次同级，
             // 且修法是纯收窄（4/6 之外的值本就会被内核拒），故不留着。
             {
-                let owned = server.snell_settings.clone().unwrap_or_default();
-                let s = &owned;
+                // 只读，故借而不拷。此前写的是 `.clone().unwrap_or_default()` —— 那在装箱之前
+                // 就已经是白拷一份带 5 个 `Option<String>` + 1 个 `Option<bool>` 的结构体
+                // （`SnellSettings`，另有一个 `u32` 版本号），装箱后更是 Some/None 两支
+                // **各多一次堆分配**（`Box::clone` 先 alloc；`Box::<T>::default()` 也 alloc）。
+                // 本函数有两个生产调用点（`builder/outbounds.rs` 的每节点循环、
+                // `runtime/speedtest.rs` 的每轮测速 × 每节点），故按节点数放大，不是一次性的。
+                // 改成借用后两支都零分配，比装箱前还省一次拷贝。
+                let fallback;
+                let s = match server.snell_settings.as_deref() {
+                    Some(s) => s,
+                    None => {
+                        fallback = crate::user_config::protocol_settings::SnellSettings::default();
+                        &fallback
+                    }
+                };
                 let version: u32 = if s.version == 6 { 6 } else { 4 };
                 ob.version = Some(crate::singbox::OutboundVersion::Num(version));
                 ob.psk = server.password.clone();
@@ -1017,11 +1030,11 @@ mod tests {
     #[test]
     fn shadowsocks_method_password() {
         let mut s = server(Protocol::Shadowsocks, "ss.com");
-        s.shadowsocks_settings = Some(ps::ShadowsocksSettings {
+        s.shadowsocks_settings = Some(Box::new(ps::ShadowsocksSettings {
             method: "aes-256-gcm".into(),
             password: "secret".into(),
             ..Default::default()
-        });
+        }));
         let ob = build_proxy_outbound(&s, "proxy-s1", &test_dial_resolver(), "x64", "linux");
         assert_eq!(ob.method.as_deref(), Some("aes-256-gcm"));
         assert_eq!(ob.password.as_deref(), Some("secret"));
@@ -1663,10 +1676,10 @@ mod tests {
         let mut s = server(Protocol::Vless, "w.com");
         s.uuid = Some("u".into());
         s.network = Some("ws".into());
-        s.ws_settings = Some(ps::WebSocketSettings {
+        s.ws_settings = Some(Box::new(ps::WebSocketSettings {
             path: Some("/ws?ed=2560".into()),
             ..Default::default()
-        });
+        }));
         let ob = build_proxy_outbound(&s, "proxy-s1", &test_dial_resolver(), "x64", "linux");
         let t = ob.transport.as_ref().unwrap();
         assert_eq!(t.type_field, "ws");

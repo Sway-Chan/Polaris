@@ -258,11 +258,11 @@ fn apply_transport(server: &mut ServerConfig, transport: &Value) {
     match t.as_str() {
         "ws" | "httpupgrade" => {
             server.network = Some(t.clone());
-            server.ws_settings = Some(WebSocketSettings {
+            server.ws_settings = Some(Box::new(WebSocketSettings {
                 path: str_val(transport.get("path")),
                 headers: host.map(host_header).or_else(|| transport_headers(headers)),
                 ..Default::default()
-            });
+            }));
         }
         "grpc" => {
             server.network = Some("grpc".to_string());
@@ -273,10 +273,10 @@ fn apply_transport(server: &mut ServerConfig, transport: &Value) {
         }
         "http" => {
             server.network = Some("http".to_string());
-            server.http_settings = Some(HttpSettings {
+            server.http_settings = Some(Box::new(HttpSettings {
                 path: str_val(transport.get("path")),
                 ..Default::default()
-            });
+            }));
         }
         _ => {}
     }
@@ -508,12 +508,12 @@ fn map_singbox_outbound(
     // Protocol-specific。
     match ty {
         "shadowsocks" => {
-            s.shadowsocks_settings = Some(ShadowsocksSettings {
+            s.shadowsocks_settings = Some(Box::new(ShadowsocksSettings {
                 method: str_ne(ob.get("method")).unwrap_or_else(|| "aes-256-gcm".to_string()),
                 password: str_val(ob.get("password")).unwrap_or_default(),
                 plugin: str_ne(ob.get("plugin")),
                 plugin_opts: str_ne(ob.get("plugin_opts")),
-            });
+            }));
         }
         "vless" => {
             s.uuid = Some(str_val(ob.get("uuid")).unwrap_or_default());
@@ -731,7 +731,7 @@ fn map_singbox_outbound(
             }
             snell.userkey = str_ne(ob.get("userkey"));
             s.password = Some(psk);
-            s.snell_settings = Some(snell);
+            s.snell_settings = Some(Box::new(snell));
         }
         _ => return MapOutcome::Fail,
     }

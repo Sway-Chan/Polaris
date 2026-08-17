@@ -783,7 +783,7 @@ const QUIC_TLS_EXEMPT: Record<string, Exemption> = {
       '给控件 = 一个拨了必然不生效的开关。',
     cite: [
       {
-        at: 'crates/config-engine/src/builder/outbound.rs:485',
+        at: 'crates/config-engine/src/builder/outbound.rs:497',
         needle: '!is_quic_managed_tls(&protocol) && should_emit_tls_engine',
       },
       { at: 'crates/config-engine/src/builder/outbound_helpers.rs:136', needle: 'p == "hysteria2" || p == "tuic" || p == "hysteria"' },
@@ -793,7 +793,7 @@ const QUIC_TLS_EXEMPT: Record<string, Exemption> = {
     why: 'uTLS 指纹同理：`is_quic_managed_tls` 前置门挡在 `final_fp != "none"` 之前 ⇒ utls 块对这两个协议永不下发。',
     cite: [
       {
-        at: 'crates/config-engine/src/builder/outbound.rs:504',
+        at: 'crates/config-engine/src/builder/outbound.rs:516',
         needle: '!is_quic_managed_tls(&protocol) && final_fp != "none"',
       },
     ],
@@ -802,7 +802,7 @@ const QUIC_TLS_EXEMPT: Record<string, Exemption> = {
     why: 'ClientHello 分片是 TCP-TLS 的手法；`fragment_unsupported` 把 QUIC 自管的两个协议排除在外。',
     cite: [
       {
-        at: 'crates/config-engine/src/builder/outbound.rs:737',
+        at: 'crates/config-engine/src/builder/outbound.rs:749',
         needle: 'is_quic_managed_tls(&protocol_lower) || server.protocol == Protocol::Naive',
       },
     ],
@@ -840,7 +840,7 @@ const GRPC_MULTIMODE_EXEMPT: Record<string, Exemption> = {
     cite: [
       { at: 'crates/config-engine/src/singbox/outbound.rs:300', needle: 'pub struct Transport' },
       {
-        at: 'crates/config-engine/src/builder/outbound.rs:2138',
+        at: 'crates/config-engine/src/builder/outbound.rs:2150',
         needle: 'grpc_multi_mode_never_reaches_the_kernel',
       },
     ],
@@ -873,10 +873,10 @@ const NODE_EXEMPT: Record<string, Record<string, Exemption>> = {
         'naive 的 TLS 由 Cronet 自管，`insecure` 写死 None；内核侧另有点名拒绝' +
         '（`insecure is not supported on naive outbound`，实测 exit=1）。',
       cite: [
-        { at: 'crates/config-engine/src/builder/outbound.rs:304', needle: 'naive TLS 由 Cronet 自管' },
-        { at: 'crates/config-engine/src/builder/outbound.rs:314', needle: 'insecure: None,' },
+        { at: 'crates/config-engine/src/builder/outbound.rs:316', needle: 'naive TLS 由 Cronet 自管' },
+        { at: 'crates/config-engine/src/builder/outbound.rs:326', needle: 'insecure: None,' },
         {
-          at: 'crates/config-engine/src/builder/outbound.rs:2535',
+          at: 'crates/config-engine/src/builder/outbound.rs:2547',
           needle: 'naive_tls_branch_pins_the_kernel_reject_list',
         },
       ],
@@ -886,10 +886,10 @@ const NODE_EXEMPT: Record<string, Record<string, Exemption>> = {
         '同上：naive 分支把 `alpn` 写死 None，内核点名拒绝（`alpn is not supported on naive outbound`）。' +
         '这是 上游 与本仓一致的既有结论，批 D 补上了机器可核对的出处。',
       cite: [
-        { at: 'crates/config-engine/src/builder/outbound.rs:304', needle: 'naive TLS 由 Cronet 自管' },
-        { at: 'crates/config-engine/src/builder/outbound.rs:306', needle: 'alpn: None,' },
+        { at: 'crates/config-engine/src/builder/outbound.rs:316', needle: 'naive TLS 由 Cronet 自管' },
+        { at: 'crates/config-engine/src/builder/outbound.rs:327', needle: 'alpn: None,' },
         {
-          at: 'crates/config-engine/src/builder/outbound.rs:2535',
+          at: 'crates/config-engine/src/builder/outbound.rs:2547',
           needle: 'naive_tls_branch_pins_the_kernel_reject_list',
         },
       ],
@@ -897,9 +897,9 @@ const NODE_EXEMPT: Record<string, Record<string, Exemption>> = {
     engine: {
       why: 'naive 分支自造的 TLS 块把 `engine` 写死 None（Cronet 自带 TLS 栈，选谁都没有意义）。',
       cite: [
-        { at: 'crates/config-engine/src/builder/outbound.rs:307', needle: 'engine: None,' },
+        { at: 'crates/config-engine/src/builder/outbound.rs:328', needle: 'engine: None,' },
         {
-          at: 'crates/config-engine/src/builder/outbound.rs:2535',
+          at: 'crates/config-engine/src/builder/outbound.rs:2547',
           needle: 'naive_tls_branch_pins_the_kernel_reject_list',
         },
       ],
@@ -909,9 +909,9 @@ const NODE_EXEMPT: Record<string, Record<string, Exemption>> = {
         'uTLS 块（`utls`）同样写死 None —— 指纹由 Cronet 决定；内核点名拒绝' +
         '（`uTLS is not supported on naive outbound`）。前端给档位只是假控件。',
       cite: [
-        { at: 'crates/config-engine/src/builder/outbound.rs:310', needle: 'utls: None,' },
+        { at: 'crates/config-engine/src/builder/outbound.rs:331', needle: 'utls: None,' },
         {
-          at: 'crates/config-engine/src/builder/outbound.rs:2535',
+          at: 'crates/config-engine/src/builder/outbound.rs:2547',
           needle: 'naive_tls_branch_pins_the_kernel_reject_list',
         },
       ],
@@ -920,7 +920,7 @@ const NODE_EXEMPT: Record<string, Record<string, Exemption>> = {
       why: '`fragment_unsupported` 显式含 naive（与 QUIC 两协议同一处判据）。',
       cite: [
         {
-          at: 'crates/config-engine/src/builder/outbound.rs:737',
+          at: 'crates/config-engine/src/builder/outbound.rs:749',
           needle: 'is_quic_managed_tls(&protocol_lower) || server.protocol == Protocol::Naive',
         },
       ],
@@ -932,7 +932,7 @@ const NODE_EXEMPT: Record<string, Record<string, Exemption>> = {
           at: 'crates/config-engine/src/user_config/tls_spoof.rs:37',
           needle: '!matches!(p.as_str(), "hysteria2" | "tuic" | "naive")',
         },
-        { at: 'crates/config-engine/src/builder/outbound.rs:308', needle: 'spoof: None,' },
+        { at: 'crates/config-engine/src/builder/outbound.rs:329', needle: 'spoof: None,' },
       ],
     },
     spoofMethod: {
@@ -942,7 +942,7 @@ const NODE_EXEMPT: Record<string, Record<string, Exemption>> = {
           at: 'crates/config-engine/src/user_config/tls_spoof.rs:37',
           needle: '!matches!(p.as_str(), "hysteria2" | "tuic" | "naive")',
         },
-        { at: 'crates/config-engine/src/builder/outbound.rs:309', needle: 'spoof_method: None,' },
+        { at: 'crates/config-engine/src/builder/outbound.rs:330', needle: 'spoof_method: None,' },
       ],
     },
   },

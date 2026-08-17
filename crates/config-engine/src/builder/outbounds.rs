@@ -1350,12 +1350,12 @@ mod tests {
             address: format!("{id}.example.com"),
             port: 8388,
             protocol: Protocol::Shadowsocks,
-            shadowsocks_settings: Some(ShadowsocksSettings {
+            shadowsocks_settings: Some(Box::new(ShadowsocksSettings {
                 method: "aes-256-gcm".into(),
                 password: "pass".into(),
                 plugin: None,
                 plugin_opts: None,
-            }),
+            })),
             ..Default::default()
         }
     }

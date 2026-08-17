@@ -714,11 +714,11 @@ mod tests {
             address: "ch.example.com".into(),
             port: 8388,
             detour: Some("nv".into()),
-            shadowsocks_settings: Some(ShadowsocksSettings {
+            shadowsocks_settings: Some(Box::new(ShadowsocksSettings {
                 method: "aes-256-gcm".into(),
                 password: "p".into(),
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         };
         let config = UserConfig {

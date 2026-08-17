@@ -179,10 +179,10 @@ mod tests {
                 "cred/ss-password",
                 |s| {
                     s.uuid = None;
-                    s.shadowsocks_settings = Some(ShadowsocksSettings {
+                    s.shadowsocks_settings = Some(Box::new(ShadowsocksSettings {
                         password: "ss-2".into(),
                         ..Default::default()
-                    });
+                    }));
                 },
                 true,
             ),
@@ -192,10 +192,10 @@ mod tests {
             (
                 "ws-path",
                 |s| {
-                    s.ws_settings = Some(WebSocketSettings {
+                    s.ws_settings = Some(Box::new(WebSocketSettings {
                         path: Some("/新路径".into()),
                         ..Default::default()
-                    });
+                    }));
                 },
                 false,
             ),
