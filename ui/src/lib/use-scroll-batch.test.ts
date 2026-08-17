@@ -219,27 +219,28 @@ describe('`useScrollBatch` 计数推进', () => {
 
   /**
    * 同一形状的第二个场景：**带 CSS 过渡的内容高度**。本条钉的是这类场景下的判据本身（有过渡的
-   * 高度变化必须靠 `transitionend` 补第二次采样），不依赖具体是哪个 CSS 属性在过渡。
+   * 高度变化必须靠 `transitionend` 补第二次采样），场景本身是虚构的、与具体是哪个 CSS 选择器/
+   * 属性在过渡无关——测的是机制不是实例，标题与断言措辞都不点名具体场景。
    *
-   * 2026-08-17 更新：这条场景当年的实例是「切视图档」——`.nd-card{transition:.14s}` 曾是无
-   * property 限定的简写（⇒ `transition-property:all`），列表档把 `min-height` 141→0 一并改掉，
-   * 故 commit 那一刻（采样器①）量到的是过渡**前**的卡高。该处已收窄到 border-color/box-shadow/
-   * background/outline（screens.css:77，均不参与盒模型），`view` 这一维今天不再触发这个场景，
-   * 但本条测的是通用机制、不是这一个实例，机制本身仍在（NodesScreen.tsx 头注「采样器③」段）。
+   * 2026-08-17 更新：曾经确实有一个真实实例（`.nd-card` 切视图档，列表档把 `min-height` 141→0
+   * 一并改掉），但该处 transition 已收窄到六个不参与盒模型的绘制层属性（screens.css:61），今天
+   * `view` 这一维不再触发这个场景。本条不因此删——测的是「有过渡的高度变化」这整条机制在
+   * `useScrollBatch` 侧的判据是否正确，不依赖仓内此刻是否存在满足该形状的真实 CSS，机制本身
+   * 仍由 NodesScreen.tsx 头注「采样器③」段的理由保留。
    * 「监听真的挂在 `.main-scroll` 上、且在 cleanup 里摘掉」由 `nodes-render-budget.test.tsx` 钉。
    */
-  it('切视图档时序：commit 那次量到过渡前的卡高不推进，transitionend 再量一次才推进', () => {
+  it('有过渡的内容高度：commit 那次量到中途值不推进，transitionend 补一次才推进', () => {
     mount();
     const total = 300;
     let batch = commit(() => useScrollBatch(total, 'k'));
-    // commit 那一刻：`min-height` 还停在旧档，内容仍远超视口 ⇒ 判「不推进」。
+    // commit 那一刻：过渡还在中途，量到的高度仍远超视口 ⇒ 判「不推进」。
     batch.onScroll({ currentTarget: { scrollHeight: 3000, scrollTop: 0, clientHeight: 1200 } });
     batch = commit(() => useScrollBatch(total, 'k'));
-    expect(batch.count, 'commit 那次量到的是过渡前的卡高').toBe(SCROLL_BATCH_PAGE);
-    // 140ms 后过渡结束：卡片矮下去，内容跌到视口以内 ⇒ 没有第三个采样器就永久卡死。
+    expect(batch.count, 'commit 那次量到的是过渡中途值').toBe(SCROLL_BATCH_PAGE);
+    // 过渡结束：高度跌到视口以内 ⇒ 没有第三个采样器就永久卡死。
     batch.onScroll({ currentTarget: { scrollHeight: 900, scrollTop: 0, clientHeight: 1200 } });
     batch = commit(() => useScrollBatch(total, 'k'));
-    expect(batch.count, 'transitionend 那次没能补批 ⇒ 切完视图档就再也点不到剩下的节点').toBe(
+    expect(batch.count, 'transitionend 那次没能补批 ⇒ 过渡结束后再也点不到剩下的节点').toBe(
       SCROLL_BATCH_PAGE * 2
     );
   });

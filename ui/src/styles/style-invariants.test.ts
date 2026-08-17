@@ -1012,6 +1012,113 @@ describe('chip 族选中态的浅色分离度：它靠的是「兄弟 chip 是 s
   });
 });
 
+describe('.nd-card transition 收窄覆盖层：靠位于全部 @import 之后取胜，同型的第 7 处', () => {
+  /**
+   * 背景：`.nd-card` 的 `transition` 在 screens.css:61（工作文件）已收窄到六个不参与盒模型的
+   * 绘制层属性，但 `prototype.css:682` 有逐字同选择器、同特异性 (0,1,0) 的未收窄声明
+   * （`transition:.14s` = 无 property 限定 ⇒ `transition-property:all`），而 prototype.css 是
+   * index.css 的最后一个 @import ⇒ 同特异性下后者胜，会把 screens.css 的收窄压回 `all`。
+   * 真正让收窄生效的是位于全部 @import 之后、index.css 里的覆盖层。
+   *
+   * 本仓同型结构（「靠位于全部 @import 之后取胜的覆盖层」）已有 6 处配套的门（见本文件
+   * :253/:497/:560/:726/:986/:1292），这是第 7 处——补齐后才有护栏防止：覆盖层被挪位、被后续
+   * 段落覆盖、或 prototype.css 再同步时新增一条更靠后的 `.nd-card` transition 声明，任一种都会
+   * 静默把收窄退回 `all`，而 NodesScreen.tsx 四处留档仍写着「已收窄」，gate 全绿没人发现。
+   *
+   * F1（2026-08-17 复审，同批修）：列表档 `border:0`/`border-bottom:0` 是简写，未提到的
+   * border-*-color 会复位成 `currentcolor`（近黑/近白），叠加收窄后 border-color 仍按 140ms
+   * 渐变、border-width 瞬切 ⇒ 切档 / 分批推进换「最后一张卡」时会闪一道深色边框再淡到
+   * --line/--hair。修法是 index.css 里两条显式钉死 border-color 的覆盖，同样靠 @import 之后
+   * 取胜，同样需要门守住——否则挪位或被覆盖都会让缺陷原样复发且没有任何信号。
+   *
+   * 变异靶（实跑过，见交接说明）：
+   *  · 把 index.css 的 `.nd-card{transition:…}` 覆盖挪到 @import 之前 → ① 红；
+   *  · 改 screens.css 或 index.css 任一处的 transition 值但不同步另一处 → ② 红；
+   *  · 把 index.css 里 F1 补的两条 border-color 覆盖挪到 @import 之前 → ④ 红；
+   *  · 把这两条覆盖的取值改回含 `currentcolor`（或删掉其中一条） → ⑤ 红。
+   */
+  const indexCss = stripComments(read('./index.css'));
+  const screensCss = stripComments(read('./screens.css'));
+  const lastImport = indexCss.lastIndexOf('@import');
+
+  /** index.css 里带 `transition` 的 `.nd-card` 覆盖——预期恰好一条。 */
+  const ndCardTransitionOverride = () => {
+    const hits = flat(indexCss).filter(
+      (r) => r.sel === '.nd-card' && /transition\s*:/.test(r.body),
+    );
+    expect(hits.length, 'index.css 里带 transition 的 .nd-card 覆盖不是恰好一条').toBe(1);
+    return hits[0];
+  };
+
+  it('① .nd-card 的 transition 收窄覆盖落在 index.css 全部 @import 之后', () => {
+    expect(lastImport, 'index.css 里一个 @import 都没有 —— 走查逻辑失效了').toBeGreaterThan(0);
+    const rule = ndCardTransitionOverride();
+    expect(
+      indexCss.indexOf(rule.body),
+      '覆盖写在 @import 前面 —— 会被 prototype.css 同特异性反压，等于空操作',
+    ).toBeGreaterThan(lastImport);
+  });
+
+  it('② screens.css 与 index.css 两处 transition 取值逐字相等（手工承诺 → 机器承诺）', () => {
+    const screensRule = flat(screensCss).find(
+      (r) => r.sel === '.nd-card' && /transition\s*:/.test(r.body),
+    );
+    expect(screensRule, 'screens.css 的 .nd-card 规则不见了').toBeTruthy();
+    const extractTransition = (body: string) =>
+      body.match(/transition\s*:\s*([^;]+);/)?.[1].replace(/\s+/g, ' ').trim();
+    const screensValue = extractTransition(screensRule!.body);
+    const overrideValue = extractTransition(ndCardTransitionOverride().body);
+    expect(screensValue, 'screens.css 侧没解析出 transition 取值').toBeTruthy();
+    expect(overrideValue, '覆盖层没解析出 transition 取值').toBe(screensValue);
+  });
+
+  it('③ 前提自检：prototype.css 仍是最后一个 @import（同 :986，钉在本组内避免跨 describe 失联）', () => {
+    const imports = [...indexCss.matchAll(/@import\s+'([^']+)'/g)].map((m) => m[1]);
+    expect(
+      imports[imports.length - 1],
+      'prototype.css 不再是最后一个 @import ⇒ 上面两条的前提不成立',
+    ).toBe('./prototype.css');
+  });
+
+  it('④ F1：列表档 border-color 覆盖同样落在全部 @import 之后', () => {
+    const base = flat(indexCss).find(
+      (r) => r.sel === '#s-nodes.nodes-list-view .nd-card' && /border-color/.test(r.body),
+    );
+    const last = flat(indexCss).find(
+      (r) =>
+        r.sel === '#s-nodes.nodes-list-view .nd-card:last-child' &&
+        /border-bottom-color/.test(r.body),
+    );
+    expect(base, '列表档基础态 border-color 覆盖不见了').toBeTruthy();
+    expect(last, ':last-child 的 border-bottom-color 覆盖不见了').toBeTruthy();
+    expect(indexCss.indexOf(base!.body), '基础态覆盖写在 @import 前面 = 空操作').toBeGreaterThan(
+      lastImport,
+    );
+    expect(indexCss.indexOf(last!.body), ':last-child 覆盖写在 @import 前面 = 空操作').toBeGreaterThan(
+      lastImport,
+    );
+  });
+
+  it('⑤ F1：列表档 border-color 全程不含 currentcolor（卡片档/列表档/last-child 三态都钉住 --line/--hair）', () => {
+    const base = flat(indexCss).find(
+      (r) => r.sel === '#s-nodes.nodes-list-view .nd-card' && /border-color/.test(r.body),
+    );
+    const last = flat(indexCss).find(
+      (r) =>
+        r.sel === '#s-nodes.nodes-list-view .nd-card:last-child' &&
+        /border-bottom-color/.test(r.body),
+    );
+    expect(base!.body).toMatch(/border-color\s*:\s*hsl\(var\(--line\)\)/);
+    expect(base!.body).toMatch(/border-bottom-color\s*:\s*hsl\(var\(--hair\)\)/);
+    expect(last!.body).toMatch(/border-bottom-color\s*:\s*hsl\(var\(--hair\)\)/);
+    expect(
+      base!.body,
+      '不得含 currentcolor —— 一旦出现，border-color 又会在过渡里途经它，边框闪光复发',
+    ).not.toMatch(/currentcolor/);
+    expect(last!.body, '不得含 currentcolor').not.toMatch(/currentcolor/);
+  });
+});
+
 describe('主题两档同步：tokens 四块键集对等 + 主题条件规则必须成对', () => {
   /**
    * 把「所有涉及风格处理的，需要同步对浅色主题一并处理」从口头纪律变成机制。

@@ -58,23 +58,53 @@
 .node-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:12px; align-content:start;
   align-items:stretch; grid-auto-rows:1fr; }
 @container mainc (max-width:470px){ .node-grid{ grid-template-columns:1fr; } }
-/* transition 限定到 border-color/box-shadow/background/outline：核过全仓每一条选中 `.nd-card` 的规则——
-   `.nd-card:hover`(:78)、`.nd-card.cur`(:80)、`#s-nodes.nodes-list-view .nd-card:hover`(:319)、
-   `#s-nodes.nodes-list-view .nd-card.cur`(:320)只动前三者；`.nd-card.confirming`(index.css:781，武装二次
-   确认的描边提示)另动 outline——这四个是真正会变的属性，值得渐变。以前写的是无 property 限定的简写
-   `transition:.14s`（= `transition-property:all`），顺带把卡片档↔列表档切换时一并改掉的
-   `min-height`/`padding`/`border-width`(:316) 也动画化了——那是几何跳变，不是需要柔化的交互反馈，而且
-   NodesScreen.tsx 的滚动分批采样器①在这类过渡中途只能读到旧几何（该文件头注「采样器③」段的由来）。
-   收窄后这四个属性都不改变盒模型（border-color/background 只换色，box-shadow/outline 是绘制层特效、
-   不参与布局），故视图档切换变回瞬切、采样器③对 `view` 这一维随之变冗余（其余依据仍需它，见
-   NodesScreen.tsx，不删）。
+/* transition 限定到「不参与盒模型」的绘制层属性：border-color/box-shadow/background/border-radius/
+   outline/outline-offset。判据是「不改变盒模型」，不是「只列 hover 用到的那几个」——2026-08-17 复审
+   揪出上一版判据与取值不自洽（漏了 border-radius，且被 outline 简写不含的 outline-offset 摆了一道），
+   这版按判据逐条重扫，六个都验过不参与盒模型（border-radius/box-shadow/outline/outline-offset 是
+   纯绘制层特效，border-color/background 只换色，均不影响 scrollHeight/clientHeight）。
+
+   全仓核过的每一条选中 `.nd-card` 的规则（漏一条都可能让某个属性悄悄从「动画」变「瞬切」或反过来）：
+   · `.nd-card:hover`(:108)、`.nd-card.cur`(:110) —— border-color/box-shadow。
+   · `#s-nodes.nodes-list-view .nd-card`(:354-355，**根因**：min-height/padding/border-width/gap/
+     flex-direction/border-radius/background 全部在这条切换，是几何变化的唯一来源）、
+     `:last-child`(:356，同根因，触发面是「批量分批推进/搜索」时哪张卡是最后一张，比切档本身更高频)、
+     `:hover`(:357)、`.cur`(:358) —— box-shadow/background。
+   · `.nd-card.confirming`(index.css:782，武装二次确认的描边提示) —— outline/outline-offset。
+   · `prototype.css:1450` 的 `.nd-card{position:relative;}`（与 :104 的声明值相同，静态重复，无状态
+     切换、非本次射程）、`prototype.css:1456` 的 `.nodes-batch-mode .nd-card{cursor:pointer;}`
+     （cursor 不是可插值属性，永远瞬切，与 transition-property 无关）——两条均无害，登记以证明穷举。
+
+   **`gap`（9px↔10px，:354）刻意不收进来**：它虽是 :354-355 众多切换属性里量最小的一个，但本质是
+   布局属性（`.nd-card` 卡片档是 `flex-direction:column`，gap 直接贡献列方向内容高度）——今天恰好
+   安全是因为 `flex-direction` 本身瞬切成 `row`，安全靠的是「两个属性同时切」这个巧合，不是机制。
+   本屏刚放弃过「靠量级不等式判安全」这条路（见 NodesScreen.tsx 头注），这里不重蹈：gap 留在瞬切一侧，
+   哪天 `flex-direction` 不再随 view 联动切换，它也不会变成第二个 F1。
+
+   **收窄后 view 切档不是纯瞬切、是混合过渡**：上面六个绘制层属性仍按 140ms 淡入淡出，只有几何属性
+   （min-height/padding/border-width/gap/flex-direction）瞬切——采样器①之所以单次采样即真值，是因为
+   `scrollHeight` 只吃后者，前者继续渐变不影响采样正确性，不代表「这条规则不再有过渡」。
+
    ⚠️ 本行改了不会立刻生效：prototype.css:682 有逐字同选择器的 `.nd-card{ transition:.14s }`（同特异性
    (0,1,0)），且是 index.css 的最后一个 @import ⇒ 同特异性后者胜，会把这里的收窄压回 `all`。真正生效的
-   收窄写在 index.css `.nd-card.confirming` 规则旁的覆盖层（该处有完整说明），本行只是保持与覆盖层同值、
-   不留自相矛盾的字面量。 */
+   收窄写在 index.css `.nd-card.confirming` 规则旁的覆盖层（该处有完整说明，含 :354-356 那圈 currentcolor
+   补丁）。
+
+   `screens.css` 与 `prototype.css` 这两处的字面量分叉（`transition` 一份已收窄、一份仍是 `.14s`）是
+   **预期内**的，不是待消的矛盾：`prototype.css` 是原型 `<style>` 的抄本（该文件首行自陈「逐字移植，
+   源：polaris-prototype.html」），价值在于能对拍原型、本该停在被抄那一刻；`screens.css`（2026-08-17
+   起明确为可改的工作文件，不算禁区）跟着实现走，这次收窄就是两者该分叉的地方。
+   ⚠️ 这份「逐字镜像」是**约定**，不是机器保证——仓内没有测试把 prototype.css 与原型 HTML 逐行对拍，
+   且它今天体量已对不上（prototype.css 1612 行 vs HTML `<style>` 块约 1500 行，未逐行比对过差异内容），
+   别把它当成有门守着的强断言用。
+
+   真正必须相等的是 `screens.css` 这份声明与 index.css 覆盖层那份——两者本该是同一个值的两处副本
+   （收窄声明 + 生效覆盖），分叉才是 bug。style-invariants.test.ts 钉住「两处逐字相等」+「覆盖层落在
+   @import 之后」，改这里务必同步改 index.css 那份、并让门重新过一遍。 */
 .nd-card{ position:relative; overflow:hidden; border:1px solid hsl(var(--line)); border-radius:var(--r); background:hsl(var(--surface));
   padding:13px 14px; display:flex; flex-direction:column; gap:9px;
-  transition:border-color .14s, box-shadow .14s, background .14s, outline .14s; min-height:141px; }
+  transition:border-color .14s, box-shadow .14s, background .14s, border-radius .14s, outline .14s, outline-offset .14s;
+  min-height:141px; }
 .nd-card:hover{ border-color:hsl(var(--flow)/0.45); box-shadow:0 4px 16px -10px hsl(var(--shadow)/0.5); }
 .nd-card > .nd-top, .nd-card > .nd-pills, .nd-card > .nd-acts, .nd-card > .nd-addr, .nd-card > .nd-check{ position:relative; z-index:1; }
 .nd-card.cur{ border-color:hsl(var(--flow)); box-shadow:0 0 0 2px hsl(var(--ring)/0.4); }
@@ -313,6 +343,14 @@
 /* list 视图：卡片网格塌成堆叠紧凑行（#s-nodes.nodes-list-view 切换；原型 L717-731）*/
 #s-nodes.nodes-list-view .node-grid{ display:flex; flex-direction:column; gap:0; grid-template-columns:none;
   border:1px solid hsl(var(--line)); border-radius:var(--r); background:hsl(var(--surface)); overflow:hidden; }
+/* ⚠️ `border:0` 与 `:last-child` 的 `border-bottom:0` 都是简写，会把未显式提到的 border-*-color
+   复位成初始值 `currentcolor`（`.nd-card` 不设 `color`，继承 body 的 `--fg` ⇒ 浅色近黑/深色近白）。
+   `.nd-card` 的 transition 收窄后 `border-color` 仍按 140ms 渐变（见 :61 注释）而 border-width 瞬切
+   ⇒ 若任由这里的 currentcolor 走完整个层叠，切档 / 分批推进换「最后一张卡」时会先以全宽边框闪出
+   近黑/近白色、再淡到 --line/--hair（2026-08-17 复审 F1，真实缺陷、非假设）。
+   修法在 index.css 的收窄覆盖层旁：显式把 border-color/border-bottom-color 钉死在 --line/--hair，
+   全程不让它经过 currentcolor（宽度仍然瞬切，但颜色本来就没变，没有可闪的东西）——改这两行前先看
+   那份注释，别让边框颜色又悄悄漏回 currentcolor。 */
 #s-nodes.nodes-list-view .nd-card{ flex-direction:row; align-items:center; gap:10px; padding:9px 13px; min-height:0;
   border:0; border-bottom:1px solid hsl(var(--hair)); border-radius:0; background:transparent; }
 #s-nodes.nodes-list-view .nd-card:last-child{ border-bottom:0; }
