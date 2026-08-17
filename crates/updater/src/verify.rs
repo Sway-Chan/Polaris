@@ -213,6 +213,26 @@ pub fn verify_hex(expected_hex: &str) -> Result<(), VerifyError> {
 /// 同目录 rename 在 Unix/Win 均为原子 syscall（覆盖 dest），故 dest 要么是旧内容、要么是新内容，
 /// 不会出现「写到一半」的半替换态。
 ///
+/// # 已知限制：**rename 之前不 fsync**（如实登记，2026-08-17；本批刻意不做）
+///
+/// 上一段那句「不会出现写到一半的半替换态」**只对进程崩溃成立**。断电 / 内核崩溃是另一回事：
+/// rename 只保证**目录项**的原子替换，不保证被替换的那个 inode 的**数据**已经离开 page cache
+/// ⇒ 完全可能出现「dest 这个名字在、内容是零或半截」。本函数第 2 步与第 3 步之间没有任何 `sync`。
+///
+/// 同一条窗口在 App 更新包腿已经堵上了（`commands/updater.rs::land_payload` 在
+/// [`promote_staged`] 之前调 [`UpdateFs::sync_file`]）；本函数的两个调用点 ——
+/// `runtime/core_swap.rs` 的换核落位与回滚落位 —— **未改**，故这条腿的窗口仍在。
+///
+/// 不在本批一起改的理由是后果弱一档、且改动落在另一条腿的射程里：
+///  - **App 包腿**：坏 dest ⇒ `update_install` 直接拿去装一个坏包（用户侧不可逆）；
+///  - **换核腿**：坏 dest ⇒ 下次起核失败，而换核**留有 `.bak`**（`core_swap` 的备份/回滚腿），
+///    退化成「回滚一次」而不是「装坏东西」。
+///
+/// 真要补：在本函数第 2 步之后、第 3 步之前插一次 `fs.sync_file(&tmp)`，与 `land_payload` 同形。
+/// 那是换核腿的**行为**改动（多一次 fsync = 多一次同步 IO，落在换核的关键路径上），
+/// 应当与它自己的真机验证同批做，不该顺手夹带。目录级 fsync 同样未做，理由见
+/// `land_payload` 头注（缺它只会丢文件，不会产生半截文件）。
+///
 /// # Errors
 ///
 /// 透传 [`UpdateFs::write`] / [`UpdateFs::rename`] 的 IO 错误。rename 失败时尽力删 tmp 残件

@@ -3347,7 +3347,11 @@ mod tests {
     /// 服务端把盘写满」：`fileSize` 报 100 GiB ⇒ 闸值 100 GiB ⇒ Content-Length 预检放行 ⇒
     /// 一路写到 ENOSPC，用户的系统盘被写满。
     ///
-    /// **变异探针**：去掉 `.min(APP_UPDATE_MAX_BYTES)` ⇒ 前三条逐条转红。
+    /// **变异探针**（2026-08-17 实测订正，原写「前三条逐条转红」是错的）：去掉
+    /// `.min(APP_UPDATE_MAX_BYTES)` ⇒ **第 1 条**转红（断言在此中止，故一次运行只看得到这一条）；
+    /// 单独摘掉第 1、2 条后重跑，**第 3、4 条仍绿** —— 第 3 条的声明值恰好等于天花板，`min`
+    /// 在那一点是恒等映射，本就落不到差异上；第 4 条在天花板之下同理。
+    /// 即本条真正的判据是**第 1、2 条**，第 3 条只钉 `min` 的等值分支不越界。
     #[test]
     fn app_update_size_limit_is_capped_by_the_absolute_ceiling() {
         // 极端声明值（前身守的那一半，保留）。裕度删掉后 `saturating_add` 也一并没了 ⇒
@@ -3831,12 +3835,17 @@ mod tests {
     /// cache ⇒ 断电/内核崩溃后可能出现「dest 名字在、内容是零或半截」，而 dest 一旦存在
     /// [`update_install`] 就会**直接拿去装**。
     ///
-    /// 顺序也在射程内：把 `sync_file` 挪到 `promote_staged` **之后**，注入的刷盘失败就会在
-    /// rename 已成功之后才报出来 ⇒ dest 已存在 ⇒ 第 2 条断言转红。
+    /// **变异探针**（2026-08-17 逐条实测，两条各红一处、互不重叠）：
+    ///  - 删掉 `land_payload` 里的 `sync_file` 调用（或把失败改成「只 log 不早退」）
+    ///    ⇒ **第 1 条**转红（注入的刷盘失败无处可发，结论成了 `Landed`）；
+    ///  - 把 `sync_file` 挪到 `promote_staged` **之后** ⇒ **第 2 条**转红（结论仍是 `Failed`，
+    ///    但 rename 已经发生 ⇒ dest 已存在）。顺序因此也在射程内，不是只靠注释声明。
     ///
-    /// **变异探针**：删掉 `land_payload` 里的 `sync_file` 调用（或把失败改成「只 log 不早退」）
-    /// ⇒ 第 1、2 条转红；把 [`StdFs::sync_file`](polaris_updater::traits::StdFs) 的
-    /// `OpenOptions::write(true)` 改成 `File::open`（只读句柄）⇒ Windows 上落位全线失败。
+    /// **不是探针、是运行期后果**（本仓 CI 只跑 Linux/macOS/Windows 的 64 位构建，但**没有**
+    /// 任何门会因它转红，故不列在上面）：把
+    /// [`StdFs::sync_file`](polaris_updater::traits::StdFs) 的 `OpenOptions::write(true)`
+    /// 改成 `File::open`（只读句柄），Linux 上照常绿，**Windows 上落位会全线失败** ——
+    /// `FlushFileBuffers` 对只读句柄直接报错。这条只能靠 trait 文档里的那句约束守住。
     #[test]
     fn landing_fsyncs_the_payload_before_renaming_it_into_place() {
         use polaris_updater::traits::{MockFailOp, MockFs};
@@ -3893,10 +3902,15 @@ mod tests {
     /// 版本一换前缀就变，于是上面那个主触发器留下的残件（必然是**旧版本名**）永远收不回来。
     /// 现在钉的是「别资产残件：新鲜保留、陈旧收」，并由第 ⑥ 条做真实缺陷回放。
     ///
-    /// **变异探针**：把本资产+本 pid 那一档也改成走 mtime 阈值 ⇒ 第 1 条转红；
+    /// **变异探针**（2026-08-17 逐条实测，末条原写「去掉它 ⇒ 第 4 条转红」是错的）：
+    /// 把本资产+本 pid 那一档也改成走 mtime 阈值 ⇒ 第 1 条转红；
     /// 把匹配面缩回 `{file_name}.polaris-new-` ⇒ 第 6 条转红（旧版本名的陈旧残件又收不回来了）；
-    /// 把 `is_orphan_tmp_name` 放宽成「只看中缀」⇒ 第 7 条转红；去掉它 ⇒ 第 4 条转红；
+    /// 把即时档改成只看 pid、不看资产名 ⇒ 第 5 条转红；
     /// 把 `>= ORPHAN_TMP_MAX_AGE` 改成 `<` ⇒ 第 2、3、5、6 条同时转红。
+    ///
+    /// `is_orphan_tmp_name` 无论**放宽成「只看中缀」还是整个去掉**，转红的都是**第 7 条**，
+    /// 不是第 4 条：第 4 条的 `dest` 夹具是新鲜写的，判据没了它只是落进 mtime 档 → 保留 → 仍绿。
+    /// 真正被这条判据护住的是「陈旧的非 tmp 文件」，而夹具里那个正是 `not_a_tmp`。
     #[test]
     fn orphan_sweep_collects_only_what_it_can_prove_is_abandoned() {
         use polaris_updater::traits::StdFs;
