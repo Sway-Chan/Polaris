@@ -136,77 +136,14 @@ jobs:
       # BoringSSL 汇编）、Linux webkit/gtk（Tauri）。首次 CI 运行前 workspace 从未在 runner 上
       # 全量构建过，这些系统依赖一直缺 → clippy/build 在 build-script 阶段就炸。
       #
-      # ── protoc：固定版本 + 固定 URL + sha256（2026-08-17，替掉 arduino/setup-protoc@v3）──
-      # 一次换掉**两个**外部失效点，两个当天都真挂过：
-      #   ① runner 从 codeload.github.com 拉 action tarball → 429/503，重试 3 次放弃，
-      #      整个 job 死在 `Set up job`（连一行自己的代码都没跑）；
-      #   ② 该 action 运行期还要拿 `23.x` 这种范围去查 protobuf 的 releases 列表解析版本 →
-      #      `Error: unable to get latest version`（GitHub 那个仓的 releases 列表首页当天返回空数组，
-      #      Link 头却写着 44 页 —— 即便重跑也修不好）。
-      # 现在这两条都不存在：一个写死的 URL + 一次 GET，不查任何 API。
-      #
-      # 版本依据（要改版本先读完这段）：
-      #   · 旧口径 `23.x` 是 arduino/setup-protoc@v3 的**默认值**，实际解析到 protoc 23.4
-      #     （2023-07-06 发布）—— 也就是说构建工具链版本此前一直是浮动的，不可复现；
-      #   · 本仓 protoc 的唯一消费者是 `crates/singbox-grpc/build.rs`
-      #     （tonic-prost-build 0.14 → prost-build 0.14.4），它对 protoc 的全部用法就是
-      #     `--include_imports --include_source_info -o <fds> -I <dir> <proto>`，都是上古参数；
-      #   · vendored `proto/started_service.proto` 是 proto3，无 import、无 proto3 `optional`
-      #     （那条才需要 protoc ≥ 3.15）、只用到 oneof ⇒ 版本下限实际上是 3.x 任意一版；
-      #   · 本机实测：protoc 3.21.12 / 23.4 / 35.1 对这份 proto 产出的 FileDescriptorSet
-      #     **逐字节相同**（sha256 50ce0c7e4757…）。prost-build 的唯一输入就是这份 FDS ⇒
-      #     生成的 Rust 代码与旧口径完全一致，升版本零行为差。
-      #   故直接钉最新稳定版 35.1（2026-06-11；36.0 当时还是 rc）。Linux 那份是静态可执行，
-      #   不依赖 glibc 版本；官方 zip 自带 `bin/` + `include/`，well-known types 的相对 include 保持原样。
-      # sha256 来源：本机 curl 下载 GitHub Release 资产后 `sha256sum` 实测（防事后替换与传输截断，
-      # 不构成对 GitHub 的独立第三方校验 —— protobuf 官方没有发布校验和文件）。
+      # ── protoc：钉扎常量与版本依据的唯一真值在 scripts/fetch-protoc.mjs（2026-08-18，CI-4）──
+      # 此前「固定版本 + 四平台 URL + sha256」在本文件与 package.yml 各内联一份、靠对拍测试防漂；
+      # 收敛到脚本后只剩一处，对拍测试的 protoc 部分随之退休（NASM 仍内联两份，对拍照旧）。
+      # 版本为什么是 35.1、为什么升版本零行为差、sha256 从哪来、被替掉的 arduino/setup-protoc@v3
+      # 两个外部失效点 —— 全部在脚本头注，改版本先读它。sha 校验走 node createHash、解压走
+      # lib/extract-zip.mjs（三平台 CI 已绿），与 shell 是 bash 还是 pwsh 彻底解耦。
       - name: Install protoc (pinned URL + sha256)
-        shell: bash
-        env:
-          PROTOC_VERSION: '35.1'
-        run: |
-          set -euo pipefail
-          case "${RUNNER_OS}-${RUNNER_ARCH}" in
-            Linux-X64)   asset='linux-x86_64'; sha256='6930ebf62bd4ea607b98fff052596c6ee564b9835b4ce172c75a3f53ae9d91b7' ;;
-            Windows-X64) asset='win64';        sha256='5d3ff218d7d91eea95f7569bcb5a98f3030f8996d44151279d9772edcff76082' ;;
-            macOS-ARM64) asset='osx-aarch_64'; sha256='193289af0470c6a1aada357d4fba0bbf8d78bfaac8b5e42ca30af2ef75583de2' ;;
-            macOS-X64)   asset='osx-x86_64';   sha256='537d73604a344ded6fc94e98e07e529d4fe3e4a0b09e59905353950fafc2a1f7' ;;
-            *) echo "::error::no pinned protoc for ${RUNNER_OS}-${RUNNER_ARCH}; add the asset name + sha256 above"; exit 1 ;;
-          esac
-          if [ "$RUNNER_OS" = 'Windows' ]; then tmp="$(cygpath -u "$RUNNER_TEMP")"; else tmp="$RUNNER_TEMP"; fi
-          zip="${tmp}/protoc-${PROTOC_VERSION}-${asset}.zip"
-          dest="${tmp}/protoc-${PROTOC_VERSION}"
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 20 -o "$zip" \
-            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${asset}.zip"
-          # 🔴 校验器与解压器**按平台写死，不做 `command -v` 探测**，并把实际用的工具打进日志 ——
-          # 判据与 `scripts/lib/extract-zip.mjs` 头注那条同名 🔴 一致：静默 fallback 会让
-          # 「unzip / sha256sum 其实不在」这个事实永远不被观测到，换 runner 镜像时原样复发，
-          # 且届时报错点已经漂到别处。写死之后缺了就当场 command not found 而红。
-          #
-          # ⚠️ Git Bash 是否自带 `sha256sum` **未经证实**（`extract-zip.mjs` 对 Git Bash 的
-          # `usr/bin` 用词同样是「未经证实」）。若 Windows 腿在此红，兜底是 `certutil -hashfile`。
-          if [ "$RUNNER_OS" = 'macOS' ]; then
-            echo 'hasher: shasum -a 256 (macOS 无 GNU coreutils)'
-            echo "${sha256}  ${zip}" | shasum -a 256 -c -
-          else
-            echo 'hasher: sha256sum'
-            echo "${sha256}  ${zip}" | sha256sum -c -
-          fi
-          rm -rf "$dest"; mkdir -p "$dest"
-          # Windows 走 System32 的 bsdtar 并写**绝对路径**：本步是 `shell: bash`，裸 `tar` 会解析成
-          # Git Bash 的 GNU tar（不认 zip）。仓内那三个 fetch step 没写 `shell:`、跑在 pwsh 下，
-          # 裸 `tar` 恰好是 System32 那份 —— 那个「恰好」不该被继承成隐性依赖。
-          if [ "$RUNNER_OS" = 'Windows' ]; then
-            echo 'extractor: /c/Windows/System32/tar.exe (bsdtar)'
-            /c/Windows/System32/tar.exe -xf "$(cygpath -w "$zip")" -C "$(cygpath -w "$dest")"
-          else
-            echo 'extractor: unzip'
-            unzip -q -o "$zip" -d "$dest"
-          fi
-          chmod +x "$dest"/bin/*
-          if [ "$RUNNER_OS" = 'Windows' ]; then cygpath -w "$dest/bin" >> "$GITHUB_PATH"
-          else                                  echo "$dest/bin" >> "$GITHUB_PATH"; fi
-          echo "PROTOC_EXPECT=libprotoc ${PROTOC_VERSION}" >> "$GITHUB_ENV"
+        run: node scripts/fetch-protoc.mjs
 
       # ── NASM（Windows）：固定 URL + sha256（2026-08-17，替掉 ilammy/setup-nasm@v1）──
       # 被替掉的 action 实际只做三件事（读它的 index.js 得到）：从

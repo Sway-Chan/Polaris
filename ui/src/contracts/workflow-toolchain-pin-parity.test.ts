@@ -1,33 +1,29 @@
 /**
- * CI 工具链钉扎常量的**跨 workflow 对拍门**。
+ * CI 工具链钉扎的守门测试。
  *
- * `ci.yml`（检测门）与 `package.yml`（出包腿）各自内联一份「固定版本 + 固定 URL + sha256」
- * 的 protoc / NASM 安装步骤 —— 这是 2026-08-17 把 `arduino/setup-protoc@v3` 与
- * `ilammy/setup-nasm@v1` 换掉时的形态（换掉的理由写在 `ci.yml` 那两步上方）。
- *
- * 换掉 action 消掉了两个外部失效点，但**引入了一个新的失效模式**：同一组常量现在有两份。
- * 只改一份不会有任何东西变红 —— 两条腿照样各自装出一个自洽的 protoc，各自的断言步也照样绿，
- * 于是「发布产物用的 protoc」和「门验过的 protoc」可以是两个版本，而没人知道。
- * 这道门就是为这一个缺口建的：两份常量必须逐字相同。
+ * 2026-08-17 起 protoc / NASM 换成「固定版本 + 固定 URL + sha256」的自装内联步，当时常量在
+ * `ci.yml` 与 `package.yml` 各一份，本文件用「两份逐字对拍」防漂。
+ * 2026-08-18（CI-4）起 protoc 收敛到 `scripts/fetch-protoc.mjs`：常量只有一处，「两份对拍」
+ * 这个失效模式对 protoc 消失，protoc 对拍部分退休，改为守「workflow 真的在调用脚本」与
+ * 「脚本自己的钉扎表有牙」。NASM 仍内联两处，对拍照旧。
  *
  * # 判据
+ * - protoc（workflow 侧）：两个文件都有真的 `run: node scripts/fetch-protoc.mjs`——
+ *   只 grep 步骤名的话，把 run 块掏空、名字留着照样绿；
+ * - protoc（脚本侧）：`ASSETS` 表恰 4 条、每条带 64 位 sha256；版本常量唯一；
+ *   校验走 `createHash` 且比对不符会抛；`PROTOC_EXPECT` 仍经 `GITHUB_ENV` 导出
+ *   （断言步的期望值来源，丢了它断言步拿不到期望）；
+ * - NASM：两文件 `NASM_VERSION` 与 sha256 一致，且条数固定——两边一起删空也是「相等」，
+ *   固定条数让删空转红；
+ * - 两文件 NASM 步的 sha256 是真在校验（`sha256sum -c`）而不是摆着看；装配步不靠
+ *   `command -v` 探测选工具；装完仍有 PATH 断言步（`[ "$got" = "$PROTOC_EXPECT" ]`）。
  *
- * - 两个文件里的 `PROTOC_VERSION` / `NASM_VERSION` 相同；
- * - 两个文件里的 `(平台 → sha256)` 表逐条相同，且**条数固定**——少一行也红。
- *   固定条数是刻意的：只比对「两边相等」的话，把两边的表一起删空同样相等，门就成了摆设。
- * - 两个文件都还在真的**校验**那些 sha256（`sha256sum -c` / `shasum -a 256 -c`），
- *   而不是只把常量写在那儿；
- * - 两个文件都还留着装完之后的 PATH 断言步。删掉它，安装步就退化成一个静默 no-op，
- *   构建会悄悄用 runner 上碰巧存在的另一份 protoc。
- *
- * # 这门抓不到什么（别当成「protoc 钉扎都验过了」）
- *
- * - **sha256 对不对**：它只保证两处相同。两处一起写错，本门全绿，真正会红的是 CI 上的
- *   `sha256sum -c`（那才是校验本身）。
- * - **版本选得对不对**：选 35.1 的依据（三个版本产出的 FileDescriptorSet 逐字节相同）
- *   在 `ci.yml` 的注释里，是一次性的实测结论，本门不复验。
- * - **URL 还在不在**：资产被上游删除只有真跑 CI 才知道。
- * - `ui.yml` 的 pnpm 钉扎不在本门射程内 —— 它只有一处，没有对拍对象。
+ * # 这门抓不到什么（别当成「工具链钉扎都验过了」）
+ * - **sha256 对不对**：只保证两处相同 / 表内形齐。两处一起写错，本门全绿；
+ *   Linux 腿真正会红的是脚本里的 createHash 比对，win/mac 腿只有 CI 真跑才知道。
+ * - **版本选得对不对**：选 35.1 的依据在 `scripts/fetch-protoc.mjs` 头注（一次性实测结论）。
+ * - **URL 还在不在**：资产被上游删除只有真下载才知道。
+ * - `ui.yml` 的 pnpm 钉扎不在射程内 —— 它只有一处，没有对拍对象。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -39,7 +35,7 @@ const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 
 const WORKFLOWS = ['ci.yml', 'package.yml'] as const;
 
-/** protoc 官方 release 覆盖的平台数（`RUNNER_OS-RUNNER_ARCH` → 资产名）。 */
+/** protoc 官方 release 覆盖的平台数（`process.platform-process.arch` → 资产名）。 */
 const PROTOC_PLATFORM_ROWS = 4;
 
 function read(workflow: string): string {
@@ -51,45 +47,57 @@ function envPin(src: string, name: string): string[] {
   return [...src.matchAll(new RegExp(`^\\s*${name}: '([^']+)'$`, 'gm'))].map((m) => m[1]);
 }
 
-/** 取 `asset='<平台资产名>'; sha256='<64 位十六进制>'`，按资产名排序后对拍。 */
-function protocAssetPins(src: string): string[] {
-  return [...src.matchAll(/asset='([^']+)';\s*sha256='([0-9a-f]{64})'/g)]
-    .map((m) => `${m[1]}=${m[2]}`)
-    .sort();
-}
-
 /** 取独立成行的 `sha256='<64 位十六进制>'`（NASM 那份）。 */
 function standaloneShaPins(src: string): string[] {
   return [...src.matchAll(/^\s*sha256='([0-9a-f]{64})'$/gm)].map((m) => m[1]).sort();
 }
 
-describe('CI 工具链钉扎常量跨 workflow 对拍', () => {
+describe('CI 工具链钉扎守门', () => {
   const sources = Object.fromEntries(WORKFLOWS.map((w) => [w, read(w)])) as Record<
     (typeof WORKFLOWS)[number],
     string
   >;
+  // CI-4 后 protoc 常量的唯一真值点；断言读的是源码文本（与其它 workflow 断言同款手法）。
+  const fetchProtoc = readFileSync(join(REPO_ROOT, 'scripts/fetch-protoc.mjs'), 'utf8');
 
-  it('protoc 版本两处一致且都已钉扎', () => {
-    const ci = envPin(sources['ci.yml'], 'PROTOC_VERSION');
-    const pkg = envPin(sources['package.yml'], 'PROTOC_VERSION');
-    expect(ci, 'ci.yml 里没有 PROTOC_VERSION —— protoc 安装步被改回浮动了？').toHaveLength(1);
-    expect(pkg, 'package.yml 里没有 PROTOC_VERSION —— 出包腿的 protoc 不再钉扎').toHaveLength(1);
-    expect(pkg[0], 'ci.yml 与 package.yml 的 protoc 版本不同：门验的和出包用的不是同一个').toBe(
-      ci[0],
-    );
+  it.each(WORKFLOWS)('%s 通过 scripts/fetch-protoc.mjs 装 protoc', (workflow) => {
+    expect(
+      /^ *run: node scripts\/fetch-protoc\.mjs\s*$/m.test(sources[workflow]),
+      `${workflow} 里没有 \`run: node scripts/fetch-protoc.mjs\` —— ` +
+        'protoc 装配被改回内联或掏空了；常量唯一真值在脚本里，别在 workflow 里再抄一份'
+    ).toBe(true);
   });
 
-  it('protoc 每平台的 URL 资产名与 sha256 两处逐条一致', () => {
-    const ci = protocAssetPins(sources['ci.yml']);
-    const pkg = protocAssetPins(sources['package.yml']);
-    // 条数固定：两边一起删空也是「相等」，那样这道门就没有牙了。
-    expect(ci, `ci.yml 的 protoc 平台表应有 ${PROTOC_PLATFORM_ROWS} 条`).toHaveLength(
-      PROTOC_PLATFORM_ROWS,
+  it('fetch-protoc.mjs 的钉扎表恰四平台且每条带 sha256，版本常量唯一', () => {
+    const rows = [...fetchProtoc.matchAll(/asset: '([^']+)',\s*sha256: '([0-9a-f]{64})'/g)].map(
+      (m) => `${m[1]}=${m[2]}`
     );
-    expect(pkg, `package.yml 的 protoc 平台表应有 ${PROTOC_PLATFORM_ROWS} 条`).toHaveLength(
-      PROTOC_PLATFORM_ROWS,
+    expect(
+      rows,
+      `ASSETS 表应有 ${PROTOC_PLATFORM_ROWS} 条（linux/win/darwin-arm64/darwin-x64）——` +
+        '少了某平台，那条腿的 runner 会在装配步当场红（fail-loud）；表被删空时本断言也必须红'
+    ).toHaveLength(PROTOC_PLATFORM_ROWS);
+    expect(new Set(rows).size, 'ASSETS 表里有重复条目').toBe(rows.length);
+    const versions = [...fetchProtoc.matchAll(/^const PROTOC_VERSION = '([^']+)'/gm)].map(
+      (m) => m[1]
     );
-    expect(pkg, 'ci.yml 与 package.yml 的 protoc sha256 表漂移了：只改了一处').toEqual(ci);
+    expect(versions, 'PROTOC_VERSION 常量应恰有一处').toHaveLength(1);
+  });
+
+  it('fetch-protoc.mjs 的校验与 CI 装配线还在（createHash 比对 / 断言步期望值导出）', () => {
+    expect(
+      fetchProtoc.includes("createHash('sha256')") && fetchProtoc.includes('sha256 不符'),
+      '脚本丢了 sha256 校验 —— 常量还在、校验没了，钉扎退化成装饰。' +
+        '（钉调用形 `createHash(\'sha256\')` 而不是裸 `createHash`：后者会被 import 行喂饱）'
+    ).toBe(true);
+    expect(
+      fetchProtoc.includes('PROTOC_EXPECT=libprotoc'),
+      '脚本不再经 GITHUB_ENV 导出 PROTOC_EXPECT —— 断言步拿不到期望值，安装步可静默 no-op'
+    ).toBe(true);
+    expect(
+      fetchProtoc.includes('GITHUB_PATH') && fetchProtoc.includes('GITHUB_ENV'),
+      '脚本的 CI 装配线（PATH 注册）没了 —— 装了但断言步解析不到；此处防整段被误删'
+    ).toBe(true);
   });
 
   it('NASM 版本与 sha256 两处一致', () => {
@@ -106,11 +114,11 @@ describe('CI 工具链钉扎常量跨 workflow 对拍', () => {
     expect(pkgSha, 'ci.yml 与 package.yml 的 NASM sha256 漂移了').toEqual(ciSha);
   });
 
-  it.each(WORKFLOWS)('%s 里的 sha256 是真在校验，不是摆着看', (workflow) => {
+  it.each(WORKFLOWS)('%s 里 NASM 的 sha256 是真在校验，不是摆着看', (workflow) => {
     const src = sources[workflow];
     expect(
-      src.includes('sha256sum -c -') && src.includes('shasum -a 256 -c -'),
-      `${workflow} 里找不到 sha256 校验命令 —— 常量还在，校验没了`,
+      src.includes('sha256sum -c -'),
+      `${workflow} 里找不到 sha256sum 校验命令 —— NASM 常量还在，校验没了`
     ).toBe(true);
   });
 
@@ -125,7 +133,7 @@ describe('CI 工具链钉扎常量跨 workflow 对拍', () => {
       expect(
         src.includes(probe),
         `${workflow} 出现了 \`${probe}\` —— 工具选择又变成了静默 fallback，` +
-          `见 scripts/lib/extract-zip.mjs 头注那条 🔴：判据要按平台写死并把实际用的工具打进日志`,
+          `见 scripts/lib/extract-zip.mjs 头注那条 🔴：判据要按平台写死并把实际用的工具打进日志`
       ).toBe(false);
     }
   });
@@ -135,11 +143,7 @@ describe('CI 工具链钉扎常量跨 workflow 对拍', () => {
     // 匹配断言里**真正的比较**，不是步骤名：只 grep 步骤名的话，把 run 块掏空、名字留着照样绿。
     expect(
       src.includes('[ "$got" = "$PROTOC_EXPECT" ]'),
-      `${workflow} 丢了 protoc 的 PATH 断言 —— 安装步变成静默 no-op 也没人知道`,
-    ).toBe(true);
-    expect(
-      src.includes('PROTOC_EXPECT=libprotoc'),
-      `${workflow} 的安装步不再导出 PROTOC_EXPECT —— 断言拿不到期望值`,
+      `${workflow} 丢了 protoc 的 PATH 断言 —— 安装步变成静默 no-op 也没人知道`
     ).toBe(true);
   });
 });

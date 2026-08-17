@@ -342,55 +342,12 @@ jobs:
 
       # ── 原生构建前置：protoc（singbox-grpc build.rs 三平台都要）+ Windows NASM（boring-sys2/BoringSSL 汇编）──
       #
-      # 两处都在 2026-08-17 换成「固定版本 + 固定 URL + sha256」的自装，不再拉 action：
-      # 完整判据（为什么是这个版本、为什么升版本零行为差、sha256 从哪来、代价是什么）写在
-      # `ci.yml` 的同名两步上方，**改这里之前先读那段**。两个文件的常量必须同时改，改一处就漂移。
-      # 一句话摘要：`arduino/setup-protoc@v3` 同时踩了「拉 action tarball 被 codeload 429」和
-      # 「运行期查 releases 列表解析 `23.x` 失败」两个失效点；`ilammy/setup-nasm@v1` 则是全程零校验。
+      # protoc 自 2026-08-18（CI-4）起走 `scripts/fetch-protoc.mjs`：钉扎常量与版本依据的唯一
+      # 真值在脚本里（头注），本文件与 ci.yml 不再各持一份 —— 对拍测试的 protoc 部分已退休。
+      # NASM 仍是两处内联：判据与版本依据写在 `ci.yml` 同名步上方，**改 NASM 前先读那段**，
+      # 两个文件的 NASM 常量必须同时改，改一处就漂移（对拍照旧）。
       - name: Install protoc (pinned URL + sha256)
-        shell: bash
-        env:
-          PROTOC_VERSION: '35.1'
-        run: |
-          set -euo pipefail
-          case "${RUNNER_OS}-${RUNNER_ARCH}" in
-            Linux-X64)   asset='linux-x86_64'; sha256='6930ebf62bd4ea607b98fff052596c6ee564b9835b4ce172c75a3f53ae9d91b7' ;;
-            Windows-X64) asset='win64';        sha256='5d3ff218d7d91eea95f7569bcb5a98f3030f8996d44151279d9772edcff76082' ;;
-            macOS-ARM64) asset='osx-aarch_64'; sha256='193289af0470c6a1aada357d4fba0bbf8d78bfaac8b5e42ca30af2ef75583de2' ;;
-            macOS-X64)   asset='osx-x86_64';   sha256='537d73604a344ded6fc94e98e07e529d4fe3e4a0b09e59905353950fafc2a1f7' ;;
-            *) echo "::error::no pinned protoc for ${RUNNER_OS}-${RUNNER_ARCH}; add the asset name + sha256 above"; exit 1 ;;
-          esac
-          if [ "$RUNNER_OS" = 'Windows' ]; then tmp="$(cygpath -u "$RUNNER_TEMP")"; else tmp="$RUNNER_TEMP"; fi
-          zip="${tmp}/protoc-${PROTOC_VERSION}-${asset}.zip"
-          dest="${tmp}/protoc-${PROTOC_VERSION}"
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 20 -o "$zip" \
-            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${asset}.zip"
-          # 🔴 校验器与解压器**按平台写死，不做 `command -v` 探测**，并把实际用的工具打进日志 ——
-          # 判据与 `scripts/lib/extract-zip.mjs` 头注那条同名 🔴 一致：静默 fallback 会让
-          # 「unzip / sha256sum 其实不在」这个事实永远不被观测到，换 runner 镜像时原样复发。
-          # ⚠️ Git Bash 是否自带 `sha256sum` 未经证实；若 Windows 腿在此红，兜底 `certutil -hashfile`。
-          if [ "$RUNNER_OS" = 'macOS' ]; then
-            echo 'hasher: shasum -a 256 (macOS 无 GNU coreutils)'
-            echo "${sha256}  ${zip}" | shasum -a 256 -c -
-          else
-            echo 'hasher: sha256sum'
-            echo "${sha256}  ${zip}" | sha256sum -c -
-          fi
-          rm -rf "$dest"; mkdir -p "$dest"
-          # Windows 走 System32 的 bsdtar 并写**绝对路径**：本步是 `shell: bash`，裸 `tar` 会解析成
-          # Git Bash 的 GNU tar（不认 zip）。仓内那三个 fetch step 跑在 pwsh 下，裸 `tar` 恰好是
-          # System32 那份 —— 那个「恰好」不该被继承成隐性依赖。
-          if [ "$RUNNER_OS" = 'Windows' ]; then
-            echo 'extractor: /c/Windows/System32/tar.exe (bsdtar)'
-            /c/Windows/System32/tar.exe -xf "$(cygpath -w "$zip")" -C "$(cygpath -w "$dest")"
-          else
-            echo 'extractor: unzip'
-            unzip -q -o "$zip" -d "$dest"
-          fi
-          chmod +x "$dest"/bin/*
-          if [ "$RUNNER_OS" = 'Windows' ]; then cygpath -w "$dest/bin" >> "$GITHUB_PATH"
-          else                                  echo "$dest/bin" >> "$GITHUB_PATH"; fi
-          echo "PROTOC_EXPECT=libprotoc ${PROTOC_VERSION}" >> "$GITHUB_ENV"
+        run: node scripts/fetch-protoc.mjs
 
       - name: Install NASM (Windows — pinned URL + sha256)
         if: runner.os == 'Windows'
