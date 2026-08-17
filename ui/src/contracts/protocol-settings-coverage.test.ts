@@ -34,7 +34,8 @@
  *     分支、传输层排除名单、`is_quic_managed_tls`、spoof 的协议门）。「Rust 给某协议新接了 TLS 而归属
  *     表没跟」会红。没有这把锁，归属表本身就是下一个盲区。
  *  6. **`NODE_EXEMPT` 与 `PORT_DEBT` 的类型区别**：「有意排除」与「还没做」**在门里是两张表**，
- *     且豁免每条必须带**可核对的代码行依据**（`path:line` + 该行附近必须真出现的字符串）。理由见下。
+ *     且豁免每条必须带**可核对的代码依据**（文件 + 可选的块锚点 + 该块内必须**恰好出现一次**的字符串，
+ *     见 [`Cite`]）。**不带行号**——行号那一维在 2026-08-17 拆掉了，理由写在 [`Cite`] 的注释里。
  *
  * # 为什么判据必须带 per-protocol 维度（批 C 的改造；改造前它在记假账）
  *
@@ -714,54 +715,142 @@ const OWNER_PAIRS: ReadonlyArray<readonly [string, NodeProto]> = Object.entries(
   .flatMap(([s, ps]) => ps.map((p) => [s, p] as const))
   .sort((a, b) => pairKey(...a).localeCompare(pairKey(...b)));
 
-/** 代码行依据：`路径:行号` + 该行**附近**必须真出现的字符串。两者任一对不上 → 红。 */
+/**
+ * 代码依据：**文件 + 定位锚点 + 依据串**，**不带行号**。
+ *
+ * `needle` 必须在 `scope` 划出的块里（没写 `scope` 就是全文）**恰好出现一次**。
+ *
+ * # 为什么不是 `路径:行号`（这一维是 2026-08-17 拆掉的）
+ *
+ * 旧形态是 `路径:行号` + 「`needle` 落在该行 ±12 行内」。那个窗口是**一份会被漂移慢慢吃掉的余量**：
+ *  - 实测（拆之前的 main）：23 条依据里 **17 条行号已经不精确**（全是 `builder/outbound.rs` 的，各差 1 行），
+ *    只是还没吃穿窗口，门是绿的 —— 「新写的」与「陈了很久的」在输出上不可区分；
+ *  - 往 `outbound.rs` 插 12 行**纯注释**（与本门毫无关系的改动），17 条同时越界，门一次性全红。
+ *    收到的信号是「17 条依据都失效了」，而真相是「一条都没失效，只是数字过期了」——
+ *    修法只剩「把 17 个数字重算一遍」，那次重算既没有信息量，也是下一次假红的起点。
+ *  - 更要命的是窗口**顺带放宽了消歧**：`alpn/engine/spoof/spoof_method/utls: None,` 这五个串在
+ *    `outbound.rs` 里**逐字同形地出现在三处**（naive 臂 / 通用 TLS 段 / Reality 段），行号是当时唯一的
+ *    消歧手段，而它只精确到 ±12 行 ⇒ 把 naive 的 `engine` 依据写成通用 TLS 段的行号（:480，真实命中 :485），
+ *    旧门照绿 —— 一条 naive 的豁免可以拿 Reality 段当证据，没有人会知道。（已实测坐实。）
+ *
+ * 原作者不要求精确到行的理由是对的：「正常重构会让行号漂几行，那种误红除了逼人改数字没有信息量」。
+ * 锚点形态把那件事解决得更彻底 —— 不是把误红的阈值调大，是**让行号不再参与判定**：
+ * 上面插多少行都不红，而依据串搬出了它该在的那个块，立刻红。
+ *
+ * # 换来的新代价（如实记）
+ *
+ *  - **锚点自身被改写会红**（`Protocol::Naive => {` 若并成 `Protocol::Naive | Protocol::X => {`）。
+ *    这是新增的假红面；但修它要写出「那段代码搬到哪儿去了」，是有信息量的一次编辑，
+ *    与「把数字 +12」不是一类。
+ *  - **依据串在块内出现两次也会红**（旧门会被「邻居」喂饱，取最近的一处判绿）。这是收紧不是放宽：
+ *    一条指得到两处的依据，指着哪一处全凭读者猜。
+ */
 interface Cite {
   at: string;
+  scope?: string;
   needle: string;
 }
 
-/** 依据行允许的漂移窗口（行）。给重构留一点余地，但指到别的函数去就会红。 */
-const CITE_WINDOW = 12;
+/**
+ * naive 出站分支的定位锚点。
+ * 该臂里的 `insecure/alpn/engine/spoof/spoof_method/utls: None,` 与通用 TLS 段（`engine`/`spoof`/
+ * `spoof_method`/`utls`）、Reality 段（`alpn`/`engine`/`spoof`/`spoof_method`）**逐字同形**，靠它消歧。
+ */
+const NAIVE_ARM = 'Protocol::Naive => {';
 
 interface Exemption {
   why: string;
   cite: readonly Cite[];
 }
 
+/** 字节偏移 → 行号。只进报错文案，不参与判定。 */
+function lineAt(src: string, offset: number): number {
+  return src.slice(0, offset).split('\n').length;
+}
+
+/** `needle` 在 `hay` 里的全部出现位置（不重叠）。 */
+function offsetsOf(hay: string, needle: string): number[] {
+  const out: number[] = [];
+  for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + needle.length)) out.push(i);
+  return out;
+}
+
 /**
- * 核对一条代码行依据。三件事任一对不上就红：文件读不到、行号越界、`needle` 不在该行 ±[`CITE_WINDOW`] 内。
+ * 取定位块的字节区间 `[from, to)`：锚点必须在文件里**唯一**，块体从它之后第一个 `{` 起花括号配对。
  *
- * 为什么不只校验「文件里有这个串」：那样把行号改成 1 也照绿，依据就退化成一句装饰。
- * 也不做「必须精确在这一行」：正常重构会让行号漂几行，那种误红除了逼人改数字没有信息量。
+ * 不剔注释 / 不剥字符串是**有意的**：一来有条依据串本身就是注释（naive 臂那句），剔了就核对不到；
+ * 二来注释或字符串里真出现不配对的花括号时，配对只会「早收」或「收不拢」，两种都落进下面
+ * 「块内命中数 ≠ 1」或这里的「不配对」，**全是红**，没有静默放行的分支。
+ */
+function braceSpan(
+  src: string,
+  anchor: string,
+  label: string,
+  path: string
+): { from: number; to: number } {
+  const at = src.indexOf(anchor);
+  expect(
+    at,
+    `${label} 的定位锚点 \`${anchor}\` 在 ${path} 里找不到 —— 依据指的那段代码已经不在了（或被改写）`
+  ).toBeGreaterThanOrEqual(0);
+  expect(
+    src.indexOf(anchor, at + 1),
+    `${label} 的定位锚点 \`${anchor}\` 在 ${path} 里出现不止一次 —— 锚点必须唯一，否则它会静默绑到第一处`
+  ).toBe(-1);
+  const open = src.indexOf('{', at);
+  expect(
+    open,
+    `${label} 的定位锚点 \`${anchor}\` 之后没有 \`{\` —— 锚点必须是一个块的开头`
+  ).toBeGreaterThanOrEqual(0);
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') {
+      depth--;
+      if (depth === 0) return { from: open, to: i };
+    }
+  }
+  throw new Error(
+    `${label} 的定位锚点 \`${anchor}\`（${path}:${lineAt(src, open)}）花括号不配对 —— 解析失效，必须转红`
+  );
+}
+
+/**
+ * 核对一条代码依据。四件事任一对不上就红：文件读不到、锚点找不到 / 不唯一、依据串在块内一次没出现、
+ * 依据串在块内出现多于一次。**没有「暂时还算数」这种中间态**。
+ *
+ * 为什么不只校验「文件里有这个串」：那样一条 naive 的豁免可以被 Reality 段的同名行喂饱（那五个串真
+ * 在三处同形出现），依据就退化成一句装饰。`scope` 顶替了行号原来干的消歧活，且它不会随无关改动过期。
  */
 function verifyCite(label: string, c: Cite): void {
-  const parts = c.at.split(':');
-  const line = Number(parts[1]);
-  expect(
-    parts.length === 2 && Number.isInteger(line) && line > 0,
-    `${label} 的依据 \`${c.at}\` 不是 \`路径:行号\` 形式`
-  ).toBe(true);
+  // 空串必须先红：`indexOf('')` 恒返回起点 ⇒ 下面的扫描会**空转不前进**，那是挂死不是红。
+  expect(c.needle.length, `${label} 的依据串是空的 —— 空串等于没有依据`).toBeGreaterThan(0);
   let src = '';
   try {
-    src = read(`../../../${parts[0]}`);
+    src = read(`../../../${c.at}`);
   } catch {
     src = '';
   }
-  expect(src.length, `${label} 的依据文件 \`${parts[0]}\` 读不到 —— 依据必须指得到真文件`).toBeGreaterThan(0);
-  const lines = src.split('\n');
-  expect(
-    line <= lines.length,
-    `${label} 的依据行 ${c.at} 越界（该文件只有 ${lines.length} 行）`
-  ).toBe(true);
-  const hits = lines.map((t, i) => (t.includes(c.needle) ? i + 1 : -1)).filter((n) => n > 0);
+  expect(src.length, `${label} 的依据文件 \`${c.at}\` 读不到 —— 依据必须指得到真文件`).toBeGreaterThan(0);
+  const span =
+    c.scope === undefined ? { from: 0, to: src.length } : braceSpan(src, c.scope, label, c.at);
+  const where =
+    c.scope === undefined
+      ? c.at
+      : `${c.at} 的 \`${c.scope}\` 块（${lineAt(src, span.from)}–${lineAt(src, span.to)} 行）`;
+  const hits = offsetsOf(src.slice(span.from, span.to), c.needle).map((o) =>
+    lineAt(src, span.from + o)
+  );
   expect(
     hits.length,
-    `${label} 的依据串 \`${c.needle}\` 在 ${parts[0]} 里一次都没出现 —— 依据已失效`
+    `${label} 的依据串 \`${c.needle}\` 在 ${where} 里一次都没出现 —— 依据已失效：` +
+      `要么那段代码没了（那豁免的前提也没了，该改的是豁免不是依据），要么它搬了家（改 \`scope\` 锚点）`
   ).toBeGreaterThan(0);
   expect(
-    hits.some((n) => Math.abs(n - line) <= CITE_WINDOW),
-    `${label} 的依据行漂了：\`${c.needle}\` 实际在 ${parts[0]}:${hits.join('/')}，表里写的是 :${line}`
-  ).toBe(true);
+    hits.length,
+    `${label} 的依据串 \`${c.needle}\` 在 ${where} 里命中 ${hits.length} 次（第 ${hits.join(' / ')} 行）` +
+      ` —— 依据必须唯一指得到一处，否则指着哪一处全凭读者猜。补一个更窄的 \`scope\` 锚点，或把依据串写长`
+  ).toBe(1);
 }
 
 /**
@@ -783,17 +872,17 @@ const QUIC_TLS_EXEMPT: Record<string, Exemption> = {
       '给控件 = 一个拨了必然不生效的开关。',
     cite: [
       {
-        at: 'crates/config-engine/src/builder/outbound.rs:497',
+        at: 'crates/config-engine/src/builder/outbound.rs',
         needle: '!is_quic_managed_tls(&protocol) && should_emit_tls_engine',
       },
-      { at: 'crates/config-engine/src/builder/outbound_helpers.rs:136', needle: 'p == "hysteria2" || p == "tuic" || p == "hysteria"' },
+      { at: 'crates/config-engine/src/builder/outbound_helpers.rs', needle: 'p == "hysteria2" || p == "tuic" || p == "hysteria"' },
     ],
   },
   fingerprint: {
     why: 'uTLS 指纹同理：`is_quic_managed_tls` 前置门挡在 `final_fp != "none"` 之前 ⇒ utls 块对这两个协议永不下发。',
     cite: [
       {
-        at: 'crates/config-engine/src/builder/outbound.rs:516',
+        at: 'crates/config-engine/src/builder/outbound.rs',
         needle: '!is_quic_managed_tls(&protocol) && final_fp != "none"',
       },
     ],
@@ -802,7 +891,7 @@ const QUIC_TLS_EXEMPT: Record<string, Exemption> = {
     why: 'ClientHello 分片是 TCP-TLS 的手法；`fragment_unsupported` 把 QUIC 自管的两个协议排除在外。',
     cite: [
       {
-        at: 'crates/config-engine/src/builder/outbound.rs:749',
+        at: 'crates/config-engine/src/builder/outbound.rs',
         needle: 'is_quic_managed_tls(&protocol_lower) || server.protocol == Protocol::Naive',
       },
     ],
@@ -811,7 +900,7 @@ const QUIC_TLS_EXEMPT: Record<string, Exemption> = {
     why: 'TLS spoof 要伪造一个 TCP ClientHello，QUIC 里没有；`is_tls_spoof_supported_protocol` 直接排除这两个协议。',
     cite: [
       {
-        at: 'crates/config-engine/src/user_config/tls_spoof.rs:37',
+        at: 'crates/config-engine/src/user_config/tls_spoof.rs',
         needle: '!matches!(p.as_str(), "hysteria2" | "tuic" | "naive")',
       },
     ],
@@ -820,7 +909,7 @@ const QUIC_TLS_EXEMPT: Record<string, Exemption> = {
     why: '同 `spoofSni` —— 两键是一对，同一道协议门挡掉，单给一个也不会生效。',
     cite: [
       {
-        at: 'crates/config-engine/src/user_config/tls_spoof.rs:37',
+        at: 'crates/config-engine/src/user_config/tls_spoof.rs',
         needle: '!matches!(p.as_str(), "hysteria2" | "tuic" | "naive")',
       },
     ],
@@ -838,9 +927,9 @@ const GRPC_MULTIMODE_EXEMPT: Record<string, Exemption> = {
       'grpc 传输 schema 是 `additionalProperties:false` 且无此键，真下发反而 FATAL。已有 Rust 断言钉住' +
       '「将来结构体真加了该字段就转红」。给它控件 = 造一个拨了永远不生效的假开关。',
     cite: [
-      { at: 'crates/config-engine/src/singbox/outbound.rs:300', needle: 'pub struct Transport' },
+      { at: 'crates/config-engine/src/singbox/outbound.rs', needle: 'pub struct Transport {' },
       {
-        at: 'crates/config-engine/src/builder/outbound.rs:2150',
+        at: 'crates/config-engine/src/builder/outbound.rs',
         needle: 'grpc_multi_mode_never_reaches_the_kernel',
       },
     ],
@@ -873,10 +962,10 @@ const NODE_EXEMPT: Record<string, Record<string, Exemption>> = {
         'naive 的 TLS 由 Cronet 自管，`insecure` 写死 None；内核侧另有点名拒绝' +
         '（`insecure is not supported on naive outbound`，实测 exit=1）。',
       cite: [
-        { at: 'crates/config-engine/src/builder/outbound.rs:316', needle: 'naive TLS 由 Cronet 自管' },
-        { at: 'crates/config-engine/src/builder/outbound.rs:326', needle: 'insecure: None,' },
+        { at: 'crates/config-engine/src/builder/outbound.rs', scope: NAIVE_ARM, needle: 'naive TLS 由 Cronet 自管' },
+        { at: 'crates/config-engine/src/builder/outbound.rs', scope: NAIVE_ARM, needle: 'insecure: None,' },
         {
-          at: 'crates/config-engine/src/builder/outbound.rs:2547',
+          at: 'crates/config-engine/src/builder/outbound.rs',
           needle: 'naive_tls_branch_pins_the_kernel_reject_list',
         },
       ],
@@ -886,10 +975,10 @@ const NODE_EXEMPT: Record<string, Record<string, Exemption>> = {
         '同上：naive 分支把 `alpn` 写死 None，内核点名拒绝（`alpn is not supported on naive outbound`）。' +
         '这是 上游 与本仓一致的既有结论，批 D 补上了机器可核对的出处。',
       cite: [
-        { at: 'crates/config-engine/src/builder/outbound.rs:316', needle: 'naive TLS 由 Cronet 自管' },
-        { at: 'crates/config-engine/src/builder/outbound.rs:327', needle: 'alpn: None,' },
+        { at: 'crates/config-engine/src/builder/outbound.rs', scope: NAIVE_ARM, needle: 'naive TLS 由 Cronet 自管' },
+        { at: 'crates/config-engine/src/builder/outbound.rs', scope: NAIVE_ARM, needle: 'alpn: None,' },
         {
-          at: 'crates/config-engine/src/builder/outbound.rs:2547',
+          at: 'crates/config-engine/src/builder/outbound.rs',
           needle: 'naive_tls_branch_pins_the_kernel_reject_list',
         },
       ],
@@ -897,9 +986,9 @@ const NODE_EXEMPT: Record<string, Record<string, Exemption>> = {
     engine: {
       why: 'naive 分支自造的 TLS 块把 `engine` 写死 None（Cronet 自带 TLS 栈，选谁都没有意义）。',
       cite: [
-        { at: 'crates/config-engine/src/builder/outbound.rs:328', needle: 'engine: None,' },
+        { at: 'crates/config-engine/src/builder/outbound.rs', scope: NAIVE_ARM, needle: 'engine: None,' },
         {
-          at: 'crates/config-engine/src/builder/outbound.rs:2547',
+          at: 'crates/config-engine/src/builder/outbound.rs',
           needle: 'naive_tls_branch_pins_the_kernel_reject_list',
         },
       ],
@@ -909,9 +998,9 @@ const NODE_EXEMPT: Record<string, Record<string, Exemption>> = {
         'uTLS 块（`utls`）同样写死 None —— 指纹由 Cronet 决定；内核点名拒绝' +
         '（`uTLS is not supported on naive outbound`）。前端给档位只是假控件。',
       cite: [
-        { at: 'crates/config-engine/src/builder/outbound.rs:331', needle: 'utls: None,' },
+        { at: 'crates/config-engine/src/builder/outbound.rs', scope: NAIVE_ARM, needle: 'utls: None,' },
         {
-          at: 'crates/config-engine/src/builder/outbound.rs:2547',
+          at: 'crates/config-engine/src/builder/outbound.rs',
           needle: 'naive_tls_branch_pins_the_kernel_reject_list',
         },
       ],
@@ -920,7 +1009,7 @@ const NODE_EXEMPT: Record<string, Record<string, Exemption>> = {
       why: '`fragment_unsupported` 显式含 naive（与 QUIC 两协议同一处判据）。',
       cite: [
         {
-          at: 'crates/config-engine/src/builder/outbound.rs:749',
+          at: 'crates/config-engine/src/builder/outbound.rs',
           needle: 'is_quic_managed_tls(&protocol_lower) || server.protocol == Protocol::Naive',
         },
       ],
@@ -929,20 +1018,20 @@ const NODE_EXEMPT: Record<string, Record<string, Exemption>> = {
       why: '`is_tls_spoof_supported_protocol` 的排除名单里点名 naive；naive 分支也把 `spoof` 写死 None。',
       cite: [
         {
-          at: 'crates/config-engine/src/user_config/tls_spoof.rs:37',
+          at: 'crates/config-engine/src/user_config/tls_spoof.rs',
           needle: '!matches!(p.as_str(), "hysteria2" | "tuic" | "naive")',
         },
-        { at: 'crates/config-engine/src/builder/outbound.rs:329', needle: 'spoof: None,' },
+        { at: 'crates/config-engine/src/builder/outbound.rs', scope: NAIVE_ARM, needle: 'spoof: None,' },
       ],
     },
     spoofMethod: {
       why: '同 `spoofSni`：协议门 + naive 分支的 `spoof_method: None` 两道都挡着。',
       cite: [
         {
-          at: 'crates/config-engine/src/user_config/tls_spoof.rs:37',
+          at: 'crates/config-engine/src/user_config/tls_spoof.rs',
           needle: '!matches!(p.as_str(), "hysteria2" | "tuic" | "naive")',
         },
-        { at: 'crates/config-engine/src/builder/outbound.rs:330', needle: 'spoof_method: None,' },
+        { at: 'crates/config-engine/src/builder/outbound.rs', scope: NAIVE_ARM, needle: 'spoof_method: None,' },
       ],
     },
   },
@@ -1060,6 +1149,43 @@ describe('解析器自检（没解析到必须自曝）', () => {
       'warpDevice'
     );
     expect(scanTs(raw).code).not.toContain('warpDevice');
+  });
+
+  /**
+   * [`verifyCite`] 自身的牙 —— **把变异内建进门里**。
+   *
+   * 手工跑一次变异只证明「今天有牙」；下一个人把 `verifyCite` 改成早返回、或把「块内唯一」放宽成
+   * 「块内出现过」，豁免表就会在无人察觉的情况下退回装饰品。⑤ 那格尤其要钉：**它正是行号 ±12 窗口
+   * 守不住的那一格**（旧判据取离记录行最近的一处判绿，同块里的邻居会把依据喂饱）。
+   *
+   * 第一条是**正向对照**：真依据必须不抛。没有它，下面五条可以被「`verifyCite` 恒抛」蒙对。
+   */
+  it('依据核对器自身有牙（五类失效各自抛，且真依据不抛）', () => {
+    const OB = 'crates/config-engine/src/builder/outbound.rs';
+    expect(() =>
+      verifyCite('probe', { at: OB, scope: NAIVE_ARM, needle: 'alpn: None,' })
+    ).not.toThrow();
+    // ① 锚点找不到（代码搬走 / 被改写）。
+    expect(() =>
+      verifyCite('probe', { at: OB, scope: 'Protocol::NoSuchArm => {', needle: 'alpn: None,' })
+    ).toThrow(/定位锚点/);
+    // ② 锚点不唯一：`ob.tls = Some(OutboundTls {` 在 naive 臂 / 通用 TLS 段 / Reality 段三处同形，
+    //    这种锚点会静默绑到第一处 —— 必须红，不许「反正第一处就是我要的」。
+    expect(() =>
+      verifyCite('probe', { at: OB, scope: 'ob.tls = Some(OutboundTls {', needle: 'alpn: None,' })
+    ).toThrow(/出现不止一次/);
+    // ③ 依据串在块内一次都没出现（naive 臂恰恰不写 `alpn: Some(`）。
+    expect(() => verifyCite('probe', { at: OB, scope: NAIVE_ARM, needle: 'alpn: Some(' })).toThrow(
+      /一次都没出现/
+    );
+    // ④ 文件读不到。
+    expect(() => verifyCite('probe', { at: 'crates/no/such/file.rs', needle: 'x' })).toThrow(
+      /读不到/
+    );
+    // ⑤ 依据串在块内命中多次 ⇒ 指着哪一处全凭猜（naive 臂里 `: None,` 有一大把）。
+    expect(() => verifyCite('probe', { at: OB, scope: NAIVE_ARM, needle: ': None,' })).toThrow(
+      /命中 \d+ 次/
+    );
   });
 });
 
