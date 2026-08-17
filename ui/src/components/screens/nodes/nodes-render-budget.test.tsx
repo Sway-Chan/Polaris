@@ -105,12 +105,26 @@ describe('自曝 · 扫描面还在', () => {
 
   /**
    * 分批的滚动监听靠 `gridRef.current.closest('.main-scroll')` 找 `AppShell` 的滚动容器
-   * （本屏自己不滚）。那个类名一旦改掉，`closest` 返回 null ⇒ 监听挂不上 ⇒ **静默**退化成
-   * 「永远只有首批」，用户看到的是节点列表少了一大半而毫无提示。故把锚点钉在这里自曝。
+   * （本屏自己不滚）。**本条的射程只有一个向量：那个类名被改掉。**
+   * 另一个向量（网格在运行期不是 `.main-scroll` 的后代 —— 换层级 / 本屏被别处复用 / 渲染进 portal）
+   * 两个类名都还在、本条照绿，只有跑起来才看得见 —— 那一路由代码自身 fail-open 兜底（下一条钉住）
+   * 加一条运行期 `console.warn` 自曝，不再由这道门负责。
    */
   it('AppShell 的主滚动容器仍叫 `.main-scroll`（分批监听的挂载点）', () => {
     expect(SHELL_RAW).toContain('className="main-scroll"');
     expect(NODES).toContain("closest<HTMLElement>('.main-scroll')");
+  });
+
+  /**
+   * 失效方向必须朝「开」。原实现找不到祖先就直接 `return` ⇒ 永远只剩首批，而用户没有滚动条、
+   * 没有任何「还有更多」的暗示，看不出少了 —— 这正是本文件不变量②要防的那种「界面与操作对象脱节」
+   * （全选/测速仍读 300，屏幕上只有 60）。宁可一次全渲染。
+   */
+  it('找不到滚动祖先时 fail-open（一次取到底）+ 运行期自曝，而不是静默只剩首批', () => {
+    expect(NODES, '兜底腿没了：closest 落空会退回「永远只有首批」').toContain(
+      'renderAllRef.current()'
+    );
+    expect(NODES, '运行期自曝没了：这一向量在源码门下不可见').toContain('warnMissingScroller()');
   });
 });
 
@@ -356,13 +370,43 @@ describe('门 3 · 分批接线', () => {
    * 真正的保证是那条「每次提交后按同一判据补批、收敛于撑出滚动条或取完」的 effect，
    * 而不是把每批数调大 —— 后者在 4K 满屏下照样不够。两条都钉。
    */
+  /** 补批 effect 的依赖数组（本 describe 里两条断言共用；解析不到就让两条都当场炸）。 */
+  const topUpDeps = (() => {
+    const m = NODES.match(/useIsomorphicLayoutEffect\(topUpBatch,\s*\[([^\]]*)\]/);
+    expect(m, '补批 effect 的锚点消失（改名 / 改回 passive 档？），本节失去判据').not.toBeNull();
+    return (m?.[1] ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  })();
+
   it('有「补批到撑出滚动条为止」的 effect（不是靠把批量数调大蒙混）', () => {
     expect(NODES).toContain('const topUpBatch = useCallback(');
     // 挂载时装监听的那条 + 每次提交后补批的那条，两条都必须在。
     expect(NODES).toMatch(/scroller\.addEventListener\('scroll', topUpBatch/);
-    expect(NODES).toMatch(/useEffect\(topUpBatch, \[topUpBatch, renderCount, visibleServers\.length\]\)/);
+    // 走 layout 档：passive 档下每轮补批之间夹着一次真实绘制，4K/超宽首屏会分 3~4 次自下而上长出来。
+    expect(topUpDeps.length).toBeGreaterThan(0);
     // 窗口变大 → 网格改列数 → 内容变矮，可能从「溢出」跌回「不溢出」，也要能续上。
     expect(NODES).toMatch(/window\.addEventListener\('resize', topUpBatch\)/);
+  });
+
+  /**
+   * **布局维必须在触发面里**。`topUpBatch` 是 `useCallback(..., [])` 恒稳定 ⇒ 依赖数组里真正
+   * 有触发力的只有后面那几项。缺 `view` 的复现（2560×1440 最大化、300 节点、列表视图进入）：
+   * 首屏溢出 ⇒ 收敛在 60；点「卡片」后整页不再溢出 ⇒ scroll 事件永不到来 ⇒ 另外 240 个节点本次
+   * 会话再也点不到，且没有滚动条、没有任何「还有更多」的暗示，而全选/测速读的仍是 300。
+   * 缺 `sidebarCollapsed` 同型（折叠改主区宽 ⇒ 网格改列数 ⇒ 行数成倍变），且它连 `resize` 都不发。
+   * 其余向量为什么不在这里，见 `NodesScreen` 的 `topUpBatch` 头注那张向量表（判据是幅度是否
+   * 跨得过 `SCROLL_BATCH_AHEAD_PX` 这段余量）。
+   */
+  it('补批的触发面含两条**布局维**：view / sidebarCollapsed', () => {
+    expect(topUpDeps).toEqual([
+      'topUpBatch',
+      'renderCount',
+      'visibleServers.length',
+      'view',
+      'sidebarCollapsed',
+    ]);
   });
 
   it('每批数至少覆盖窗口最小尺寸下的一屏（980×740、200px 最小列宽、141px 卡高）', () => {

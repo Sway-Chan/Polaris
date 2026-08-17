@@ -22,8 +22,23 @@
  * 第二个消费方来了（规则弹窗的候选勾选区：ruleSet 外置 2000+、进程本机实测 356）。
  * 原实现是 `AppAddDialog` 里内联的 state + effect + handler，复制一份就会漂 —— 而漂出来的症状是
  * 「一个面板滚得动、另一个滚到底不再加载」。抽 hook 是为了消掉第二份，不是为了更优雅。
+ *
+ * # 为什么复位写在**渲染期**，不是 `useEffect`
+ *
+ * `resetKey` 变的那一帧必须按新结果集的首批画。写成 `useEffect(() => setCount(PAGE), [resetKey])`
+ * 时复位跑在**提交之后**：切订阅组、搜索框每敲一个字，都会先按上一档那个大 count 把整帧画完
+ * （最坏 600 张卡）再回落到 60 —— 正好是分批要消掉的那一帧，方向反了。改用 React 官方的
+ * 「渲染期调整 state」形态（`prevResetKey` + 渲染中 `setState`）：React 丢弃这次渲染的输出、
+ * 立刻拿新 state 重跑本组件，**提交前**就已经是 60，那一帧根本不存在。三个消费方同时受益。
+ *
+ * # 为什么判据是导出的纯函数，不留在 `onScroll` 闭包里
+ *
+ * 本仓 vitest 是 node 环境、无 jsdom，hook 的行为在那一层不可观测；而 `renderToStaticMarkup`
+ * 的首帧对「会推进」与「永远只有首批」这两种状态**逐字一致**（SSR 不跑 effect）。判据留在闭包里，
+ * 把推进条件写成恒假也能全绿。提成 [`shouldAdvance`] / [`advanceBatch`] 才能被正反两向直测，
+ * 且 hook 只是它们的一层 `useState` 接线（`use-scroll-batch.test.ts` 用极简宿主驱动真实 hook 源码）。
  */
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 
 /**
  * 每批渲染数。`.aad-ico-grid` 是 `max-height:150px` 的滚动容器（原型 §AF2），可视区约 3 行 ≈ 24 格，
@@ -32,6 +47,33 @@ import { useEffect, useState } from 'react';
 export const SCROLL_BATCH_PAGE = 60;
 /** 滚到距底部多少像素时追加下一批。 */
 export const SCROLL_BATCH_AHEAD_PX = 240;
+
+/** 滚动容器的三个量（只要这三个，故写成结构型 —— 便于直测，也便于消费方喂祖先元素）。 */
+export interface ScrollMetrics {
+  scrollHeight: number;
+  scrollTop: number;
+  clientHeight: number;
+}
+
+/**
+ * 「该不该再追加一批」的**唯一判据**：距底不足 [`SCROLL_BATCH_AHEAD_PX`] 就追加。
+ *
+ * 注意这条同时兼两个身份：滚动时是「快到底了，预取下一批」；每次提交后由消费方主动调用时是
+ * 「内容还没撑出滚动条（距底 ≤ 余量），再来一批」——后者正是「初批必须覆盖视口」那条保证的实现。
+ */
+export function shouldAdvance(m: ScrollMetrics): boolean {
+  return m.scrollHeight - m.scrollTop - m.clientHeight <= SCROLL_BATCH_AHEAD_PX;
+}
+
+/**
+ * 分批计数的状态机：不该推进、或已取完，都返回**原值**（React 就地 bail-out ⇒ 补批循环收敛，不自激）。
+ * 越过 `total` 不裁剪：消费方一律 `slice(0, count)`，裁不裁结果一样，而不裁能让「已取完」这件事
+ * 只由 `c >= total` 一条判据表达。
+ */
+export function advanceBatch(count: number, total: number, m: ScrollMetrics): number {
+  if (!shouldAdvance(m)) return count;
+  return count >= total ? count : count + SCROLL_BATCH_PAGE;
+}
 
 export interface ScrollBatch {
   /** 当前该渲染多少条（调用方自己 `slice(0, count)`）。 */
@@ -45,7 +87,15 @@ export interface ScrollBatch {
    * React 合成事件，那边就得造一个 `as unknown as UIEvent` 的假事件来喂它，纯属为类型而说谎。
    * 逆变使这个更宽的形参依然能直接写成 `onScroll={onScroll}`（前两个消费方一字未改）。
    */
-  onScroll: (e: { currentTarget: HTMLElement }) => void;
+  onScroll: (e: { currentTarget: ScrollMetrics }) => void;
+  /**
+   * 一次取到底（`count = total`）。**只给失效路径兜底**，不是给「我不想分批」用的。
+   *
+   * 消费方拿不到自己的滚动容器时（第三个消费方要 `closest()` 找祖先，可能落空）就再也收不到任何
+   * 事件。那时唯一安全的方向是「不分批」而不是「只剩首批」：多渲染的代价是一次卡顿，画不出来的
+   * 代价是用户永远点不到剩下的节点，且**没有滚动条就没有「还有更多」的暗示**，他不会知道少了。
+   */
+  renderAll: () => void;
 }
 
 /**
@@ -55,13 +105,16 @@ export interface ScrollBatch {
  */
 export function useScrollBatch(total: number, resetKey: unknown): ScrollBatch {
   const [count, setCount] = useState(SCROLL_BATCH_PAGE);
-  useEffect(() => setCount(SCROLL_BATCH_PAGE), [resetKey]);
+  // 渲染期复位（判据见头注「为什么复位写在渲染期」）：React 会丢弃这趟渲染、立刻重跑本组件，
+  // 故 `resetKey` 变的那一次**提交出去的就是首批**，不存在按旧计数画的中间帧。
+  const [prevResetKey, setPrevResetKey] = useState(resetKey);
+  if (!Object.is(prevResetKey, resetKey)) {
+    setPrevResetKey(resetKey);
+    setCount(SCROLL_BATCH_PAGE);
+  }
   return {
     count,
-    onScroll: (e) => {
-      const el = e.currentTarget;
-      if (el.scrollHeight - el.scrollTop - el.clientHeight > SCROLL_BATCH_AHEAD_PX) return;
-      setCount((c) => (c >= total ? c : c + SCROLL_BATCH_PAGE));
-    },
+    onScroll: (e) => setCount((c) => advanceBatch(c, total, e.currentTarget)),
+    renderAll: () => setCount((c) => (c >= total ? c : total)),
   };
 }

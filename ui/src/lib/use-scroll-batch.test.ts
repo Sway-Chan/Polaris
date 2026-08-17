@@ -1,7 +1,23 @@
 /**
- * 分批渲染的门 —— 钉住那条**真机实证**：不许用 `loading="lazy"` / IntersectionObserver。
+ * 分批渲染的门 —— 两件事：**行为**（分批真的会推进、复位在渲染期、到顶不自激）与那条**真机实证**
+ * （不许用 `loading="lazy"` / IntersectionObserver）。
  *
- * # 为什么这条只能靠源码门
+ * # 为什么必须有行为断言（这一节别删）
+ *
+ * 源码门只能回答「接线在不在」。而本 hook 的两种状态 —— 「会推进」与「永远只有首批」——
+ * 在本仓可观测的那一层**逐字一致**：`nodes-render-budget.test.tsx` 门 4 用 `renderToStaticMarkup`
+ * 真渲染，SSR 下 effect 不跑，它钉的「首帧只有 60 张」在两种状态下都成立。于是把推进条件写成恒假、
+ * 或把复位改成每次渲染都跑，`pnpm test` 全绿而真机永远只显示前 60 个节点。
+ * 故判据提成纯函数（`shouldAdvance` / `advanceBatch`）直测**正反两向**，再用一个极简宿主驱动
+ * **真实的 hook 源码**（不是复刻一份判据）验计数怎么走。
+ *
+ * # 极简宿主为什么长这样
+ *
+ * 本仓 vitest 是 node 环境、无 jsdom，且不为一道门引新依赖（react-test-renderer / testing-library）。
+ * `useScrollBatch` 只用 `useState`，故把 react 的 `useState` 换成「数组游标 + 重跑到 state 稳定」
+ * 的 30 行实现即可 —— 「重跑到稳定」正是 React 对渲染期 `setState` 的语义，复位那一段因此被真的走到。
+ *
+ * # 为什么那条 lazy 判据只能靠源码门
  *
  * 真机（macOS/WKWebView）症状是：请求根本没到 scheme handler，却触发了 img 的 `onerror`
  * —— 屏幕上是一片白方块，本机（Linux/Chromium）与任何单测里都**复现不了**。
@@ -10,16 +26,173 @@
  *
  * # 射程（如实记账）
  *
- * 扫的是**滚动分批的两个消费方文件**里有没有出现那两个词。抓不到：
+ * 扫的是**登记在 CONSUMERS 里的消费方文件**里有没有出现那两个词。抓不到：
  *  · 别的文件里用 IntersectionObserver（本仓其它地方若真有正当用途，不该被这道门连坐 ——
  *    坑的成因是「top-layer `<dialog>` + 小高度滚动容器」这个组合，不是这两个 API 本身）；
  *  · 动态构造属性名（`el.setAttribute('loading', 'lazy')`）；
- *  · 第三个消费方（新文件不在 CONSUMERS 里 —— 加消费方时要手动登记，这是刻意的）。
+ *  · **消费方渲染的子组件里的 lazy** —— 节点网格里真正带 `<img>` 的是 `NodeCard`（经 `nd-flag.tsx`
+ *    的国旗图），`NodesScreen` 本身一个 `<img>` 都没有。就「真机白块」这个被守的缺陷而言，
+ *    把 `NodesScreen` 登记进来射程为零；它进 CONSUMERS 是为了另外两条（复用唯一实现、不自持常量）。
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { SCROLL_BATCH_PAGE, SCROLL_BATCH_AHEAD_PX } from './use-scroll-batch';
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * 极简 hook 宿主（见头注）。`vi.hoisted` 是因为 `vi.mock` 的工厂被提升到 import 之前，
+ * 不能闭包引用普通的模块级变量。
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+const host = vi.hoisted(() => ({ slots: [] as unknown[], cursor: 0, dirty: false }));
+
+vi.mock('react', () => ({
+  /**
+   * 宿主刻意**不跑** effect：本组断言问的是「提交出去的那一帧长什么样」，而 passive effect 按定义
+   * 跑在提交之后。所以复位一旦退回 `useEffect(() => setCount(PAGE), [resetKey])`，这里看到的就是
+   * 真机上那一帧 —— 按上一档的大计数画的 —— 断言当场转红。留这个空壳而不是让 hook 报「没有该导出」，
+   * 是为了让红的**原因**落在语义上，不落在 mock 缺项上。
+   */
+  useEffect: () => {},
+  useState: (init: unknown) => {
+    const i = host.cursor++;
+    if (i >= host.slots.length) host.slots[i] = init;
+    const set = (v: unknown) => {
+      const prev = host.slots[i];
+      const next = typeof v === 'function' ? (v as (p: unknown) => unknown)(prev) : v;
+      // 与 React 一致：同值不产生新渲染（本 hook「到顶不自激」正是靠这条）。
+      if (!Object.is(next, prev)) {
+        host.slots[i] = next;
+        host.dirty = true;
+      }
+    };
+    return [host.slots[i], set];
+  },
+}));
+
+import {
+  useScrollBatch,
+  shouldAdvance,
+  advanceBatch,
+  SCROLL_BATCH_PAGE,
+  SCROLL_BATCH_AHEAD_PX,
+} from './use-scroll-batch';
+
+/** 新挂载一个 hook 实例（清空 state 槽）。 */
+function mount(): void {
+  host.slots = [];
+}
+
+/** 一次「渲染 + 提交」：重跑组件直到 state 不再变 —— React 对渲染期 `setState` 就是这个语义。 */
+function commit<T>(render: () => T, maxPasses = 20): T {
+  for (let pass = 0; pass < maxPasses; pass++) {
+    host.cursor = 0;
+    host.dirty = false;
+    const out = render();
+    if (!host.dirty) return out;
+  }
+  throw new Error('渲染期 setState 没有收敛（>20 趟）—— 复位被写成无条件调用了？');
+}
+
+/** 距底 0px：该追加。 */
+const AT_BOTTOM = { currentTarget: { scrollHeight: 800, scrollTop: 0, clientHeight: 800 } };
+/** 距底 7200px：不该追加。 */
+const FAR_FROM_BOTTOM = { currentTarget: { scrollHeight: 8000, scrollTop: 0, clientHeight: 800 } };
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 行为① 推进判据（纯函数，正反两向 —— 少任一向，恒真/恒假的实现都能过）
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+describe('推进判据 `shouldAdvance`', () => {
+  /** 距底 d 像素的滚动容器。 */
+  const at = (d: number) => ({ scrollHeight: 1000 + d, scrollTop: 0, clientHeight: 1000 });
+
+  it('距底 ≤ 预取余量 → 真', () => {
+    expect(shouldAdvance(at(0))).toBe(true);
+    expect(shouldAdvance(at(1))).toBe(true);
+    expect(shouldAdvance(at(SCROLL_BATCH_AHEAD_PX))).toBe(true);
+  });
+
+  it('距底 > 预取余量 → 假（恒真实现会在这里转红）', () => {
+    expect(shouldAdvance(at(SCROLL_BATCH_AHEAD_PX + 1))).toBe(false);
+    expect(shouldAdvance(at(10_000))).toBe(false);
+  });
+
+  it('`scrollTop` 计入距底：内容再长，滚到底也该追加', () => {
+    expect(shouldAdvance({ scrollHeight: 10_000, scrollTop: 8_900, clientHeight: 1_000 })).toBe(
+      true
+    );
+    // 正向对照：同一份内容没滚时不该追加，否则上一条只是恒真。
+    expect(shouldAdvance({ scrollHeight: 10_000, scrollTop: 0, clientHeight: 1_000 })).toBe(false);
+  });
+
+  it('`advanceBatch`：不该推进 / 已取完，都返回**原值**（同值 ⇒ React 就地 bail-out ⇒ 不自激）', () => {
+    const m = AT_BOTTOM.currentTarget;
+    expect(advanceBatch(60, 1000, FAR_FROM_BOTTOM.currentTarget)).toBe(60);
+    expect(advanceBatch(60, 1000, m)).toBe(120);
+    expect(advanceBatch(240, 187, m)).toBe(240);
+    expect(advanceBatch(187, 187, m)).toBe(187);
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 行为② 真实 hook 的计数怎么走（极简宿主驱动，跑的是 use-scroll-batch.ts 的源码）
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+describe('`useScrollBatch` 计数推进', () => {
+  it('滚到底 → 60 → 120 → 180 → 到 total 后**不再增长**', () => {
+    mount();
+    const total = SCROLL_BATCH_PAGE * 3 + 7; // 187：刻意不是整数批，验「越过 total 即停」
+    const seen: number[] = [];
+    let batch = commit(() => useScrollBatch(total, 'k'));
+    seen.push(batch.count);
+    for (let i = 0; i < 5; i++) {
+      batch.onScroll(AT_BOTTOM);
+      batch = commit(() => useScrollBatch(total, 'k'));
+      seen.push(batch.count);
+    }
+    expect(seen).toEqual([60, 120, 180, 240, 240, 240]);
+    // 正向对照：total 确实超过一批，否则上面这串没有信息量。
+    expect(total).toBeGreaterThan(SCROLL_BATCH_PAGE);
+  });
+
+  it('没滚到底就不推进（少了这一向，「每次渲染都追加」照样能过上一条）', () => {
+    mount();
+    let batch = commit(() => useScrollBatch(1000, 'k'));
+    batch.onScroll(FAR_FROM_BOTTOM);
+    batch = commit(() => useScrollBatch(1000, 'k'));
+    expect(batch.count).toBe(SCROLL_BATCH_PAGE);
+  });
+
+  it('`resetKey` 变的**那一次提交**就已经是首批（复位在渲染期，不留按旧计数的那一帧）', () => {
+    mount();
+    let batch = commit(() => useScrollBatch(1000, 'a'));
+    for (let i = 0; i < 3; i++) {
+      batch.onScroll(AT_BOTTOM);
+      batch = commit(() => useScrollBatch(1000, 'a'));
+    }
+    expect(batch.count).toBe(SCROLL_BATCH_PAGE * 4);
+    // 复位若退回 `useEffect`，这里会先拿到 240 —— 真机上就是「先按上一档的大计数画完整整一帧，
+    // 再回落到 60」，正好是分批要消掉的那一帧。
+    batch = commit(() => useScrollBatch(1000, 'b'));
+    expect(batch.count).toBe(SCROLL_BATCH_PAGE);
+  });
+
+  it('`renderAll` 一次取到底（消费方找不到滚动祖先时的 fail-open），且之后不再增长', () => {
+    mount();
+    const total = SCROLL_BATCH_PAGE * 3 + 7;
+    let batch = commit(() => useScrollBatch(total, 'k'));
+    batch.renderAll();
+    batch = commit(() => useScrollBatch(total, 'k'));
+    expect(batch.count).toBe(total);
+    batch.renderAll();
+    batch = commit(() => useScrollBatch(total, 'k'));
+    expect(batch.count).toBe(total);
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 源码门：唯一实现 + 禁 lazy/IntersectionObserver（射程见头注）
+ * ════════════════════════════════════════════════════════════════════════════ */
 
 /** 登记的消费方（新增一个就加一行 —— 手动登记是为了让「谁在分批」这件事留在灯下）。 */
 const CONSUMERS = [
@@ -39,7 +212,7 @@ const sources = CONSUMERS.map((rel) => ({
 }));
 
 describe('滚动分批：唯一实现 + 禁 lazy/IntersectionObserver', () => {
-  it('自检：两个消费方都读到了，且都真的在用这个 hook（否则下面是空跑）', () => {
+  it('自检：登记的消费方都读到了，且都真的在用这个 hook（否则下面是空跑）', () => {
     for (const { rel, src } of sources) {
       expect(src.length, `${rel} 读空了`).toBeGreaterThan(2000);
       expect(src, `${rel} 不再消费 useScrollBatch —— 是不是又抄了一份内联实现？`).toContain(

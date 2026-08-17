@@ -1,5 +1,7 @@
 /**
- * 拓扑渲染预算门 —— 守住「首页拓扑每帧只做必要的那点活」。
+ * 首页渲染预算门 —— 守住「首页每帧 / 每次 store 提交只做必要的那点活」。
+ * 起于拓扑（门 1–3），随后并入同类判据：aggregate 只持令牌不挂帧监听（门 4）、
+ * 延迟表按出口选单开合条件订阅（门 5）。判据同源，故不另开文件。
  *
  * # 为什么需要一道门
  *
@@ -33,6 +35,8 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { createTopicSubscription } from '@/lib/topic-subscription';
+import { EMPTY_LATENCY_MAP, latencyMapWhen } from '@/store/use-latency-store';
 
 /** `@/i18n` 在模块加载期就写 `<html dir/lang>`（i18n/index.ts:81），node 下无 document ⇒ 先垫桩。
  *  与 `harness-screens.test.tsx` 同款，别为它引 jsdom。 */
@@ -138,11 +142,95 @@ describe('门 4 · 首页 aggregate 只持订阅令牌，不挂帧监听', () =>
     expect(CODE).toContain("unsubscribe: () => api.stats.unsubscribe('aggregate')");
   });
 
-  it('正向对照：连接导航排名页自带真监听 —— 撤首页那条不影响它', () => {
-    // 事件按监听独立投递；这条断言的存在是为了让「撤掉首页监听会不会连累排名页」有据可查。
-    const conn = readFileSync(`${HERE}../connections/ConnectionsScreen.tsx`, 'utf8');
-    expect(conn).toContain('onFrame: (cb) => api.stats.onConnectionsAggregate(cb)');
-    expect(conn).toContain('setAggregate');
+  /**
+   * 正向对照：**撤掉首页的帧监听会不会连累别处的真监听**。
+   *
+   * 原实现在这里跨文件逐字断言 `ConnectionsScreen.tsx` 里那行 `onFrame: (cb) => api.stats...` ——
+   * 连接页任何等价重构都会让**首页**这道门转红，红点落在一个与本门无关的文件上。而要证的命题
+   * （「事件按监听独立投递」）本来就是 `createTopicSubscription` 的端口契约，可以直测。
+   * 改成直测与本文件既有分层一致：真断言优先于源码文本。
+   */
+  it('正向对照：帧监听按订阅独立投递 —— 首页只持令牌不挂监听，不影响别处的真监听', () => {
+    const listeners = new Set<(d: number) => void>();
+    const tokens: string[] = [];
+    const emit = (d: number) => listeners.forEach((cb) => cb(d));
+    /** 同一条后端流的两个订阅端口；`attachFrames=false` 就是首页那条（回调体为空的监听）。 */
+    const port = (attachFrames: boolean) => ({
+      onFrame: (cb: (d: number) => void) => {
+        if (!attachFrames) return () => {};
+        listeners.add(cb);
+        return () => {
+          listeners.delete(cb);
+        };
+      },
+      subscribe: async () => {
+        tokens.push('sub');
+      },
+      unsubscribe: async () => {
+        tokens.push('unsub');
+      },
+    });
+
+    const got: number[] = [];
+    const home = createTopicSubscription<number>(port(false), () => {
+      throw new Error('首页那条不挂监听，不该收到任何帧');
+    });
+    const ranking = createTopicSubscription<number>(port(true), (d) => got.push(d));
+    home.setWanted(true);
+    ranking.setWanted(true);
+    emit(1);
+    emit(2);
+    // 两条订阅令牌都发了：后端按 aggregate ∪ detail ∪ closed 判需求，首页撤监听不撤令牌。
+    expect(tokens).toEqual(['sub', 'sub']);
+    expect(got).toEqual([1, 2]);
+    // 首页退订/卸载后，排名页照收 —— 这就是「撤首页那条不连累它」的直接证据。
+    home.dispose();
+    emit(3);
+    expect(got).toEqual([1, 2, 3]);
+    ranking.dispose();
+    emit(4);
+    expect(got).toEqual([1, 2, 3]);
+  });
+});
+
+/**
+ * 门 5 · 首页的延迟表按出口选单开合**条件订阅**。
+ *
+ * 被守的缺陷与门 4 同型（每帧/每次提交白付），只是发生在延迟流上：`latencies` 全文唯一去处是
+ * `<NodeMenu latencies={latencies}>`，而 `NodeMenu` 在 `open` 为假时第一行就
+ * `return <div hidden />`。无条件订整表 ⇒ 停在首页点「全部测速」测 200 个节点 = 200 次 store 提交
+ * = 首页整棵子树重渲 200 次，而屏幕上没有任何一处在显示延迟。
+ *
+ * 放本文件而不是 `store/latency-wiring-invariants.test.ts`：那份守的是**状态归属**（真值在 store
+ * 还是组件私有 useState、订阅挂哪一层），它的两组 `it.each(CONSUMERS)` 对「订不订」一视同仁；
+ * 本条守的是**订阅时机**（条件 vs 无条件），判据来源是渲染预算，与节点页的对应门
+ * （`nodes/nodes-render-budget.test.tsx` 门 2）对称。混进那边会让 CONSUMERS 那两组的语义漂掉。
+ */
+describe('门 5 · 首页延迟表按选单开合条件订阅', () => {
+  const CODE = HOME_SRC.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, '');
+
+  it('订阅是**条件式**的，不得退回无条件订整表', () => {
+    // 变异对照：改回 `useLatencyStore((s) => s.latencyMap)` ⇒ 本条转红。
+    // 注释里逐字写着旧形态与「勿改回」，故必须扫去注释后的源码。
+    expect(CODE, '首页又无条件订整张延迟表了 ⇒ 每次逐节点回包都重渲整棵子树').not.toMatch(
+      /useLatencyStore\(\s*\(s\)\s*=>\s*s\.latencyMap\s*\)/
+    );
+    expect(CODE).toContain('useLatencyStore(latencyMapWhen(nodeMenuOpen))');
+  });
+
+  it('关闭档返回**模块级冻结哨兵**（写成 `{}` 字面量 ⇒ 每次提交仍判不等 ⇒ 改了等于白改）', () => {
+    const sel = latencyMapWhen(false);
+    expect(sel({ latencyMap: { a: 1 } })).toBe(sel({ latencyMap: { b: 2 } }));
+    expect(sel({ latencyMap: { a: 1 } })).toBe(EMPTY_LATENCY_MAP);
+    expect(Object.isFrozen(EMPTY_LATENCY_MAP)).toBe(true);
+    expect(Object.keys(EMPTY_LATENCY_MAP)).toEqual([]);
+  });
+
+  it('打开档拿的是 store 那张表**本体** —— 选单打开那一次就读到当下真值，不是旧快照', () => {
+    const state = { latencyMap: { a: 1 } };
+    expect(latencyMapWhen(true)(state)).toBe(state.latencyMap);
+    // 选择器每次渲染都会被重建（调用点写在渲染里），稳定性只能来自哨兵引用，不能来自闭包缓存。
+    expect(latencyMapWhen(false)).not.toBe(latencyMapWhen(false));
   });
 });
 

@@ -59,7 +59,7 @@ import {
 import { resolveExitNodeFlagCode } from '@/domain/exit-flag';
 import { FlagImg } from '@/components/flag-img';
 import { speedTestableIds } from '@/domain/endpoint-routes';
-import { useLatencyStore } from '@/store/use-latency-store';
+import { useLatencyStore, latencyMapWhen } from '@/store/use-latency-store';
 import { useSystemProxyLive } from '@/store/use-system-proxy-live';
 import { isReverseRegionRouting } from '@/domain/region-routing';
 import {
@@ -251,9 +251,6 @@ export function HomeScreen() {
   const [testing, setTesting] = useState(false);
   /** 分流策略切换在飞（契约 L21 的 `routingBusy`）：置灰 seg2 + 单飞守卫，见 onRoutingChange。 */
   const [routingBusy, setRoutingBusy] = useState(false);
-  /** 节点测速结果（供 NodeMenu 各行 + 当前出口共用；-1=后端判定不可测，键缺席=未测）。
-   *  读**全局 store**（`use-latency-store`）：订阅挂 App.tsx 顶层，切屏不丢。勿改回组件私有 useState。 */
-  const latencies = useLatencyStore((s) => s.latencyMap);
   /** 批量结果落库（invoke 返回值兜底同步，补事件丢失）。 */
   const applyLatencyResults = useLatencyStore((s) => s.applyLatencyResults);
   /** 网络检测冷却态（置灰刷新钮 + tooltip 说明）：见 UNLOCK_COOLDOWN_MS 的 DESIGN-REVIEW。 */
@@ -261,6 +258,28 @@ export function HomeScreen() {
   /** 出口节点选单开合（原型 #node-menu，恢复内联下拉而非跳转节点页）。 */
   const [nodeMenuOpen, setNodeMenuOpen] = useState(false);
   const nodeDdRef = useRef<HTMLDivElement>(null);
+  /**
+   * 节点测速结果（喂 `NodeMenu` 各行；-1=后端判定不可测，键缺席=未测）。读**全局 store**
+   * （`use-latency-store`）：订阅挂 App.tsx 顶层，切屏不丢。勿改回组件私有 useState。
+   *
+   * **按选单开合条件订阅**。全文唯一去处就是下面 `<NodeMenu latencies={latencies}>`，而 `NodeMenu`
+   * 在 `open` 为假时第一行就 `return <div hidden />` —— 选单关着时这张表一个字都没人读。无条件订它
+   * 的代价是：停在首页点「全部测速」测 200 个节点 = 200 次 store 提交 = 本页整棵子树重渲 200 次，
+   * 而屏幕上没有任何一处在显示延迟。节点页按 `sortKey === 'lat'` 收掉的正是同一个缺陷，这里是它的
+   * 姊妹腿，故复用同一个 helper（`latencyMapWhen`）而不是再写第三份三元。
+   *
+   * 关闭档返回的是**模块级冻结哨兵**，不是 `{}` 字面量：zustand 按 `Object.is` 比较选择器结果，
+   * 字面量每次求值都是新对象 ⇒ 照样每次提交重渲，改了等于白改（判据在 `use-latency-store.ts`）。
+   *
+   * 及时性（不变量②）三条自检，逐条成立：
+   *  · **打开那一次**：`nodeMenuOpen` 翻真本身就触发重渲，本行随即换成订整表的选择器，zustand 的
+   *    选择器在渲染当刻求值 ⇒ 拿到的是当下真值，不是打开前的旧快照，没有「先空一帧再补」。
+   *  · **打开期间**：订的是整表本体，逐节点回包每次提交都判不等 ⇒ 照常重渲，与原状逐字相同。
+   *  · **关闭期间**：写入口是 App.tsx 顶层那条全局订阅（`subscribeLatencyEvents`）+ 本页 invoke
+   *    返回值的 `applyLatencyResults` 兜底，两条都与本组件订不订阅无关 ⇒ 结果完整落库，
+   *    只是本组件不为它重渲；下次打开选单即刻显示全部结果。不丢数据、不推迟、不显示陈旧值。
+   */
+  const latencies = useLatencyStore(latencyMapWhen(nodeMenuOpen));
   /** 本次解锁快照是否由用户点「网络检测」触发（喂 onUpdated 里的完成 toast，见 onUnlockRefresh）。 */
   const unlockUserRequested = useRef(false);
   /** 当前出口显示名。走 ref 而非直接读闭包：解锁事件订阅 effect 不该因换节点重挂（重挂会丢事件），

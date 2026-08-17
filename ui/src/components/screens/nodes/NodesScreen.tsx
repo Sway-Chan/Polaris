@@ -19,7 +19,7 @@
  * **本屏不再自订 onSpeedTestProgress**，也不再画屏内进度行——见 `runSpeedTest` 上方的判据。
  */
 
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useAppStore, useEffectiveConfig, useEffectiveServers } from '@/store/app-store';
 import { useNodeSortStore } from '@/store/use-node-sort-store';
 import { useLatencyStore } from '@/store/use-latency-store';
@@ -83,6 +83,34 @@ type SortKey = 'default' | 'name' | 'lat' | 'proto';
 
 /** 批量删除按钮的原地二次确认 key（单节点删除用 `node-del:<id>`，见 requestDelete）。 */
 const BATCH_DEL_KEY = 'batch-del';
+
+/**
+ * SSR 安全的 layout effect。补批要在 paint **之前**收敛（见 topUpBatch 下方那条 effect 的判据），
+ * 但 `renderToStaticMarkup` 下 `useLayoutEffect` 会打 React 警告，而本屏的首帧真渲染门
+ * （`nodes-render-budget.test.tsx` 门 4）正跑在 node 里。
+ *
+ * 判据用 `window` 而**不是** `document`：本仓多个 node 环境测试会给 `globalThis.document` 垫桩
+ * （i18n 在模块加载期就要写 `<html lang>`），拿 document 判会在那些测试里错误地选到 layout 分支。
+ */
+const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+
+/**
+ * 分批监听挂不上时的**运行期自曝**（开发者可见日志，非用户文案）。
+ *
+ * `nodes-render-budget.test.tsx` 的锚点门只覆盖**一个**向量：`.main-scroll` 这个类名被改掉。
+ * 另一个向量它覆盖不到 —— 网格在运行期不是该容器的后代（AppShell 换层级、本屏被别处复用、
+ * 渲染进 portal）：两个类名都还在、门照绿，而 `closest` 返回 null。故那一路由代码本身 fail-open
+ * 兜底（见 topUpBatch），再由这条日志把「兜底真的被走到了」说出来。
+ * 一次会话报一次：fail-open 之后每次提交都会再走一遍这条路径，逐次打印只会淹没控制台。
+ */
+let missingScrollerWarned = false;
+function warnMissingScroller(): void {
+  if (missingScrollerWarned) return;
+  missingScrollerWarned = true;
+  console.warn(
+    '[NodesScreen] 找不到 .main-scroll 滚动祖先：节点网格的滚动分批已 fail-open（本次一次性渲染全部节点）。'
+  );
+}
 
 export function NodesScreen() {
   const { t } = useTranslation();
@@ -209,6 +237,10 @@ export function NodesScreen() {
   // 局部 state 会把用户选的列表视图悄悄改回卡片（见 use-node-view-store 头注）。
   const view = useNodeViewStore((s) => s.view);
   const setView = useNodeViewStore((s) => s.setView);
+  /** 侧栏折叠态。本屏一个字都不显示它 —— 订它只为**补批的触发面**：折叠改主区宽度 ⇒ 网格改列数
+   *  ⇒ 内容高度成倍变化，而这件事既不改 `renderCount` 也不改 `visibleServers.length`、还不发
+   *  `resize` 事件。判据见下方 topUpBatch 头注的向量表。 */
+  const sidebarCollapsed = useNavStore((s) => s.sidebarCollapsed);
   const [search, setSearch] = useState('');
   const [protoFilter, setProtoFilter] = useState('');
 
@@ -400,7 +432,11 @@ export function NodesScreen() {
    * `resetKey` = 结果集身份（tab + 搜索 + 协议筛选 + 排序键）：一变即回首批，否则从窄结果切回
    * 宽结果时会残留一个大计数，分批等于白做。分隔符用 `\u0000` 免得 `a|b` 与 `a` + `|b` 撞。 */
   const gridRef = useRef<HTMLDivElement>(null);
-  const { count: renderCount, onScroll: onGridScroll } = useScrollBatch(
+  const {
+    count: renderCount,
+    onScroll: onGridScroll,
+    renderAll: renderAllServers,
+  } = useScrollBatch(
     visibleServers.length,
     `${activeTab}\u0000${search}\u0000${protoFilter}\u0000${sortKey}`
   );
@@ -408,26 +444,72 @@ export function NodesScreen() {
     () => visibleServers.slice(0, renderCount),
     [visibleServers, renderCount]
   );
-  /* hook 每次渲染都返回一个新的 onScroll 闭包（它捕获着当轮的 total）。用 latest-ref 转发，
-     使下面那条监听只在挂载/卸载时装拆一次，而不是每渲染一次就重挂一次。 */
+  /* hook 每次渲染都返回新的闭包（它们捕获着当轮的 total）。用 latest-ref 转发，
+     使下面那条监听只在挂载/卸载时装拆一次，而不是每渲染一次就重挂一次。
+     这条同步**必须**也是 layout 档、且声明在补批 effect 之前：layout effect 整体跑在 passive 之前，
+     写成 useEffect 会让补批读到上一轮的闭包（旧 total），节点变多时补批会停在旧上限。 */
   const gridScrollRef = useRef(onGridScroll);
-  useEffect(() => {
+  const renderAllRef = useRef(renderAllServers);
+  useIsomorphicLayoutEffect(() => {
     gridScrollRef.current = onGridScroll;
+    renderAllRef.current = renderAllServers;
   });
   /**
    * 追加下一批的触发器。**滚动容器是 `AppShell` 的 `.main-scroll`**：本屏是普通 `.screen`
    * （`flex:1 0 auto; display:block`），自己不滚，整页滚在那个祖先上。scroll 事件不冒泡、
    * React 的 `onScroll` 也不做委派，故这里必须找到那个祖先自己挂原生监听 —— 把 `onScroll`
    * 挂在 `.node-grid` 上是一行不会报错、也永远不会触发的死代码。
-   * 类名找不到（`AppShell` 改结构）时不静默降级成「永远只有首批」：那种情形由
-   * `nodes-render-budget.test.tsx` 的锚点自曝条目当场转红。
+   *
+   * # 找不到祖先时 **fail-open**（宁可全渲染，不许静默只剩首批）
+   *
+   * `closest` 返回 null 有两个向量：① `.main-scroll` 这个类名被改掉 —— 只有这一条被
+   * `nodes-render-budget.test.tsx` 的锚点门覆盖（它断言的是两个文件里各有一处那个字面量）；
+   * ② **网格在运行期根本不是 `.main-scroll` 的后代**（AppShell 换层级 / 本屏被别处复用 /
+   * 渲染进 portal）—— 两个类名都还在、门照绿，只有跑起来才看得见。原实现在这一路直接 `return`，
+   * 失效方向朝「关」：永远只剩首批，而用户没有滚动条、没有任何「还有更多」的暗示，看不出少了。
+   * 故改为一次取到底（`renderAll`）+ 一条运行期自曝（`warnMissingScroller`），把失效方向翻过来。
+   *
+   * # 补批的触发面为什么可以「枚举」，而不是靠观测（ResizeObserver）
+   *
+   * **不要改用 ResizeObserver**：它的回调正是「再追加一批」，而追加会把被观测的网格撑高 ⇒ 立刻
+   * 又是一次 resize 通知 ⇒ 回调再追加……浏览器以 `ResizeObserver loop completed with undelivered
+   * notifications` 报出来，等于用一个自激循环换掉一个漏触发。
+   *
+   * 枚举成立的量化前提：补批收敛于「距底 > `SCROLL_BATCH_AHEAD_PX`(240px)」。任何让内容变矮、或让
+   * 可视区变高的向量，只是把这段余量削掉自身高度；只要它 < 240px，滚动条就还在，用户一滚就续上，
+   * 退化程度是「多滚一次」而非永久卡死。故只有**能跨过这 240px 余量**的向量才必须进触发面：
+   *
+   * | 向量 | 改的是 | 幅度 | 会不会永久卡死 | 归宿 |
+   * |---|---|---|---|---|
+   * | 视图档 `view`（卡片↔列表） | 内容 | 行高 141px ↔ ~40px；60 条两档差 2~3 倍 scrollHeight（>1000px） | **会** | 进依赖数组 |
+   * | 侧栏折叠 `sidebarCollapsed` | 内容（主区宽 ±92px / mac ±68px → 列数 ±1 → 行数 ±k/N(N+1)） | 窄窗 N=4、k=60 时 3 行 = 423px | **会** | 进依赖数组 |
+   * | 窗口缩放 / 全屏 / DPI 变化 | 可视区 + 内容 | 无界 | 会 | 已有 `resize` 监听 |
+   * | 搜索 / 协议筛选 / 切 tab | 内容 + 结果集身份 | — | 否 | resetKey 复位 + `visibleServers.length` 变，本就在触发面内 |
+   * | 增删节点 / 订阅刷新 / staged 变更 | 内容 | — | 否 | `visibleServers.length` 变，同上 |
+   * | 批选条进出（`.batch-bar`） | 内容 ±~62px（padding 20 + border 2 + margin-bottom 14 + 行高） | < 240 | 否 | 靠余量兜底；批选态不改卡高（`.nd-check` 在卡片档是 absolute） |
+   * | PendingChangesBar 出现/消失 | 可视区 ±36px（`.pending-bar.show`） | < 240 | 否 | 同上（它在 `.main-scroll` **之外**，改的是 clientHeight） |
+   * | AppUpdateBanner 出现/消失 | 可视区 ±~74px | < 240 | 否 | 同上 |
+   * | SubInfoBar 出现/消失 | 内容 ±~80px | < 240 | 否 | 且它只随切 tab 变，已在触发面内 |
+   * | 语言切换 / 字体换装 / 角标增减 | 内容 ±一行文本 | < 240 | 否 | 卡片档 `grid-auto-rows:1fr` 会把最高卡的变化摊到每行，量级仍是一行文本 |
+   * | 延迟数值回填 | 行内文本，零高度变化 | 0 | 否 | — |
+   *
+   * 注意方向：让**可视区变矮**（差集条出现）只会更容易溢出，是安全方向；危险的只有「内容变矮」与
+   * 「可视区变高」这两侧 —— 上表按这个口径逐条判过。三条 chrome（批选条 + 差集条 + 更新横幅）
+   * 即便同向同时发生也只有 ~172px，仍在 240px 余量内。像素数取自各自的 CSS 盒模型（screens.css /
+   * components.css），是量级判定不是精确测绘 —— 判据要的正是「离 240 有没有量级余地」。
    */
   const topUpBatch = useCallback(() => {
     const scroller = gridRef.current?.closest<HTMLElement>('.main-scroll');
-    if (scroller) gridScrollRef.current({ currentTarget: scroller });
+    if (scroller) {
+      gridScrollRef.current({ currentTarget: scroller });
+      return;
+    }
+    warnMissingScroller();
+    renderAllRef.current();
   }, []);
   useEffect(() => {
     const scroller = gridRef.current?.closest<HTMLElement>('.main-scroll');
+    // 找不到就没有可挂的事件源；该路的兜底在 topUpBatch 里（fail-open），不在这里重复第二份。
     if (!scroller) return;
     scroller.addEventListener('scroll', topUpBatch, { passive: true });
     // 窗口变大时网格改列数、内容反而变矮，可能从「溢出」跌回「不溢出」⇒ 再没有 scroll 事件可收。
@@ -441,10 +523,26 @@ export function NodesScreen() {
    * **初批必须覆盖视口**，否则整个分批是个陷阱：内容没撑出滚动条 ⇒ 永远收不到 scroll 事件 ⇒
    * 剩下的节点再也出不来（而用户看不出少了 —— 没有滚动条就没有「还有更多」的暗示）。
    * 每次提交后按同一条判据（距底不足 `SCROLL_BATCH_AHEAD_PX` 就再来一批）补批，收敛于
-   * 「撑出滚动条」或「取完」两者之一：`useScrollBatch` 在 `c >= total` 时返回同一个 count，
+   * 「撑出滚动条」或「取完」两者之一：`advanceBatch` 在 `c >= total` 时返回同一个 count，
    * React 就地 bail-out，不会自激。
+   *
+   * 走 **layout** 档而不是 `useEffect`：4K / 超宽下首屏容量远大于每批 60，收敛要连跑三四轮，
+   * 而 passive effect 每轮之间都夹着一次真实绘制 ⇒ 用户看见网格分段自下而上长出来（2026-08-16
+   * 复审报的量级：约 50~65ms 可见抖动）。layout 档把收敛循环整个压在 paint 之前跑完。
+   * 代价如实记账：首帧前多几次同步重渲
+   * （每轮一次 `slice` + 一批卡片的 VDOM），换的是「首帧即定稿」。
+   *
+   * 依赖里的 `view` / `sidebarCollapsed` 是**布局维**不是数据维：它们不改 `renderCount`、不改
+   * `visibleServers.length`、也不发 `resize`，却能成倍改变网格高度。为什么只有这两条、其余向量
+   * 凭什么不列，见上方 topUpBatch 头注的向量表。
    */
-  useEffect(topUpBatch, [topUpBatch, renderCount, visibleServers.length]);
+  useIsomorphicLayoutEffect(topUpBatch, [
+    topUpBatch,
+    renderCount,
+    visibleServers.length,
+    view,
+    sidebarCollapsed,
+  ]);
 
   const protoOptions = useMemo(() => {
     if (!activeGroup) return [];

@@ -7,6 +7,7 @@
  */
 
 import type { ServerConfig, SubscriptionConfig, InvalidNodeInfo } from '@/contracts/types';
+import { latencyMapWhen } from '@/store/use-latency-store';
 import {
   isMeshNode,
   isSpeedTestable,
@@ -87,28 +88,30 @@ export function subEffectiveIntervalHours(config: SubAutoUpdateConfigLike | null
  * ──────────────────────────────────────────────────────────────────────────── */
 
 /**
- * 「本屏这一刻要不要订整张延迟表」的选择器 —— 排序键不是 `lat` 时恒返回**同一个**空表哨兵。
- *
- * # 为什么必须是模块级常量，而不是 `{}` 字面量或 `useMemo`
- *
- * zustand 默认用 `Object.is` 比较选择器的返回值来决定「要不要让这个组件重渲」。选择器里写
- * `: {}` 每次求值都是新对象 ⇒ 每一次 store 提交（测速逐节点回包，一轮几十上百次）都判不等 ⇒
- * 父层照样每次提交重渲、`visibleServers` 照样整表重算、所有卡片跟着重渲 —— 与不做条件订阅
- * **逐字等价**，但多骗了一次 code review。`useMemo` 也不行：hook 只在组件里能调，而这里要的是
- * 「跨组件实例、跨渲染恒等」的一个引用，只有模块级常量给得了。
- *
- * # 为什么不能反过来「恒不订、动作腿现取」
- *
- * `sortKey === 'lat'` 时排序结果**必须**随每次回包同步重排（不变量①），那时父层就该重渲。
- * 条件订阅要收掉的是另外三档排序（默认/名称/协议）下那份「订了也没人读」的重渲，不是排序本身。
+ * 空表哨兵。本体与判据（为什么必须是模块级冻结常量、为什么 `{}` 字面量和 `useMemo` 都不行）
+ * 在 `store/use-latency-store.ts` —— 首页与节点页共用同一个引用，两份哨兵等于两条判据。
+ * 这里只做转出口，保住既有调用点与门的 import 路径。
  */
-export const EMPTY_LATENCY_MAP: Readonly<Record<string, number | null>> = Object.freeze({});
+export { EMPTY_LATENCY_MAP } from '@/store/use-latency-store';
 
-/** [`EMPTY_LATENCY_MAP`] 的消费面：`useLatencyStore(latencySortSelector(sortKey === 'lat'))`。 */
+/**
+ * 「**本屏**这一刻要不要订整张延迟表」—— 排序键不是 `lat` 时恒返回同一个空表哨兵。
+ *
+ * 实现委托给 store 层中性的 [`latencyMapWhen`]（首页按选单开合走同一条），本函数只保留
+ * 节点页那句「需不需要」的语义命名。**不要**在这里再写一遍三元：第二份哨兵/第二份形态一出现，
+ * 「非延迟档返回稳定引用」这条前提就有两处可以各自漂。
+ *
+ * 为什么不能反过来「恒不订、动作腿现取」：`sortKey === 'lat'` 时排序结果**必须**随每次回包同步
+ * 重排（不变量①），那时父层就该重渲。条件订阅要收掉的是另外三档排序（默认/名称/协议）下那份
+ * 「订了也没人读」的重渲，不是排序本身。
+ *
+ * 每次调用返回**新函数**（调用点写在渲染里 `latencySortSelector(sortKey === 'lat')`）—— 稳定性
+ * 全部来自哨兵引用，不来自选择器本身，这一点由 `nodes-render-budget.test.tsx` 正反两向钉住。
+ */
 export function latencySortSelector(
   needsLatency: boolean
 ): (s: { latencyMap: Record<string, number | null> }) => Readonly<Record<string, number | null>> {
-  return (s) => (needsLatency ? s.latencyMap : EMPTY_LATENCY_MAP);
+  return latencyMapWhen(needsLatency);
 }
 
 /**
