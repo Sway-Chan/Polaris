@@ -8,8 +8,8 @@
  *
  * 实证（本门落地时的存量）：`TailscaleSettings` 17 个字段里 `routes` / `reverseMesh` /
  * `relayServerPort` / `resolveByName` 四个从未进过 `TsSettingsDialog`。其中
- *  - `reverseMesh` 决定 `meshUsesSystemInterface` ⇒ 该节点是否参与测速（`domain/endpoint-routes.ts:320`）；
- *  - `resolveByName` 是 `acceptDefaultResolvers` 生效的前提（`builder/dns.rs:1214` 选节点的谓词就是它）
+ *  - `reverseMesh` 决定 `meshUsesSystemInterface` ⇒ 该节点是否参与测速（`domain/endpoint-routes.ts`）；
+ *  - `resolveByName` 是 `acceptDefaultResolvers` 生效的前提（`builder/dns.rs` 选节点的谓词就是它）
  *    ⇒ 它缺席时，弹窗里那个「接受 DNS」开关**恒无效**——一个拨了不生效的控件。
  * 两条都不是「少几个框」，是不可见的活状态。
  *
@@ -45,7 +45,7 @@
  *  - `ShadowTlsSettings.password`/`.sni`/`.fingerprint` 被各协议的 `password:`、`{k:'sni'}`、
  *    vless 的 `.fingerprint` 遮蔽 ⇒ 「ShadowTLS 开关造出用户修不好的坏节点」那条缺陷长期活着；
  *  - `Hysteria2Settings.network` 被 snell 的 `{k:'network'}` 遮蔽 ⇒ 债务表记零债务，实际 Rust 会消费
- *    （`builder/outbound.rs:249` 的 `ob.network = h.network.clone()`）而 UI 无入口；
+ *    （`builder/outbound.rs` 的 `ob.network = h.network.clone()`）而 UI 无入口；
  *  - `HttpSettings.method` 被 shadowsocks 的 `{k:'method'}` 遮蔽；
  *  - ws 那批在 codec 里写下 `path:`/`headers:` 之后，`HttpSettings.path`/`headers` 被判「已覆盖」，
  *    **不得不从债务表删掉两个其实没修的条目** —— 门从「看不见缺口」恶化成「记录假账」，并且开始
@@ -146,7 +146,7 @@ const RUST_OUTBOUND_HELPERS = read('../../../crates/config-engine/src/builder/ou
 const RUST_TLS_SPOOF = read('../../../crates/config-engine/src/user_config/tls_spoof.rs');
 
 /**
- * 行注释剔除。**这一步是承重的**，不是整洁癖：`wg-logic.ts:137` 的注释里写着
+ * 行注释剔除。**这一步是承重的**，不是整洁癖：`wg-logic.ts` 的注释里写着
  * `reverseMesh / warpDevice / reserved`，不剔注释的话 WG 的真实缺口会被注释「盖绿」——
  * 门会报「全覆盖」，而那三个键里 `reverseMesh` 确实没有编辑入口。Rust 侧同理（doc 注释里
  * 出现 `rename = "..."` 或 `pub foo:` 会解析出幽灵字段）。
@@ -353,11 +353,26 @@ const EXEMPT: Record<string, Record<string, string>> = {
   TailscaleSettings: {
     allowInternet:
       'Tailscale 的「是否允许作外网出口」两侧谓词都由 exitNode 派生，存量字段被明确忽略：' +
-      'domain/endpoint-routes.ts:153 与 builder/endpoint_routes.rs:76 都是 `!!exitNode`，' +
+      'domain/endpoint-routes.ts 与 builder/endpoint_routes.rs 都是 `!!exitNode`，' +
       '前者注释写明「存量 tailscaleSettings.allowInternet 字段谓词层忽略（向后兼容、不迁移）」。' +
       '给它做开关 = 一个拨了不生效的假控件 + 第二个默认值真值源。改法是改 exitNode，不是加控件。',
   },
   // WireGuardSettings：本表曾登记 `reverseMesh` 为「未移植的真实缺口」，接入模式开关补上后按锁 3 删除。
+};
+
+/**
+ * **G2（2026-08-18）**：EXEMPT 理由里声称「代码在某处长什么样」的，一律在此登记同款 [`Cite`]
+ * 机核（判据见 [`verifyCite`]）。锚点/依据串烂了就红，理由不再靠读者自觉。
+ * ⚠️ 理由串本身**不许再写字面行号**（`xx.rs:153`）——那正是 G2 拆掉的东西，锁 3 里有断言拦新增。
+ */
+const EXEMPT_CITES: Record<string, readonly Cite[]> = {
+  'TailscaleSettings.allowInternet': [
+    {
+      at: 'ui/src/domain/endpoint-routes.ts',
+      needle: '!!server.tailscaleSettings?.exitNode?.trim()',
+    },
+    { at: 'crates/config-engine/src/builder/endpoint_routes.rs', needle: 't.exit_node.as_deref()' },
+  ],
 };
 
 // ── per-protocol 切片（批 C）─────────────────────────────────────────────────
@@ -612,7 +627,7 @@ function protoVariants(seg: string, label: string): string[] {
   return [...new Set(got)];
 }
 
-/** 恒需 TLS 块的协议（`builder/outbound.rs:20`）。 */
+/** 恒需 TLS 块的协议（`builder/outbound.rs` 的 `TLS_PROTOCOLS`，符号即解析锚点）。 */
 const RUST_TLS_PROTOCOLS = rustStrSlice(RUST_OUTBOUND, 'TLS_PROTOCOLS');
 
 /** multiplex 真正下发的协议面（`apply_anti_censorship_options` 里那句 `matches!`）。 */
@@ -683,7 +698,7 @@ const RUST_NO_FRAGMENT = (() => {
  *    `security.is_tls() || tls_settings.is_some()` 是**通用兜底**（导入器写进来什么就带什么），
  *    这五个协议在 sing-box 侧根本没有 TLS 出站语义，上游 也不给控件 ⇒ 不是编辑面。
  *    真要变（Rust 把某个加进 `TLS_PROTOCOLS`），锁 5 的 `TLS_PROTOCOLS ⊆ owners` 会红。
- *  - `HttpSettings` 给 http **协议**：不是笔误 —— `outbound.rs:343` 的 `Protocol::Http` 分支
+ *  - `HttpSettings` 给 http **协议**：不是笔误 —— `outbound.rs` 的 `Protocol::Http` 分支
  *    直接读 `server.http_settings` 的 `headers`/`path`，与 h2 传输那条腿是两处消费。
  */
 const STRUCT_OWNERS: Record<string, readonly NodeProto[]> = {
@@ -1184,7 +1199,7 @@ const PORT_DEBT: Record<string, readonly string[]> = {
   //
   // 🔴 **`Protocol::Http` 分支产出的是一份内核拒绝加载的配置**（2026-08-06 实测，随包核 beta.7）：
   // 它把 `http_settings` 的 headers/path 塞进 `ob.transport`（`builder/outbound.rs` 的
-  // `Protocol::Http` 腿，1:1 移植自 上游 `singbox-outbound-builder.ts:391-398`），而随包核的
+  // `Protocol::Http` 腿，1:1 移植自上游 `singbox-outbound-builder.ts`（仓外文件，行号无从核对）），而随包核的
   // **http 出站 schema 根本没有 `transport` 键**且 `additionalProperties:false` ⇒
   //   `sing-box check` → `FATAL decode config: outbounds[0].transport: json: unknown field "transport"`
   // 正向对照：同一份 headers/path 写在出站**顶层**（内核 http 出站真有这两个键）→ exit=0。
@@ -1481,6 +1496,44 @@ describe('锁 3：豁免表反向锁（豁免不许变成永久盲区）', () =>
     for (const [structName, table] of Object.entries(EXEMPT)) {
       for (const [k, reason] of Object.entries(table)) {
         expect(reason.trim().length, `EXEMPT.${structName}.${k} 没写理由`).toBeGreaterThan(20);
+      }
+    }
+  });
+
+  /**
+   * G2：豁免理由声称的代码事实必须机核。依据表比豁免表多出来的条目 = 指向已删除的豁免，先红；
+   * 反向（豁免有、依据表没有）不拦 —— 有的理由陈述的是设计取舍，未必句句是代码位置。
+   */
+  it('EXEMPT 理由引用的代码位置机核（从不核对的引用等于装饰）', () => {
+    for (const [row, cites] of Object.entries(EXEMPT_CITES)) {
+      const [structName, k] = row.split('.');
+      const reason = EXEMPT[structName]?.[k];
+      expect(reason, `${row} 在 EXEMPT 里已不存在 —— 依据表比豁免表多，先对齐再改这里`).toBeDefined();
+      for (const c of cites) verifyCite(row, c);
+    }
+  });
+
+  /**
+   * G2 反恒真：理由串里禁止字面行号引用（`xx.rs:153` / `xx.ts:391-398`）。行号那一维在 G1/G2 已拆，
+   * 依据走 EXEMPT_CITES 机核；谁再往理由里写行号，就是绕开机核的假精度。报错文案里动态算出的
+   * 行号（`lineAt`）不受影响 —— 这里只拦**字面量**。
+   */
+  it('豁免理由里禁止字面行号引用（假精度）', () => {
+    const LINEREF = /\.(rs|ts|tsx|mjs|js|css|json):\d/;
+    for (const [structName, table] of Object.entries(EXEMPT)) {
+      for (const [k, reason] of Object.entries(table)) {
+        expect(
+          LINEREF.test(reason),
+          `EXEMPT.${structName}.${k} 的理由里出现字面行号 —— 改成符号名并登记 EXEMPT_CITES 机核`
+        ).toBe(false);
+      }
+    }
+    for (const [row, t] of Object.entries(NODE_EXEMPT)) {
+      for (const [k, ex] of Object.entries(t)) {
+        expect(
+          LINEREF.test(ex.why),
+          `NODE_EXEMPT["${row}"].${k} 的理由里出现字面行号 —— 同上`
+        ).toBe(false);
       }
     }
   });
