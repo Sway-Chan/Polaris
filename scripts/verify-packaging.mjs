@@ -496,6 +496,12 @@ function checkConfs() {
  *  - 全 workflow 里带 `--names-only` 的调用**恰好一条** —— 防它蔓延到 per-job 三条腿。
  *
  * 认不出（重命名了 `$outdir`、改了目录形态）一律判红：判据取不到时装作通过，等于把这条纪律删掉。
+ *
+ * # 射程边界（如实登记，不修）
+ *
+ * 判据看的是**调用行的字面**，故把开关藏进 shell 变量（`F=--names-only` … `node … $F`）能绕过去。
+ * 那是**刻意规避**，不在本门自述的射程里 —— 它守的是「调试时加上、事后忘了摘」这类无意残留。
+ * 一道门不可能同时防住健忘和防住存心，把射程写清楚比假装它两样都防更有用。
  */
 function checkNamesOnlyDiscipline(workflow) {
   const calls = workflow
@@ -506,7 +512,10 @@ function checkNamesOnlyDiscipline(workflow) {
   if (release.length !== 2) {
     fail(
       `.github/workflows/package.yml: 应恰有 2 条 \`assets --label release\` 调用（上传前全口径 + 发布后仅命名），` +
-        `实为 ${release.length} 条 —— 少一条 = 有一遍没跑；判据认不出 = 本纪律无从断言。`
+        `实为 ${release.length} 条。\n` +
+        `  <2 ⇒ 有一遍没跑，或判据认不出它（改了调用形态）—— 两种都让本纪律无从断言；\n` +
+        `  >2 ⇒ 新增了 release 口径的调用，本纪律的射程没跟上：请把判据从「按条数」改成` +
+        `「按 --dir 分类」（每个目标目录各自声明该不该带 --names-only），再把新那条登记进去。`
     );
     return;
   }
@@ -901,8 +910,9 @@ function updaterMacCandidates(names, archTag) {
 /**
  * Linux 两形态的候选集 = `github.rs` 的 Linux 分支（`app_image.first()` / `deb.first()`），逐字同口径。
  *
- * 抽成函数而不是内联过滤：内联过的地方有三处（per-job 体积门、release 体积门、release 命名断言），
- * 与 mac/win 靠共享函数自动跟随选包规则不同，内联的那几处会在 `github.rs` 判据变化时**静默滞后**。
+ * 抽成函数而不是内联过滤：内联过的地方有**四处**（per-job 体积门、release 体积门、release 命名断言、
+ * per-job `linux` 命名分支的 deb / AppImage 两条），与 mac/win 靠共享函数自动跟随选包规则不同，
+ * 内联的那几处会在 `github.rs` 判据变化时**静默滞后**。
  * @param {string[]} names @param {'.deb'|'.AppImage'} [ext] 只要某一形态时传，缺省两形态都算
  */
 function updaterLinuxCandidates(names, ext) {
@@ -957,11 +967,10 @@ function updaterLinuxCandidates(names, ext) {
  * **改这里必须同步改那里**，且那条测试还会拦住「把它调到客户端写入闸之上」——那等于发一个
  * 客户端结构性下不动的包。
  *
- * ⚠️ 那条测试按「`const` + 本常量名 + ` = `」这串文本定位，要求它在本文件里**只出现一处**，
- * 且形态恒为 `N * 1024 * 1024`：出现多处（例如在注释里留一份旧值作沿革）或换成裸字面量，
- * 它一律判成「判据取不到」而转红 —— 因为「读到了错的那一行」与「读到了对的那一行」在结果上
- * 无从分辨。**本段刻意不把那串文本原样写出来**，否则这份文档自己就会把计数顶成 2
- * （实测：初稿就是这么红的）。
+ * ⚠️ 那条测试按「`const` + 本常量名 + ` = `」定位，要求**以它开头的行恰有一行**，且该行形态恒为
+ * `N * 1024 * 1024;`（允许行首缩进与 `export `）。声明写两遍、把它折成两行、或换成裸字面量，
+ * 一律判成「判据取不到」而转红 —— 因为「读到了对的那一行」与「读到了别处一句同形文本」在结果上
+ * 无从分辨。注释里出现同形文本**不影响**判据（它不以 marker 起头），故本段可以照常引用它。
  */
 const MAX_UPDATE_ASSET_BYTES = 96 * 1024 * 1024;
 

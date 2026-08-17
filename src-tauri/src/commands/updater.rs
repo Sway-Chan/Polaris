@@ -3452,15 +3452,32 @@ mod tests {
     /// 本仓的注释风格就是大段引用代码 —— 调门时在常量文档里补一行
     /// `const MAX_UPDATE_ASSET_BYTES = 96 * 1024 * 1024;  // 旧值` 作沿革记录、同时把真值升到 256，
     /// 首个匹配读到注释里那个 96、与镜像相等 ⇒ **绿**，而两份常量已经漂开 160 MiB。
-    /// 故先数出现次数，`!= 1` 直接 `None`：与 `checkSha256Sums` 对同名资产的处置同一条纪律
+    /// 故先数命中数，`!= 1` 直接 `None`：与 `checkSha256Sums` 对同名资产的处置同一条纪律
     /// ——**不可判定就必须红，不能挑一个继续**。
+    ///
+    /// # 数的是「以 marker 开头的**行**」，不是子串出现次数（2026-08-17 二次复审修）
+    ///
+    /// 只数子串的话，「恰好 1 次、但那 1 次不是真声明」照样会被取值 —— 复审逐字复刻本函数跑了
+    /// 14 组输入，三组假绿全长一个样：**真声明因换行/改名不再匹配（0 次）+ 注释里那处同形（1 次）
+    /// = 合计 1 次**。最现实的一种是有人按更窄行宽把常量折成
+    /// `= \n  256 * 1024 * 1024;`，而文件里某处注释还留着一句一行形态的引用 ⇒ 读到注释里的旧值 96、
+    /// 与镜像相等 ⇒ 绿，两份实际已漂开 160 MiB。
+    ///
+    /// 按行判把两侧一起堵上：注释行（`//` / ` * ` 开头）结构上不以 marker 起头，不再参与计数；
+    /// 真声明一旦折行就 0 命中 ⇒ `None` ⇒ 红（fail-closed，方向正确）。
+    /// `trim_start_matches("export ")` 是给「将来这行改成 `export const`」留的等价形态，不是通配。
     fn packaging_gate_mib_from_js(src: &str) -> Option<u64> {
         const MARKER: &str = "const MAX_UPDATE_ASSET_BYTES = ";
-        if src.matches(MARKER).count() != 1 {
+        let hits: Vec<&str> = src
+            .lines()
+            .map(|l| l.trim_start().trim_start_matches("export "))
+            .filter(|l| l.starts_with(MARKER))
+            .collect();
+        if hits.len() != 1 {
             return None;
         }
-        src.split_once(MARKER)?
-            .1
+        hits[0]
+            .strip_prefix(MARKER)?
             .split_once(';')?
             .0
             .trim()
@@ -3470,19 +3487,23 @@ mod tests {
             .ok()
     }
 
-    /// 🟡 **解析函数对「扒不准」的两类输入都必须交白卷，而不是猜一个数出来。**
+    /// 🟡 **解析函数对「扒不准」的三类输入都必须交白卷，而不是猜一个数出来。**
     ///
     /// 上一条测试的全部效力都建立在「`js` 这个数确实是 CI 上拦包的那个数」之上。本条把这个前提
-    /// 本身钉住，覆盖两类：
-    ///  - **形态变了**（裸字面量 / 换算符 / 改名）⇒ `None`，调用方 `expect` 转红；
-    ///  - **出现多次**（注释里留了一份旧值）⇒ `None`。这一类原实现是**静默读首个**，
-    ///    即两份常量漂开而 D5 那颗钉子一声不吭 —— 复审实测出来的洞，也正是本批要防的那类事。
+    /// 本身钉住，覆盖三类：
+    ///  - **形态变了**（裸字面量 / 改名 / 折行）⇒ `None`，调用方 `expect` 转红；
+    ///  - **真声明出现多次**⇒ `None`（读哪一处不确定）；
+    ///  - **注释里有同形文本**⇒ 不得被当成声明取值 —— 这一类是二次复审逐字复刻跑出来的假绿：
+    ///    真声明折行后 0 命中、注释那处 1 命中，只数子串的实现合计得 1 ⇒ 静默读注释里的旧值。
     ///
-    /// **变异探针**：删掉 `matches(MARKER).count() != 1` 那道闸 ⇒ 第 3 条转红（它会读到注释里的 96，
-    /// 返回 `Some(96)`）。
+    /// **变异探针**（2026-08-17 实测）：把命中判据换回 `src.matches(MARKER).count()` ⇒ 注释组
+    /// ①②③ **三条各自都会转红**（断言在首条中止，故一次运行只看得到 ①）。三组在旧判据下逐字返回
+    /// `Some(96)` —— 即注释里那份旧值被当成了真值，而真值其实是 256。
+    /// 两条正向对照（唯一真声明 / `export` + 缩进）在新旧实现下都返回 `Some(96)`，
+    /// 故本条不是靠「把什么都判红」换来的。
     #[test]
     fn packaging_gate_parser_refuses_ambiguous_or_reshaped_sources() {
-        // 正向对照：唯一一处、形态如约 ⇒ 读得出（否则下面三条「读不出」毫无信息量）。
+        // 正向对照：唯一一处、形态如约 ⇒ 读得出（否则下面几条「读不出」毫无信息量）。
         assert_eq!(
             packaging_gate_mib_from_js("const MAX_UPDATE_ASSET_BYTES = 96 * 1024 * 1024;\n"),
             Some(96)
@@ -3498,14 +3519,50 @@ mod tests {
             None,
             "常量改名 = 判据消失"
         );
-        // 出现两次（注释里留了一份旧值，真值在下面）⇒ 交白卷，**绝不返回首个**。
+        // 真声明出现两次 ⇒ 读哪一处不确定，交白卷。
         assert_eq!(
             packaging_gate_mib_from_js(concat!(
-                "// 沿革：const MAX_UPDATE_ASSET_BYTES = 96 * 1024 * 1024;（2026-08 的旧值）\n",
+                "const MAX_UPDATE_ASSET_BYTES = 96 * 1024 * 1024;\n",
                 "const MAX_UPDATE_ASSET_BYTES = 256 * 1024 * 1024;\n"
             )),
             None,
-            "同形文本出现多次 ⇒ 读哪一处不确定；挑首个会把「已漂开 160 MiB」判成绿"
+            "两条真声明 ⇒ 不可判定；挑首个会把「已漂开」判成绿"
+        );
+        // ── 注释里的同形文本不得被当成声明（只数子串的实现在这三组上全是假绿）──
+        // ① 真声明折行 ⇒ 应 0 命中；注释那处不参与计数 ⇒ 合计 0 ⇒ None。
+        assert_eq!(
+            packaging_gate_mib_from_js(concat!(
+                "// 沿革：const MAX_UPDATE_ASSET_BYTES = 96 * 1024 * 1024;（旧值）\n",
+                "const MAX_UPDATE_ASSET_BYTES =\n  256 * 1024 * 1024;\n"
+            )),
+            None,
+            "真声明折行 ⇒ 判据取不到，绝不能回落去读注释里的旧值"
+        );
+        // ② 真声明改名 + 注释留旧形态。
+        assert_eq!(
+            packaging_gate_mib_from_js(concat!(
+                " * 旧写法：const MAX_UPDATE_ASSET_BYTES = 96 * 1024 * 1024;\n",
+                "const MAX_UPDATE_ASSET_LIMIT = 256 * 1024 * 1024;\n"
+            )),
+            None,
+            "块注释里的同形行同样不得顶替判据"
+        );
+        // ③ 真声明换裸字面量并改名 + 注释留旧形态。
+        assert_eq!(
+            packaging_gate_mib_from_js(concat!(
+                "// const MAX_UPDATE_ASSET_BYTES = 96 * 1024 * 1024;\n",
+                "const ASSET_CEILING = 268435456;\n"
+            )),
+            None,
+            "注释掉的旧行 + 换形态的新声明 ⇒ 必须交白卷"
+        );
+        // 反向对照：真声明前有缩进 / 将来改成 `export const` 仍读得出（本条不是「越严越好」，
+        // 把等价形态一并判红会让门在无害改动上假红）。
+        assert_eq!(
+            packaging_gate_mib_from_js(
+                "  export const MAX_UPDATE_ASSET_BYTES = 96 * 1024 * 1024;\n"
+            ),
+            Some(96)
         );
     }
 
