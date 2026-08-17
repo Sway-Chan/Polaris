@@ -353,8 +353,8 @@ const EXEMPT: Record<string, Record<string, string>> = {
   TailscaleSettings: {
     allowInternet:
       'Tailscale 的「是否允许作外网出口」两侧谓词都由 exitNode 派生，存量字段被明确忽略：' +
-      'domain/endpoint-routes.ts 与 builder/endpoint_routes.rs 都是 `!!exitNode`，' +
-      '前者注释写明「存量 tailscaleSettings.allowInternet 字段谓词层忽略（向后兼容、不迁移）」。' +
+      'TS 侧 domain/endpoint-routes.ts 是 `!!exitNode`、Rust 侧 builder/endpoint_routes.rs 是' +
+      'exit_node 非空判定，前者注释写明「存量 tailscaleSettings.allowInternet 字段谓词层忽略（向后兼容、不迁移）」。' +
       '给它做开关 = 一个拨了不生效的假控件 + 第二个默认值真值源。改法是改 exitNode，不是加控件。',
   },
   // WireGuardSettings：本表曾登记 `reverseMesh` 为「未移植的真实缺口」，接入模式开关补上后按锁 3 删除。
@@ -371,7 +371,17 @@ const EXEMPT_CITES: Record<string, readonly Cite[]> = {
       at: 'ui/src/domain/endpoint-routes.ts',
       needle: '!!server.tailscaleSettings?.exitNode?.trim()',
     },
+    // 「前者注释写明……」那条声称的注释本体：注释被清理时豁免的合法性佐证一起消失，必须转红。
+    {
+      at: 'ui/src/domain/endpoint-routes.ts',
+      needle: '存量 tailscaleSettings.allowInternet 字段谓词层忽略（向后兼容、不迁移）',
+    },
+    // 两条合起来钉「派生」：只读 exit_node 不算数，返回值得由它算出来（防恒真残骸喂饱前一条）。
     { at: 'crates/config-engine/src/builder/endpoint_routes.rs', needle: 't.exit_node.as_deref()' },
+    {
+      at: 'crates/config-engine/src/builder/endpoint_routes.rs',
+      needle: '.map(|e| !e.trim().is_empty())',
+    },
   ],
 };
 
@@ -1505,6 +1515,11 @@ describe('锁 3：豁免表反向锁（豁免不许变成永久盲区）', () =>
    * 反向（豁免有、依据表没有）不拦 —— 有的理由陈述的是设计取舍，未必句句是代码位置。
    */
   it('EXEMPT 理由引用的代码位置机核（从不核对的引用等于装饰）', () => {
+    // 反恒真：EXEMPT 还有豁免时依据表不许被清空（否则上面的循环零次即恒绿，新锁可被无声拆光）。
+    expect(
+      Object.keys(EXEMPT).length > 0 && Object.keys(EXEMPT_CITES).length === 0,
+      'EXEMPT 非空而 EXEMPT_CITES 是空的 —— 依据表被清空了，恢复它而不是删断言'
+    ).toBe(false);
     for (const [row, cites] of Object.entries(EXEMPT_CITES)) {
       const [structName, k] = row.split('.');
       const reason = EXEMPT[structName]?.[k];
@@ -1514,12 +1529,12 @@ describe('锁 3：豁免表反向锁（豁免不许变成永久盲区）', () =>
   });
 
   /**
-   * G2 反恒真：理由串里禁止字面行号引用（`xx.rs:153` / `xx.ts:391-398`）。行号那一维在 G1/G2 已拆，
-   * 依据走 EXEMPT_CITES 机核；谁再往理由里写行号，就是绕开机核的假精度。报错文案里动态算出的
-   * 行号（`lineAt`）不受影响 —— 这里只拦**字面量**。
+   * G2 反恒真：理由串里禁止字面行号引用（`xx.rs:153` / `xx.ts:391-398` / `xx.rs#L153` /
+   * `xx.rs 第153行`）。行号那一维在 G1/G2 已拆，依据走 EXEMPT_CITES 机核；谁再往理由里写行号，
+   * 就是绕开机核的假精度。报错文案里动态算出的行号（`lineAt`）不受影响 —— 这里只拦**字面量**。
    */
   it('豁免理由里禁止字面行号引用（假精度）', () => {
-    const LINEREF = /\.(rs|ts|tsx|mjs|js|css|json):\d/;
+    const LINEREF = /\.(rs|ts|tsx|mjs|js|css|json)(:\d|#L\d)|第\s*\d+\s*行/;
     for (const [structName, table] of Object.entries(EXEMPT)) {
       for (const [k, reason] of Object.entries(table)) {
         expect(
