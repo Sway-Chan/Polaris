@@ -565,6 +565,63 @@ export function isPortableZipUpdate(downloadedPath: string | null | undefined): 
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
+ * 更新包的摘要校验状态：「这版有没有摘要」与「这次下载校没校」是**两件事**
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * 该 release 是否随包给了期望 sha256 摘要（⇒ 下载腿会做逐字节强校验）。
+ *
+ * # 判据与后端逐条同口径
+ *
+ * `commands/updater.rs::resolve_expected_digest`：字段缺失 → 无；非字符串 → 后端**报错拒装**
+ * （不是「没摘要」，故也不该走本函数的 false 分支去提示「无摘要」——但本函数拿到的是 TS 侧
+ * 已声明为 `string | undefined` 的值，非字符串只可能来自破损回包，判 false 是保守方向：
+ * 多提示一次，不会把一次会失败的下载说成安全）；trim 后空串 / 纯空白 → 无（后端 `continue`）。
+ *
+ * **刻意不校验 hex 形态**：后端对「有值但写坏了」的处理是照常进校验、然后
+ * `verify_hex_digest` 的 `InvalidExpectedHash` 分支**拒装**，不是当成「本来就没摘要」放行。
+ * 这里若自作主张把坏 hex 判成「无摘要」，就会在一次注定失败的下载前先给用户一条不成立的说明。
+ *
+ * # 时机：这是**下载开始前**就能算出的判断
+ *
+ * `UpdateInfo.sha256` 与 `hasUpdate` 同一次 `update_check` 回包到手，故「这个版本有没有摘要」
+ * 在用户还能选择「下不下」的那一刻就已知 —— 等到装机环节才说，是在风险已经承担之后才告知。
+ * 它与 [`appDownloadIntegrity`] 不是一个状态：后者是下载**之后**的既成事实，两者可用时机不同，
+ * 合并成一个布尔就必然要么提前撒谎、要么迟到。
+ */
+export function releaseShipsDigest(
+  updateInfo: { sha256?: string | null } | null | undefined,
+): boolean {
+  const raw = updateInfo?.sha256;
+  return typeof raw === 'string' && raw.trim() !== '';
+}
+
+/** 一次 `update_download` 回包的摘要校验结果。`unknown` ≠ `unverified`，成因见下。 */
+export type AppDownloadIntegrity = 'verified' | 'unverified' | 'unknown';
+
+/**
+ * 从 `updateApi.download()` 的回包读出摘要校验**结果**（下载之后才存在的事实）。
+ *
+ * # 为什么是三态而不是布尔
+ *
+ * 设置页的 `downloaded` 态有**两条**到达路径，只有一条带着回包：
+ *  - 用户在本卡点「下载」→ `updateApi.download()` 的返回值里有 `verified`；
+ *  - 启动腿 `runtime/startup_tasks.rs::spawn_auto_download` 在后台下完 → 本卡只收到
+ *    `update:progress` 的 `downloaded` 事件（`emit_progress`），**拿不到任何回包**。
+ *
+ * 后一条路径上本地无从得知校没校。把「不知道」折叠进 `unverified` 会凭空造一条警告；
+ * 折叠进 `verified` 则是假绿。故只在**确知未校验**（`verified === false`）时才提示。
+ */
+export function appDownloadIntegrity(
+  result: { verified?: boolean | null } | null | undefined,
+): AppDownloadIntegrity {
+  const verified = result?.verified;
+  if (verified === true) return 'verified';
+  if (verified === false) return 'unverified';
+  return 'unknown';
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
  * 暂存条目的**段级**译名（原型 `settingLabel:4257`）
  * ──────────────────────────────────────────────────────────────────────────── */
 

@@ -6,6 +6,7 @@
  * 「开」跑 —— UI 与后台分叉是本批要根治的最恶劣缺陷。
  */
 import { describe, it, expect } from 'vitest';
+import ts from 'typescript';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { USER_CONFIG_FIELDS } from '@/contracts/user-config-fields';
@@ -34,6 +35,8 @@ import {
   MIN_LISTEN_PORT,
   STAGED_SETTING_SECTION_LABELS,
   MAX_LISTEN_PORT,
+  releaseShipsDigest,
+  appDownloadIntegrity,
 } from './settings-logic';
 
 describe('defaultOn —— 缺省为开的三态布尔', () => {
@@ -778,5 +781,207 @@ describe('STAGED_SETTING_SECTION_LABELS', () => {
         expect(value, `${loc} 缺 ${path}`).toBeTypeOf('string');
       }
     }
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 无摘要明示（U4 轻方案）—— 两个字段、两个时机，不许合并
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+describe('releaseShipsDigest —— 逐条对齐 commands/updater.rs::resolve_expected_digest', () => {
+  it('有非空 sha256 ⇒ 有摘要（下载腿会做强校验）', () => {
+    expect(releaseShipsDigest({ sha256: 'a'.repeat(64) })).toBe(true);
+  });
+
+  it('字段缺失 ⇒ 无摘要（后端 `let Some(raw) = .. else { continue }`）', () => {
+    expect(releaseShipsDigest({})).toBe(false);
+  });
+
+  it('空串 / 纯空白 ⇒ 无摘要（后端 `hex.trim()` 后 `is_empty()` 即 continue）', () => {
+    // 写成 `!!raw` 会把 "   " 判成有摘要 ⇒ 后端不校验、UI 却不提示 = 本批要消掉的静默腿。
+    expect(releaseShipsDigest({ sha256: '' })).toBe(false);
+    expect(releaseShipsDigest({ sha256: '   ' })).toBe(false);
+    expect(releaseShipsDigest({ sha256: '\t\n ' })).toBe(false);
+  });
+
+  it('null / undefined 的 updateInfo ⇒ 无摘要（尚未查到版本时不得误报「有」）', () => {
+    expect(releaseShipsDigest(null)).toBe(false);
+    expect(releaseShipsDigest(undefined)).toBe(false);
+    expect(releaseShipsDigest({ sha256: null })).toBe(false);
+  });
+
+  it('**不校验 hex 形态**：坏 hex 仍算「有摘要」', () => {
+    // 后端对坏 hex 的处理是照常进 `verify_hex_digest` 然后 `InvalidExpectedHash` **拒装**，
+    // 不是当成「本来就没摘要」放行。这里若判 false，就会在一次注定失败的下载前先讲一段
+    // 不成立的「该版本没有摘要」。
+    expect(releaseShipsDigest({ sha256: 'not-a-hex' })).toBe(true);
+    expect(releaseShipsDigest({ sha256: 'ABC' })).toBe(true);
+  });
+});
+
+describe('appDownloadIntegrity —— unknown 与 unverified 必须分得开', () => {
+  it('verified:true ⇒ verified', () => {
+    expect(appDownloadIntegrity({ verified: true })).toBe('verified');
+  });
+
+  it('verified:false ⇒ unverified（唯一该出提示的那一格）', () => {
+    expect(appDownloadIntegrity({ verified: false })).toBe('unverified');
+  });
+
+  it('回包里没有 verified ⇒ unknown，**不是** unverified', () => {
+    // 自动下载腿（startup_tasks::spawn_auto_download）只推 `downloaded` 事件、没有回包，
+    // 折叠成 unverified 会凭空造一条警告，折叠成 verified 则是假绿。
+    expect(appDownloadIntegrity({})).toBe('unknown');
+    expect(appDownloadIntegrity(null)).toBe('unknown');
+    expect(appDownloadIntegrity(undefined)).toBe('unknown');
+    expect(appDownloadIntegrity({ verified: null })).toBe('unknown');
+  });
+
+  it('三态互斥且穷尽：只有 false 落 unverified', () => {
+    const verdicts = [{ verified: true }, { verified: false }, {}].map(appDownloadIntegrity);
+    expect(verdicts).toEqual(['verified', 'unverified', 'unknown']);
+  });
+});
+
+describe('无摘要明示：接线面 + 五语文案', () => {
+  /**
+   * 取材器**先剥注释**再断言。
+   *
+   * 本仓已被这一格坑过一次（跨批复审 Low：「TS 取材器不剥块注释 ⇒ 注释伪造订阅 + 真订阅
+   * 被删仍全绿」）。本门两个方向都被注释污染过：正向断言可以被一句注释假装满足，
+   * 负向断言（「不得直接读 `.sha256`」）会被一句解释该字段的注释误判成违规。
+   * 用 TS 自己的 parser 逐 token 取注释区间并抹成空格（保留换行与偏移，行号不漂）。
+   */
+  async function readTsx() {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { fileURLToPath: toPath } = await import('node:url');
+    const dir = path.dirname(toPath(import.meta.url));
+    const file = path.join(dir, 'SettingsUpdate.tsx');
+    const raw = fs.readFileSync(file, 'utf8');
+    // 取材自检：路径漂走会让下面全部断言在空串上「恰好」通过 = 假绿。
+    expect(raw.length, `取材文件太短或不对：${file}`).toBeGreaterThan(2000);
+
+    const sf = ts.createSourceFile(file, raw, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const out = [...raw];
+    const blank = (pos: number, end: number) => {
+      for (let i = pos; i < end; i++) if (out[i] !== '\n') out[i] = ' ';
+    };
+    // `forEachChild` 跳过 token 节点，而 `{/* … */}` 这类 JSX 注释正挂在 token 的前导上，
+    // 故必须走 `getChildren`（含 token）。
+    const walk = (n: ts.Node) => {
+      for (const r of ts.getLeadingCommentRanges(raw, n.getFullStart()) ?? []) blank(r.pos, r.end);
+      for (const r of ts.getTrailingCommentRanges(raw, n.getEnd()) ?? []) blank(r.pos, r.end);
+      for (const c of n.getChildren(sf)) walk(c);
+    };
+    walk(sf);
+    const src = out.join('');
+    // 剥注释自检（正向对照）：本文件必有中文块注释，剥完必须真的少了字符；
+    // 且代码骨架仍在（不能把整份剥成空白还一路绿）。
+    expect(src.length, '剥注释不该改变长度以外的东西').toBe(raw.length);
+    expect(raw.includes('/**'), '取材文件本应含块注释（否则本自检无信息量）').toBe(true);
+    expect(src.includes('/**'), '注释未被剥掉').toBe(false);
+    expect(src.includes('export default function SettingsUpdate'), '剥过头，代码骨架没了').toBe(
+      true,
+    );
+    return src;
+  }
+
+  /** 抽出 `{us === 'X' && (` 起、到下一个 `{us === ` 为止的那一段 JSX。 */
+  function stateBlock(src: string, state: string): string {
+    const start = src.indexOf(`{us === '${state}'`);
+    expect(start, `SettingsUpdate 里找不到 ${state} 态分支`).toBeGreaterThan(-1);
+    const rest = src.slice(start + 1);
+    const nextIdx = rest.indexOf('{us === ');
+    const block = nextIdx === -1 ? rest : rest.slice(0, nextIdx);
+    expect(block.length, `${state} 态分支取材为空`).toBeGreaterThan(200);
+    return block;
+  }
+
+  it('组件消费两个判据本身，不并行复刻字段读法', async () => {
+    const src = await readTsx();
+    expect(src.includes('releaseShipsDigest'), '必须消费 releaseShipsDigest').toBe(true);
+    expect(src.includes('appDownloadIntegrity'), '必须消费 appDownloadIntegrity').toBe(true);
+    // 单点判据：直接读 `.sha256` / `.verified` 就是在组件里另写一份口径，
+    // 后端 `resolve_expected_digest` 的 trim/空串语义会在那份复刻里丢掉。
+    expect(src.includes('.sha256'), '不得在组件里直接读 sha256').toBe(false);
+    expect(src.includes('.verified'), '不得在组件里直接读 verified').toBe(false);
+  });
+
+  it('两处明示各由**各自那个字段**驱动，不得对调或合并', async () => {
+    const src = await readTsx();
+    // 检查阶段那一格只能来自 updateInfo.sha256（经 releaseShipsDigest）。
+    expect(src).toMatch(/const releaseDigestMissing = !releaseShipsDigest\(updateInfo\)/);
+    // 下载之后那一格只能来自回包 verified（经 appDownloadIntegrity），且只认 unverified。
+    expect(src).toMatch(/const downloadUnverified = downloadIntegrity === 'unverified'/);
+    expect(src).toMatch(/setDownloadIntegrity\(appDownloadIntegrity\(r\)\)/);
+
+    const available = stateBlock(src, 'available');
+    expect(available.includes('digestMissingBefore'), 'available 态缺下载前明示').toBe(true);
+    expect(available.includes('releaseDigestMissing'), 'available 态必须由 sha256 判据驱动').toBe(true);
+    expect(available.includes('downloadUnverified'), 'available 态不得用下载后的 verified').toBe(false);
+    expect(available.includes('digestMissingAfter'), 'available 态不得用下载后的文案').toBe(false);
+
+    // `downloaded` 与 `manual` 是**互斥**的两个「包已在盘、下一步就是装/解压」态：
+    // 便携腿转 manual 后 downloaded 整块不渲染，只挂一条腿等于在便携用户那里静默撤掉明示。
+    for (const state of ['downloaded', 'manual'] as const) {
+      const block = stateBlock(src, state);
+      expect(block.includes('digestMissingAfter'), `${state} 态缺下载后明示`).toBe(true);
+      expect(block.includes('downloadUnverified'), `${state} 态必须由 verified 判据驱动`).toBe(true);
+      expect(block.includes('releaseDigestMissing'), `${state} 态不得用检查期的 sha256`).toBe(false);
+      expect(block.includes('digestMissingBefore'), `${state} 态不得用下载前的文案`).toBe(false);
+    }
+  });
+
+  it('新一轮检查 / 新一次下载都必须把上次的校验结论清回 unknown', async () => {
+    const src = await readTsx();
+    // 不清 ⇒ 换了个版本还举着上一次的「未校验」（或反过来，把旧的「已校验」当新包的背书）。
+    const resets = src.match(/setDownloadIntegrity\('unknown'\)/g) ?? [];
+    expect(resets.length, '检查入口与下载入口各需一次复位').toBe(2);
+    const checkFn = src.slice(src.indexOf('async function checkUpdate('), src.indexOf('async function skipVersion('));
+    const dlFn = src.slice(src.indexOf('async function downloadUpdate('), src.indexOf('async function installUpdate('));
+    expect(checkFn.includes("setDownloadIntegrity('unknown')"), 'checkUpdate 未复位').toBe(true);
+    expect(dlFn.includes("setDownloadIntegrity('unknown')"), 'downloadUpdate 未复位').toBe(true);
+  });
+
+  it('三个键在五个语种里都非空，且都点名 sha256（把缺口限定在「摘要」这一级）', async () => {
+    const fs = await import('node:fs');
+    const keys = ['digestMissingTag', 'digestMissingBefore', 'digestMissingAfter'] as const;
+    for (const loc of ['zh-CN', 'zh-TW', 'en-US', 'ru', 'fa']) {
+      const json = JSON.parse(
+        fs.readFileSync(fileURLToPath(new URL(`../../../i18n/locales/${loc}.json`, import.meta.url)), 'utf8'),
+      ) as { settings: { update: Record<string, string> } };
+      for (const k of keys) {
+        const v = json.settings.update[k];
+        expect(v, `${loc} 缺 settings.update.${k}`).toBeTypeOf('string');
+        expect(v.trim().length, `${loc} 的 ${k} 是空串`).toBeGreaterThan(0);
+      }
+      // 两条说明必须写出「缺的是 sha256 摘要」——只写「未校验」会被读成「什么都没查」，
+      // 而实际还有清单体积 / Content-Length 两级弱校验（虽都有条件，不写进文案）。
+      expect(json.settings.update.digestMissingBefore, `${loc} 下载前文案未点名 sha256`).toContain('sha256');
+      expect(json.settings.update.digestMissingAfter, `${loc} 下载后文案未点名 sha256`).toContain('sha256');
+    }
+  });
+
+  it('文案不得暗示「已校验」，也不得把它写成一次失败', async () => {
+    const fs = await import('node:fs');
+    const read = (loc: string) =>
+      (
+        JSON.parse(
+          fs.readFileSync(fileURLToPath(new URL(`../../../i18n/locales/${loc}.json`, import.meta.url)), 'utf8'),
+        ) as { settings: { update: Record<string, string> } }
+      ).settings.update;
+    const zh = read('zh-CN');
+    const en = read('en-US');
+    for (const k of ['digestMissingBefore', 'digestMissingAfter'] as const) {
+      expect(zh[k], `zh-CN ${k} 不得声称已校验`).not.toMatch(/已校验|校验通过/);
+      // 无摘要不是错误、不阻断安装：写成「失败」会把一次正常更新描述成故障。
+      expect(zh[k], `zh-CN ${k} 不得写成失败`).not.toMatch(/失败|错误/);
+      expect(en[k], `en-US ${k} 不得声称 verified`).not.toMatch(/\bverified\b/i);
+      expect(en[k], `en-US ${k} 不得写成 failed`).not.toMatch(/\bfail(ed|ure)?\b/i);
+    }
+    // 下载前那条必须明说不阻断（用户此刻要决定的正是「还下不下」）。
+    expect(zh.digestMissingBefore, 'zh-CN 未说明不阻断更新').toMatch(/不会因此被阻断|不阻断/);
+    expect(en.digestMissingBefore, 'en-US 未说明不阻断更新').toMatch(/not blocked/i);
   });
 });

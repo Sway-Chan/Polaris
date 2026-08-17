@@ -55,11 +55,14 @@ import { toast } from '@/lib/error-handler';
 import { useConfirmTwice } from '@/lib/confirm-twice';
 import { revealOnToggle } from '@/components/reveal';
 import {
+  appDownloadIntegrity,
   backgroundIntervalSelectValue,
   isPortableZipUpdate,
+  releaseShipsDigest,
   ruleResourceAutoStatus,
   ruleResourceAutoUpdateChecked,
   subscriptionAutoUpdateStatus,
+  type AppDownloadIntegrity,
 } from './settings-logic';
 
 export interface SettingsUpdateProps {
@@ -141,6 +144,14 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
   const [progress, setProgress] = useState(0);
   const [errMsg, setErrMsg] = useState('');
   const [downloadedPath, setDownloadedPath] = useState<string | null>(null);
+  /**
+   * 本次下载的摘要校验结果（`update_download` 回包的 `verified`）。
+   *
+   * 初值与「新一轮检查/下载开始」都必须回 `unknown`：它是**上一次**下载的事实，跨版本沿用
+   * 就是拿旧结论给新包背书。只有确知 `unverified` 才提示，`unknown`（自动下载腿没有回包）
+   * 一律不出提示 —— 判据与成因见 `appDownloadIntegrity`。
+   */
+  const [downloadIntegrity, setDownloadIntegrity] = useState<AppDownloadIntegrity>('unknown');
   const [coreVer, setCoreVer] = useState<{
     current: string;
     hasBackup: boolean;
@@ -219,6 +230,8 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
 
   async function checkUpdate() {
     setUs('checking');
+    // 上一轮下载的校验结论对新查到的版本不成立，先清空再查。
+    setDownloadIntegrity('unknown');
     try {
       const r = await updateApi.check(true);
       if (r.hasUpdate && r.updateInfo) {
@@ -252,8 +265,11 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
     if (!updateInfo) return;
     setUs('downloading');
     setProgress(0);
+    setDownloadIntegrity('unknown');
     try {
       const r = await updateApi.download(updateInfo);
+      // 无论成败都按回包如实记账：失败回包不带 `verified` ⇒ 落回 `unknown`，不出提示。
+      setDownloadIntegrity(appDownloadIntegrity(r));
       if (r.success) {
         setDownloadedPath(r.filePath ?? null);
       } else {
@@ -460,6 +476,21 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
    * `unknown`（探测失败）后端并不拦，跟着置灰就会把能用的功能误锁死。
    */
   const coreForkBlocked = coreVer?.build === 'fork';
+  /**
+   * 「无校验摘要」的两处常驻明示 —— **两个字段、两个时机，不合并**：
+   *  - `available` 态用 `updateInfo.sha256`（检查阶段就已知）：这是**预测**，且是它还能改变
+   *    用户决定的最后一刻；
+   *  - `downloaded` 态用回包 `verified`（下载之后才有）：这是**既成事实**，也是唯一覆盖
+   *    「复用本地已有包」那条腿的字段。
+   * 合并成一个状态必然要么在 check 阶段替下载腿说话、要么把明示推迟到风险已承担之后。
+   *
+   * 文案只讲**缺什么**（无 sha256 摘要 ⇒ 无法逐字节核对），不去枚举「还剩哪些弱校验」：
+   * 剩下那两级（清单 `fileSize` 等值判据 / Content-Length）都**有条件**——前者只在
+   * `fileSize > 0` 时生效、后者只在服务端给了该头时生效，写进文案就成了一句会在边界上变假的断言。
+   * 把缺口精确限定在「摘要」这一级，既不说成「完全没校验」，也不暗示「已校验」。
+   */
+  const releaseDigestMissing = !releaseShipsDigest(updateInfo);
+  const downloadUnverified = downloadIntegrity === 'unverified';
 
   return (
     <section className="screen" data-sec="update">
@@ -600,7 +631,15 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
                   {new Date(updateInfo.publishedAt).toLocaleDateString()} ·{' '}
                   {(updateInfo.fileSize / 1024 / 1024).toFixed(1)} MB
                 </CardSub>
+                {releaseDigestMissing && (
+                  <CardSub style={{ marginTop: 4, lineHeight: 1.7 }}>
+                    {t('settings.update.digestMissingBefore')}
+                  </CardSub>
+                )}
               </div>
+              {releaseDigestMissing && (
+                <Pill variant="warn">{t('settings.update.digestMissingTag')}</Pill>
+              )}
             </div>
             {updateInfo.releaseNotes && (
               <details className="us-notes" onToggle={revealOnToggle}>
@@ -648,7 +687,15 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
               <div style={{ flex: 1 }}>
                 <b>{t('settings.update.downloadDone')}</b> <span className="cv-tag">{updateInfo?.version}</span>
                 <CardSub>{t('settings.update.restartToInstall')}</CardSub>
+                {downloadUnverified && (
+                  <CardSub style={{ marginTop: 4, lineHeight: 1.7 }}>
+                    {t('settings.update.digestMissingAfter')}
+                  </CardSub>
+                )}
               </div>
+              {downloadUnverified && (
+                <Pill variant="warn">{t('settings.update.digestMissingTag')}</Pill>
+              )}
               <Button variant="flow" size="sm" onClick={() => void installUpdate()}>
                 <span>{t('settings.update.restartAndInstall')}</span>
               </Button>
@@ -664,7 +711,18 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
               <div style={{ flex: 1 }}>
                 <b>{t('settings.update.downloadedManual')}</b> <span className="cv-tag">{updateInfo?.version}</span>
                 <CardSub style={{ lineHeight: 1.7, wordBreak: 'break-all' }}>{errMsg}</CardSub>
+                {/* 姊妹腿：`manual` 与 `downloaded` 是**互斥**的两个态，一旦转 manual，
+                    `downloaded` 那条明示就整块消失 —— 而这里恰恰是「你自己去解压覆盖」的那一刻，
+                    离用户真的执行这些字节最近。同一个判据必须两条腿都挂。 */}
+                {downloadUnverified && (
+                  <CardSub style={{ marginTop: 4, lineHeight: 1.7 }}>
+                    {t('settings.update.digestMissingAfter')}
+                  </CardSub>
+                )}
               </div>
+              {downloadUnverified && (
+                <Pill variant="warn">{t('settings.update.digestMissingTag')}</Pill>
+              )}
             </div>
           </div>
         )}
