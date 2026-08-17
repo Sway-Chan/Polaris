@@ -805,9 +805,11 @@ describe('releaseShipsDigest —— 逐条对齐 commands/updater.rs::resolve_ex
   });
 
   it('null / undefined 的 updateInfo ⇒ 无摘要（尚未查到版本时不得误报「有」）', () => {
+    // 不测 `{ sha256: null }`：后端对「字段在、非字符串」是**拒装**，本函数判 false 与它
+    // 故意不对齐（成因见 releaseShipsDigest 文档）。把它写成通过用例等于把一格已知失真
+    // 登记成「支持的行为」，而签名也不再接纳 null。
     expect(releaseShipsDigest(null)).toBe(false);
     expect(releaseShipsDigest(undefined)).toBe(false);
-    expect(releaseShipsDigest({ sha256: null })).toBe(false);
   });
 
   it('**不校验 hex 形态**：坏 hex 仍算「有摘要」', () => {
@@ -837,9 +839,30 @@ describe('appDownloadIntegrity —— unknown 与 unverified 必须分得开', (
     expect(appDownloadIntegrity({ verified: null })).toBe('unknown');
   });
 
-  it('三态互斥且穷尽：只有 false 落 unverified', () => {
-    const verdicts = [{ verified: true }, { verified: false }, {}].map(appDownloadIntegrity);
-    expect(verdicts).toEqual(['verified', 'unverified', 'unknown']);
+  it('穷尽性：任何输入都落在三态里，且只有布尔 false 落 unverified', () => {
+    // 真穷尽 —— 输入面里带上会绕过 `=== true` / `=== false` 的**类真/类假**值：
+    // 判据若被抄成 `verified ? .. : 'unverified'`，`0` / `''` / `'false'` 就会错落。
+    const inputs: unknown[] = [
+      { verified: true },
+      { verified: false },
+      {},
+      null,
+      undefined,
+      { verified: undefined },
+      { verified: 0 },
+      { verified: 1 },
+      { verified: '' },
+      { verified: 'false' },
+    ];
+    const verdicts = inputs.map((v) => appDownloadIntegrity(v as { verified?: boolean }));
+    for (const [i, verdict] of verdicts.entries()) {
+      expect(['verified', 'unverified', 'unknown'], `第 ${i} 个输入落到三态之外`).toContain(verdict);
+    }
+    // 只有布尔 false 那一个输入配得上 unverified（= 唯一会出警告的那一格）。
+    expect(verdicts.filter((v) => v === 'unverified')).toHaveLength(1);
+    expect(verdicts[1]).toBe('unverified');
+    expect(verdicts.filter((v) => v === 'verified')).toHaveLength(1);
+    expect(verdicts[0]).toBe('verified');
   });
 });
 
@@ -876,9 +899,10 @@ describe('无摘要明示：接线面 + 五语文案', () => {
     };
     walk(sf);
     const src = out.join('');
-    // 剥注释自检（正向对照）：本文件必有中文块注释，剥完必须真的少了字符；
-    // 且代码骨架仍在（不能把整份剥成空白还一路绿）。
-    expect(src.length, '剥注释不该改变长度以外的东西').toBe(raw.length);
+    // 剥注释自检（正负对照）：本文件必有块注释 ⇒ 剥完必须**真的不一样**，且注释标记没了、
+    // 代码骨架还在（不能把整份剥成空白还一路绿）。
+    // 不写 `src.length === raw.length`：`blank()` 是原地单字符替换，那条恒真、零信息量。
+    expect(src, '剥注释后与原文逐字相同 ⇒ 什么都没剥掉').not.toBe(raw);
     expect(raw.includes('/**'), '取材文件本应含块注释（否则本自检无信息量）').toBe(true);
     expect(src.includes('/**'), '注释未被剥掉').toBe(false);
     expect(src.includes('export default function SettingsUpdate'), '剥过头，代码骨架没了').toBe(
@@ -905,6 +929,8 @@ describe('无摘要明示：接线面 + 五语文案', () => {
     // 单点判据：直接读 `.sha256` / `.verified` 就是在组件里另写一份口径，
     // 后端 `resolve_expected_digest` 的 trim/空串语义会在那份复刻里丢掉。
     expect(src.includes('.sha256'), '不得在组件里直接读 sha256').toBe(false);
+    // `.verified` 这条是**前瞻守卫**：本文件今天连注释里都没有它，取材器就算完全不剥注释
+    // 它也是绿的 ⇒ 它证明不了取材器有效，不算进本批的变异收据。留着是为挡将来那次复刻。
     expect(src.includes('.verified'), '不得在组件里直接读 verified').toBe(false);
   });
 
@@ -933,15 +959,48 @@ describe('无摘要明示：接线面 + 五语文案', () => {
     }
   });
 
-  it('新一轮检查 / 新一次下载都必须把上次的校验结论清回 unknown', async () => {
+  it('**三个**入口都必须把上次的校验结论清回 unknown（监听器两个分支各算一处）', async () => {
     const src = await readTsx();
-    // 不清 ⇒ 换了个版本还举着上一次的「未校验」（或反过来，把旧的「已校验」当新包的背书）。
+    // 不清 ⇒ 换了个包还举着上一次的「未校验」（或反过来，把旧的「已校验」当新包的背书）。
+    // 第三个入口最容易漏：`onProgress` 收到的事件可能来自**别的窗口**发起的下载
+    // （`update_popup_action` 的「更新/重试」、`spawn_auto_download`），本页拿不到那次回包。
     const resets = src.match(/setDownloadIntegrity\('unknown'\)/g) ?? [];
-    expect(resets.length, '检查入口与下载入口各需一次复位').toBe(2);
-    const checkFn = src.slice(src.indexOf('async function checkUpdate('), src.indexOf('async function skipVersion('));
-    const dlFn = src.slice(src.indexOf('async function downloadUpdate('), src.indexOf('async function installUpdate('));
+    expect(resets.length, 'checkUpdate / downloadUpdate / 监听器两分支 = 4 处复位').toBe(4);
+
+    const between = (from: string, to: string) => {
+      const a = src.indexOf(from);
+      const b = src.indexOf(to);
+      expect(a, `取材锚点不在了：${from}`).toBeGreaterThan(-1);
+      expect(b, `取材锚点不在了：${to}`).toBeGreaterThan(a);
+      return src.slice(a, b);
+    };
+
+    const checkFn = between('async function checkUpdate(', 'async function skipVersion(');
+    const dlFn = between('async function downloadUpdate(', 'async function installUpdate(');
     expect(checkFn.includes("setDownloadIntegrity('unknown')"), 'checkUpdate 未复位').toBe(true);
     expect(dlFn.includes("setDownloadIntegrity('unknown')"), 'downloadUpdate 未复位').toBe(true);
+
+    // 监听器：`downloading` 与 `downloaded` **各**要一次 —— 复用本地已有包那条腿
+    // （`updater.rs` 的 reuse 分支）只发 `downloaded`，不发 `downloading`。
+    const listener = between('updateApi.onProgress(', "async function checkUpdate(");
+    const downloadingArm = listener.slice(
+      listener.indexOf("p.status === 'downloading'"),
+      listener.indexOf("p.status === 'downloaded'"),
+    );
+    const downloadedArm = listener.slice(
+      listener.indexOf("p.status === 'downloaded'"),
+      listener.indexOf("p.status === 'error'"),
+    );
+    expect(downloadingArm.length, 'downloading 分支取材为空').toBeGreaterThan(20);
+    expect(downloadedArm.length, 'downloaded 分支取材为空').toBeGreaterThan(20);
+    expect(
+      downloadingArm.includes("setDownloadIntegrity('unknown')"),
+      '监听器 downloading 分支未复位',
+    ).toBe(true);
+    expect(
+      downloadedArm.includes("setDownloadIntegrity('unknown')"),
+      '监听器 downloaded 分支未复位（复用腿只发这一条）',
+    ).toBe(true);
   });
 
   it('三个键在五个语种里都非空，且都点名 sha256（把缺口限定在「摘要」这一级）', async () => {

@@ -147,9 +147,22 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
   /**
    * 本次下载的摘要校验结果（`update_download` 回包的 `verified`）。
    *
-   * 初值与「新一轮检查/下载开始」都必须回 `unknown`：它是**上一次**下载的事实，跨版本沿用
-   * 就是拿旧结论给新包背书。只有确知 `unverified` 才提示，`unknown`（自动下载腿没有回包）
-   * 一律不出提示 —— 判据与成因见 `appDownloadIntegrity`。
+   * 它是**上一次**下载的事实，跨包沿用就是拿旧结论给新包背书。故凡是「一次新的下载可能开始」
+   * 的入口都必须先回 `unknown`，而那样的入口有**三个**（只堵前两个不够）：
+   *  1. 本页 `checkUpdate()` —— 查到的可能是另一个版本；
+   *  2. 本页 `downloadUpdate()` —— 本会话自己发起；
+   *  3. **`onProgress` 监听器** —— 别的窗口发起的下载会把本页推进下载生命周期，而本页
+   *     **拿不到那次 invoke 的回包**。`emit_progress` 走 `events::broadcast`（`events.rs:213`
+   *     的 `handle.emit`）fan-out 给所有窗口，可达来源有两条：`startup_tasks::spawn_auto_download`
+   *     的启动自动下载，以及 `update_popup_action` 的「更新/重试」（`updater.rs:1526-1545`：
+   *     用户点弹窗按钮 → 复查 → 直调 `update_download`，回包只回弹窗窗口）。
+   *     不复位就会出现「设置页对一个已逐字节校验过的包举着上一次的『未提供校验摘要』」。
+   *
+   * `downloading` 与 `downloaded` **两个分支都要复位**：复用本地已有包那条腿（`updater.rs:1141`）
+   * 只发 `downloaded`、根本不发 `downloading`。
+   *
+   * 失效方向安全：万一 invoke 回包早于事件到达，最坏是被事件盖回 `unknown`（少一条警告），
+   * 绝不会凭空造出一条假警告。只有确知 `unverified` 才提示 —— 判据见 `appDownloadIntegrity`。
    */
   const [downloadIntegrity, setDownloadIntegrity] = useState<AppDownloadIntegrity>('unknown');
   const [coreVer, setCoreVer] = useState<{
@@ -218,8 +231,13 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
       if (p.status === 'downloading') {
         setUs('downloading');
         setProgress(p.percentage);
+        // 第三个「新下载可能开始」的入口：事件可能来自别的窗口（弹窗腿 / 启动自动下载腿），
+        // 本页拿不到那次回包 ⇒ 不复位就会把上一次的结论盖到这个新包头上。成因见 downloadIntegrity。
+        setDownloadIntegrity('unknown');
       } else if (p.status === 'downloaded') {
         setUs('downloaded');
+        // 复用本地已有包那条腿只发 downloaded、不发 downloading，故这里必须**各补一次**。
+        setDownloadIntegrity('unknown');
       } else if (p.status === 'error') {
         setUs('error');
         setErrMsg(p.error ?? p.message ?? t('settings.update.downloadInterrupted'));
@@ -268,7 +286,9 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
     setDownloadIntegrity('unknown');
     try {
       const r = await updateApi.download(updateInfo);
-      // 无论成败都按回包如实记账：失败回包不带 `verified` ⇒ 落回 `unknown`，不出提示。
+      // 走到这里必是成功回包：业务失败在 `ipc-client.invoke` 拆信封时 throw IpcError
+      // （`api-client.ts` 头注第 3 条，拆包点唯一），一律落进下面的 catch —— 那里
+      // `downloadIntegrity` 保持函数开头那次复位的 `unknown`，不出提示。
       setDownloadIntegrity(appDownloadIntegrity(r));
       if (r.success) {
         setDownloadedPath(r.filePath ?? null);

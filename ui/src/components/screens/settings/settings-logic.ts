@@ -571,16 +571,27 @@ export function isPortableZipUpdate(downloadedPath: string | null | undefined): 
 /**
  * 该 release 是否随包给了期望 sha256 摘要（⇒ 下载腿会做逐字节强校验）。
  *
- * # 判据与后端逐条同口径
+ * # 判据与后端同口径的那一格，以及**故意不对齐**的那一格
  *
- * `commands/updater.rs::resolve_expected_digest`：字段缺失 → 无；非字符串 → 后端**报错拒装**
- * （不是「没摘要」，故也不该走本函数的 false 分支去提示「无摘要」——但本函数拿到的是 TS 侧
- * 已声明为 `string | undefined` 的值，非字符串只可能来自破损回包，判 false 是保守方向：
- * 多提示一次，不会把一次会失败的下载说成安全）；trim 后空串 / 纯空白 → 无（后端 `continue`）。
+ * 对齐（`commands/updater.rs::resolve_expected_digest`）：字段缺失 → 无摘要；trim 后空串 /
+ * 纯空白 → 无摘要（后端 `hex.trim()` 后 `is_empty()` 即 `continue`）。写成 `!!raw` 会把 `"   "`
+ * 判成有摘要 ⇒ 后端不校验、UI 却不提示，正是本判据要堵的静默腿。
+ *
+ * **不对齐（如实登记，不粉饰成「保守方向」）**：字段在、但不是字符串时后端返 `Err` ⇒ 这次下载
+ * **直接拒装**；本函数判 false ⇒ `available` 卡片会说「未附带摘要、更新不会因此被阻断」，
+ * 而用户点下去立刻被证伪。之所以仍判 false 而不抛，是因为本函数唯一的替代品是让渲染期崩掉；
+ * 代价是那句「不阻断」在这一格失真。
  *
  * **刻意不校验 hex 形态**：后端对「有值但写坏了」的处理是照常进校验、然后
  * `verify_hex_digest` 的 `InvalidExpectedHash` 分支**拒装**，不是当成「本来就没摘要」放行。
- * 这里若自作主张把坏 hex 判成「无摘要」，就会在一次注定失败的下载前先给用户一条不成立的说明。
+ * 这里若自作主张把坏 hex 判成「无摘要」，方向就反了。
+ *
+ * # 上面两格在生产链路上都**不可达**（射程如实写窄，别让注释暗示得比事实宽）
+ *
+ * `crates/updater/src/github.rs:186` 的 `parse_asset_digest` 只放行 `sha256:` + 恰好 64 位 hex，
+ * 否则回 `None`；`AppUpdateInfo.sha256` 带 `skip_serializing_if = "Option::is_none"`。
+ * ⇒ 真实回包里 `updateInfo.sha256` **只可能是「缺失」或「合法的 64 位小写 hex」**。
+ * 「非字符串」与「坏 hex」两格都只会来自破损/伪造回包，故上面两段讲的是判据方向，不是日常输入。
  *
  * # 时机：这是**下载开始前**就能算出的判断
  *
@@ -590,7 +601,7 @@ export function isPortableZipUpdate(downloadedPath: string | null | undefined): 
  * 合并成一个布尔就必然要么提前撒谎、要么迟到。
  */
 export function releaseShipsDigest(
-  updateInfo: { sha256?: string | null } | null | undefined,
+  updateInfo: { sha256?: string } | null | undefined,
 ): boolean {
   const raw = updateInfo?.sha256;
   return typeof raw === 'string' && raw.trim() !== '';
