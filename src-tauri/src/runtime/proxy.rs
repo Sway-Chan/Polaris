@@ -6628,6 +6628,51 @@ impl ProxyRuntime {
             .unwrap_or(false)
     }
 
+    /// A4 早退闸的**廉价一半**：选中出口在**原始配置 JSON** 上是否为 Tailscale 协议。
+    ///
+    /// # 为什么读 raw `Value` 而不是 `UserConfig`
+    ///
+    /// 这个判据存在的唯一理由，是省掉 [`reconcile_login_fallback`](Self::reconcile_login_fallback)
+    /// 每帧那两份整配置分配（`current_config` 的深拷贝 + 反序列化出的 `UserConfig`，两者都含全部
+    /// 节点）。为判它再反序列化一次就等于白做。本实现只在读锁内对**借来的** `Value` 做两次 `&str`
+    /// 比较：**零堆分配**，代价 = 一次 `RwLock` 读 + 对 `servers` 数组的一次线性扫描。
+    ///
+    /// # 与 [`login_fallback_eligible`](Self::login_fallback_eligible) 的等价性
+    ///
+    /// 那条判据经 `UserConfig` 走 `selected_server_id` → `servers.iter().find(id)` →
+    /// `protocol == Protocol::Tailscale`。三处键名与取法在此**逐字对齐**：`selectedServerId`
+    /// （`UserConfig` 的 `#[serde(rename)]`）、`servers[].id`、`servers[].protocol`
+    /// （`Protocol` 带 `#[serde(rename_all = "lowercase")]` ⇒ 线上字面量恒为 `"tailscale"`）。
+    /// 同样用 `find` 而非 `any`：id 重复时两条路必须取到同一个元素。
+    ///
+    /// 任何让 `UserConfig::deserialize` 失败的形态（缺 `protocol`、大小写不符、类型不对）在本判据
+    /// 下同样落 `false`，而 `reconcile_login_fallback` 遇反序列化失败本就 `return` ⇒ 两条路的可观测
+    /// 结果一致（都无效果）。空 `selectedServerId` 亦然（对账里 `sel_id` 同样按非空过滤）。
+    fn selected_exit_is_tailscale(&self) -> bool {
+        let Ok(guard) = self.current_config.read() else {
+            return false;
+        };
+        let Some(raw) = guard.as_ref() else {
+            return false;
+        };
+        let Some(selected) = raw
+            .get("selectedServerId")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        else {
+            return false;
+        };
+        raw.get("servers")
+            .and_then(Value::as_array)
+            .and_then(|servers| {
+                servers
+                    .iter()
+                    .find(|s| s.get("id").and_then(Value::as_str) == Some(selected))
+            })
+            .and_then(|s| s.get("protocol").and_then(Value::as_str))
+            == Some("tailscale")
+    }
+
     /// 内存态写：置/清 `(engaged, server_id)`。
     fn set_login_fallback(&self, engaged: bool, server_id: Option<String>) {
         if let Ok(mut g) = self.login_fallback.lock() {
@@ -7213,12 +7258,45 @@ impl ProxyRuntime {
     /// 授权失败也不直连」），切走出口则仅清 flag（不 PUT）。其余过渡态（NoState/Starting/Stopped/无帧）维持现状
     /// 不翻转（避免过渡期抖动 / 已登录节点起核闪直连）。由 STATUS 帧 / switchMode 非重启腿 / 起核预置后共同驱动；
     /// 核未起时 hotSwitch 返 false → 不改 flag。上游 `reconcileLoginFallback`。
+    ///
+    /// 开头有一道**早退闸**（谓词 `!engaged && !选中出口是 TS`），只跳过「结构性无任何可观测效果」的那
+    /// 一格，决策矩阵与谓词推导见函数体内注释。非 TS 用户的每帧成本由此归零。
     async fn reconcile_login_fallback(&self) {
         // 单飞：抢占失败（已在飞）→ 丢弃后来者（下一帧/tick 幂等收敛）。
         if self.login_fallback_reconciling.swap(true, Ordering::SeqCst) {
             return;
         }
         let _guard = ReconcileGuard(&self.login_fallback_reconciling);
+
+        // ── 早退闸：本帧结构性不可能有任何可观测效果时，跳过下面两份整配置分配 ──
+        //
+        // 三态决策矩阵（`eligible` = 配置层符合让位形态，**蕴含**「选中出口是 TS 协议」；
+        // `state` = 选中出口 STATUS 末帧 backendState；`engaged` = 当前让位 flag）：
+        //
+        // | # | eligible | state       | engaged | 本帧动作                                              |
+        // |---|----------|-------------|---------|-------------------------------------------------------|
+        // | 1 | true     | NeedsLogin  | 任意    | **engage**：PUT selector→direct，成功才置 flag/emit    |
+        // | 2 | true     | Running     | true    | **disengage**：同出口 → PUT 回其 tag；已切走 → 仅清 flag |
+        // | 3 | true     | Running     | false   | 维持（本就没让位）                                     |
+        // | 4 | true     | 其它 / 无帧 | 任意    | 维持（过渡态不翻转，避免抖动 / 已登录节点起核闪直连）   |
+        // | 5 | false    | 任意        | true    | **disengage**：关开关 / 切非 TS / authKey / direct 模式 |
+        // | 6 | false    | 任意        | false   | **无任何效果** ← 本闸的射程，且**仅此一行**             |
+        //
+        // 谓词必须是两条的合取：`eligible ⇒ 选中是 TS`（`mesh_login_fallback_should_engage` 的必要
+        // 条件之一），故 `!选中是 TS` 单独就排除第 1 行；第 2/5 行则一律以 `engaged` 为前提，故
+        // `!engaged` 排除它们。**只判「选中是不是 TS」会杀掉第 5 行**——用户从 TS 出口切走后
+        // `eligible` 立刻为假，而那一帧恰恰必须跑完才能清 flag + 撤让位横幅
+        // （`emit_mesh_login_fallback(false)`）；早退会让 engaged 态永不收敛、横幅永不撤。
+        //
+        // 与 `mesh.rs::has_ts_status` 的范式差别（**别照抄那条**）：那条安全，是因为「无 TS 帧 ⇒ 结论
+        // 恒为无告警」；本函数在 engaged 态下结论会变，不满足该前提，故必须把 `engaged` 并进谓词。
+        //
+        // 竞态：`engaged` 由假翻真只发生在本函数与 `reassert_selector_selection`，而后者置 flag 的
+        // 前提同样是「选中出口为 TS」⇒ 那条腿下本闸第二个合取项亦为假、不会早退。配置在本闸与下面
+        // 那次读之间被改写只影响本帧取舍，STATUS 每帧驱动 ⇒ 下一帧即收敛。
+        if !self.login_fallback_engaged() && !self.selected_exit_is_tailscale() {
+            return;
+        }
 
         let Some(raw) = self.current_config.read().ok().and_then(|g| g.clone()) else {
             return;
@@ -15074,6 +15152,228 @@ mod tests {
             "正常退场 ReconcileGuard 必复位单飞标志"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ══════════ A4 早退闸（P0-2②）：三态决策矩阵不变 + 「切走仍能 disengage」回归 ══════════
+    //
+    // 被守的是 `reconcile_login_fallback` 开头那道 `!engaged && !选中是 TS` 的合取闸。它只允许跳过
+    // 矩阵里「无任何可观测效果」的那一格；下面四条把**有效果**的三格逐格钉住，任何把闸写宽的变异
+    // （尤其是漏掉 `!engaged` 那一半）都会在其中一条上转红。
+
+    /// 一 TS + 一 vless 的两节点配置（`selected` 指定选中谁）。TS 侧为账号制全隧道（`exitNode` 非空、
+    /// 无 authKey）⇒ 选中它时符合让位形态。
+    fn ts_and_vless_config(selected: &str) -> Value {
+        serde_json::json!({
+            "servers": [
+                { "id": "ts1", "name": "组网出口", "protocol": "tailscale",
+                  "address": "100.64.0.5", "port": 0,
+                  "tailscaleSettings": { "exitNode": "peer-x" } },
+                { "id": "node-a", "name": "A", "protocol": "vless",
+                  "address": "a.example.com", "port": 443, "uuid": "u-a" }
+            ],
+            "selectedServerId": selected,
+            "proxyMode": "smart"
+        })
+    }
+
+    /// 往 mesh 末帧缓存塞一条指定 `backendState` 的 STATUS 帧（`selected_exit_backend_state` 的唯一来源）。
+    /// Taildrop 四位取中性值，不用 `..Default::default()`：日后加字段时这里必须被人再看一眼。
+    fn seed_backend_state(rt: &Arc<ProxyRuntime>, server_id: &str, backend_state: &str) {
+        rt.mesh.update_ts_status(vec![TailscaleStatusEvent {
+            server_id: server_id.into(),
+            backend_state: backend_state.into(),
+            logged_in: backend_state == "Running",
+            auth_url: None,
+            tailscale_ips: vec!["100.64.0.9".into()],
+            expired: false,
+            peers: Vec::new(),
+            can_share_files: false,
+            waiting_file_count: 0,
+            receiving_file_count: 0,
+            unread_file_count: 0,
+        }]);
+    }
+
+    /// 早退闸的**廉价一半**必须与 `login_fallback_eligible` 里那条 TS 判定同口径。
+    ///
+    /// 这条判据本身不可由行为观测（矩阵第 6 行两条路都无效果），故在这里直测：既证它没漏判
+    /// （选中 TS → 真，闸不会误吞 engage 腿），也证它没误判（切走 / 无选中 / 选中不存在 → 假）。
+    ///
+    /// **变异锁**：键名写错（`selectedServerId` → `selected_server_id`、`protocol` → `type`）⇒ 首段转红；
+    /// 把协议字面量写成 `"Tailscale"` ⇒ 首段转红；去掉「选中项才算」这一跳（改成「任一节点是 TS」）
+    /// ⇒ 「切走」那段转红。
+    #[test]
+    fn selected_exit_is_tailscale_agrees_with_eligible_predicate() {
+        let (rt, dir) = test_runtime();
+        // 选中 TS：判据为真，且与配置层 eligible 同向。
+        let raw = ts_and_vless_config("ts1");
+        *rt.current_config.write().unwrap() = Some(raw.clone());
+        let cfg: UserConfig = serde_json::from_value(raw.clone()).expect("parse");
+        assert!(
+            rt.selected_exit_is_tailscale(),
+            "选中 TS 出口 → 廉价判据必须为真"
+        );
+        assert!(
+            rt.login_fallback_eligible(&cfg, &raw),
+            "正向对照：同一份配置在完整判据下也符合让位形态"
+        );
+        // 切走到 vless：判据为假（配置里仍有 TS 节点，但它不是选中项）。
+        let raw_away = ts_and_vless_config("node-a");
+        *rt.current_config.write().unwrap() = Some(raw_away.clone());
+        let cfg_away: UserConfig = serde_json::from_value(raw_away.clone()).expect("parse");
+        assert!(
+            !rt.selected_exit_is_tailscale(),
+            "选中的是 vless → 判据必须为假（不能被配置里另一个 TS 节点喂饱）"
+        );
+        assert!(!rt.login_fallback_eligible(&cfg_away, &raw_away));
+        // 空 selectedServerId / 选中 id 不在册 → 假（与 reconcile 里 `sel_id` 的非空过滤同口径）。
+        *rt.current_config.write().unwrap() = Some(ts_and_vless_config(""));
+        assert!(!rt.selected_exit_is_tailscale(), "空选中 → 假");
+        *rt.current_config.write().unwrap() = Some(ts_and_vless_config("ghost"));
+        assert!(!rt.selected_exit_is_tailscale(), "选中 id 不在册 → 假");
+        // 无配置 → 假（`reconcile` 本就在下一步 return）。
+        *rt.current_config.write().unwrap() = None;
+        assert!(!rt.selected_exit_is_tailscale(), "无 current_config → 假");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 矩阵第 1 行：eligible + `NeedsLogin` → PUT direct、置 flag、emit(true, 出口名)。
+    ///
+    /// **变异锁**：闸改成无条件 `return` ⇒ 无 PUT、无 emit ⇒ 转红。
+    #[tokio::test]
+    async fn reconcile_engages_when_ts_exit_needs_login() {
+        let tags = BTreeMap::from([("ts1".to_string(), "组网出口".to_string())]);
+        let (rt, dir, sink, _i, _r, fb) =
+            reassert_runtime(&ts_and_vless_config("ts1"), tags, BTreeMap::new());
+        seed_backend_state(&rt, "ts1", "NeedsLogin");
+        rt.reconcile_login_fallback().await;
+        assert_eq!(
+            sink.calls(),
+            vec![("proxy-selector".to_string(), "direct".to_string())],
+            "未登录的 TS 出口：默认路由必须让位 direct"
+        );
+        assert!(rt.login_fallback_engaged(), "PUT 成功 → 让位 flag 必置");
+        assert_eq!(
+            fb.lock().unwrap().as_slice(),
+            &[(true, Some("组网出口".to_string()))]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 矩阵第 2 行（同一选中出口）：已让位 + `Running` → PUT 回该出口 tag、清 flag、emit(false, 出口名)。
+    ///
+    /// **变异锁**：把 `should_disengage` 里的 `Running` 腿删掉 ⇒ 无 PUT、flag 仍真 ⇒ 转红。
+    #[tokio::test]
+    async fn reconcile_disengages_when_ts_exit_becomes_running() {
+        let tags = BTreeMap::from([("ts1".to_string(), "组网出口".to_string())]);
+        let (rt, dir, sink, _i, _r, fb) =
+            reassert_runtime(&ts_and_vless_config("ts1"), tags, BTreeMap::new());
+        rt.set_login_fallback(true, Some("ts1".to_string()));
+        seed_backend_state(&rt, "ts1", "Running");
+        rt.reconcile_login_fallback().await;
+        assert_eq!(
+            sink.calls(),
+            vec![("proxy-selector".to_string(), "组网出口".to_string())],
+            "隧道就绪 → 默认路由必须切回该出口"
+        );
+        assert!(!rt.login_fallback_engaged(), "撤销让位必须清 flag");
+        assert_eq!(
+            fb.lock().unwrap().as_slice(),
+            &[(false, Some("组网出口".to_string()))]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 🔴 **本项存在的唯一风险面**（矩阵第 5 行）：让位中途用户从 TS 出口**切走** → 本帧仍须 disengage。
+    ///
+    /// 切走后 `eligible` 立刻为假，若早退闸只判「选中是不是 TS」，这一帧会被整个跳过 ⇒ flag 永不清、
+    /// 「已让位直连」横幅永不撤、selector 与 UI 长期脱节（陈旧态永不收敛）。这一格必须由谓词里的
+    /// `!engaged` 那一半接住。
+    ///
+    /// **变异锁**：闸改成 `if !self.selected_exit_is_tailscale() { return; }`（丢掉 `!engaged`）⇒
+    /// flag 仍真、零 emit ⇒ 本条转红。
+    #[tokio::test]
+    async fn reconcile_disengages_after_switching_away_from_ts_exit() {
+        let tags = BTreeMap::from([
+            ("ts1".to_string(), "组网出口".to_string()),
+            ("node-a".to_string(), "A".to_string()),
+        ]);
+        let (rt, dir, sink, _i, _r, fb) =
+            reassert_runtime(&ts_and_vless_config("node-a"), tags, BTreeMap::new());
+        rt.set_login_fallback(true, Some("ts1".to_string()));
+        // 选中已是 vless ⇒ 廉价判据为假；本帧全靠 `!engaged` 那一半才不会被早退闸吞掉。
+        assert!(!rt.selected_exit_is_tailscale());
+        rt.reconcile_login_fallback().await;
+        assert!(
+            !rt.login_fallback_engaged(),
+            "切走出口后必须清让位 flag —— 否则 engaged 态永不收敛"
+        );
+        assert_eq!(
+            fb.lock().unwrap().as_slice(),
+            &[(false, None)],
+            "必须撤 UI 让位横幅"
+        );
+        assert!(
+            sink.calls().is_empty(),
+            "切走腿只清 flag，不 PUT（selector 已由换节点那条路径落定，再 PUT 会打架）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 矩阵第 4 行：让位中 + 过渡态（`Starting` / 无帧）→ 维持现状，零 PUT 零 emit。
+    ///
+    /// **变异锁**：把「其余过渡态维持」改成「非 NeedsLogin 即 disengage」⇒ 两段都转红。
+    #[tokio::test]
+    async fn reconcile_holds_through_transitional_backend_states() {
+        let tags = BTreeMap::from([("ts1".to_string(), "组网出口".to_string())]);
+        for state in ["Starting", "NoState"] {
+            let (rt, dir, sink, _i, _r, fb) =
+                reassert_runtime(&ts_and_vless_config("ts1"), tags.clone(), BTreeMap::new());
+            rt.set_login_fallback(true, Some("ts1".to_string()));
+            seed_backend_state(&rt, "ts1", state);
+            rt.reconcile_login_fallback().await;
+            assert!(rt.login_fallback_engaged(), "{state}：过渡态不得翻转 flag");
+            assert!(sink.calls().is_empty(), "{state}：过渡态不得 PUT");
+            assert!(fb.lock().unwrap().is_empty(), "{state}：过渡态不得 emit");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        // 无 STATUS 帧（核刚起 / 未选中 TS）同属过渡态。
+        let (rt, dir, sink, _i, _r, fb) =
+            reassert_runtime(&ts_and_vless_config("ts1"), tags, BTreeMap::new());
+        rt.set_login_fallback(true, Some("ts1".to_string()));
+        rt.reconcile_login_fallback().await;
+        assert!(rt.login_fallback_engaged(), "无帧：不得翻转 flag");
+        assert!(sink.calls().is_empty());
+        assert!(fb.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 🟡 **源码型守卫**：早退闸必须是**两条腿的合取**，且必须排在整配置深拷贝**之前**。
+    ///
+    /// 行为断言管不到这两件事：闸写弱（只剩 `!engaged`）行为完全等价、只是白付；闸挪到 clone 之后
+    /// 则一分钱都省不下来，而全部行为断言照绿。故这一条只能落在源码上。
+    ///
+    /// **变异锁**：删任一合取项 / 把 `&&` 改 `||` ⇒ 首段 `find` 落空转红；把闸挪到 `let Some(raw) = …`
+    /// 之后 ⇒ 顺序断言转红。
+    #[test]
+    fn login_fallback_early_gate_is_a_conjunction_before_the_clone() {
+        let body = method_body(
+            include_str!("proxy.rs"),
+            "    async fn reconcile_login_fallback(&self) {",
+        );
+        let gate = body
+            .find("if !self.login_fallback_engaged() && !self.selected_exit_is_tailscale() {")
+            .expect(
+                "早退闸不见了或谓词被改写 —— 只判『选中是不是 TS』会杀掉 disengage 腿，\
+                 只判 `!engaged` 则省不掉非 TS 用户的每帧成本",
+            );
+        let clone_site = body
+            .find("self.current_config.read().ok().and_then(|g| g.clone())")
+            .expect("整配置深拷贝的锚点消失，本守卫已失去判据");
+        assert!(
+            gate < clone_site,
+            "早退闸必须排在整配置深拷贝之前，否则跳过的是白工之后的那一段，一分钱不省"
+        );
     }
 
     // ══════════════ H3：起核后 selector 校正（reassert_selector_selection）══════════════
