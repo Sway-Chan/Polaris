@@ -99,10 +99,35 @@ jobs:
         if: runner.os == 'Linux'
         run: node scripts/fetch-cronet.mjs --check-only
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      # ── Rust toolchain（2026-08-17：不再经 dtolnay/rust-toolchain@stable）──
+      # 三个 runner 镜像都预装 rustup 1.29（ubuntu/windows 带 stable 1.97.1、macos-14 带 1.96.0），
+      # 而本仓 `ui.yml` 早已直接写 `rustup toolchain install stable --profile minimal --no-self-update`
+      # —— 这里只是把同一条既有口径搬过来，代价是零，换掉一次 action tarball 拉取。
+      #
+      # 逐条复刻被替掉那个 composite action 的**全部**副作用（读它的 action.yml 得到，不是猜）：
+      #   · rustup toolchain install <tc> --profile minimal --component … --no-self-update
+      #   · rustup default <tc>
+      #   · CARGO_INCREMENTAL=0（仅当未设置）—— 这条是**它**设的，`Swatinem/rust-cache` 并不设；
+      #     漏掉会静默改变增量编译行为与缓存体积，属于「删掉也不报错」的那类回归，故必须带上
+      #   · CARGO_TERM_COLOR=always（仅当未设置）
+      #   · 打印 `rustc -Vv`
+      # 确认无消费者、故意不复刻的三项：`cachekey` output（本仓两处 rust-cache 都没引用）、
+      # 显式导出 `CARGO_HOME`（不设时 rust-cache 自己回落到同一个 ~/.cargo）、
+      # 「rustup 缺失就下载安装」（三镜像都自带；真缺了应该红，不该静默补装掩盖镜像变更）。
+      #
+      # 失效自曝：components 没装上时下面两条 `--version` 直接非零退出，不会拖到 fmt/clippy 才发现。
+      - name: Install Rust toolchain (preinstalled rustup)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal \
+            --component rustfmt --component clippy --no-self-update
+          rustup default stable
+          [ -n "${CARGO_INCREMENTAL+set}" ] || echo 'CARGO_INCREMENTAL=0' >> "$GITHUB_ENV"
+          [ -n "${CARGO_TERM_COLOR+set}" ] || echo 'CARGO_TERM_COLOR=always' >> "$GITHUB_ENV"
+          rustc -Vv
+          cargo fmt --version
+          cargo clippy --version
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
@@ -110,14 +135,138 @@ jobs:
       # 原生构建前置：protoc（singbox-grpc build.rs 三平台都要）、Windows NASM（boring-sys2/
       # BoringSSL 汇编）、Linux webkit/gtk（Tauri）。首次 CI 运行前 workspace 从未在 runner 上
       # 全量构建过，这些系统依赖一直缺 → clippy/build 在 build-script 阶段就炸。
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      #
+      # ── protoc：固定版本 + 固定 URL + sha256（2026-08-17，替掉 arduino/setup-protoc@v3）──
+      # 一次换掉**两个**外部失效点，两个当天都真挂过：
+      #   ① runner 从 codeload.github.com 拉 action tarball → 429/503，重试 3 次放弃，
+      #      整个 job 死在 `Set up job`（连一行自己的代码都没跑）；
+      #   ② 该 action 运行期还要拿 `23.x` 这种范围去查 protobuf 的 releases 列表解析版本 →
+      #      `Error: unable to get latest version`（GitHub 那个仓的 releases 列表首页当天返回空数组，
+      #      Link 头却写着 44 页 —— 即便重跑也修不好）。
+      # 现在这两条都不存在：一个写死的 URL + 一次 GET，不查任何 API。
+      #
+      # 版本依据（要改版本先读完这段）：
+      #   · 旧口径 `23.x` 是 arduino/setup-protoc@v3 的**默认值**，实际解析到 protoc 23.4
+      #     （2023-07-06 发布）—— 也就是说构建工具链版本此前一直是浮动的，不可复现；
+      #   · 本仓 protoc 的唯一消费者是 `crates/singbox-grpc/build.rs`
+      #     （tonic-prost-build 0.14 → prost-build 0.14.4），它对 protoc 的全部用法就是
+      #     `--include_imports --include_source_info -o <fds> -I <dir> <proto>`，都是上古参数；
+      #   · vendored `proto/started_service.proto` 是 proto3，无 import、无 proto3 `optional`
+      #     （那条才需要 protoc ≥ 3.15）、只用到 oneof ⇒ 版本下限实际上是 3.x 任意一版；
+      #   · 本机实测：protoc 3.21.12 / 23.4 / 35.1 对这份 proto 产出的 FileDescriptorSet
+      #     **逐字节相同**（sha256 50ce0c7e4757…）。prost-build 的唯一输入就是这份 FDS ⇒
+      #     生成的 Rust 代码与旧口径完全一致，升版本零行为差。
+      #   故直接钉最新稳定版 35.1（2026-06-11；36.0 当时还是 rc）。Linux 那份是静态可执行，
+      #   不依赖 glibc 版本；官方 zip 自带 `bin/` + `include/`，well-known types 的相对 include 保持原样。
+      # sha256 来源：本机 curl 下载 GitHub Release 资产后 `sha256sum` 实测（防事后替换与传输截断，
+      # 不构成对 GitHub 的独立第三方校验 —— protobuf 官方没有发布校验和文件）。
+      - name: Install protoc (pinned URL + sha256)
+        shell: bash
+        env:
+          PROTOC_VERSION: '35.1'
+        run: |
+          set -euo pipefail
+          case "${RUNNER_OS}-${RUNNER_ARCH}" in
+            Linux-X64)   asset='linux-x86_64'; sha256='6930ebf62bd4ea607b98fff052596c6ee564b9835b4ce172c75a3f53ae9d91b7' ;;
+            Windows-X64) asset='win64';        sha256='5d3ff218d7d91eea95f7569bcb5a98f3030f8996d44151279d9772edcff76082' ;;
+            macOS-ARM64) asset='osx-aarch_64'; sha256='193289af0470c6a1aada357d4fba0bbf8d78bfaac8b5e42ca30af2ef75583de2' ;;
+            macOS-X64)   asset='osx-x86_64';   sha256='537d73604a344ded6fc94e98e07e529d4fe3e4a0b09e59905353950fafc2a1f7' ;;
+            *) echo "::error::no pinned protoc for ${RUNNER_OS}-${RUNNER_ARCH}; add the asset name + sha256 above"; exit 1 ;;
+          esac
+          if [ "$RUNNER_OS" = 'Windows' ]; then tmp="$(cygpath -u "$RUNNER_TEMP")"; else tmp="$RUNNER_TEMP"; fi
+          zip="${tmp}/protoc-${PROTOC_VERSION}-${asset}.zip"
+          dest="${tmp}/protoc-${PROTOC_VERSION}"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 20 -o "$zip" \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${asset}.zip"
+          # 🔴 校验器与解压器**按平台写死，不做 `command -v` 探测**，并把实际用的工具打进日志 ——
+          # 判据与 `scripts/lib/extract-zip.mjs` 头注那条同名 🔴 一致：静默 fallback 会让
+          # 「unzip / sha256sum 其实不在」这个事实永远不被观测到，换 runner 镜像时原样复发，
+          # 且届时报错点已经漂到别处。写死之后缺了就当场 command not found 而红。
+          #
+          # ⚠️ Git Bash 是否自带 `sha256sum` **未经证实**（`extract-zip.mjs` 对 Git Bash 的
+          # `usr/bin` 用词同样是「未经证实」）。若 Windows 腿在此红，兜底是 `certutil -hashfile`。
+          if [ "$RUNNER_OS" = 'macOS' ]; then
+            echo 'hasher: shasum -a 256 (macOS 无 GNU coreutils)'
+            echo "${sha256}  ${zip}" | shasum -a 256 -c -
+          else
+            echo 'hasher: sha256sum'
+            echo "${sha256}  ${zip}" | sha256sum -c -
+          fi
+          rm -rf "$dest"; mkdir -p "$dest"
+          # Windows 走 System32 的 bsdtar 并写**绝对路径**：本步是 `shell: bash`，裸 `tar` 会解析成
+          # Git Bash 的 GNU tar（不认 zip）。仓内那三个 fetch step 没写 `shell:`、跑在 pwsh 下，
+          # 裸 `tar` 恰好是 System32 那份 —— 那个「恰好」不该被继承成隐性依赖。
+          if [ "$RUNNER_OS" = 'Windows' ]; then
+            echo 'extractor: /c/Windows/System32/tar.exe (bsdtar)'
+            /c/Windows/System32/tar.exe -xf "$(cygpath -w "$zip")" -C "$(cygpath -w "$dest")"
+          else
+            echo 'extractor: unzip'
+            unzip -q -o "$zip" -d "$dest"
+          fi
+          chmod +x "$dest"/bin/*
+          if [ "$RUNNER_OS" = 'Windows' ]; then cygpath -w "$dest/bin" >> "$GITHUB_PATH"
+          else                                  echo "$dest/bin" >> "$GITHUB_PATH"; fi
+          echo "PROTOC_EXPECT=libprotoc ${PROTOC_VERSION}" >> "$GITHUB_ENV"
 
-      - name: Install NASM (Windows — boring-sys2/BoringSSL asm)
+      # ── NASM（Windows）：固定 URL + sha256（2026-08-17，替掉 ilammy/setup-nasm@v1）──
+      # 被替掉的 action 实际只做三件事（读它的 index.js 得到）：从
+      # `github.com/ilammy/setup-nasm/raw/mirror/...` 取 nasm-<ver>-win64.zip（取不到再退 www.nasm.us）、
+      # 解出 nasm.exe/ndisasm.exe、addPath —— **全程零校验**（一个 hash 都没有）。
+      # 版本保持 2.16.01（= 该 action 的默认值，即今天装的那一份），行为不变；改动只有两点：
+      #   ① 少一次 action tarball 拉取；② 加上 sha256。
+      # 代价说清楚：镜像那条腿去掉了，现在只有 www.nasm.us 一个源（本机实测那个 GitHub 镜像
+      # 当时正好也在 429，拿不到字节 ⇒ 无法核对它的 sha256，不写未验证的常量进来）。
+      # curl 带重试兜瞬时抖动；真下不来会红，不会静默跳过。
+      #
+      # 本步 **Windows-only**（`if: runner.os == 'Windows'`），所以校验器不写平台分支 ——
+      # 写了另一条也是死代码。别看着上面 protoc 步有 macOS 分支就以为这里漏了。
+      # 「Git Bash 是否自带 `sha256sum`」这条未证实的前提两步**共用**，不是各自独立的假设。
+      # 解压器与 protoc 步统一成同一个（System32 的 bsdtar，绝对路径），不用 `7z`：
+      # 两者都合乎「按平台写死」那条 🔴，但 `7z` 多押一个「它在 Git Bash 的 PATH 上」——
+      # runner 镜像清单只说装了 7zip、没说在不在 PATH（它对 Miniconda / MSYS2 才显式标注了
+      # 「不在 PATH」，对 7-Zip 的沉默是推断不是证据）。绝对路径把 PATH 这一维整个去掉，
+      # 于是 windows 腿（2x 计费）在「解压」这件事上只需要验证一个机制而不是两个。
+      - name: Install NASM (Windows — pinned URL + sha256)
         if: runner.os == 'Windows'
-        uses: ilammy/setup-nasm@v1
+        shell: bash
+        env:
+          NASM_VERSION: '2.16.01'
+        run: |
+          set -euo pipefail
+          sha256='029eed31faf0d2c5f95783294432cbea6c15bf633430f254bb3c1f195c67ca3a'
+          tmp="$(cygpath -u "$RUNNER_TEMP")"
+          zip="${tmp}/nasm-${NASM_VERSION}-win64.zip"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 20 -o "$zip" \
+            "https://www.nasm.us/pub/nasm/releasebuilds/${NASM_VERSION}/win64/nasm-${NASM_VERSION}-win64.zip"
+          echo "${sha256}  ${zip}" | sha256sum -c -
+          rm -rf "${tmp}/nasm-${NASM_VERSION}"
+          # zip 内已带 `nasm-<ver>/` 顶层目录，解到 tmp 即得 `<tmp>/nasm-<ver>/nasm.exe`。
+          # 落点是 `$tmp`（= RUNNER_TEMP，runner 保证存在），故不需要 protoc 步那句 `mkdir -p`。
+          echo 'extractor: /c/Windows/System32/tar.exe (bsdtar)'
+          /c/Windows/System32/tar.exe -xf "$(cygpath -w "$zip")" -C "$(cygpath -w "$tmp")"
+          cygpath -w "${tmp}/nasm-${NASM_VERSION}" >> "$GITHUB_PATH"
+          echo "NASM_EXPECT=${NASM_VERSION}" >> "$GITHUB_ENV"
+
+      # 装完必须断言，而且要断言 **PATH 上解析到的那一个** —— 一个静默 no-op 的安装步骤比没有这
+      # 一步更坏：构建会悄悄用 runner 上碰巧存在的另一份 protoc，或者把「根本没装上」推迟到
+      # build.rs 里报一句没人看的错。上面两步把期望值写进 $GITHUB_ENV，所以任何一步被跳过 /
+      # 没执行，这里都会因 `set -u` 取不到变量而直接红 —— 「没执行」自曝，不需要额外的登记表。
+      - name: Assert pinned tools resolve on PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "protoc → $(command -v protoc)"
+          got="$(protoc --version)"
+          [ "$got" = "$PROTOC_EXPECT" ] || {
+            echo "::error::protoc on PATH is '$got', expected '$PROTOC_EXPECT'"; exit 1; }
+          if [ "$RUNNER_OS" = 'Windows' ]; then
+            echo "nasm → $(command -v nasm)"
+            got="$(nasm -v)"
+            case "$got" in
+              "NASM version ${NASM_EXPECT} "*) ;;
+              *) echo "::error::nasm on PATH is '$got', expected NASM version ${NASM_EXPECT}"; exit 1 ;;
+            esac
+          fi
 
       - name: Install Linux system dependencies (Tauri webkit/gtk)
         if: runner.os == 'Linux'

@@ -49,9 +49,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
+      # pnpm：不再经 pnpm/action-setup@v4（2026-08-17）。被替掉的 action 做的就是「按 version
+      # 装一份 pnpm 并加进 PATH」，`npm install -g` 等价 —— 少一次 action tarball 拉取
+      # （runner 拉 action 被 codeload 429 是 2026-08-17 CI 连挂两次里的第一次），
+      # 顺手把浮动的 `10`（= 10.x 最新，当时解析到 10.34.5）钉成精确值。
+      #
+      # 为什么必须排在 setup-node **之前**（别调顺序）：下一步的 `cache: pnpm` 会在 setup-node
+      # 内部执行 `pnpm store path` 来定位缓存目录 —— 那时 pnpm 必须已经在 PATH 上，否则
+      # setup-node 直接报 "Unable to locate executable file: pnpm"。
+      # 因此这里用镜像自带的 node（22.x）的 npm 装，装到独立 prefix 后经 $GITHUB_PATH 生效；
+      # pnpm 本体是纯 JS，后续步骤在 node 26 下执行它没有影响。用独立 prefix 而不是默认全局目录，
+      # 是为了不依赖「镜像的 npm 全局 bin 恰好在 PATH 上」这个未声明前提。
+      #
+      # 失效自曝：紧接着按绝对路径断言版本号逐字相等，装歪 / 装成别的版本当场红。
+      - name: Setup pnpm (pinned)
+        shell: bash
+        env:
+          PNPM_VERSION: '10.34.5'
+        run: |
+          set -euo pipefail
+          npm install -g --prefix "$RUNNER_TEMP/pnpm" "pnpm@${PNPM_VERSION}"
+          got="$("$RUNNER_TEMP/pnpm/bin/pnpm" --version)"
+          [ "$got" = "$PNPM_VERSION" ] || {
+            echo "::error::pnpm is '$got', expected '$PNPM_VERSION'"; exit 1; }
+          echo "$RUNNER_TEMP/pnpm/bin" >> "$GITHUB_PATH"
 
       # 与本地开发机同一 major（node 26）：这道门的价值在于「与本地 gate 口径一致」，
       # 不在于多版本覆盖；版本漂移只会制造本地绿/CI 红的伪信号。
