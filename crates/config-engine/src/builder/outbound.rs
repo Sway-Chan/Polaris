@@ -244,8 +244,20 @@ pub fn build_proxy_outbound(
             // 而非已复现的线上缺陷。但落点是「整核起不来」，与 `Protocol::Http` 那次同级，
             // 且修法是纯收窄（4/6 之外的值本就会被内核拒），故不留着。
             {
-                let owned = server.snell_settings.clone().unwrap_or_default();
-                let s = &owned;
+                // 只读，故借而不拷。此前写的是 `.clone().unwrap_or_default()` —— 那在装箱之前
+                // 就已经是白拷一份带 6 个 `String` 的结构体，装箱后更是 Some/None 两支**各多一次
+                // 堆分配**（`Box::clone` 先 alloc；`Box::<T>::default()` 也 alloc）。
+                // 本函数有两个生产调用点（`builder/outbounds.rs` 的每节点循环、
+                // `runtime/speedtest.rs` 的每轮测速 × 每节点），故按节点数放大，不是一次性的。
+                // 改成借用后两支都零分配，比装箱前还省一次拷贝。
+                let fallback;
+                let s = match server.snell_settings.as_deref() {
+                    Some(s) => s,
+                    None => {
+                        fallback = crate::user_config::protocol_settings::SnellSettings::default();
+                        &fallback
+                    }
+                };
                 let version: u32 = if s.version == 6 { 6 } else { 4 };
                 ob.version = Some(crate::singbox::OutboundVersion::Num(version));
                 ob.psk = server.password.clone();
