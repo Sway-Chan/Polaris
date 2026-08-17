@@ -216,8 +216,17 @@ fn spawn_auto_check_update(app: AppHandle) {
         }
         log::info!("正在自动检查更新...");
         let state = app.state::<AppRuntime>();
-        // include_prerelease=false：自动检查只推正式版，预发布由用户在更新页手动查。
-        let resp = match crate::commands::update_check(app.clone(), state, Some(false)).await {
+        // 自动检查只推正式版，预发布由用户在更新页手动查。口径不写字面量而共用
+        // `PUSH_UPDATE_INCLUDE_PRERELEASE`：本腿检出的版本号会被下面的 `update_popup_show`
+        // 原样写进弹窗，而用户点「更新」时的**复查**用的是同一个常量 —— 两处一致才谈得上
+        // 「弹窗写的版本 == 真正下载的版本」。
+        let resp = match crate::commands::update_check(
+            app.clone(),
+            state,
+            Some(crate::commands::updater::PUSH_UPDATE_INCLUDE_PRERELEASE),
+        )
+        .await
+        {
             Ok(r) => r,
             Err(()) => {
                 log::error!("自动检查更新异常：命令层返回错误");

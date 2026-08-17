@@ -131,4 +131,28 @@ describe('Settings UI 使用统一组件与语义分组', () => {
     expect(dns).toContain('update({ resolveBeforeDial: v })');
     expect(dns).not.toMatch(/resolveBeforeDial[\s\S]{0,160}(?:disabled|enableFakeIp)/);
   });
+
+  /**
+   * 设置页的「检查更新」是**全仓唯一**会返回预发布的 App 更新入口（`updateApi.check(true)`）——
+   * 三条「推」腿（启动自动检查 / 托盘检查更新 / 顶部常驻横幅）恒只看正式版。
+   *
+   * 于是「用户拿到的是不是预发布」这件事，只有在这张卡上说得出来。不说的话，用户只能从
+   * tag 文本里猜档次 —— 而 GitHub 的 `prerelease` 是一个与 tag 命名**无关**的独立布尔，
+   * 一个打成 `v1.3.0` 的 release 完全可以是预发布。`isPrerelease` 一路传到前端却零消费，
+   * 正是这个缺口的形态。
+   *
+   * **变异探针**：删掉徽标 / 删掉说明 / 把 `check(true)` 改成 `check(false)` ⇒ 逐条转红。
+   */
+  it('更新卡对预发布版本如实标注，不让用户从 tag 文本里猜档次', () => {
+    const update = stripComments(read('./SettingsUpdate.tsx'));
+    // 前提自检：这条门只在「本页确实会拿到预发布」时才成立。前提没了要一并复核，而不是恒绿。
+    expect(update, '设置页不再以 check(true) 拉预发布 —— 本门的前提已变，请连同标注一并复核').toContain(
+      'updateApi.check(true)',
+    );
+    expect(update, '拿得到 isPrerelease 却不消费 = 用户看不出手里这份是不是预发布').toContain(
+      'updateInfo.isPrerelease',
+    );
+    expect(update).toContain("t('settings.update.prereleaseTag')");
+    expect(update).toContain("t('settings.update.prereleaseNote')");
+  });
 });

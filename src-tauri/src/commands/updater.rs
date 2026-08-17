@@ -397,6 +397,34 @@ pub(crate) fn is_portable_layout(exe_path: &std::path::Path) -> bool {
         .is_some_and(|dir| dir.join(PORTABLE_MARKER).is_file())
 }
 
+/// 「推」腿的 App 更新预发布口径 —— **恒为 `false`（只看正式版）**。
+///
+/// # 为什么是一个共享常量，而不是各腿各写一个字面量
+///
+/// 下面三处不是三件独立的事，而是**同一次邀请的两段**：
+///  - 产出邀请：`runtime/startup_tasks.rs::spawn_auto_check_update`（启动后自动检查）与
+///    `tray.rs::tray_check_update`（托盘 / 原生菜单「检查更新」）—— 它们检出的版本号被
+///    [`update_popup_show`] 原样写进 mini 更新窗；
+///  - 兑现邀请：本文件 [`update_popup_action`] 的 `Update` / `Retry` 分支 —— 弹窗只持版本号、
+///    不持下载地址，故必须**复查一次**才拿得到 `updateInfo`，然后把那份资产真下下来。
+///
+/// 两段的候选集口径必须逐字相同，否则「弹窗上写的版本」与「点下去真正下载的版本」是两个东西。
+/// 2026-08-17 之前复查腿写死 `Some(true)`：只要上游在最新正式版**之后**又发过一条预发布，
+/// [`polaris_updater::github::check_app_update`] 内部按 `published_at` 取最新 ⇒ 用户看着
+/// 「发现新版本 v1.2.0」按下「更新」，下回来的是 `v1.3.0-beta.1` —— 那个版本号从未被写给他看过。
+///
+/// # 为什么值是 `false`，而不是读一个「App 更新通道」设置
+///
+/// 本仓的「更新通道」只有内核那一条（`config.coreUpdateChannel`，见
+/// [`core_update_channel_is_prerelease`]），**App 腿没有**对应配置键、没有 store 缺省值、
+/// 设置页也没有任何开关（2026-08-17 全仓反查：`coreUpdateChannel` 5 处消费点，无 `appUpdateChannel`
+/// 同类物）。没有用户可见开关支撑的 `true` 不是「更激进的策略」，是**没有任何人同意过**的策略。
+///
+/// App 的预发布只经**一扇门**暴露：设置页那次手动「检查更新」（`SettingsUpdate.tsx` 的
+/// `updateApi.check(true)`）—— 那是用户自己按的「拉」，且结果卡上带 `isPrerelease` 标记，
+/// 用户看得见自己拿到的是什么。本常量守的是另一侧：我们主动「推」到用户脸上的东西，只能是正式版。
+pub(crate) const PUSH_UPDATE_INCLUDE_PRERELEASE: bool = false;
+
 /// 上游 `UPDATE_CHECK`：检查应用更新。
 ///
 /// ✅ **检查侧已接线**：经 `runtime/http.rs` 的真实 client（`state.http()`）走**同一条**
@@ -1456,6 +1484,8 @@ pub fn update_popup_state(state: State<'_, AppRuntime>) -> ApiResponse<Option<Up
 ///  - `update` / `retry` **真下载**：弹窗自身只持有版本号、不持有下载地址，故先复查一次拿
 ///    `updateInfo`，再走 [`update_download`]；进度经 `update:progress` 广播，并由
 ///    [`emit_progress`] 镜像成弹窗 `progress` / `done` / `error` 三态。
+///    复查的候选集口径**必须与产出这次邀请的那条腿相同** —— 共用
+///    [`PUSH_UPDATE_INCLUDE_PRERELEASE`]，理由见该常量文档。
 ///
 /// # 窗内反馈的两个边角（`emit_progress` 覆盖不到的）
 ///
@@ -1522,7 +1552,14 @@ pub async fn update_popup_action(
             // 复查期没有进度事件（可达 15s）→ 先把弹窗推进 progress，否则窗内零反馈。
             // 用 force：这一发正是「用户点了更新」的动作本身，闸（只放行 Progress）对它恒 false。
             force_popup_state(&app, UpdatePopupState::progress(0));
-            let checked = update_check(app.clone(), state.clone(), Some(true)).await?;
+            // 口径与「产出这次邀请」的那条腿同源（见 PUSH_UPDATE_INCLUDE_PRERELEASE）：
+            // 弹窗上写着哪个版本，这里复查出来的就得是哪个版本。
+            let checked = update_check(
+                app.clone(),
+                state.clone(),
+                Some(PUSH_UPDATE_INCLUDE_PRERELEASE),
+            )
+            .await?;
             let Some(data) = checked.data.filter(|_| checked.success) else {
                 let msg = checked.error.unwrap_or_else(|| "检查更新失败".into());
                 emit_progress(&app, "error", 0, &msg);
@@ -4285,6 +4322,116 @@ mod tests {
             !body.contains(r#"emit_progress(&app, "downloaded""#),
             "「已是最新」不得广播 downloaded —— 无文件、无 filePath，设置页会显示假的「已下载」"
         );
+    }
+
+    // ── 弹窗邀请 ↔ 真正下载：同一个版本 ────────────────────────────────────
+
+    /// 🟡 **不变量：弹窗上写的那个版本，就是点「更新」真正下下来的那个版本。**
+    ///
+    /// 这条不变量拆成两半，两半各有一道门：
+    ///  - **两条腿口径相同** —— 由共享常量 [`PUSH_UPDATE_INCLUDE_PRERELEASE`] 在编译期保证，
+    ///    守它的是下面那条源码级 [`every_pushed_update_check_uses_the_shared_prerelease_scope`]
+    ///    （防有人把某一处退回字面量）；
+    ///  - **这个口径选出来的到底是什么** —— 本测试。常量共享得再好，值本身错了照样把用户
+    ///    推到预发布上去。
+    ///
+    /// 样本刻意造成「最新正式版之后又发过一条预发布」：这正是 2026-08-17 之前复查腿写死
+    /// `Some(true)` 时会翻车的形状 —— `select_update_release` 按 `published_at` 取最新，
+    /// 于是弹窗写 `v0.2.0`、点下去下的是 `v0.3.0-beta.1`。
+    ///
+    /// **变异探针**：把 [`PUSH_UPDATE_INCLUDE_PRERELEASE`] 改成 `true` ⇒ 三条正向断言同时转红。
+    #[test]
+    fn the_version_the_popup_advertises_is_the_version_that_gets_downloaded() {
+        const RELEASES: &str = r#"[
+          {"tag_name":"v0.3.0-beta.1","prerelease":true,"published_at":"2024-06-01T00:00:00Z",
+           "assets":[{"name":"Polaris-0.3.0-mac-arm64.dmg","browser_download_url":"https://x/beta","size":1}]},
+          {"tag_name":"v0.2.0","prerelease":false,"published_at":"2024-05-01T00:00:00Z",
+           "assets":[{"name":"Polaris-0.2.0-mac-arm64.dmg","browser_download_url":"https://x/stable","size":1}]}
+        ]"#;
+        let pick = |include_pre: bool| match check_app_update(
+            RELEASES,
+            "0.1.0",
+            include_pre,
+            None,
+            AssetPlatform::Macos,
+            AssetArch::Arm64,
+            false,
+        )
+        .expect("样本 JSON 必须可解析")
+        {
+            AppUpdateCheck::Available(i) => i,
+            AppUpdateCheck::NoUpdate => panic!("样本里有比 0.1.0 新的版本，不该判成无更新"),
+        };
+
+        // 产出邀请（startup_tasks / tray → update_popup_show 写进弹窗的那个版本号）与兑现邀请
+        // （update_popup_action 复查 → update_download 真下的那份资产）读的是同一个常量。
+        let advertised = pick(PUSH_UPDATE_INCLUDE_PRERELEASE);
+        assert_eq!(
+            advertised.version, "v0.2.0",
+            "推给用户的必须是最新**正式版**，而不是发布时间更晚的那条预发布线"
+        );
+        assert!(
+            !advertised.is_prerelease,
+            "「推」腿不得把预发布推到用户脸上 —— App 侧没有任何通道开关支撑这个选择"
+        );
+        assert_eq!(
+            advertised.download_url, "https://x/stable",
+            "复查后真正下载的资产必须属于弹窗写着的那个版本"
+        );
+        // 反证：口径一放开，选中的就是另一个版本。没有这一条，上面三条在「样本里只有一个候选」
+        // 时同样全绿 —— 那是恒真断言，等于没门。
+        assert_eq!(
+            pick(true).version,
+            "v0.3.0-beta.1",
+            "样本自检：放开口径必须指向另一个版本，否则本测试对该常量不敏感"
+        );
+    }
+
+    /// 🟡 **调用点守卫：三条「推」腿的预发布口径必须共用同一个常量，不得各写字面量。**
+    ///
+    /// 「弹窗邀请的版本 == 点下去下载的版本」在本仓不是靠一处判断实现的，而是靠**两条产出腿 +
+    /// 一条兑现腿读同一个值**。三处各写一个 `Some(false)` 在今天等价，但正是 2026-08-17 那次缺陷的
+    /// 温床：兑现腿被单独改成 `Some(true)`，另两处纹丝不动，没有任何门会红。
+    ///
+    /// **变异探针**：任一腿改回 `Some(true)` / `Some(false)` ⇒ 该腿转红；删掉某腿的 `update_check`
+    /// 调用 ⇒ 锚点 panic（守卫失去判据必须转红，不许静默退化成扫了个空字符串）。
+    #[test]
+    fn every_pushed_update_check_uses_the_shared_prerelease_scope() {
+        const TRAY_SRC: &str = include_str!("../tray.rs");
+        const STARTUP_SRC: &str = include_str!("../runtime/startup_tasks.rs");
+        for (src, sig, leg) in [
+            (
+                SRC,
+                "pub async fn update_popup_action(",
+                "弹窗「更新/重试」复查腿",
+            ),
+            (
+                TRAY_SRC,
+                "pub async fn tray_check_update(",
+                "托盘检查更新腿",
+            ),
+            (STARTUP_SRC, "fn spawn_auto_check_update(", "启动自动检查腿"),
+        ] {
+            let body = crate::commands::guard_scan::top_level_fn_body(src, sig);
+            let at = body.find("update_check(").unwrap_or_else(|| {
+                panic!("{leg} 锚点消失：守卫已失去判据（这条腿不再调 update_check？）")
+            });
+            let tail = &body[at..];
+            let end = tail
+                .find(".await")
+                .unwrap_or_else(|| panic!("{leg} 锚点消失：update_check 调用之后找不到 .await"));
+            // 去掉全部空白 ⇒ 断言不随 rustfmt 的换行位置漂移。
+            let args: String = tail[..end].split_whitespace().collect();
+            assert!(
+                args.contains("PUSH_UPDATE_INCLUDE_PRERELEASE"),
+                "{leg} 没有共用预发布口径常量（实参：{args}）—— \
+                 邀请与兑现各写各的字面量，用户就会按 A 的版本号下到 B"
+            );
+            assert!(
+                !args.contains("Some(true)") && !args.contains("Some(false)"),
+                "{leg} 把口径写回了字面量（实参：{args}）"
+            );
+        }
     }
 
     // ── 解归档工作目录（M7）─────────────────────────────────────────────────

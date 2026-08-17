@@ -217,6 +217,15 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
     return off;
   }, []);
 
+  /**
+   * 手动「检查更新」——**全仓唯一**含预发布的 App 更新入口（`check(true)`）。
+   *
+   * 这是「拉」：用户自己按的按钮，且结果卡会用 `isPrerelease` 明确标出拿到的是不是预发布。
+   * 与之相对的「推」腿恒只看正式版 —— 启动自动检查与托盘检查更新（连同弹窗点「更新」时的复查）
+   * 共用后端 `commands/updater.rs::PUSH_UPDATE_INCLUDE_PRERELEASE`，顶部常驻横幅同口径
+   * （`AppUpdateBanner` 的 `check(false)`）。我们主动推到用户脸上的东西不能是预发布，因为 App 侧
+   * **没有**任何「更新通道」开关（`coreUpdateChannel` 只管内核）。
+   */
   async function checkUpdate() {
     setUs('checking');
     try {
@@ -596,10 +605,27 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
               <Dot variant="flow" style={{ background: 'hsl(var(--flow))', boxShadow: '0 0 0 3px hsl(var(--flow)/0.18)' }} />
               <div style={{ flex: 1 }}>
                 <b>{t('settings.update.foundNew')}</b> <span className="cv-tag">{updateInfo.version}</span>
+                {/* 预发布标记。本卡的检查是**全仓唯一**会返回预发布的 App 更新入口
+                    （上面 `checkUpdate()` 的 `updateApi.check(true)`）：启动自动检查与托盘检查更新
+                    由后端 `PUSH_UPDATE_INCLUDE_PRERELEASE` 钉死只看正式版，顶部常驻横幅同口径
+                    （`AppUpdateBanner` 的 `check(false)`）。
+                    不标出来的话，用户在这里点「下载」拿到的是什么档次的版本只能靠 tag 文本自己猜 ——
+                    而「是不是预发布」在 GitHub 上是一个**独立的布尔**，与 tag 怎么命名无关
+                    （`updater.rs` 的内核通道注释同样点过这一条：档次不可从字符串反推）。
+                    `isPrerelease` 一路从 `AppUpdateInfo` 传到这里，此前零消费。 */}
+                {updateInfo.isPrerelease && (
+                  <>
+                    {' '}
+                    <Pill variant="warn">{t('settings.update.prereleaseTag')}</Pill>
+                  </>
+                )}
                 <CardSub>
                   {new Date(updateInfo.publishedAt).toLocaleDateString()} ·{' '}
                   {(updateInfo.fileSize / 1024 / 1024).toFixed(1)} MB
                 </CardSub>
+                {updateInfo.isPrerelease && (
+                  <CardSub>{t('settings.update.prereleaseNote')}</CardSub>
+                )}
               </div>
             </div>
             {updateInfo.releaseNotes && (
