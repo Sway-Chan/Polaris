@@ -285,7 +285,30 @@ impl<T: PopupTransport> PopupSession<T> {
     ///
     /// 透传推送失败。**失败也已写 `last_state`** —— 这是上游把 `lastPopupState = state` 放在
     /// destroyed 检查之前的原因：推送失败不能让重放失去依据。
-    pub fn send_state(&mut self, state: UpdatePopupState) -> Result<(), String> {
+    ///
+    /// # 邀请过的版本号是**会话级**事实，不是 phase 级事实
+    ///
+    /// [`UpdatePopupState::progress`] / [`UpdatePopupState::done`] / [`UpdatePopupState::error`]
+    /// 三个构造点都只填自己那一档要用的字段（`..Self::default()` ⇒ `version: None`）。不继承的话，
+    /// **一离开 remind，「这次弹窗邀请的是哪一版」就在会话里蒸发了** —— 而下游有两个消费者要它：
+    ///
+    ///  1. `commands/updater.rs` 的 `Update` / `Retry` 分支：复查回来要与邀请版本逐字对账。
+    ///     `Retry` 按 [`PopupAction::is_valid_for`] **只在 `Error` 态合法**，那里 `version` 恒 `None`
+    ///     ⇒ 对账恒判「变了」⇒ 退回 remind 而**一个字节都不下**，「重试」实际变成「返回」。
+    ///  2. 同文件 `ManualDownload` 分支（同样只在 `Error` 态合法）：拿它去拼该版本的 release tag 页。
+    ///     `None` 时回落泛列表页 —— #311 修的正是「找不到对应版本说明」，而 error 态恰好是最需要
+    ///     它的一屏。
+    ///
+    /// 只继承 `version`，**不继承 `current_version`**：前者有决策依赖它（上面两条），后者今天在
+    /// remind 之外无任何消费者，而 remind 恒自带两者。为对称而继承是给未来的猜测付税。
+    ///
+    /// 继承只在 `version.is_none()` 时发生 ⇒ [`UpdatePopupState::remind`] 恒显式带版本，覆盖关系
+    /// 明确（新邀请永远压过旧记忆）。[`Self::open`] 不需要这一层：它只被 `update_popup_show` 以
+    /// remind 态调用，且那时会话刚 `new` 出来、`last_state` 为空。
+    pub fn send_state(&mut self, mut state: UpdatePopupState) -> Result<(), String> {
+        if state.version.is_none() {
+            state.version = self.last_state.as_ref().and_then(|s| s.version.clone());
+        }
         let height_changed = self.last_state.as_ref().map(|s| s.height()) != Some(state.height());
         let height = state.height();
         // 先写：任何推送失败都不得让 last_state 失同步（#300 的核心教训）。
@@ -458,6 +481,63 @@ mod tests {
         // 关键：推送失败，但 last_state 已推进到 progress。
         assert_eq!(s.last_state().unwrap().phase, PopupPhase::Progress);
         assert_eq!(s.last_state().unwrap().percentage, Some(42));
+    }
+
+    // ── 邀请过的版本号：会话级事实，跨 phase 不蒸发 ──
+
+    /// 🟡 **不变量：一次弹窗会话邀请过的版本号，跨 phase 一直在。**
+    ///
+    /// `progress` / `error` / `done` 三个构造点都不填 `version`。不继承的话，会话一离开 remind 就
+    /// 忘了自己邀请过谁，而 `Error` 态恰恰挂着**两个**需要它的动作（[`PopupAction::is_valid_for`]：
+    /// `Retry` 与 `ManualDownload`）：
+    ///  - `Retry`：宿主拿它与复查回来的版本对账。恒 `None` ⇒ 恒判「变了」⇒ 退回 remind、一个字节
+    ///    都不下，「重试」退化成「返回」。
+    ///  - `ManualDownload`：拿它拼该版本的 release tag 页；`None` 回落泛列表页（#311 修的就是这个）。
+    ///
+    /// **变异探针**：删掉 `send_state` 里那三行继承 ⇒ 本条转红（且 `error` 那格恰好复刻真实故障）。
+    #[test]
+    fn the_invited_version_survives_phase_changes() {
+        let mut s = PopupSession::new(RecordingTransport::default());
+        s.open(UpdatePopupState::remind("v1.2.0", "v1.1.0"));
+
+        for (step, state) in [
+            ("progress", UpdatePopupState::progress(30)),
+            ("error", UpdatePopupState::error("网络中断")),
+            ("done", UpdatePopupState::done()),
+        ] {
+            s.send_state(state).unwrap();
+            assert_eq!(
+                s.last_state().unwrap().version.as_deref(),
+                Some("v1.2.0"),
+                "{step} 态把邀请版本弄丢了 —— error 态丢它会让「重试」永不下载"
+            );
+        }
+
+        // 推给 renderer 的载荷也得带着它（宿主读的是 `popup_state()`，而它就是 last_state 的克隆；
+        // 这里连推送侧一起钉，免得将来有人只改 last_state 不改推送）。
+        let sent = s.transport().sent.borrow();
+        assert!(
+            sent.iter().all(|p| p.version.as_deref() == Some("v1.2.0")),
+            "推送出去的状态里版本号丢了：{sent:?}"
+        );
+    }
+
+    /// 🟡 **新邀请压过旧记忆：`remind` 恒显式带版本，不被继承值污染。**
+    ///
+    /// 继承只在 `version.is_none()` 时发生。这条钉住「同一会话里换了个版本重新提醒」时不会举着
+    /// 上一轮的版本号 —— 本批 `update_popup_action` 的对账不一致分支正是这么用的。
+    #[test]
+    fn a_fresh_remind_overrides_the_inherited_version() {
+        let mut s = PopupSession::new(RecordingTransport::default());
+        s.open(UpdatePopupState::remind("v1.2.0", "v1.1.0"));
+        s.send_state(UpdatePopupState::progress(10)).unwrap();
+        s.send_state(UpdatePopupState::remind("v1.3.0", "v1.1.0"))
+            .unwrap();
+        assert_eq!(
+            s.last_state().unwrap().version.as_deref(),
+            Some("v1.3.0"),
+            "新一轮 remind 必须覆盖继承来的旧版本号"
+        );
     }
 
     // ── 状态流转 / 窗高 ──

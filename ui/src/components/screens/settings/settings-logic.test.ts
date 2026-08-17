@@ -920,16 +920,14 @@ describe('progressResetsIntegrity —— 对整个 status 联合闭合的真值�
  * 预发布档次那道门要断言的也是这张更新卡的分状态结构。两份取材器 + 两份「什么算一个 `us`
  * 态分支」的定义早晚会对不上，而它们对不上时**两边都还是绿的** —— 那正是本文件反复在防的形态。
  */
-async function readTsx(rel = 'SettingsUpdate.tsx') {
-  const fs = await import('node:fs');
-  const path = await import('node:path');
-  const { fileURLToPath: toPath } = await import('node:url');
-  const dir = path.dirname(toPath(import.meta.url));
-  const file = path.join(dir, rel);
-  const raw = fs.readFileSync(file, 'utf8');
-  // 取材自检：路径漂走会让下面全部断言在空串上「恰好」通过 = 假绿。
-  expect(raw.length, `取材文件太短或不对：${file}`).toBeGreaterThan(2000);
-
+/**
+ * 剥注释内核：用 TS 自己的 parser 逐 token 取注释区间并抹成空格（保留换行与偏移，行号不漂）。
+ *
+ * 2026-08-17 由 [`readTsx`] 内提出来，因为「全仓 `updateApi.check(` 普查」那道门要对**任意**
+ * `ui/src` 下的源码剥注释，而 `readTsx` 的自检是给单个组件文件量身做的（要求含块注释、要求
+ * `export default function <Component>`）。两份剥法早晚会漂，且漂的时候两边都还是绿的。
+ */
+function stripTsComments(file: string, raw: string): string {
   const sf = ts.createSourceFile(file, raw, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const out = [...raw];
   const blank = (pos: number, end: number) => {
@@ -943,7 +941,20 @@ async function readTsx(rel = 'SettingsUpdate.tsx') {
     for (const c of n.getChildren(sf)) walk(c);
   };
   walk(sf);
-  const src = out.join('');
+  return out.join('');
+}
+
+async function readTsx(rel = 'SettingsUpdate.tsx') {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { fileURLToPath: toPath } = await import('node:url');
+  const dir = path.dirname(toPath(import.meta.url));
+  const file = path.join(dir, rel);
+  const raw = fs.readFileSync(file, 'utf8');
+  // 取材自检：路径漂走会让下面全部断言在空串上「恰好」通过 = 假绿。
+  expect(raw.length, `取材文件太短或不对：${file}`).toBeGreaterThan(2000);
+
+  const src = stripTsComments(file, raw);
   // 剥注释自检（正负对照）：本文件必有块注释 ⇒ 剥完必须**真的不一样**，且注释标记没了、
   // 代码骨架还在（不能把整份剥成空白还一路绿）。
   // 不写 `src.length === raw.length`：`blank()` 是原地单字符替换，那条恒真、零信息量。
@@ -1165,12 +1176,19 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
    * **变异探针**：把预发布 Pill 挪到 `</div>` 之后（行尾槽位，digest Pill 旁）⇒ 转红。
    */
   it('两枚徽标按「版本先、制品后」排布，不挤在同一个槽位', async () => {
-    const block = stateBlock(await readTsx(), 'available');
-    const pre = block.indexOf('prereleaseTag');
-    const digest = block.indexOf('digestMissingTag');
-    expect(pre, 'available 态缺预发布徽标').toBeGreaterThan(-1);
-    expect(digest, 'available 态缺无摘要徽标（本门的对照方没了）').toBeGreaterThan(-1);
-    expect(pre, '预发布徽标必须排在无摘要徽标之前（版本先、制品后）').toBeLessThan(digest);
+    const src = await readTsx();
+    // 三条腿都是两枚 Pill 同框（`downloaded`/`manual` 挂的是 digestMissingAfter 那一档），
+    // 位置约定对三处同样成立 —— 只钉 available 等于给另两处发了免死金牌。
+    for (const state of ['available', 'downloaded', 'manual'] as const) {
+      const block = stateBlock(src, state);
+      const pre = block.indexOf('prereleaseTag');
+      const digest = block.indexOf('digestMissingTag');
+      expect(pre, `${state} 态缺预发布徽标`).toBeGreaterThan(-1);
+      expect(digest, `${state} 态缺无摘要徽标（本门的对照方没了）`).toBeGreaterThan(-1);
+      expect(pre, `${state} 态：预发布徽标必须排在无摘要徽标之前（版本先、制品后）`).toBeLessThan(
+        digest,
+      );
+    }
   });
 
   /**
@@ -1199,13 +1217,58 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
    *
    * **变异探针**：改成 `.check(true)` ⇒ 转红。
    */
-  it('顶部常驻横幅这条推腿确实只看正式版（三处注释声称的那件事真有判据）', async () => {
-    const src = await readTsx('../../layout/AppUpdateBanner.tsx');
-    const flat = src.replace(/\s+/g, '');
-    expect(flat.includes('updateApi.check(false)'), '横幅腿不再是正式版口径').toBe(true);
-    expect(flat.includes('updateApi.check(true)'), '横幅腿改成了含预发布，且横幅上没有任何标注').toBe(
-      false,
-    );
+  /**
+   * 前端「推」面的**普查**，不是点名。
+   *
+   * 上一版只 `readTsx('../../layout/AppUpdateBanner.tsx')` 点名横幅一个文件 —— 覆盖面由夹具定，
+   * 不由判据定：**新增第三个推面写 `check(true)`，前端全绿，Rust 那道门也管不着（它只扫 `.rs`）**。
+   * 这与 Rust 侧刚修掉的「按函数名点三条腿」是同一条教训的另一条腿，故同形修：递归 `ui/src`
+   * 收全部 `updateApi.check(`，断言**恰好一处**传 `true` 且位于设置页，其余一律 `false` / 空参。
+   *
+   * 缺省值 `check(includePrerelease = false)` 只挡得住裸调用，挡不住显式 `true`，所以判据看实参。
+   * 折行写法（源码里是 `updateApi\n  .check(false)`）由 `\s*` 接住。
+   *
+   * **变异探针**：横幅改 `check(true)` / 任意新文件里写一处 `check(true)` ⇒ 转红。
+   */
+  it('全仓前端只有一处含预发布的 App 检查，且在设置页（其余推面一律正式版）', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { fileURLToPath: toPath } = await import('node:url');
+    const uiSrc = path.resolve(path.dirname(toPath(import.meta.url)), '../../..');
+
+    const files: { rel: string; src: string }[] = [];
+    const walk = (dir: string) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (/\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) {
+          files.push({
+            rel: path.relative(uiSrc, p).replace(/\\/g, '/'),
+            src: stripTsComments(p, fs.readFileSync(p, 'utf8')),
+          });
+        }
+      }
+    };
+    walk(uiSrc);
+    // 取材自检：扫到 0 个文件会让下面所有断言在空集上「恰好」通过。
+    expect(files.length, `${uiSrc} 下扫到的源文件太少`).toBeGreaterThan(100);
+
+    const sites: { rel: string; arg: string }[] = [];
+    for (const { rel, src } of files) {
+      for (const m of src.matchAll(/\bupdateApi\s*\.\s*check\s*\(([^)]*)\)/g)) {
+        sites.push({ rel, arg: m[1].replace(/\s+/g, '') });
+      }
+    }
+    expect(sites.length, '一处 updateApi.check( 都没扫到 —— 判据面塌了').toBeGreaterThanOrEqual(2);
+
+    const withTrue = sites.filter((s) => s.arg === 'true').map((s) => s.rel);
+    expect(withTrue, '含预发布的 App 检查必须**恰好**只有设置页那一处「拉」').toEqual([
+      'components/screens/settings/SettingsUpdate.tsx',
+    ]);
+    // 其余一律显式 false 或空参（缺省即 false）。`check(someVar)` 这类看不出口径的写法同样拒收：
+    // 判据要能一眼读出这条腿推的是什么。
+    const murky = sites.filter((s) => !['true', 'false', ''].includes(s.arg));
+    expect(murky, '有调用点的预发布口径不是字面量，无法静态判定').toEqual([]);
   });
 
   it('两个键在五个语种里都非空，且说明都点名 alpha/beta/rc（档次不可从 tag 反推）', async () => {
