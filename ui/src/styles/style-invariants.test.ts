@@ -1012,6 +1012,199 @@ describe('chip 族选中态的浅色分离度：它靠的是「兄弟 chip 是 s
   });
 });
 
+describe('.nd-card transition 收窄覆盖层：靠位于全部 @import 之后取胜，同型的第 7 处', () => {
+  /**
+   * 背景：`.nd-card` 的 `transition` 在 screens.css:61（工作文件）已收窄到六个不参与盒模型的
+   * 绘制层属性，但 `prototype.css:682` 有逐字同选择器、同特异性 (0,1,0) 的未收窄声明
+   * （`transition:.14s` = 无 property 限定 ⇒ `transition-property:all`），而 prototype.css 是
+   * index.css 的最后一个 @import ⇒ 同特异性下后者胜，会把 screens.css 的收窄压回 `all`。
+   * 真正让收窄生效的是位于全部 @import 之后、index.css 里的覆盖层。
+   *
+   * 本仓同型结构（「靠位于全部 @import 之后取胜的覆盖层」）在本文件已有实测过的先例——
+   * :497/:560/:726 三处断言的是同一件事（复位/统一规则必须落在最后一个 @import 之后）；
+   * :253/:986 是相邻但不同的一类（钉的是 @import **顺序**本身：components 在 prototype 之前、
+   * prototype 是最后一个），本组的③直接复用后一类的判据。这是第 4 处「覆盖落在 @import 之后」
+   * 型的门——补齐后才有护栏防止：覆盖层被挪位、被后续段落覆盖、或 prototype.css 再同步时新增
+   * 一条更靠后的 `.nd-card` transition 声明，任一种都会静默把收窄退回 `all`，而 NodesScreen.tsx
+   * 四处留档仍写着「已收窄」，gate 全绿没人发现。
+   *
+   * 2026-08-17 二轮复审追加：①②③④⑤ 原先对「取值内容」零覆盖——②只断言两处**相等**，没有任何
+   * 一条断言相等的取值本身是「收窄过的」。实跑变异：把 screens.css 与 index.css 的 transition
+   * **同步**改回 `transition:.14s;`，①②③④⑤ 整组仍绿（位置对、两处也相等，只是又等成了 `all`）。
+   * ⑥补上内容判据堵住这条。
+   *
+   * 同轮还发现 ④⑤ 用 `find` 取第一条匹配、且 `filter` 条件里混了 body 内容（`/border-color/`），
+   * 覆盖层之后再插一条同选择器规则（内容上不含 "border-color" 这个子串，例如整条重新
+   * `border:0`）不会被「恰好一条」发现，而层叠里更晚出现的那条会赢，缺陷原样复发但门不知道。
+   * 已改成纯按选择器 `filter` + 断言恰好一条（与①的 transition 覆盖同款）。
+   *
+   * F1（2026-08-17 复审，同批修）：列表档 `border:0`/`border-bottom:0` 是简写，未提到的
+   * border-*-color 会复位成 `currentcolor`（近黑/近白），叠加收窄后 border-color 仍按 140ms
+   * 渐变、border-width 瞬切 ⇒ **离开**列表档（list→card，侧边框 0→1px 瞬现）以及**失去
+   * `:last-child` 身份**（底边框 0→1px 瞬现）时会先闪一道近黑/近白边框再淡到 --line/--hair
+   * （方向如实记：不是「进入」列表档那一侧——那一侧是宽度瞬间归零，currentcolor 根本没机会上屏）。
+   * 修法是 index.css 里两条显式钉死 border-color 的覆盖，同样靠 @import 之后取胜，同样需要门
+   * 守住——否则挪位、被覆盖、或规则体内补一行 `border:0` 简写（层叠里更晚的声明赢，即使写在
+   * 同一条规则内也一样）都会让缺陷原样复发且没有任何信号。
+   *
+   * 变异靶（实跑过，见交接说明）：
+   *  · 把 index.css 的 `.nd-card{transition:…}` 覆盖挪到 @import 之前 → ① 红；
+   *  · 改 screens.css 或 index.css 任一处的 transition 值但不同步另一处 → ② 红；
+   *  · 两处**同步**改回 `transition:.14s;`（退回 `all` 但位置/相等两条前提仍满足）→ ⑥ 红；
+   *  · 把 index.css 里 F1 补的两条 border-color 覆盖挪到 @import 之前 → ④ 红；
+   *  · 把这两条覆盖的取值改回含 `currentcolor`（或删掉其中一条） → ⑤ 红；
+   *  · 在列表档基础态覆盖规则**内**追加一行 `border:0;`（同规则内简写复位颜色）→ ⑤ 红；
+   *  · 在覆盖层之后再插一条同选择器的 `#s-nodes.nodes-list-view .nd-card{ border:0; }` → ④/⑤ 红
+   *    （"恰好一条"断言先炸，即使凑巧没炸，body 里出现的 `border:` 简写也会被 ⑤ 的新增断言拦下）。
+   */
+  const indexCss = stripComments(read('./index.css'));
+  const screensCss = stripComments(read('./screens.css'));
+  const lastImport = indexCss.lastIndexOf('@import');
+
+  /** index.css 里带 `transition` 的 `.nd-card` 覆盖——预期恰好一条。 */
+  const ndCardTransitionOverride = () => {
+    const hits = flat(indexCss).filter(
+      (r) => r.sel === '.nd-card' && /transition\s*:/.test(r.body),
+    );
+    expect(hits.length, 'index.css 里带 transition 的 .nd-card 覆盖不是恰好一条').toBe(1);
+    return hits[0];
+  };
+  const extractTransition = (body: string) =>
+    body.match(/transition\s*:\s*([^;]+);/)?.[1].replace(/\s+/g, ' ').trim();
+
+  it('① .nd-card 的 transition 收窄覆盖落在 index.css 全部 @import 之后', () => {
+    expect(lastImport, 'index.css 里一个 @import 都没有 —— 走查逻辑失效了').toBeGreaterThan(0);
+    const rule = ndCardTransitionOverride();
+    expect(
+      indexCss.indexOf(rule.body),
+      '覆盖写在 @import 前面 —— 会被 prototype.css 同特异性反压，等于空操作',
+    ).toBeGreaterThan(lastImport);
+  });
+
+  it('② screens.css 与 index.css 两处 transition 取值逐字相等（手工承诺 → 机器承诺）', () => {
+    const screensRule = flat(screensCss).find(
+      (r) => r.sel === '.nd-card' && /transition\s*:/.test(r.body),
+    );
+    expect(screensRule, 'screens.css 的 .nd-card 规则不见了').toBeTruthy();
+    const screensValue = extractTransition(screensRule!.body);
+    const overrideValue = extractTransition(ndCardTransitionOverride().body);
+    expect(screensValue, 'screens.css 侧没解析出 transition 取值').toBeTruthy();
+    expect(overrideValue, '覆盖层没解析出 transition 取值').toBe(screensValue);
+  });
+
+  it('③ 前提自检：prototype.css 仍是最后一个 @import（同 :986，钉在本组内避免跨 describe 失联）', () => {
+    const imports = [...indexCss.matchAll(/@import\s+'([^']+)'/g)].map((m) => m[1]);
+    expect(
+      imports[imports.length - 1],
+      'prototype.css 不再是最后一个 @import ⇒ 上面两条的前提不成立',
+    ).toBe('./prototype.css');
+  });
+
+  /** index.css 里选中列表档基础态 `.nd-card` 的规则——预期恰好一条（按选择器过滤，不掺 body 内容，
+   *  否则覆盖层之后再插一条「内容上不含 border-color 子串」的同选择器规则不会被发现，见头注变异靶）。*/
+  const listViewBaseOverride = () => {
+    const hits = flat(indexCss).filter((r) => r.sel === '#s-nodes.nodes-list-view .nd-card');
+    expect(
+      hits.length,
+      'index.css 里 #s-nodes.nodes-list-view .nd-card 规则不是恰好一条——多出的那条无论内容是什么，' +
+        '层叠里更晚出现的都会赢，可能悄悄覆盖掉这条的 border-color',
+    ).toBe(1);
+    return hits[0];
+  };
+  const listViewLastChildOverride = () => {
+    const hits = flat(indexCss).filter(
+      (r) => r.sel === '#s-nodes.nodes-list-view .nd-card:last-child',
+    );
+    expect(
+      hits.length,
+      'index.css 里 #s-nodes.nodes-list-view .nd-card:last-child 规则不是恰好一条',
+    ).toBe(1);
+    return hits[0];
+  };
+  /** 规则体内不得再出现 `border`/`border-bottom` 简写——简写会把未提到的 longhand 复位成
+   *  currentcolor，即使写在这两行**后面**也会因为同规则内后声明胜出而赢，颜色又漏回 currentcolor。
+   *  正则只匹配裸的 `border:`/`border-bottom:`，不会误伤 `border-color:`/`border-bottom-color:`
+   *  （`-bottom` 之后紧跟 `\s*:` 才算命中，`-color`/`-radius` 都在这一步失配）。*/
+  const noBorderShorthand = /(^|;)\s*border(-bottom)?\s*:/;
+
+  it('④ F1：列表档 border-color 覆盖同样落在全部 @import 之后', () => {
+    const base = listViewBaseOverride();
+    const last = listViewLastChildOverride();
+    expect(base.body, '基础态覆盖里没有 border-color —— 规则本身找错了').toMatch(/border-color/);
+    expect(last.body, ':last-child 覆盖里没有 border-bottom-color —— 规则本身找错了').toMatch(
+      /border-bottom-color/,
+    );
+    expect(indexCss.indexOf(base.body), '基础态覆盖写在 @import 前面 = 空操作').toBeGreaterThan(
+      lastImport,
+    );
+    expect(indexCss.indexOf(last.body), ':last-child 覆盖写在 @import 前面 = 空操作').toBeGreaterThan(
+      lastImport,
+    );
+  });
+
+  it('⑤ F1：列表档 border-color 全程不含 currentcolor（列表档基础态 + last-child 两态钉住 --line/--hair；' +
+    '卡片档那态本就是 screens.css 的 border 简写直接写死 --line，不途经 currentcolor，见下一条）', () => {
+    const base = listViewBaseOverride();
+    const last = listViewLastChildOverride();
+    expect(base.body).toMatch(/border-color\s*:\s*hsl\(var\(--line\)\)/);
+    expect(base.body).toMatch(/border-bottom-color\s*:\s*hsl\(var\(--hair\)\)/);
+    expect(last.body).toMatch(/border-bottom-color\s*:\s*hsl\(var\(--hair\)\)/);
+    expect(
+      base.body,
+      '不得含 currentcolor —— 一旦出现，border-color 又会在过渡里途经它，边框闪光复发',
+    ).not.toMatch(/currentcolor/);
+    expect(last.body, '不得含 currentcolor').not.toMatch(/currentcolor/);
+    // 变异 C：规则体内追加一行 `border:0;`——同规则内后声明胜出，颜色又漏回 currentcolor，
+    // 且不影响以上任何一条既有断言（border-color: --line 那行字面量还在，只是不再生效）。
+    expect(
+      base.body,
+      '基础态覆盖内出现了 border/border-bottom 简写——会把上面钉的颜色重新复位成 currentcolor',
+    ).not.toMatch(noBorderShorthand);
+    expect(
+      last.body,
+      ':last-child 覆盖内出现了 border/border-bottom 简写——同上',
+    ).not.toMatch(noBorderShorthand);
+  });
+
+  it('⑥ 覆盖层的 transition 取值本身是收窄过的——不是「两处相等」就够，相等的对象也要对（挡「同步退回 all」）', () => {
+    const value = extractTransition(ndCardTransitionOverride().body);
+    expect(value, '覆盖层没解析出 transition 取值').toBeTruthy();
+    const props = value!.split(',').map((seg) => seg.trim().split(/\s+/)[0]);
+    // ⓒ 不含裸时长项——单独这一条就能挡住「两处同步改回 `.14s`」这类同步退回 all 的变异
+    // （②的「两处相等」在这种变异下仍然成立：两处都等成了同一个错值）。
+    for (const p of props) {
+      expect(
+        p,
+        `解析出一项「${p}」不像属性名，很可能是 transition-property:all 的裸时长简写`,
+      ).not.toMatch(/^\.?\d/);
+    }
+    // ⓐ 至少含 hover/cur 真正用到的两个——否则可能是解析器扫到了别的规则。
+    expect(props, '缺 border-color —— hover/cur 的边框反馈会瞬切').toContain('border-color');
+    expect(props, '缺 box-shadow —— hover/cur 的阴影反馈会瞬切').toContain('box-shadow');
+    // ⓑ 与白名单逐项相等——多出的可能是重新纳入了几何属性，少的是悄悄丢了一个绘制层属性。
+    const whitelist = [
+      'border-color',
+      'box-shadow',
+      'background',
+      'border-radius',
+      'outline',
+      'outline-offset',
+    ];
+    expect(
+      [...props].sort(),
+      '收窄清单变了：核对 screens.css:61 的判据（不参与盒模型的绘制层属性）逐条重扫',
+    ).toEqual([...whitelist].sort());
+  });
+
+  it('前提自检：卡片档 .nd-card 的 border-color 本就直接写死 --line，不经过任何简写复位', () => {
+    const cardRule = flat(screensCss).find(
+      (r) => r.sel === '.nd-card' && /transition\s*:/.test(r.body),
+    );
+    expect(cardRule, 'screens.css 的 .nd-card 规则不见了').toBeTruthy();
+    expect(cardRule!.body).toMatch(/border\s*:\s*1px\s+solid\s+hsl\(var\(--line\)\)/);
+  });
+});
+
 describe('主题两档同步：tokens 四块键集对等 + 主题条件规则必须成对', () => {
   /**
    * 把「所有涉及风格处理的，需要同步对浅色主题一并处理」从口头纪律变成机制。

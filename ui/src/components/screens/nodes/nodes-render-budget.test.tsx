@@ -463,9 +463,13 @@ describe('门 3 · 分批接线', () => {
   });
 
   /**
-   * 采样器③。`.nd-card{transition:.14s}` 是简写 ⇒ `transition-property:all`，列表档把
-   * `min-height` 141→0 一并改掉 ⇒ 切视图档那一次，采样器①（每次 commit）量到的是**过渡前**的
-   * 卡高，而采样器②只看容器盒子、内容变矮不改它。缺这条，`view` 这一维就只有一次陈旧采样。
+   * 采样器③，纯防御性保留（2026-08-17 更新，详见 NodesScreen.tsx 头注）。当年非它不可的实例是
+   * 切视图档：`.nd-card{transition:.14s}` 曾是无 property 限定的简写 ⇒ `transition-property:all`，
+   * 列表档把 `min-height` 141→0 一并改掉 ⇒ 那一次采样器①（每次 commit）量到的是**过渡前**的
+   * 卡高，而采样器②只看容器盒子、内容变矮不改它。该处 transition 现已收窄到六个不参与盒模型的
+   * 绘制层属性（border-color/box-shadow/background/border-radius/outline/outline-offset，
+   * 完整清单见 screens.css:61），`view` 这一维今天不再触发这个洞，但③守的是机制本身（任何带
+   * CSS 过渡的内容高度变化），不是这一个实例，故本条继续钉「监听确实挂着、且 cleanup 里摘掉」。
    */
   it('采样器③：委派 `transitionend` 在同一条 effect 里挂上、且在 cleanup 里摘掉', () => {
     expect(scrollerEffect, '带 CSS 过渡的内容高度变化没有采样器').toMatch(

@@ -132,7 +132,7 @@ function warnMissingScroller(): void {
  *    读反了 `grid-auto-rows:1fr`：它的效果是**所有行等于全局最高卡**（prototype.css:679 自己的
  *    注释就写着「stretch+auto-rows:1fr=全卡跨行统一等高(全局最高卡)」），故总幅度 = **行数 × Δ**。
  *    k=60、N=4 ⇒ 15 行，一排 chip ≈ 20~25px ⇒ 300~375px，**直接跨过 240px 余量**。
- *    这行结论今天侥幸成立，靠的是 `.nd-card{min-height:141px}`（screens.css:62）这个地板把一排
+ *    这行结论今天侥幸成立，靠的是 `.nd-card{min-height:141px}`（screens.css:117）这个地板把一排
  *    chip 的自然高吃掉了 —— 而地板只在自然高 < 141px 时有效，原表从头到尾没提过它。
  *    更要命的是漏项：`selectedServerId`（点卡设为出口，本屏最高频动作）会把 `.nd-cur` chip 从 A 卡
  *    挪到 B 卡；A 卡若原本是唯一最高卡、且正因这颗 chip 排到 3 行，掉回 2 行 ⇒ 15 行各矮 ~23px
@@ -151,27 +151,60 @@ function warnMissingScroller(): void {
  *     它取代了原来的 `window.addEventListener('resize')`：今天所有改窗口几何的路径都落在这个盒子上，
  *     旧监听是它的子集。（**不写「必然」**：Windows per-monitor DPI 迁移会给出等逻辑尺寸的新 rect，
  *     CSS px 不变、RO 不发；那一档也不改 auto-fill 列数，无害，但断言不能过强。）
- *  ③ **委派 `transitionend` on `.main-scroll`** —— 覆盖**带 CSS 过渡的内容高度**变化。
- *     今天在用的只有一条：视图档切换。`.nd-card{transition:.14s}` 是简写、无 property 限定
- *     ⇒ `transition-property:all`（screens.css:62），而列表档把 `min-height` 141→0、`padding`、
- *     `border-width` 一并改掉（:301）⇒ 切档那一次，①量到的是**过渡前**的卡高，而②只看容器盒子、
- *     内容变矮不改它。少了③，`view` 这一维就只有一次可能陈旧的采样 —— 与侧栏那条 High 同型。
- *     （今天两个方向都恰好落在安全侧，我逐个核过：**card→list** 时 `display` 瞬切成 flex 列而
- *     `min-height` 还停在 141px ⇒ 量到 60×141 ≈ 8460px，远超任何视口 ⇒ 判「不推进」，而终态
- *     60×40 = 2400px 本来也不该推进，结论一致；**list→card** 时 `min-height` 还停在 0 ⇒ 量到的比
- *     终态矮 ⇒ 只会多推进，是过渡渲染而非漏渲染。但这是两条**量级不等式**，不是机制。给 `.nd-card`
- *     加任何影响高度的样式、或把列表行做厚，它立刻变成第三个同型缺陷 —— 故按机制补，不靠不等式。）
+ *  ③ **委派 `transitionend` on `.main-scroll`** —— 覆盖**带 CSS 过渡的内容高度**变化，纯防御性保留。
+ *     **2026-08-17 更新**：曾经在用的那一条（视图档切换的几何变化）已被收窄掉。`.nd-card` 的
+ *     transition 原是无 property 限定的简写 `.14s`（⇒ `transition-property:all`），列表档把
+ *     `min-height`/`padding`/`border-width`（screens.css:364-365）一并改掉 ⇒ 切档那一次，①量到的
+ *     是**过渡前**的卡高，而②只看容器盒子、内容变矮不改它 —— 那一维在两者之间是个洞，与侧栏那条
+ *     High 同型。现在 `.nd-card` 的 transition 已收窄到六个「不参与盒模型」的绘制层属性（完整清单
+ *     见 screens.css:61 注释），几何属性随切档瞬切 ⇒ scrollHeight 单次采样即是终值，`view` 这一维
+ *     不再需要③补齐（但 border-color/background/box-shadow/outline/border-radius/outline-offset
+ *     仍按 140ms 渐变，是混合过渡不是纯瞬切——只是不影响几何采样，见 screens.css:61 的详细说明）。
+ *     **仍不删的理由**：③守的是「`.main-scroll` 内任何带 CSS 过渡的内容高度变化」这整条机制，不是
+ *     `view` 这一个案例——给 `.nd-card` 或本屏其它元素今后新加任何动画化几何属性的样式，它立刻
+ *     重新变成非它不可。删掉它等于把「今天没有已知触发案例」误判成「以后也用不到」，是本屏刚放弃
+ *     的「枚举触发面」思路（见上方「为什么补批放弃枚举触发面」整段）从「布局向量」换个马甲搬回
+ *     「过渡属性」。
+ *     **成本如实记账（别被「view 已不触发」误读成③几乎不响）**：③今天的主触发源不是 view 切换，
+ *     是**悬停**——`.nd-card:hover`（border-color/box-shadow）、`.nd-a:hover`、`.proto-chip:hover`
+ *     等一切冒泡到 `.main-scroll` 的 `transitionend` 都会进 `topUpBatch` 读一次 `scrollHeight`（强制
+ *     一次布局），鼠标划过节点网格时相当高频。这在收窄前后同频、不是本次改动引入的回归，只是
+ *     narrowing 前容易被「反正 view 才是大头」的直觉带偏——它一直是次要开销，成本极低（一次强制
+ *     布局读 + `advanceBatch` 同值 bail-out），不值得为省它把③整条撤掉。
  *
- * **未解的上游问题（需产品决策，本批未动）**：`.nd-card` 的 `transition:.14s` 写成 `all`，本意只是
- * `:hover` 的 `border-color`/`box-shadow`/`background`。收窄成那三个属性可以从根上消掉内容高度过渡
- * （采样器③对 `view` 这一维随之变成冗余），还省掉 60+ 张卡的 `min-height` 动画。但那是**用户可见的
- * 动效变化**（卡片↔列表从渐变morph 变成瞬切），且偏离原型 SoT，需陈先生拍板，不在本批自行决定。
+ * **已收窄（2026-08-17，陈先生拍板执行；同日复审 F1/F2/F5/F7/F8 追加修正，一并留档）**：`.nd-card`
+ * 的 `transition:.14s` 曾写成无 property 限定的简写（= `all`）。判据是「不参与盒模型的绘制层属性
+ * 才收进来」，不是「只列 hover 用到的那几个」——首版漏了 `border-radius`（符合判据却被漏收）、
+ * 且被 `outline` 简写不含的 `outline-offset` 摆了一道，复审后按判据重扫，收窄到六个属性：
+ * `border-color`/`box-shadow`/`background`/`border-radius`/`outline`/`outline-offset`
+ * （screens.css:114-117 + index.css 的收窄覆盖层——完整的选择器核对清单、`gap` 为何刻意不收进来，
+ * 都写在 screens.css:61 的姊妹注释里，此处不复述）。`screens.css` 那份声明单独存在不生效：
+ * `prototype.css:682` 有逐字同选择器、同特异性的未收窄声明，且是 `index.css` 的最后一个 `@import`
+ * ⇒ 同特异性后者胜，真正生效的是 index.css 覆盖层；两处 transition 取值必须逐字相等，
+ * `style-invariants.test.ts` 有专门的门钉住。
+ *
+ * **F1（真实缺陷，已随本次收窄一并修）**：列表档 `border:0`/`border-bottom:0`（screens.css:365/366）
+ * 是简写，未提到的 border-*-color 会复位成 `currentcolor`（`.nd-card` 继承 body 的 `--fg`）。收窄让
+ * `border-width` 瞬切、`border-color` 仍按 140ms 渐变 ⇒ 若不管，会在「切档」以及**更高频的**「滚动
+ * 分批推进/搜索击键导致哪张卡是 `:last-child` 改变」两条路径上闪一道近黑/近白边框再淡到
+ * `--line`/`--hair`。已在 index.css 覆盖层里把 border-color 显式钉死在 `--line`/`--hair`、两态都
+ * 不含 currentcolor（完整推导见 index.css 里紧邻 `.nd-card.confirming` 的那条注释）。
+ *
+ * 六个属性均不参与盒模型，故视图档切换的几何变化（`min-height`/`padding`/`border-width`/`gap`/
+ * `flex-direction`）随之变回瞬切 ⇒ 采样器③对 `view` 这一维随之变成冗余（仍保留，见上方该采样器
+ * 条目——它守的是机制，不是这一个案例）。**但这不是纯瞬切**：上面六个绘制层属性仍按 140ms 渐变，
+ * 只是它们不影响 `scrollHeight`，故不改变采样器③已冗余这个结论——是「几何瞬切 + 颜色/圆角/描边
+ * 仍渐变」的混合过渡，向量表那一行按此口径记账，别读成「整条规则不再有过渡」。
+ * **用户可见的取舍（如实记）**：卡片↔列表切换的**几何**（尺寸/位置）从渐变 morph 变成瞬切，颜色/
+ * 圆角/描边仍柔化过渡。纯几何渐变的代价是 60+ 张卡的 `min-height` 逐帧参与布局重算（本屏这份分批
+ * 基础设施的存在理由之一）；几何瞬切换回来的是零几何动画开销、且从根上消掉「过渡中途采样陈旧几何」
+ * 这整类缺陷的触发面。
  *
  * 下表是**留档**，不再是判据来源（像素取自各自 CSS 盒模型，量级判定非精确测绘）：
  *
  * | 向量 | 改的是 | 幅度 | 曾经的判定 | 现在由谁收 |
  * |---|---|---|---|---|
- * | 视图档 `view`（卡片↔列表） | 内容，**带 140ms 过渡**（`transition:all`） | 行高 141px ↔ ~40px；60 条差 2~3 倍 scrollHeight | 会卡死 → 进依赖 | ③ transitionend（①量到的是过渡前的值） |
+ * | 视图档 `view`（卡片↔列表，**2026-08-17 起几何瞬切、颜色/圆角/描边仍 140ms 渐变**，见上方「已收窄」段） | 几何（min-height/padding/border-width/gap/flex-direction） | 行高 141px ↔ ~40px；60 条差 2~3 倍 scrollHeight | 收窄前：会卡死 → 进依赖（`transition:all`，③ transitionend 补） | ① 每次 commit（几何瞬切，一采即真值——scrollHeight 不吃仍在渐变的颜色/圆角/描边；③ 仍挂着，对这一维是无害空转，见上方③条目「成本如实记账」） |
  * | 侧栏折叠 | 主区宽 ±92px / mac ±68px → 列数 ±1 | 窄窗 N=4、k=60 时 15→12 行 = 3×141 + 3×12(gap) ≈ 459px | 会卡死 → 进依赖（**读到的是旧几何，实际没收住**） | ② RO（过渡全程连续回报） |
  * | 窗口 resize / 缩放 / 全屏 | 可视区 + 内容 | 无界 | `window resize` 监听 | ② RO（旧监听已撤；per-monitor DPI 迁移那一档 RO 不发，见上） |
  * | **出口切换 `selectedServerId`** | 内容（`.nd-cur` chip 换卡 → 最高卡行数变 → **每行**跟着变） | 15 行 × ~23px = 345px | **整条漏列** | ① 每次 commit（无过渡，一采即真值） |
@@ -186,8 +219,8 @@ function warnMissingScroller(): void {
  * | 延迟数值回填 | 内容：`.nd-lat` 是**条件渲染**（NodeCard:274），盒高 11px×1.5+4=20.5px > `.nd-name` 的 18.9px 行盒 ⇒ 首个结果到达时 `.nd-top` 涨 ~1.6px，再经 1fr 摊到每行 | ~1.6px × 行数 | 判成「0」（**当时写的是断言不是测量**） | ① 每次 commit |
  *
  * 两处「结论成立但理由写错了」的更正（Low-2，一并留档）：
- *  · 批选条不改卡高。旧理由（「`.nd-check` 是 absolute」）**对卡片档成立**（screens.css:105），
- *    但只覆盖卡片档 —— 列表档它是 `position:static; order:-1`（:312）在流内。列表档成立的理由是
+ *  · 批选条不改卡高。旧理由（「`.nd-check` 是 absolute」）**对卡片档成立**（screens.css:160），
+ *    但只覆盖卡片档 —— 列表档它是 `position:static; order:-1`（:375）在流内。列表档成立的理由是
  *    行高由 `.nd-acts` 里 27px 的 `.nd-a` 撑住，18~21px 的勾选框够不着。
  *  · 「延迟数值回填零高度变化」不成立，见上表该行。方向安全、量级也小，但那是断言不是测量值。
  * ════════════════════════════════════════════════════════════════════════════ */
@@ -568,17 +601,29 @@ export function NodesScreen() {
        （同值 ⇒ React 就地停），外加 `shouldAdvance` 的 `clientHeight <= 0` 短路。 */
     const ro = new ResizeObserver(topUpBatch);
     ro.observe(scroller);
-    /* 采样器③：**带 CSS 过渡的内容高度变化**。`transitionend` 冒泡，故一条委派监听即可。
-       非它不可的理由：`.nd-card` 写的是 `transition:.14s`（简写、无 property 限定 ⇒
-       `transition-property:all`，screens.css:62），而列表档把 `min-height` 141→0、`padding`、
-       `border-width` 一并改掉（:301）⇒ 切视图档那一次，commit 后立刻量到的是**过渡前**的卡高。
-       采样器①（每次 commit）只有那一次采样，采样器②又只看容器盒子（内容变高矮不改它）——
-       这一维在两者之间是个洞，与侧栏那条 High 同型。140ms 后过渡结束，这条把它补上。
+    /* 采样器③：**带 CSS 过渡的内容高度变化**，纯防御性保留（2026-08-17 更新，详见文件头注）。
+       `transitionend` 冒泡，故一条委派监听即可。
 
-       成本如实记账：一次切档 60 张卡 × 若干属性 ≈ 一两百个事件，集中落在过渡结束那一帧。
-       但 `min-height` 过渡本身每帧就在让浏览器算布局，这里多出来的是同一帧内的 `scrollHeight`
-       读；第一次读强制一次 layout，其余读命中干净布局。不做 propertyName 过滤：过滤就是又一张
-       要维护的枚举表，正是本屏刚放弃的那条路。 */
+       曾经非它不可的那个案例已被消掉：`.nd-card` 原写的是 `transition:.14s`（简写、无 property
+       限定 ⇒ `transition-property:all`），列表档把 `min-height`/`padding`/`border-width`
+       （screens.css:364-365）一并改掉 ⇒ 切视图档那一次，commit 后立刻量到的是**过渡前**的卡高。
+       现在 `.nd-card` 的 transition 已收窄到六个不参与盒模型的绘制层属性（border-color/box-shadow/
+       background/border-radius/outline/outline-offset，完整清单见 screens.css:61）⇒ 几何属性随
+       切档瞬切，采样器①单次采样即是终值——**但这六个属性本身仍按 140ms 渐变**，不是整条规则变
+       瞬切，只是它们不影响 scrollHeight，不改变「①单次采样即真值」这个结论。
+
+       **仍不删的理由**：这条守的是「`.main-scroll` 内任何带 CSS 过渡的内容高度变化」这整条机制，
+       不是 `view` 这一个案例——给 `.nd-card` 或本屏其它元素今后新加任何动画化几何属性的样式，它
+       立刻重新变成非它不可，删掉等于把「今天没有已知触发案例」误判成「以后也用不到」。
+
+       成本如实记账（别被「view 已不触发」带偏，以为③今天几乎不响）：③今天的主触发源是**悬停**——
+       `.nd-card:hover`（border-color/box-shadow）、`.nd-a:hover`、`.proto-chip:hover` 等一切
+       冒泡到 `.main-scroll` 的 `transitionend` 都会进这里读一次 `scrollHeight`（强制一次布局），
+       鼠标划过节点网格时相当高频；card↔list 切换本身也仍会触发（六个绘制层属性在两档间的值确有
+       不同，只是不再影响几何）。这些事件读到的值和采样器①已经一致，`advanceBatch` 同值
+       bail-out，是无副作用的空转，成本是一次强制布局读，不是错误重算，也不是本次改动引入的新
+       开销（悬停触发在收窄前后同频）。不做 propertyName 过滤：过滤就是又一张要维护的枚举表，
+       正是本屏刚放弃的那条路。 */
     scroller.addEventListener('transitionend', topUpBatch);
     return () => {
       scroller.removeEventListener('scroll', topUpBatch);
