@@ -5707,12 +5707,18 @@ mod tests {
 
     /// 🟡 **调用点守卫：生产写点恰两处（update_skip / PopupAction::Skip），且都过归一化点。**
     ///
-    /// 第三个写点若直写 `s.skipped_version = …`，跳过功能会静默失效回 W8 前的形态
+    /// 第三个写点若直写 `.skipped_version = …`，跳过功能会静默失效回 W8 前的形态
     /// （用户按了跳过，下次照样被提醒）。
+    ///
+    /// 计数是**全仓**的（`src-tauri/src` + `crates/updater/src` 递归、带点形态 `.skipped_version = `，
+    /// 不依赖闭包参数名）：首版只扫本文件 + `s.` 前缀，跨文件或 `|st| st.` 形态的第三写点
+    /// 会把它喂饱（复审 F1 实证）。`mutate_state` 是这条状态唯一可变入口，生产赋值必然以
+    /// `.skipped_version = ` 文本出现 ⇒ 文本扫描无漏。
     ///
     /// **变异探针**：`update_skip` 里 `stored_skip_version(&v)` 换回 `v` ⇒ 第 1 条红；
     /// Skip 臂删掉 `.map(|v| stored_skip_version(&v))` ⇒ 第 2 条红；
-    /// 新增第三处生产赋值 ⇒ 第 3 条红。
+    /// 在**任何文件**（含 runtime/updater.rs）新增生产赋值 ⇒ 第 3 条红；
+    /// 改用异参数名（`|st| st.skipped_version = …`）⇒ 仍第 3 条红（带点形态不分参数名）。
     #[test]
     fn skipped_version_write_points_all_go_through_the_normalizer() {
         let cmd = crate::commands::guard_scan::top_level_fn_body(SRC, "pub fn update_skip(");
@@ -5728,14 +5734,72 @@ mod tests {
             act.contains(".map(|v| stored_skip_version(&v))"),
             "弹窗 Skip 臂的写点绕过了归一化 —— 同上"
         );
-        let tests_at = SRC.find("\nmod tests {").unwrap_or(SRC.len());
-        let writes = SRC
-            .match_indices("s.skipped_version = ")
-            .filter(|(i, _)| *i < tests_at)
-            .count();
+
+        // 全仓生产写点清单：`rel_path` → 赋值次数（tests 区整段剔除）。
+        let mut writes: Vec<(String, usize)> = vec![];
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        for root in [
+            format!("{manifest}/src"),
+            format!("{manifest}/../crates/updater/src"),
+        ] {
+            collect_skip_writes(std::path::Path::new(&root), &root, &mut writes);
+        }
+        let total: usize = writes.iter().map(|(_, n)| n).sum();
+        let locations = writes
+            .iter()
+            .filter(|(_, n)| *n > 0)
+            .map(|(p, n)| format!("{p}×{n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         assert_eq!(
-            writes, 2,
-            "生产写点应恰有 2 处（update_skip / PopupAction::Skip）——多了就是绕过归一化的第三写点（先过 stored_skip_version 再在这里登记），少了是本断言漂了"
+            total, 2,
+            "全仓 `.skipped_version = ` 生产赋值应恰有 2 处（update_skip / PopupAction::Skip，均在 \
+             commands/updater.rs）。实得 [{locations}] —— 多了就是绕过归一化点的第三写点（先过 \
+             stored_skip_version 并更新本断言），少了是写点被搬走、两处体内断言也该跟着红"
         );
+        assert!(
+            writes.len() == writes.iter().filter(|(_, n)| *n == 0).count() + 1
+                && writes
+                    .iter()
+                    .find(|(_, n)| *n > 0)
+                    .is_some_and(|(p, _)| p.ends_with("commands/updater.rs")),
+            "写点必须仍集中在 commands/updater.rs —— 搬文件时同步改本守卫与两处体内断言，别静默放过"
+        );
+    }
+
+    /// 递归收集 `dir` 下 `.rs` 文件里 `.skipped_version = ` 的**生产区**出现次数。
+    /// tests 边界取**第一个** `#[cfg(test)]` / `mod tests {` 锚：本仓测试模块一律置尾，
+    /// 锚失联（= 边界没了）按「全文件计入」处理——宁可误红不可漏数。
+    fn collect_skip_writes(dir: &std::path::Path, root: &str, out: &mut Vec<(String, usize)>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            panic!(
+                "守卫扫描不到目录 {} —— 仓库布局变了，先修守卫再改代码",
+                dir.display()
+            );
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                collect_skip_writes(&p, root, out);
+                continue;
+            }
+            if p.extension().is_none_or(|x| x != "rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&p)
+                .unwrap_or_else(|e| panic!("读不了 {}: {e}", p.display()));
+            let cut = ["\n#[cfg(test)]", "\nmod tests {"]
+                .iter()
+                .filter_map(|a| src.find(a))
+                .min()
+                .unwrap_or(src.len());
+            let n = src[..cut].matches(".skipped_version = ").count();
+            let rel = p
+                .strip_prefix(root)
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .into_owned();
+            out.push((format!("{}/{}", root.trim_end_matches('/'), rel), n));
+        }
     }
 }
