@@ -97,9 +97,15 @@ body {
   font-size: 12px;
 }
 
-/* done 态那行「版本 · 落位路径」：路径长度无上限而窗高固定（`popup_height_for` 的 116）。
+/* done 态那行「版本 · 包文件名」：资产名长度无上限而窗高固定（`popup_height_for` 的 116）。
  * 不截断的话它会换行把卡片顶穿 —— 本窗没有滚动条，溢出的那部分用户永远看不到，且会把
- * 进度条挤出可视区。故单行截尾省略。 */
+ * 进度条挤出可视区。
+ *
+ * ⚠️ 省略号是**尾截断**，故这一行绝不能放完整路径：那样被裁掉的恰好是「下的是哪个包」，
+ * 留在屏幕上的是恒定的 `<cache>/updates` 前缀 = 零信息量。取文件名的判断在
+ * `state-facts.ts::doneSubject`，本规则只是超长资产名的兜底。
+ * 三平台样本实测（仓内 `textPx`，12px，可用 348px）：全路径 579.5 / 700.6 / 760.4px（溢出
+ * 1.7–2.2 倍）；改取文件名后 300.0 / 283.1 / 282.5px，均留有余量。 */
 .sub.path {
   white-space: nowrap;
   overflow: hidden;
@@ -135,7 +141,7 @@ body {
   transition: width 0.2s ease;
 }
 
-/* 角标关闭钮（原型 `.ut-x`，`proto:2948`）：四态恒在的退出口。绝对定位在卡右上角，不占 flex 行，
+/* 角标关闭钮（原型 `.ut-x`，`proto:2948`）：每一档恒在的退出口。绝对定位在卡右上角，不占 flex 行，
  * 故不会把 `.row` 的贴底布局顶掉。与 `.btn` 一样是普通元素、不做拖拽区排除（本窗未用
  * `data-tauri-drag-region`，`body` 那句注释描述的是窗口无边框，不是 CSS app-region 拖拽）。 */
 .ut-x {
@@ -159,7 +165,7 @@ body {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
-  margin-top: auto; /* 按钮恒贴底，四态窗高不同也不跳 */
+  margin-top: auto; /* 按钮恒贴底，各档窗高不同也不跳 */
   /* 允许换行 —— 380px 单行装不下四个俄语按钮。实测（`styles/text-fit.test.ts` 的宽度模型）：
    * remind 四钮 en-US 需 347.7px / 可用 348px，**余量 0.3px**，即这一行本来就是按英文顶格设计的；
    * ru 需 458.6px、fa 需 427.5px。把字号/内边距压到 11.5px/7px（已到可点性下限）仍需 371.4px，

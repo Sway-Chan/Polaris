@@ -3,7 +3,7 @@
 //! Polaris 的更新 UI 状态散在两处：
 //!   - `UpdateProgress.status`：`'idle' | 'checking' | 'downloading' | 'downloaded' | 'no-update' |
 //!     'update-available' | 'error'`（`UpdateService.ts:77-81` + `updateProgress(...)` 各调用点）。
-//!   - `UpdatePopupState.phase`：`'remind' | 'progress' | 'done' | 'error'`（4 态 Conduit mini 窗，
+//!   - `UpdatePopupState.phase`：上游是 `'remind' | 'progress' | 'done' | 'error'` 四态（Conduit mini 窗，
 //!     `UpdateService.ts:591-644`，含进度镜像 / done 自动关窗 / error 重试循环）。
 //!
 //! 本 crate 把这两套运行时态规约到一个枚举，驱动 staged 更新 UI 反馈：用户可见的「下载中 → 已就绪 →
@@ -35,7 +35,9 @@ pub enum PopupPhase {
     /// 完成态：下载/校验/落位完成（800ms 后自动关窗，对齐 Polaris done 态）。= 上游 `'done'`。
     ///
     /// **「完成」= 盘上真有一份包**：载荷必带落位路径（[`crate::popup::UpdatePopupState::done`]
-    /// 的参数是必填的），故「什么都没下」在类型上就构造不出本态。成因见下面 [`Self::NoUpdate`]。
+    /// 的参数是必填的）。注意必填参数只消掉「零参即得终态」那一种写法，**挡不住空串或伪造
+    /// 路径** —— 那一半由 `commands::updater` 的调用点门守（见 `UpdatePopupState::done` 的文档）。
+    /// 成因见下面 [`Self::NoUpdate`]。
     Done,
     /// 无更新可下态：用户点了「更新」，复查回来却没有任何可下载的包。**上游没有这一档**。
     ///
@@ -43,7 +45,7 @@ pub enum PopupPhase {
     ///
     /// 复查判 `NoUpdate` 有五条可达成因（`crate::github::check_app_update`：无正式发布 / 不比当前新 /
     /// 该版本已被跳过 / 无适配本平台的资产；外加宿主层的平台不受支持），后端**分辨不出**是哪一条。
-    /// 塞进现有四态只有两条路，两条都是假话：
+    /// 塞进本档出现之前的那四档只有两条路，两条都是假话：
     ///  - `Done` ⇒ 弹窗渲染「下载完成」+ 满格进度条，而一个字节都没下（2026-08-17 前的现状）；
     ///  - `Error` ⇒ 把「用户自己按过跳过」「已经是最新版」说成故障。
     ///

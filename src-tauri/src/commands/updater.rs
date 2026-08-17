@@ -268,7 +268,7 @@ fn progress_payload(info: &Value, stage: ProgressStage<'_>) -> Value {
 /// # 同一份进度也镜像进 mini 弹窗
 ///
 /// 弹窗与设置页看的是**同一次下载**，各自维护一份进度必然漂移。故此处是唯一产地：广播事件之后，
-/// 若弹窗会话存在就把同一真值转成弹窗四态推过去（见 [`popup_state_for`]）。这也是
+/// 若弹窗会话存在就把同一真值转成对应的弹窗档位推过去（见 [`popup_state_for`]）。这也是
 /// `progress`/`done`/`error` 三态**唯一**的产地 —— 在此之前全仓只有 `remind`
 /// （`update_popup_show`）能产出，于是弹窗里点「更新」后窗内零反馈、`PopupAction::Cancel`
 /// （仅 Progress 合法）结构性不可达。
@@ -1733,7 +1733,7 @@ pub fn update_open_releases(app: AppHandle, version: Option<String>) -> ApiRespo
     ok_void()
 }
 
-/// 上游 `UPDATE_POPUP_STATE`：mini 更新窗四态状态载荷（弹窗 → 主，拉取当前态）。
+/// 上游 `UPDATE_POPUP_STATE`：mini 更新窗状态载荷（弹窗 → 主，拉取当前态）。
 ///
 /// ✅ **已接线**：返回会话的 `last_state`。
 ///
@@ -4966,16 +4966,31 @@ mod tests {
     /// 是必填落位路径的构造函数，本臂根本没有路径可传 —— 源码门与类型闸在此重合，两道都留着：
     /// 类型挡「拿不出路径」，本门挡「随手编一个路径喂给它」。
     ///
-    /// # 判据限定在 `Update | Retry` 臂内
+    /// # 判据必须收到**分支**，臂一级还不够
     ///
-    /// 正向断言若打在整个函数体上，把这发推送搬进别的臂（或将来别处新增一发 `no_update`）就能
-    /// 替本臂作证 —— 本仓在同一个函数上栽过两次（见 `guard_scan::match_arm_body` 文档）。
+    /// 射程收紧走过三级，每一级都是被同一形态咬出来的（「取材面宽于意图面」）：
+    ///  1. **整函数**：把推送搬进别的臂就能替本臂作证 —— 本仓在同一个函数上栽过两次
+    ///     （见 `guard_scan::match_arm_body` 文档）。
+    ///  2. **臂**（`match_arm_body`）：仍不够。`Update | Retry` 臂内有 **5 条早退分支**，而
+    ///     `arm.contains(…)` 只问「臂内某处有没有这句话」。实测：把本分支的推送**整个删掉**
+    ///     （⇒ 弹窗永远停在 progress 转圈，正是本门自称要防的那件事）、把它挪进下面的
+    ///     `Renegotiate` 分支 ⇒ **全仓 1428 passed / 0 failed，本门全绿**。
+    ///  3. **分支**（现判据）：用**位置区间**钉死 —— 那两发推送的 offset 必须落在
+    ///     「`let Some(info) = data.get("updateInfo")` 这一行」与「本分支自己的
+    ///     `"hasUpdate": false` 早退」之间。同款先例见本文件
+    ///     [`the_user_action_forces_the_popup_into_progress_before_rechecking`] 的 `force_at < check_at`。
+    ///
+    /// 「我要判的是什么位置的什么形状」：形状 = 那两发推送，位置 = **那一条 `let-else` 的 else 体内**。
+    /// 计数不是位置（把推送搬进 helper 里计数纹丝不动），故这里判的是区间不是次数；但两个锚点
+    /// 各自的**唯一性**要单独断言，否则「区间」本身可以被第二处同名锚点重新划定。
+    ///
     /// 负向断言（不得广播 `ProgressStage::Downloaded`）**故意保持全函数**：任何一条臂都不许广播，
     /// 那是更强的形态，与 `recheck_failures_settle_the_popup_without_broadcasting` 同一取向。
+    /// `done(` 的负向断言保持**臂级**：本臂任何一条分支都不许推 done，同样严于分支级。
     ///
-    /// **变异探针**：把 `no_update(...)` 改回 `done(popup.version.clone(), "")` ⇒ 两条正向断言与
-    /// 「不得出现 done」同时转红；把那发推送整个删掉 ⇒ 「必须推出 progress」转红；
-    /// 把它挪进 `ViewLog` 臂 ⇒ 臂内计数为 0，转红。
+    /// **变异探针**：把 `no_update(...)` 改回 `done(popup.version.clone(), "")` ⇒ 转红；
+    /// 把两发推送挪进 `Renegotiate` 分支 ⇒ 区间判定转红（臂级判据在此**全绿**，见上面第 2 条）；
+    /// 把它挪进 `ViewLog` 臂 ⇒ 臂内找不到，转红。
     #[test]
     fn the_no_download_path_never_claims_a_download() {
         let body = crate::commands::guard_scan::top_level_fn_body(
@@ -4987,10 +5002,41 @@ mod tests {
             "PopupAction::Update | PopupAction::Retry =>",
             "PopupAction::",
         );
-        assert!(
-            arm.contains("push_popup_state(&app, UpdatePopupState::no_update("),
-            "「没有可下的东西」仍须把弹窗推出 progress（否则永远转圈），且必须推 `no_update` 那一档"
-        );
+
+        // ── 区间的两个端点：先证明它们各自唯一，否则「落在区间内」可以被第二处锚点重新划定 ──
+        const BRANCH_HEAD: &str = "let Some(info) = data.get(\"updateInfo\")";
+        const BRANCH_EXIT: &str = "\"hasUpdate\": false";
+        for anchor in [BRANCH_HEAD, BRANCH_EXIT] {
+            let n = arm.matches(anchor).count();
+            assert_eq!(
+                n, 1,
+                "锚点 {anchor:?} 在本臂里出现 {n} 次（须恰好 1）—— 区间端点不唯一，\
+                 「落在分支内」这句话就不再指同一段代码"
+            );
+        }
+        let head = arm.find(BRANCH_HEAD).expect("锚点消失：守卫已失去判据");
+        let exit = arm.find(BRANCH_EXIT).expect("锚点消失：守卫已失去判据");
+
+        // ── 那两发推送必须落在这条 `let-else` 的 else 体内 ──
+        for (needle, why) in [
+            (
+                "push_popup_state(&app, UpdatePopupState::no_update(",
+                "「没有可下的东西」仍须把弹窗推出 progress（否则永远转圈），且必须推 `no_update` 那一档",
+            ),
+            (
+                "schedule_popup_auto_close(&app, NO_UPDATE_AUTO_CLOSE_MS)",
+                "`noupdate` 终态没有排自动关窗，或沿用了 done 的 800ms —— 后者一闪而过，等于没说",
+            ),
+        ] {
+            let at = arm.find(needle).unwrap_or_else(|| panic!("{why}（本臂里根本找不到）"));
+            assert!(
+                head < at && at < exit,
+                "{why}。实得 offset：分支头={head} / 本句={at} / 分支早退={exit} —— \
+                 它不在「复查回来没有 updateInfo」那条分支里。搬到臂内别的分支上，\
+                 这条路径就一发都不推，而弹窗停在 progress 永远转圈"
+            );
+        }
+
         assert!(
             !arm.contains("UpdatePopupState::done("),
             "本臂一个字节都没下 —— 推 `done` 就是在发起本次动作的那一屏上谎称「下载完成」\
@@ -4999,11 +5045,6 @@ mod tests {
         assert!(
             !body.contains("ProgressStage::Downloaded"),
             "「没有可下的东西」不得广播 downloaded —— 无文件、无 filePath，设置页会显示假的「已下载」"
-        );
-        // 终态得真能关窗：推完态不排关窗 = 一个 always_on_top 的窗停在那儿不动。
-        assert!(
-            arm.contains("schedule_popup_auto_close(&app, NO_UPDATE_AUTO_CLOSE_MS)"),
-            "`noupdate` 终态没有排自动关窗，或沿用了 done 的 800ms —— 后者一闪而过，等于没说"
         );
     }
 
@@ -5631,7 +5672,7 @@ mod tests {
         assert_eq!(progress_percent(9_999, Some(1000), 50), Some(99));
     }
 
-    // ── 弹窗四态（此前只有 remind 一态可达）─────────────────────────────────
+    // ── 弹窗各档（此前只有 remind 一档可达）─────────────────────────────────
 
     /// 🟡 **弹窗镜像与广播载荷读的是同一帧：三种帧各自带齐自己那一屏要的事实。**
     ///

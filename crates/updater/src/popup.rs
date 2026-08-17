@@ -4,7 +4,7 @@
 //!  - `createUpdatePopup:541-631`：建窗 + 复用分支 + 初始态下发。
 //!  - `sendPopupState:636-647`：写 `lastPopupState` + 推 renderer + 按 phase 改窗高。
 //!  - `showUpdateDialog:486-503`：互斥闸 + remind 态 + 动作等待。
-//!  - `popupHeightFor:18-28`（`update-popup-layout.ts`）：四态窗高。
+//!  - `popupHeightFor:18-28`（`update-popup-layout.ts`）：上游四态窗高（本移植另加 `noupdate` 一档）。
 //!
 //! # 本模块存在的理由：#300/#301 的不变式需要一个「结构上无法违反」的落点
 //!
@@ -46,7 +46,12 @@ pub const POPUP_WIDTH: u32 = 380;
 ///
 /// 上游四态高度逐字对齐：`remind`=184 / `error`=152 / `progress`|`done`=116。
 /// 本移植新增的 `noupdate` 上游没有对应值，与 `progress`/`done` 同档：三者都是「标题 + 一两行
-/// 辅助信息、无按钮行」的卡（`noupdate` 实际只用到 75px，116 有余量而不溢出）——**不新造魔数**。
+/// 辅助信息、无按钮行」的卡 ——**不新造魔数**。
+///
+/// 代价如实登记（真机可见）：`noupdate` 的内容只有标题 + 一行副文案，按本窗排版实算约 75px
+/// （padding 28 + 标题 21 + gap 8 + 副文案 18），于是卡片**底部留约 41px 空白**。取舍是「宁可
+/// 多一格空白，也不为一屏新造一个只此一处用的高度常量」；真要收，得连同 `progress`/`done`
+/// 一起按内容算高，那是另一件事。
 #[must_use]
 pub fn popup_height_for(phase: PopupPhase) -> u32 {
     match phase {
@@ -62,8 +67,8 @@ pub const DONE_AUTO_CLOSE_MS: u64 = 800;
 /// `noupdate` 态自动关窗延迟（ms）。
 ///
 /// **刻意不沿用 [`DONE_AUTO_CLOSE_MS`]**：那 800ms 是上游「打勾即走」的确认动画时长 —— `done` 那一屏
-/// 用户不必读任何字就知道发生了什么。`noupdate` 是四态里**唯一要求用户把一句话读完才有信息量**的
-/// 终态（「本次检查未找到 vX 的更新包」），800ms 内一闪而过等于没说 —— 那与本批要修的「只有状态、
+/// 用户不必读任何字就知道发生了什么。`noupdate` 则是五档里**唯一要求用户把一句话读完才有
+/// 信息量**的终态（「本次检查未找到 vX 的更新包」），800ms 内一闪而过等于没说 —— 那与本批要修的「只有状态、
 /// 没有事实」是同一个病。
 ///
 /// 取值属**判断**，不是实测：本仓没有可援引的一次性提示停留时长先例（应用内 toast 由 sonner 托管、
@@ -93,11 +98,13 @@ pub struct UpdatePopupState {
     /// # 为什么发数字而不是发拼好的文案
     ///
     /// 本字段的前身是 `bytes_text: Option<String>`（形如 `3.2 MB / 48 MB`）——**全仓零生产写点**，
-    /// 有字段、有 serde 单测，渲染端恒回落 `${pct}%`。改发数字不是「顺手换个形状」：
-    /// 后端拼文案就意味着后端产出**用户可见文案**，而数字的小数点、千分位、数字形（fa 用
-    /// ۰۱۲۳）全部随语言变，那条路本仓已有登记在案的欠账（`emit_progress` 的硬编码中文 message）。
-    /// 数字过线、渲染端按当前语种拼，是本仓 i18n 纪律唯一站得住的方向；顺带让弹窗与设置页
-    /// 用同一套换算（`SettingsUpdate.tsx` 的下载卡也是 `MB` 一位小数）。
+    /// 有字段、有 serde 单测，渲染端恒回落 `${pct}%`。改发数字不是「顺手换个形状」：后端拼文案
+    /// 就意味着**后端又多产出一份用户可见文案**，而本仓已有一条登记在案的欠账正是那条路
+    /// （`emit_progress` 的 `message` 携带硬编码中文、经 `update:progress` 原样广播、绕过 i18n）。
+    /// 数字过线、渲染端拼串，是不把那个口子再开宽一格的唯一方向。
+    ///
+    /// ⚠️ **不要把它说成「换到前端就本地化了」**：渲染端用的 `fmtBytes` 同样语种无关（拉丁数字、
+    /// `.` 小数点、写死 `B/KB/MB/GB/TB`）。真按语种给数字形要走 `Intl.NumberFormat`，未做。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub received_bytes: Option<u64>,
     /// 本次下载的**总字节**（= 清单 `fileSize`）。
@@ -116,8 +123,13 @@ pub struct UpdatePopupState {
     /// 包的落位路径（done 态）。
     ///
     /// **这是 `done` 的必填随行事实**：[`UpdatePopupState::done`] 把它做成必填参数之后，
-    /// 「什么都没下却推一个 done」在类型上就写不出来了（此前 `update_popup_action` 的
-    /// 「复查发现没有可下的东西」那一档正是这么写的，弹窗于是显示「下载完成」+ 满格进度条）。
+    /// 零参的 `done()` 这个写法不复存在（此前 `update_popup_action` 的「复查发现没有可下的东西」
+    /// 那一档正是这么写的，弹窗于是显示「下载完成」+ 满格进度条）。
+    ///
+    /// ⚠️ **类型只挡住零参调用，挡不住空串/伪造路径**：`done(version, "")` 照样编译得过。真正
+    /// 挡住那一档的是源码门 `commands::updater::tests::the_no_download_path_never_claims_a_download`
+    /// —— 类型挡「拿不出路径」，那道门挡「随手编一个路径喂给它」。两道都得在，删任一条缺陷都能
+    /// 静默复活（实测：把源码门 `#[ignore]` 掉 ⇒ 全仓仍绿）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_path: Option<String>,
     /// 错误文案（error 态）。
@@ -159,9 +171,17 @@ impl UpdatePopupState {
     ///
     /// 本函数此前是零参的 `done()`，于是「复查回来发现没有可下的东西」那一档能拿它收场 ——
     /// 弹窗渲染「下载完成」+ 100% 进度条，而**一个字节都没下**。把落位路径提成必填参数之后，
-    /// 那句谎话不再是「有没有人记得别这么写」的约定，而是编译期写不出来：没有包就没有路径，
-    /// 没有路径就构造不出 `done`。「没有可下的东西」现在有自己的一档
-    /// （[`PopupPhase::NoUpdate`] / [`UpdatePopupState::no_update`]）。
+    /// 调用点至少得为「包在哪儿」这件事**显式表态**一次，而不是什么都不填就拿到一个终态。
+    /// 「没有可下的东西」现在有自己的一档（[`PopupPhase::NoUpdate`] /
+    /// [`UpdatePopupState::no_update`]）。
+    ///
+    /// ⚠️ **别把这条读成「谎话在类型上写不出来」**（本注释初版就是那么写的，过头了）：
+    /// `done(version, "")` 编译得过，`done(version, "/dev/null")` 也编译得过。类型消掉的只是
+    /// 「零参即得终态」这一种形态；「编一个路径喂给它」由源码门
+    /// `commands::updater::tests::the_no_download_path_never_claims_a_download` 挡
+    /// （该门那边的注释是对的：类型挡拿不出路径，门挡随手编一个）。实测把那道门 `#[ignore]`
+    /// 掉再把分支改回推 `done` ⇒ 全仓 4185 passed / 0 failed，缺陷复活且零告警 ——
+    /// **看着这句话去删门的人会把缺陷放回来**，故此处必须写准。
     ///
     /// `version` 可缺（清单理论上可能没有 `version` 字段）；缺时由
     /// [`PopupSession::send_state`] 的会话级继承补上这次弹窗邀请的那一版 —— 两处都没有才留空。
@@ -860,6 +880,60 @@ mod tests {
             .join("\n")
     }
 
+    /// 取 `impl UpdatePopupState` 里**全部 `Self { … }` 结构体字面量的体**（按花括号配对切）。
+    ///
+    /// # 为什么取材面必须是字面量体，而不是整个 impl 块
+    ///
+    /// 「字段有没有被写」这句话的意图面很窄：**某个字段名出现在一个结构体字面量的字段位上**。
+    /// 前一版把取材面放到整个 impl 块 + 行首 `<ident>:` 的形状上，宽了一级 —— 而宽出来的那一格
+    /// 恰好装得下**函数签名的形参声明**：`done` 只要多一个参数，rustfmt 就会把签名折成
+    ///
+    /// ```text
+    ///     pub fn done(
+    ///         version: Option<String>,
+    ///         file_path: impl Into<String>,   // ← 行首裸标识符 + 冒号，与字段写点同形
+    ///     ) -> Self {
+    /// ```
+    ///
+    /// 于是删掉 `file_path: Some(..)` 这个真写点之后本门照样绿（复审实测 M4b）。那正是本门存在的
+    /// 意义所在的反面：**新加的字段没有专属断言，全靠本门兜底**，兜漏了就是 `bytes_text` 躺一个
+    /// 移植周期的形态原样复发。
+    ///
+    /// 按花括号配对切之后，形参列表、`let` 绑定、`match` 臂一律不在取材面内 —— 收到形状上，
+    /// 而不是再加一个串去堵 `_file_path:`。
+    fn self_literal_bodies() -> Vec<String> {
+        let block = state_impl_block();
+        let mut out = Vec::new();
+        let mut from = 0usize;
+        while let Some(rel) = block[from..].find("Self {") {
+            let open = from + rel + "Self {".len();
+            let mut depth = 1usize;
+            let mut end = open;
+            for (i, c) in block[open..].char_indices() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = open + i;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            assert!(depth == 0, "`Self {{` 的花括号没配上对 —— 取材器判据已过期");
+            out.push(block[open..end].to_string());
+            from = end;
+        }
+        assert!(
+            out.len() >= 4,
+            "只切到 {} 个 `Self {{ … }}` 字面量 —— 构造函数写法变了，判据面塌了",
+            out.len()
+        );
+        out
+    }
+
     /// 🟡 **载荷里声明的每个字段都必须有生产写点，否则它只是个骗前端的坑。**
     ///
     /// 这是本批第二条缺陷的判据面。`bytes_text` 在本结构里躺了整整一个移植周期：有字段、有
@@ -868,8 +942,8 @@ mod tests {
     /// 「后端这一帧没给」一模一样，`cargo build` 与 `tsc` 都不会说话。
     ///
     /// 判据面是**结构体自己的字段表**（不是点名清单）：加字段就自动进判据面，加完不写它必红。
-    /// 写点认定 = 该字段名在 `impl UpdatePopupState` 的构造函数里出现过（那是全仓唯一的构造入口
-    /// —— 生产代码不用结构体字面量造这个类型，见下方反向断言）。
+    /// 写点认定 = 该字段名出现在 `impl UpdatePopupState` 内某个 **`Self { … }` 字面量体**的字段位上
+    /// （取材器见 [`self_literal_bodies`]；那是全仓唯一的构造入口，下方反向断言钉住这个前提）。
     ///
     /// **变异探针**：把 `progress` 里的 `received_bytes: received` 删掉 ⇒ 转红并点名
     /// `received_bytes`；把 `mirror` 从待修表里去掉 ⇒ 转红（登记表只降不升，两个方向都说话）。
@@ -905,32 +979,46 @@ mod tests {
             fields.len()
         );
 
-        // 写点 = 构造函数里**独占一行的字段初始化**（`    field: expr,`），按行首判。
+        // 写点 = **`Self { … }` 字面量体内**的字段位（`field: expr,` 或简写 `field,`）。
         //
-        // **不能只判「`field:` 在 impl 块里出现过」**：那样形参声明会替字段作证 —— 实测（变异
-        // M3）把 `done` 的 `file_path: Some(..)` 注掉、形参改名 `_file_path` 之后，签名里那句
-        // `_file_path: impl Into<String>` 含子串 `file_path:`，本门纹丝不动地绿了，而字段确实
-        // 已经没人写。这正是本仓登记在案的「邻居喂饱判据」：判据必须一路咬到要钉的那个 token。
+        // 取材面就是那几个字面量体（见 [`self_literal_bodies`]），不是整个 impl 块 —— 后者宽出来
+        // 的那一格装得下**函数签名的形参声明**：`done` 多一个参数、rustfmt 一折行，
+        // `    file_path: impl Into<String>,` 就与字段写点同形，删掉真写点本门照样绿（复审实测
+        // M4b）。收到字面量体之后，形参列表 / `let` 绑定 / `match` 臂一律不在取材面内。
         //
-        // 只认**带冒号**的初始化形态。字段简写（`Self { version, .. }`，`done` / `no_update` 里
-        // 就有）不算 —— 认它就得把「独占一行的 `<ident>,`」也算写点，而那个形状同样匹配「跨行
-        // 函数实参」，等于把刚收紧的取材面又放宽回去。今天每个字段都至少有一处带冒号的写法，
-        // 故不需要；将来若某字段的写点全改成简写，本门会红（安全方向，见下）。
+        // 字面量体内可以既认冒号形态又认简写形态（`Self { version, .. }`，`done` / `no_update`
+        // 里就有）：这里已经没有「跨行函数实参」可混淆了，认简写反而消掉一个误红面。
         //
-        // 行首判据的两个失效方向都是**误红**（rustfmt 把某个结构体字面量压成一行、或写点全用
-        // 简写）—— 红了会有人来看；而放过一个死字段没有任何人会知道，那正是 `bytes_text` 躺了
-        // 一整个移植周期的原因。今天本文件的字面量一律逐行展开。
-        let impl_block = state_impl_block();
-        let written: std::collections::BTreeSet<&str> = impl_block
-            .lines()
-            .filter_map(|l| l.trim_start().split_once(':').map(|(name, _)| name))
-            .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_alphanumeric() || c == '_'))
-            .collect();
-        let inert: Vec<&str> = fields
-            .iter()
-            .copied()
-            .filter(|f| !written.contains(f))
-            .collect();
+        // 失效方向（**登记修正**：上一版写成「两个方向都是误红」，那是错的，漏了下面第 2 条）：
+        //  1. 误红 —— 某字段的写点整个消失。安全方向，正是本门要的。
+        //  2. **误绿** —— 生产代码不经 `Self { … }` 造状态（比如换成 `..existing` 更新式，或另写一个
+        //     builder）。那时字段确实被写了，本门却看不见其形状；反过来若那种写法**取代**了字面量，
+        //     本门会因取材为空而在 [`self_literal_bodies`] 的自检上先炸（`>= 4` 那条），不会静默。
+        //     真正的哑格只剩「字面量与另一种写法并存、且某字段只在后者里被写」—— 今天不可达
+        //     （全部构造都是 `Self { .. }`），谁要引入第二种构造形态，请连同本门一起改判据。
+        let inert: Vec<&str> = {
+            let bodies = self_literal_bodies();
+            let written: std::collections::BTreeSet<&str> = bodies
+                .iter()
+                .flat_map(|b| b.lines())
+                .filter_map(|l| {
+                    let t = l.trim();
+                    // `field: expr,` / `field,` 两种字段位形态；`..Self::default()` 之类不含冒号
+                    // 也不是裸标识符，天然落选。
+                    let name = t.split_once(':').map_or_else(
+                        || t.strip_suffix(',').unwrap_or(""),
+                        |(name, _)| name.trim_end(),
+                    );
+                    (!name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_'))
+                        .then_some(name)
+                })
+                .collect();
+            fields
+                .iter()
+                .copied()
+                .filter(|f| !written.contains(f))
+                .collect()
+        };
         let known: Vec<&str> = KNOWN_INERT.iter().map(|(f, _)| *f).collect();
         assert_eq!(
             inert, known,
@@ -980,28 +1068,50 @@ mod tests {
     ///  - 它说不出「下了哪一版、落在哪儿」；
     ///  - 「什么都没下」能借用同一个构造函数收场，弹窗照样画「下载完成」+ 满格进度条。
     ///
-    /// 判据是**逐档的键集相等**（不是「至少有这几个」——那种只挡得住删除）。档数由
+    /// 判据是**逐档的键集**：必带的一个不许少、登记之外的一个不许夹带。档数由
     /// [`PopupPhase::ALL`] 给，而 `ALL` 自己由 `state.rs` 的门与枚举对账 ⇒ 加一档而不给它样本，
-    /// 这里必红。`required` 写成穷尽 `match` ⇒ 加一档不表态就编译不过。
+    /// 这里必红。`required` / `optional` 都写成穷尽 `match` ⇒ 加一档不表态就编译不过。
+    ///
+    /// # 为什么必须分「必带 / 可缺」两档
+    ///
+    /// 上一版只有一张 `required` 表，靠**手写夹具**自证 —— 而那张表的 `Progress` 一行声明
+    /// `receivedBytes`/`totalBytes` 必带，样本恰好是 `progress(37, Some, Some)`。**生产里有反例**：
+    /// 用户点「更新」后复查前那一发是 `progress(0, None, None)`（`commands/updater.rs` 的
+    /// `Update | Retry` 臂），序列化后根本没有这两个键。即「档数覆盖」是判据定的，而「逐档带哪些
+    /// 键」那一半是夹具定的 —— 本仓刚在别处栽过同一形态。
+    ///
+    /// 现在样本表按**档 × 生产可达形态**展开（`Progress` 两个：知道字节数的、不知道的），
+    /// 判据是 `required ⊆ keys ⊆ required ∪ optional`。哪个字段进 `optional` 必须有生产理由，
+    /// 不是「反正它可能没有」。
     ///
     /// **变异探针**：`done` 里删掉 `file_path: Some(...)` ⇒ done 那格转红；`no_update` 里补一个
-    /// `percentage: Some(100)` ⇒ noupdate 那格报「夹带」；`progress` 不写 `total_bytes` ⇒ 转红。
+    /// `percentage: Some(100)` ⇒ noupdate 那格报「夹带」；把 `receivedBytes` 从 `optional` 挪进
+    /// `required` ⇒ 复查前那一发的样本转红（证明这张表现在真по生产形态判，不是по夹具）。
     #[test]
     fn every_phase_carries_the_facts_its_screen_depends_on() {
-        /// 该档序列化后**必须**出现、且不得多于此的键。穷尽 match ⇒ 新增一档即编译错误。
+        /// 该档序列化后**必须**出现的键。穷尽 match ⇒ 新增一档即编译错误。
         fn required(phase: PopupPhase) -> &'static [&'static str] {
             match phase {
                 PopupPhase::Remind => &["phase", "version", "currentVersion"],
-                PopupPhase::Progress => &[
-                    "phase",
-                    "percentage",
-                    "receivedBytes",
-                    "totalBytes",
-                    "version",
-                ],
+                // 字节数**不在**必带里：复查前那一发（`progress(0, None, None)`）此刻确实什么都
+                // 不知道。百分比与版本号则每一发都有。
+                PopupPhase::Progress => &["phase", "percentage", "version"],
+                // 落位路径必带 —— 没有它，本档与「什么都没下」在屏幕上长得一模一样。
                 PopupPhase::Done => &["phase", "version", "percentage", "filePath"],
                 PopupPhase::NoUpdate => &["phase", "version"],
                 PopupPhase::Error => &["phase", "version", "errorText"],
+            }
+        }
+
+        /// 该档**允许出现但可缺**的键（逐条要有生产理由）。必带之外的一律算夹带。
+        fn optional(phase: PopupPhase) -> &'static [&'static str] {
+            match phase {
+                // 分母未知时 `total_bytes` 被 `progress()` 滤成 `None`；两者同缺于复查前那一发。
+                PopupPhase::Progress => &["receivedBytes", "totalBytes"],
+                PopupPhase::Remind
+                | PopupPhase::Done
+                | PopupPhase::NoUpdate
+                | PopupPhase::Error => &[],
             }
         }
 
@@ -1009,42 +1119,68 @@ mod tests {
         // 就是这么来的），拿裸构造体断言等于测了一条用户走不到的路。
         let mut s = PopupSession::new(RecordingTransport::default());
         s.open(UpdatePopupState::remind("v1.2.0", "v1.1.0"));
-        let sample = |phase: PopupPhase| -> UpdatePopupState {
+        // 每一档**全部生产可达的构造形态**（不是每档一个夹具）。`Progress` 两发对应
+        // `commands/updater.rs` 的两个调用点：复查前的 `progress(0, None, None)` 与下载回调那一发。
+        let samples = |phase: PopupPhase| -> Vec<UpdatePopupState> {
             match phase {
-                PopupPhase::Remind => UpdatePopupState::remind("v1.2.0", "v1.1.0"),
-                PopupPhase::Progress => {
-                    UpdatePopupState::progress(37, Some(19_240_000), Some(52_000_000))
-                }
-                PopupPhase::Done => {
-                    UpdatePopupState::done(Some("v1.2.0".into()), "/tmp/updates/polaris.dmg")
-                }
-                PopupPhase::NoUpdate => UpdatePopupState::no_update(None),
-                PopupPhase::Error => UpdatePopupState::error("网络中断"),
+                PopupPhase::Remind => vec![UpdatePopupState::remind("v1.2.0", "v1.1.0")],
+                PopupPhase::Progress => vec![
+                    UpdatePopupState::progress(0, None, None),
+                    UpdatePopupState::progress(37, Some(19_240_000), Some(52_000_000)),
+                ],
+                PopupPhase::Done => vec![UpdatePopupState::done(
+                    Some("v1.2.0".into()),
+                    "/tmp/updates/polaris.dmg",
+                )],
+                PopupPhase::NoUpdate => vec![UpdatePopupState::no_update(None)],
+                PopupPhase::Error => vec![UpdatePopupState::error("网络中断")],
             }
         };
 
         for phase in PopupPhase::ALL {
-            s.send_state(sample(phase))
-                .expect("mock transport 不会失败");
-            let state = s.last_state().expect("刚推过");
-            assert_eq!(state.phase, phase, "样本表里 {phase} 那一格造错了档");
-            let json = serde_json::to_value(state).expect("载荷必须可序列化");
-            let obj = json.as_object().expect("载荷必须是 JSON 对象");
-            for key in required(phase) {
+            for sample in samples(phase) {
+                s.send_state(sample).expect("mock transport 不会失败");
+                let state = s.last_state().expect("刚推过");
+                assert_eq!(state.phase, phase, "样本表里 {phase} 那一格造错了档");
+                let json = serde_json::to_value(state).expect("载荷必须可序列化");
+                let obj = json.as_object().expect("载荷必须是 JSON 对象");
+                for key in required(phase) {
+                    assert!(
+                        obj.contains_key(*key),
+                        "{phase} 档缺随行事实 `{key}` —— 那一屏只剩一个状态字"
+                    );
+                }
+                let extra: Vec<&String> = obj
+                    .keys()
+                    .filter(|k| {
+                        !required(phase).contains(&k.as_str())
+                            && !optional(phase).contains(&k.as_str())
+                    })
+                    .collect();
+                assert!(extra.is_empty(), "{phase} 档夹带了未登记的键: {extra:?}");
+            }
+        }
+
+        // `optional` 不许当豁免用：登记为可缺的键，必须真有**至少一个**生产形态带着它 ——
+        // 否则那一格与「这个字段根本没人写」不可分辨（`bytes_text` 正是那个形态）。
+        for phase in PopupPhase::ALL {
+            for key in optional(phase) {
+                let seen = samples(phase).into_iter().any(|st| {
+                    serde_json::to_value(&st)
+                        .expect("载荷必须可序列化")
+                        .get(key)
+                        .is_some()
+                });
                 assert!(
-                    obj.contains_key(*key),
-                    "{phase} 档缺随行事实 `{key}` —— 那一屏只剩一个状态字"
+                    seen,
+                    "{phase} 档把 `{key}` 登记成「可缺」，却没有任何一个生产形态带着它 —— \
+                     那不是可选字段，那是死字段"
                 );
             }
-            let extra: Vec<&String> = obj
-                .keys()
-                .filter(|k| !required(phase).contains(&k.as_str()))
-                .collect();
-            assert!(extra.is_empty(), "{phase} 档夹带了未登记的键: {extra:?}");
         }
 
         // 逐值对账（上面只管「在不在」）：两个终态的事实必须指向**这一次**下载。
-        let done = sample(PopupPhase::Done);
+        let done = samples(PopupPhase::Done).remove(0);
         assert_eq!(done.file_path.as_deref(), Some("/tmp/updates/polaris.dmg"));
         assert_eq!(done.version.as_deref(), Some("v1.2.0"));
         // `no_update` 自己不带版本号，靠会话继承拿到弹窗邀请的那一版 —— 它是「关于哪一版没得下」

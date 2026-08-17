@@ -167,7 +167,7 @@ export const IPC_CHANNELS = {
   UPDATE_INSTALL: 'update_install',
   UPDATE_SKIP: 'update_skip',
   UPDATE_OPEN_RELEASES: 'update_open_releases',
-  // App 更新弹窗（独立 mini 更新窗）：主进程 → 弹窗推四态状态载荷；弹窗 → 主进程回传按钮/关闭动作。
+  // App 更新弹窗（独立 mini 更新窗）：主进程 → 弹窗推状态载荷；弹窗 → 主进程回传按钮/关闭动作。
   UPDATE_POPUP_STATE: 'update_popup_state',
   UPDATE_POPUP_ACTION: 'update_popup_action',
 

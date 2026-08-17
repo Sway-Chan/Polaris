@@ -1,5 +1,5 @@
 /**
- * mini 更新弹窗渲染端（380px 角落 toast，四态：remind / progress / done / error）。
+ * mini 更新弹窗渲染端（380px 角落 toast，五档：remind / progress / done / noupdate / error）。
  *
  * 移植自 Polaris `src/renderer/update-popup/main.ts`，但**首帧来源不同**——这是 #300 的结构性解。
  *
@@ -77,7 +77,7 @@ function sendAction(action: PopupAction): void {
   });
 }
 
-/** 角标关闭钮（原型 `:2948` 的 `.ut-x`，**四态恒在**）。 */
+/** 角标关闭钮（原型 `:2948` 的 `.ut-x`，**每一档恒在**；对拍门逐档核它挂没挂）。 */
 function closeButton(phase: PopupPhase | undefined): string {
   // 不用原生 `title=`（G10：无 skip-delay / 键盘不可见 / 不跟深色主题）。本窗是独立 Tauri 窗、
   // 没装主窗那套 tooltip 引擎，故只留 `aria-label`——图标含义（×）本身自明，无需悬浮解释。

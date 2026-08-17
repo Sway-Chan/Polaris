@@ -200,7 +200,7 @@ pub mod channel {
     // App 更新进度
     pub const EVENT_UPDATE_PROGRESS: &str = "update:progress";
 
-    // App 更新弹窗四态（独立 mini 窗）
+    // App 更新弹窗状态载荷（独立 mini 窗）
     pub const UPDATE_POPUP_STATE: &str = "update:popupState";
 }
 
