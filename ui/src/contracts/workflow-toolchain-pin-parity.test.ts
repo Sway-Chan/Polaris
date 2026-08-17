@@ -84,19 +84,25 @@ describe('CI 工具链钉扎守门', () => {
     expect(versions, 'PROTOC_VERSION 常量应恰有一处').toHaveLength(1);
   });
 
-  it('fetch-protoc.mjs 的校验与 CI 装配线还在（createHash 比对 / 断言步期望值导出）', () => {
+  it('fetch-protoc.mjs 的校验与 CI 装配线还在（钉执行形，防被注释/import/log 行喂饱）', () => {
+    // 三条都钉「执行形」而不是裸词：CI-4 复审实证过裸词的喂饱路径——`createHash` 被 import 行
+    // 喂饱、`PROTOC_EXPECT=libprotoc` 被 console.log 行喂饱、`GITHUB_PATH` 被注释喂饱、
+    // `sha256 不符` 词在 throw 被改成 console.error 后仍绿（那等于校验静默放行，供应链牙全失效）。
     expect(
-      fetchProtoc.includes("createHash('sha256')") && fetchProtoc.includes('sha256 不符'),
-      '脚本丢了 sha256 校验 —— 常量还在、校验没了，钉扎退化成装饰。' +
-        '（钉调用形 `createHash(\'sha256\')` 而不是裸 `createHash`：后者会被 import 行喂饱）'
+      fetchProtoc.includes('throw new Error(`sha256 不符'),
+      'sha256 不符的处置必须是 throw（经 catch 转 exit 1）—— 换成 console.error 就成了静默放行'
     ).toBe(true);
     expect(
-      fetchProtoc.includes('PROTOC_EXPECT=libprotoc'),
-      '脚本不再经 GITHUB_ENV 导出 PROTOC_EXPECT —— 断言步拿不到期望值，安装步可静默 no-op'
+      fetchProtoc.includes("createHash('sha256')"),
+      '脚本丢了 sha256 校验调用 —— 常量还在、校验没了，钉扎退化成装饰'
     ).toBe(true);
     expect(
-      fetchProtoc.includes('GITHUB_PATH') && fetchProtoc.includes('GITHUB_ENV'),
-      '脚本的 CI 装配线（PATH 注册）没了 —— 装了但断言步解析不到；此处防整段被误删'
+      fetchProtoc.includes('appendFileSync(process.env.GITHUB_ENV, `PROTOC_EXPECT='),
+      'PROTOC_EXPECT 不再经 GITHUB_ENV 真写入 —— 断言步拿不到期望值，安装步可静默 no-op'
+    ).toBe(true);
+    expect(
+      fetchProtoc.includes('appendFileSync(process.env.GITHUB_PATH'),
+      'CI 的 PATH 注册线没了 —— 装了但断言步解析不到；此处防整段被误删'
     ).toBe(true);
   });
 

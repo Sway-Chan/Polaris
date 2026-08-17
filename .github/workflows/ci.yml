@@ -142,6 +142,10 @@ jobs:
       # 版本为什么是 35.1、为什么升版本零行为差、sha256 从哪来、被替掉的 arduino/setup-protoc@v3
       # 两个外部失效点 —— 全部在脚本头注，改版本先读它。sha 校验走 node createHash、解压走
       # lib/extract-zip.mjs（三平台 CI 已绿），与 shell 是 bash 还是 pwsh 彻底解耦。
+      # （node 依赖：runner 镜像三平台均预装 nodejs 且在 PATH（runner-images 软件清单）——本步
+      #   是 ci.yml 的 win/mac 腿**首次**跑 node（此前 ci.yml 只有 ubuntu 腿的 fetch-cronet
+      #   --check-only）。ci 侧 node 版本随镜像浮动、package.yml 侧有 setup-node 钉 26；脚本
+      #   只用 ≥14 稳定 API，失败模式是 command not found 当场红，不会静默。）
       - name: Install protoc (pinned URL + sha256)
         run: node scripts/fetch-protoc.mjs
 
@@ -156,9 +160,9 @@ jobs:
       # curl 带重试兜瞬时抖动；真下不来会红，不会静默跳过。
       #
       # 本步 **Windows-only**（`if: runner.os == 'Windows'`），所以校验器不写平台分支 ——
-      # 写了另一条也是死代码。别看着上面 protoc 步有 macOS 分支就以为这里漏了。
-      # 「Git Bash 是否自带 `sha256sum`」这条未证实的前提两步**共用**，不是各自独立的假设。
-      # 解压器与 protoc 步统一成同一个（System32 的 bsdtar，绝对路径），不用 `7z`：
+      # 写了另一条也是死代码。「Git Bash 是否自带 `sha256sum`」已由 CI-1 的 windows-2022
+      # 真跑实证（当初六条不确定项里唯一「明确未证实」的那条）。
+      # 解压器用 System32 的 bsdtar 绝对路径，不用 `7z`：
       # 两者都合乎「按平台写死」那条 🔴，但 `7z` 多押一个「它在 Git Bash 的 PATH 上」——
       # runner 镜像清单只说装了 7zip、没说在不在 PATH（它对 Miniconda / MSYS2 才显式标注了
       # 「不在 PATH」，对 7-Zip 的沉默是推断不是证据）。绝对路径把 PATH 这一维整个去掉，
@@ -178,7 +182,7 @@ jobs:
           echo "${sha256}  ${zip}" | sha256sum -c -
           rm -rf "${tmp}/nasm-${NASM_VERSION}"
           # zip 内已带 `nasm-<ver>/` 顶层目录，解到 tmp 即得 `<tmp>/nasm-<ver>/nasm.exe`。
-          # 落点是 `$tmp`（= RUNNER_TEMP，runner 保证存在），故不需要 protoc 步那句 `mkdir -p`。
+          # 落点是 `$tmp`（= RUNNER_TEMP，runner 保证存在；bsdtar 的 -C 要求目录已在，故成立）。
           echo 'extractor: /c/Windows/System32/tar.exe (bsdtar)'
           /c/Windows/System32/tar.exe -xf "$(cygpath -w "$zip")" -C "$(cygpath -w "$tmp")"
           cygpath -w "${tmp}/nasm-${NASM_VERSION}" >> "$GITHUB_PATH"

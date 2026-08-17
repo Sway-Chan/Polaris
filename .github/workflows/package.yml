@@ -363,9 +363,9 @@ jobs:
             "https://www.nasm.us/pub/nasm/releasebuilds/${NASM_VERSION}/win64/nasm-${NASM_VERSION}-win64.zip"
           echo "${sha256}  ${zip}" | sha256sum -c -
           rm -rf "${tmp}/nasm-${NASM_VERSION}"
-          # 本步 Windows-only，故校验器不写平台分支（写了另一条也是死代码）；解压器与 protoc 步
-          # 统一成 System32 的 bsdtar、绝对路径，不用 `7z`——理由（少押一个「7z 在 Git Bash 的
-          # PATH 上」）写在 `ci.yml` 同名步骤上方。落点是 RUNNER_TEMP，故无需 `mkdir -p`。
+          # 本步 Windows-only，故校验器不写平台分支（写了另一条也是死代码）；解压器用 System32
+          # 的 bsdtar 绝对路径、不用 `7z`——理由（少押一个「7z 在 Git Bash 的 PATH 上」）写在
+          # `ci.yml` 同名步骤上方。落点是 RUNNER_TEMP（runner 保证存在），故无需 `mkdir -p`。
           echo 'extractor: /c/Windows/System32/tar.exe (bsdtar)'
           /c/Windows/System32/tar.exe -xf "$(cygpath -w "$zip")" -C "$(cygpath -w "$tmp")"
           cygpath -w "${tmp}/nasm-${NASM_VERSION}" >> "$GITHUB_PATH"

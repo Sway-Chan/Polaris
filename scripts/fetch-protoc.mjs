@@ -82,10 +82,18 @@ const url =
   `https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}` +
   `/protoc-${PROTOC_VERSION}-${pinned.asset}.zip`;
 
-// 落点：CI 上用 RUNNER_TEMP（随 job 回收），本地用系统 tmp。绝不落进仓库——
-// protoc 是构建工具不是随包产物（与 resources/ 下那批不同），库里多一份只会漂。
+// CI 上用 RUNNER_TEMP（随 job 回收），本地用系统 tmp。
 const base = process.env.RUNNER_TEMP || tmpdir();
-const dest = join(base, 'polaris-protoc', `protoc-${PROTOC_VERSION}-${pinned.asset}`);
+
+// 落点绝不落进仓库——protoc 是构建工具不是随包产物（与 resources/ 下那批不同），库里多一份
+// 只会漂。目录名织入**完整** sha（对齐 fetch-cronet 的指纹思路）：换版本或**同版本重钉 sha**
+// 都换目录 ⇒ 必然重新下载重校验。⚠️ 不能只织前 12 位——confirm 轮 M13 实证：改 sha 尾位
+// 的 hex 不动前缀 ⇒ 同目录 ⇒ 旧产物 skip 掉新 sha 的验证，重钉保护整个失效。
+const dest = join(
+  base,
+  'polaris-protoc',
+  `protoc-${PROTOC_VERSION}-${pinned.asset}-${pinned.sha256}`
+);
 
 const sha256 = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
 
@@ -95,10 +103,13 @@ if (!FORCE && existsSync(join(dest, 'bin'))) {
   console.log(`skip (up to date): ${dest}`);
 } else {
   const work = mkdtempSync(join(tmpdir(), 'polaris-protoc-dl-'));
+  let failed = false;
   try {
     const zip = join(work, 'protoc.zip');
     console.log(`downloading ${url} ...`);
-    // 与 fetch-core / fetch-cronet 同款：`-f` 拦 404 冒充成功、`-L` 跟重定向、`--retry` 抗抖动。
+    // 骨架形制照 fetch-cronet，强度参数（--retry 5 / --retry-all-errors / --connect-timeout 20）
+    // 承自被替掉的内联步 —— 与两个先例都不逐字同款，差异有意：不带 --retry-delay 5（curl 默认
+    // 指数退避，总等待反而更长）；不带 -sS（stdio inherit 下进度条进日志，噪音不是功能差）。
     execFileSync('curl', ['-fL', '--retry', '5', '--retry-all-errors', '--connect-timeout', '20', '-o', zip, url], {
       stdio: 'inherit',
     });
@@ -113,10 +124,13 @@ if (!FORCE && existsSync(join(dest, 'bin'))) {
     console.log(`extracted → ${dest}`);
   } catch (e) {
     console.error(`FAILED: ${e.message}`);
-    process.exit(1);
+    failed = true;
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
+  // exit 放在 finally 之后：catch 里直接 process.exit 会跳过 finally、泄漏整个 mkdtemp 工作区
+  //（fetch-cronet 的 catch 只记数、循环外统一 exit，就是为这个——照抄骨架时别把这处变形抄丢）。
+  if (failed) process.exit(1);
 }
 
 const binDir = join(dest, 'bin');
