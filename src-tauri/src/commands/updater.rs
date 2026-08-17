@@ -5735,7 +5735,7 @@ mod tests {
             "弹窗 Skip 臂的写点绕过了归一化 —— 同上"
         );
 
-        // 全仓生产写点清单：`rel_path` → 赋值次数（tests 区整段剔除）。
+        // 全仓命中清单：`路径` → `.skipped_version = ` 出现次数（**不剔测试区**，见 helper 头注）。
         let mut writes: Vec<(String, usize)> = vec![];
         let manifest = env!("CARGO_MANIFEST_DIR");
         for root in [
@@ -5744,6 +5744,12 @@ mod tests {
         ] {
             collect_skip_writes(std::path::Path::new(&root), &root, &mut writes);
         }
+        // 今天的构成：生产 2（update_skip / PopupAction::Skip）+ 测试与 doc 示例 10
+        // （本文件 8、runtime/updater.rs 测试 2）。任何**新增**命中——生产第三写点、新测试写
+        // state、doc 示例串——都先红：红了就过目定性，属生产写点必须过 stored_skip_version
+        // 并两处体内断言，其余 bump 常量登记。（常量自己就咬过一次：helper 头注里的示例串
+        // 让首版钉 11 立刻红，正是「全响无哑」的实证。）
+        const PINNED_TOTAL: usize = 12;
         let total: usize = writes.iter().map(|(_, n)| n).sum();
         let locations = writes
             .iter()
@@ -5752,24 +5758,21 @@ mod tests {
             .collect::<Vec<_>>()
             .join(", ");
         assert_eq!(
-            total, 2,
-            "全仓 `.skipped_version = ` 生产赋值应恰有 2 处（update_skip / PopupAction::Skip，均在 \
-             commands/updater.rs）。实得 [{locations}] —— 多了就是绕过归一化点的第三写点（先过 \
-             stored_skip_version 并更新本断言），少了是写点被搬走、两处体内断言也该跟着红"
-        );
-        assert!(
-            writes.len() == writes.iter().filter(|(_, n)| *n == 0).count() + 1
-                && writes
-                    .iter()
-                    .find(|(_, n)| *n > 0)
-                    .is_some_and(|(p, _)| p.ends_with("commands/updater.rs")),
-            "写点必须仍集中在 commands/updater.rs —— 搬文件时同步改本守卫与两处体内断言，别静默放过"
+            total, PINNED_TOTAL,
+            "全仓 `.skipped_version = ` 命中数漂了（期望 {PINNED_TOTAL}，实得 {total}：[{locations}]）。\
+             多了：生产第三写点必须先过 stored_skip_version；测试/doc 新增也在此登记后 bump 常量。\
+             少了：写点被删/搬走 —— 两处体内断言应同步红，一并修"
         );
     }
 
-    /// 递归收集 `dir` 下 `.rs` 文件里 `.skipped_version = ` 的**生产区**出现次数。
-    /// tests 边界取**第一个** `#[cfg(test)]` / `mod tests {` 锚：本仓测试模块一律置尾，
-    /// 锚失联（= 边界没了）按「全文件计入」处理——宁可误红不可漏数。
+    /// 递归收集 `dir` 下 `.rs` 文件里 `.skipped_version = ` 的出现次数（**全文件**计数）。
+    ///
+    /// ⚠️ **不剔测试区**（复审 F2 实证的教训）：本仓存在三类打破「测试置尾」假设的合法布局——
+    /// 文件头部的 `#[cfg(test)] mod guard_scan`（commands.rs，93% 内容在首锚之后）、中部的具名
+    /// sub 测试 mod（runtime/proxy.rs 的 `mod probe_tests` 之后还有约 1.9 万行）、inline
+    /// `#[cfg(test)]` 项（runtime.rs 的 TmpDir）。「按第一个锚截断」会让这些文件锚后的生产代码
+    /// 整段免扫——哑绿。安全截断需要 cfg(test) 块的完整花括号解析（半个 parser），不成比例；
+    /// 故改为全文件计数 + 总数钉扎（调用处断言），新增命中一律先红后登记，全响无哑。
     fn collect_skip_writes(dir: &std::path::Path, root: &str, out: &mut Vec<(String, usize)>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             panic!(
@@ -5788,12 +5791,7 @@ mod tests {
             }
             let src = std::fs::read_to_string(&p)
                 .unwrap_or_else(|e| panic!("读不了 {}: {e}", p.display()));
-            let cut = ["\n#[cfg(test)]", "\nmod tests {"]
-                .iter()
-                .filter_map(|a| src.find(a))
-                .min()
-                .unwrap_or(src.len());
-            let n = src[..cut].matches(".skipped_version = ").count();
+            let n = src.matches(".skipped_version = ").count();
             let rel = p
                 .strip_prefix(root)
                 .unwrap_or(&p)
