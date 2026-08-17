@@ -119,6 +119,17 @@ describe('CI 工具链钉扎守门', () => {
       pkg[0],
       'ui 门与出包腿的 pnpm 版本不同：两侧装出来的 node_modules 不是一回事（见 CI-2）'
     ).toBe(ui[0]);
+    // 版本同还不够，install 形态也要同（复审 Low 的补刀）：版本一致而一侧掏掉
+    // `--frozen-lockfile` / 换安装器，lockfile 就能静默漂移——同一个坑的另一半。
+    // 钉整段执行形而不是步骤名：掏空 run 块、名字留着照样绿是本文件记载过的失效形态。
+    expect(
+      read('ui.yml').includes('pnpm install --frozen-lockfile'),
+      'ui.yml 的 install 丢了 --frozen-lockfile —— 门腿可以装出 lockfile 之外的依赖'
+    ).toBe(true);
+    expect(
+      sources['package.yml'].includes('pnpm --dir ui install --frozen-lockfile'),
+      'package.yml 的 install 丢了 --frozen-lockfile —— 出包腿可以装出门验过之外的依赖'
+    ).toBe(true);
   });
 
   it('NASM 版本与 sha256 两处一致', () => {
