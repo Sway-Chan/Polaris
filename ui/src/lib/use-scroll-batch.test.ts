@@ -117,6 +117,21 @@ describe('推进判据 `shouldAdvance`', () => {
     expect(shouldAdvance(at(10_000))).toBe(false);
   });
 
+  /**
+   * **量不到就不判**。全零输入下 `0 - 0 - 0 <= 240` 恒真 ⇒「不该推进」这条分支永不成立 ⇒
+   * `advanceBatch` 的 bail-out 只剩 `c >= total`，而节点屏的补批循环跑在 layout 档、同步、无上限：
+   * total=3000 要 50 轮，正好撞 React 的 `NESTED_UPDATE_LIMIT = 50` ⇒ `Maximum update depth
+   * exceeded`（白屏），不是「就地 bail-out」。真实入口是 RO：被观测元素停止渲染时投递 0×0。
+   */
+  it('容器高度为 0 时不推进（否则补批循环撞 React 的嵌套更新上限）', () => {
+    expect(shouldAdvance({ scrollHeight: 0, scrollTop: 0, clientHeight: 0 })).toBe(false);
+    expect(shouldAdvance({ scrollHeight: 0, scrollTop: 0, clientHeight: -1 })).toBe(false);
+    // 正向对照：同样「距底 0」但容器有真实高度时**必须**推进，否则上面两条只是把判据写死成假。
+    expect(shouldAdvance({ scrollHeight: 800, scrollTop: 0, clientHeight: 800 })).toBe(true);
+    // 到了 advanceBatch 这一层同样不动（这才是循环真正读的那个出口）。
+    expect(advanceBatch(60, 3000, { scrollHeight: 0, scrollTop: 0, clientHeight: 0 })).toBe(60);
+  });
+
   it('`scrollTop` 计入距底：内容再长，滚到底也该追加', () => {
     expect(shouldAdvance({ scrollHeight: 10_000, scrollTop: 8_900, clientHeight: 1_000 })).toBe(
       true
@@ -190,14 +205,37 @@ describe('`useScrollBatch` 计数推进', () => {
     mount();
     const total = 300;
     let batch = commit(() => useScrollBatch(total, 'k'));
-    // 收敛态（窄窗 4 列、60 张卡 15 行 ≈ 2115px，视口 1800px ⇒ 距底 315 > 240）。
-    batch.onScroll({ currentTarget: { scrollHeight: 2115, scrollTop: 0, clientHeight: 1800 } });
+    // 收敛态（窄窗 4 列、60 张卡 15 行 = 15×141 + 14×12(gap) = 2283px，视口 1800 ⇒ 距底 483 > 240）。
+    batch.onScroll({ currentTarget: { scrollHeight: 2283, scrollTop: 0, clientHeight: 1800 } });
     batch = commit(() => useScrollBatch(total, 'k'));
     expect(batch.count, 't=0 量到的是折叠前的几何 ⇒ 本就不该补批').toBe(SCROLL_BATCH_PAGE);
-    // 过渡结束：5 列 12 行 ≈ 1692px < 1800 ⇒ 不再溢出，此刻必须还有人来敲一次。
-    batch.onScroll({ currentTarget: { scrollHeight: 1692, scrollTop: 0, clientHeight: 1800 } });
+    // 过渡结束：5 列 12 行 = 12×141 + 11×12 = 1824px < 1800+240 ⇒ 该补批，此刻必须还有人来敲一次。
+    batch.onScroll({ currentTarget: { scrollHeight: 1824, scrollTop: 0, clientHeight: 1800 } });
     batch = commit(() => useScrollBatch(total, 'k'));
     expect(batch.count, '过渡结束后的那次回调没能补批 ⇒ 剩下 240 个节点永久点不到').toBe(
+      SCROLL_BATCH_PAGE * 2
+    );
+  });
+
+  /**
+   * 同一形状的第二个场景：**带 CSS 过渡的内容高度**（切视图档）。`.nd-card{transition:.14s}` 是
+   * 简写 ⇒ `transition-property:all`，列表档把 `min-height` 141→0 一并改掉，故 commit 那一刻
+   * （采样器①）量到的是过渡**前**的卡高；而采样器② RO 只看容器盒子，内容变矮不改它。
+   * 140ms 后 `transitionend` 是这一维唯一的第二次采样。本条钉的是判据；
+   * 「监听真的挂在 `.main-scroll` 上、且在 cleanup 里摘掉」由 `nodes-render-budget.test.tsx` 钉。
+   */
+  it('切视图档时序：commit 那次量到过渡前的卡高不推进，transitionend 再量一次才推进', () => {
+    mount();
+    const total = 300;
+    let batch = commit(() => useScrollBatch(total, 'k'));
+    // commit 那一刻：`min-height` 还停在旧档，内容仍远超视口 ⇒ 判「不推进」。
+    batch.onScroll({ currentTarget: { scrollHeight: 3000, scrollTop: 0, clientHeight: 1200 } });
+    batch = commit(() => useScrollBatch(total, 'k'));
+    expect(batch.count, 'commit 那次量到的是过渡前的卡高').toBe(SCROLL_BATCH_PAGE);
+    // 140ms 后过渡结束：卡片矮下去，内容跌到视口以内 ⇒ 没有第三个采样器就永久卡死。
+    batch.onScroll({ currentTarget: { scrollHeight: 900, scrollTop: 0, clientHeight: 1200 } });
+    batch = commit(() => useScrollBatch(total, 'k'));
+    expect(batch.count, 'transitionend 那次没能补批 ⇒ 切完视图档就再也点不到剩下的节点').toBe(
       SCROLL_BATCH_PAGE * 2
     );
   });

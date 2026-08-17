@@ -124,7 +124,8 @@ function warnMissingScroller(): void {
  *    `sidebarCollapsed` 翻转那一次，layout effect 在 commit 后立刻量 —— 此刻过渡 progress=0，
  *    `.side` 的 used value 还是**旧宽度**，`.main{flex:1}` ⇒ 主区宽还是旧的 ⇒ `auto-fill` 列数
  *    还是旧的 ⇒ 量到的是折叠**前**那份更高的内容，判「仍溢出」⇒ 不补批。300ms 后列数 4→5、
- *    行数 15→12、内容矮 423px ⇒ 不再溢出 ⇒ 卡死。把键换成折叠钮，缺陷与它本要修的那条逐字同型。
+ *    行数 15→12、内容矮 3×141 + 3×12(gap) ≈ 459px ⇒ 不再溢出 ⇒ 卡死。把键换成折叠钮，缺陷与它
+ *    本要修的那条逐字同型。
  *    （展开是安全侧；坏的是折叠这一侧。）
  *
  * ② **枚举漏得掉，而且漏的是最高频的那颗**。原表把「角标增减」判成「量级仍是一行文本」——
@@ -140,36 +141,54 @@ function warnMissingScroller(): void {
  *    **一张列到 12 行的表仍漏了它** —— 每加一颗角标就多一条要枚举的边，而漏一条的后果是
  *    「用户永远点不到剩下的节点且看不出少了」。这就是改用观测的理由。
  *
- * 现在的两条腿都观测**结果**，不枚举原因：
- *  · `.main-scroll` 上的 `ResizeObserver` —— 覆盖一切改可视区/主区宽度的向量（窗口 resize、缩放、
- *    全屏、DPI、侧栏折叠的**整个 300ms 过渡**、差集条/更新横幅进出）。它取代了原来的
- *    `window.addEventListener('resize')`：`.main` 是 `flex:1`、`.main-scroll` 又占满 `.main`，
- *    任何改变窗口几何的事都必然改变这个盒子 ⇒ 旧监听是它的真子集，留着只是第二条要同步的路径。
- *  · layout effect **无依赖数组** —— 覆盖一切改内容高度的向量（角标增删、出口切换、语言切换、
- *    字体换装、批选条/SubInfoBar 进出、视图档切换）。
+ * 现在是**三个采样器**，各自观测结果、不枚举原因。三条合起来才叫「不枚举」，缺任一条都有洞：
+ *
+ *  ① **每次 commit 一采**（layout effect 无依赖数组）—— 覆盖**瞬时**内容变化：增删节点、搜索/
+ *     筛选、切 tab、`selectedServerId` 换出口、`stagedOnly`/`invalidReason`/`shadowedCidrs` 角标
+ *     增减、语言切换。这些不带 CSS 过渡，commit 那一刻量到的就是真值，一次采样够。
+ *  ② **`ResizeObserver` on `.main-scroll`** —— 覆盖**容器盒子**变化：窗口 resize / 缩放 / 全屏、
+ *     侧栏折叠的整个 300ms 过渡（连续回报）、差集条与更新横幅进出、滚动条出现/消失。
+ *     它取代了原来的 `window.addEventListener('resize')`：今天所有改窗口几何的路径都落在这个盒子上，
+ *     旧监听是它的子集。（**不写「必然」**：Windows per-monitor DPI 迁移会给出等逻辑尺寸的新 rect，
+ *     CSS px 不变、RO 不发；那一档也不改 auto-fill 列数，无害，但断言不能过强。）
+ *  ③ **委派 `transitionend` on `.main-scroll`** —— 覆盖**带 CSS 过渡的内容高度**变化。
+ *     今天在用的只有一条：视图档切换。`.nd-card{transition:.14s}` 是简写、无 property 限定
+ *     ⇒ `transition-property:all`（screens.css:62），而列表档把 `min-height` 141→0、`padding`、
+ *     `border-width` 一并改掉（:301）⇒ 切档那一次，①量到的是**过渡前**的卡高，而②只看容器盒子、
+ *     内容变矮不改它。少了③，`view` 这一维就只有一次可能陈旧的采样 —— 与侧栏那条 High 同型。
+ *     （今天两个方向都恰好落在安全侧，我逐个核过：**card→list** 时 `display` 瞬切成 flex 列而
+ *     `min-height` 还停在 141px ⇒ 量到 60×141 ≈ 8460px，远超任何视口 ⇒ 判「不推进」，而终态
+ *     60×40 = 2400px 本来也不该推进，结论一致；**list→card** 时 `min-height` 还停在 0 ⇒ 量到的比
+ *     终态矮 ⇒ 只会多推进，是过渡渲染而非漏渲染。但这是两条**量级不等式**，不是机制。给 `.nd-card`
+ *     加任何影响高度的样式、或把列表行做厚，它立刻变成第三个同型缺陷 —— 故按机制补，不靠不等式。）
+ *
+ * **未解的上游问题（需产品决策，本批未动）**：`.nd-card` 的 `transition:.14s` 写成 `all`，本意只是
+ * `:hover` 的 `border-color`/`box-shadow`/`background`。收窄成那三个属性可以从根上消掉内容高度过渡
+ * （采样器③对 `view` 这一维随之变成冗余），还省掉 60+ 张卡的 `min-height` 动画。但那是**用户可见的
+ * 动效变化**（卡片↔列表从渐变morph 变成瞬切），且偏离原型 SoT，需陈先生拍板，不在本批自行决定。
  *
  * 下表是**留档**，不再是判据来源（像素取自各自 CSS 盒模型，量级判定非精确测绘）：
  *
  * | 向量 | 改的是 | 幅度 | 曾经的判定 | 现在由谁收 |
  * |---|---|---|---|---|
- * | 视图档 `view`（卡片↔列表） | 内容 | 行高 141px ↔ ~40px；60 条差 2~3 倍 scrollHeight | 会卡死 → 进依赖 | 无依赖数组 |
- * | 侧栏折叠 | 主区宽 ±92px / mac ±68px → 列数 ±1 | 窄窗 N=4、k=60 时 3 行 = 423px | 会卡死 → 进依赖（**读到的是旧几何，实际没收住**） | RO（过渡全程连续回报） |
- * | 窗口 resize / 缩放 / 全屏 / DPI | 可视区 + 内容 | 无界 | `window resize` 监听 | RO（旧监听已撤） |
- * | **出口切换 `selectedServerId`** | 内容（`.nd-cur` chip 换卡 → 最高卡行数变 → **每行**跟着变） | 15 行 × ~23px = 345px | **整条漏列** | 无依赖数组 |
- * | `stagedOnly` / `invalidReason` / `shadowedCidrs` 角标增减 | 同上 | 行数 × ~20~25px，今天靠 141px 地板吃掉 | 判成「一行文本」（读反 1fr） | 无依赖数组 |
- * | 语言切换 / 字体换装 | 同上 | 同上 | 同上 | 无依赖数组 |
- * | 搜索 / 协议筛选 / 切 tab | 内容 + 结果集身份 | — | resetKey 复位 + 长度变 | 无依赖数组 |
- * | 增删节点 / 订阅刷新 / staged 变更 | 内容 | — | 长度变 | 无依赖数组 |
- * | 批选条进出（`.batch-bar`） | 内容 ±~62px（padding 20 + border 2 + margin-bottom 14 + 行高） | < 240 | 余量兜底 | 无依赖数组 |
- * | PendingChangesBar 出现/消失 | **可视区** ±36px（`.pending-bar.show`；在 `.main-scroll` 之外） | < 240 | 余量兜底 | RO |
- * | AppUpdateBanner 出现/消失 | **可视区** ±~74px（同上，在 `.main-scroll` 之外） | < 240 | 余量兜底 | RO |
- * | SubInfoBar 出现/消失 | 内容 ±~80px | < 240 | 余量兜底 | 无依赖数组 |
- * | 延迟数值回填 | 内容：`.nd-lat` 是**条件渲染**（NodeCard:274），盒高 11px×1.5+4=20.5px > `.nd-name` 的 18.9px 行盒 ⇒ 首个结果到达时 `.nd-top` 涨 ~1.6px，再经 1fr 摊到每行 | ~1.6px × 行数 | 判成「0」（**当时写的是断言不是测量**） | 无依赖数组 |
+ * | 视图档 `view`（卡片↔列表） | 内容，**带 140ms 过渡**（`transition:all`） | 行高 141px ↔ ~40px；60 条差 2~3 倍 scrollHeight | 会卡死 → 进依赖 | ③ transitionend（①量到的是过渡前的值） |
+ * | 侧栏折叠 | 主区宽 ±92px / mac ±68px → 列数 ±1 | 窄窗 N=4、k=60 时 15→12 行 = 3×141 + 3×12(gap) ≈ 459px | 会卡死 → 进依赖（**读到的是旧几何，实际没收住**） | ② RO（过渡全程连续回报） |
+ * | 窗口 resize / 缩放 / 全屏 | 可视区 + 内容 | 无界 | `window resize` 监听 | ② RO（旧监听已撤；per-monitor DPI 迁移那一档 RO 不发，见上） |
+ * | **出口切换 `selectedServerId`** | 内容（`.nd-cur` chip 换卡 → 最高卡行数变 → **每行**跟着变） | 15 行 × ~23px = 345px | **整条漏列** | ① 每次 commit（无过渡，一采即真值） |
+ * | `stagedOnly` / `invalidReason` / `shadowedCidrs` 角标增减 | 同上 | 行数 × ~20~25px，今天靠 141px 地板吃掉 | 判成「一行文本」（读反 1fr） | ① 每次 commit |
+ * | 语言切换 / 字体换装 | 同上 | 同上 | 同上 | ① 每次 commit |
+ * | 搜索 / 协议筛选 / 切 tab | 内容 + 结果集身份 | — | resetKey 复位 + 长度变 | ① 每次 commit |
+ * | 增删节点 / 订阅刷新 / staged 变更 | 内容 | — | 长度变 | ① 每次 commit |
+ * | 批选条进出（`.batch-bar`） | 内容 ±~62px（padding 20 + border 2 + margin-bottom 14 + 行高） | < 240 | 余量兜底 | ① 每次 commit |
+ * | PendingChangesBar 出现/消失 | **可视区** ±36px（`.pending-bar.show`；在 `.main-scroll` 之外） | < 240 | 余量兜底 | ② RO |
+ * | AppUpdateBanner 出现/消失 | **可视区** ±~74px（同上，在 `.main-scroll` 之外） | < 240 | 余量兜底 | ② RO |
+ * | SubInfoBar 出现/消失 | 内容 ±~80px | < 240 | 余量兜底 | ① 每次 commit |
+ * | 延迟数值回填 | 内容：`.nd-lat` 是**条件渲染**（NodeCard:274），盒高 11px×1.5+4=20.5px > `.nd-name` 的 18.9px 行盒 ⇒ 首个结果到达时 `.nd-top` 涨 ~1.6px，再经 1fr 摊到每行 | ~1.6px × 行数 | 判成「0」（**当时写的是断言不是测量**） | ① 每次 commit |
  *
  * 两处「结论成立但理由写错了」的更正（Low-2，一并留档）：
- *  · 批选条不改卡高，成立的原因**不是**「`.nd-check` 在卡片档是 absolute」—— 列表档它是
- *    `position:static; order:-1`（screens.css:312）在流内。真正的原因是行高由 `.nd-acts` 里 27px 的
- *    `.nd-a` 撑住，18~21px 的勾选框够不着。
+ *  · 批选条不改卡高。旧理由（「`.nd-check` 是 absolute」）**对卡片档成立**（screens.css:105），
+ *    但只覆盖卡片档 —— 列表档它是 `position:static; order:-1`（:312）在流内。列表档成立的理由是
+ *    行高由 `.nd-acts` 里 27px 的 `.nd-a` 撑住，18~21px 的勾选框够不着。
  *  · 「延迟数值回填零高度变化」不成立，见上表该行。方向安全、量级也小，但那是断言不是测量值。
  * ════════════════════════════════════════════════════════════════════════════ */
 
@@ -536,15 +555,34 @@ export function NodesScreen() {
       return;
     }
     scroller.addEventListener('scroll', topUpBatch, { passive: true });
-    /* 观测**滚动容器**的盒子。这是本屏「内容够不够高」这件事的唯一外生变量，且它比枚举可靠：
-       见文件顶部「为什么放弃枚举」。**不构成 RO 自激回路** —— 回调追加内容涨的是 scroller 的
-       `scrollHeight`，不涨它的 border-box（`.main-scroll` 是 `flex:1` + `overflow:auto`，
-       盒子由 `.main` 分配）。自激只发生在观测**被撑高的那个元素本身**时，即观测 `.node-grid`。
-       同款用法本仓已有先例：`home/ConnectionTopology.tsx:154` 观测 `.sankey`。 */
+    /* 采样器②：**容器盒子**。观测 `.main-scroll` 自身，覆盖窗口/侧栏过渡/缩放这一维。
+       同款用法本仓已有先例：`home/ConnectionTopology.tsx:154` 观测 `.sankey`。
+
+       **不带 `box` 参数**（默认 content-box，别改）：`.main-scroll` 是 `overflow-y:auto`，
+       Win/Linux 经典滚动条下内容从「不溢出」跨到「溢出」会让 content-box 宽缩约 15px ——
+       那一维**恰恰要**观测（网格变窄 ⇒ auto-fill 列数变 ⇒ 行数变）。改成 `border-box`
+       会把它整条丢掉，而全部门仍绿。
+
+       它**确实**构成一条回调 → 自身盒子变化 → 再回调的反馈边（就是上面那 15px）。不自激的理由
+       不是「盒子不变」，而是 `count` 单调不减 + `total` 封顶 + `advanceBatch` 按值 bail-out
+       （同值 ⇒ React 就地停），外加 `shouldAdvance` 的 `clientHeight <= 0` 短路。 */
     const ro = new ResizeObserver(topUpBatch);
     ro.observe(scroller);
+    /* 采样器③：**带 CSS 过渡的内容高度变化**。`transitionend` 冒泡，故一条委派监听即可。
+       非它不可的理由：`.nd-card` 写的是 `transition:.14s`（简写、无 property 限定 ⇒
+       `transition-property:all`，screens.css:62），而列表档把 `min-height` 141→0、`padding`、
+       `border-width` 一并改掉（:301）⇒ 切视图档那一次，commit 后立刻量到的是**过渡前**的卡高。
+       采样器①（每次 commit）只有那一次采样，采样器②又只看容器盒子（内容变高矮不改它）——
+       这一维在两者之间是个洞，与侧栏那条 High 同型。140ms 后过渡结束，这条把它补上。
+
+       成本如实记账：一次切档 60 张卡 × 若干属性 ≈ 一两百个事件，集中落在过渡结束那一帧。
+       但 `min-height` 过渡本身每帧就在让浏览器算布局，这里多出来的是同一帧内的 `scrollHeight`
+       读；第一次读强制一次 layout，其余读命中干净布局。不做 propertyName 过滤：过滤就是又一张
+       要维护的枚举表，正是本屏刚放弃的那条路。 */
+    scroller.addEventListener('transitionend', topUpBatch);
     return () => {
       scroller.removeEventListener('scroll', topUpBatch);
+      scroller.removeEventListener('transitionend', topUpBatch);
       ro.disconnect();
     };
   }, [topUpBatch]);
@@ -576,7 +614,10 @@ export function NodesScreen() {
    * 而 passive effect 每轮之间都夹着一次真实绘制 ⇒ 用户看见网格分段自下而上长出来（2026-08-16
    * 复审报的量级：约 50~65ms 可见抖动）。layout 档把收敛循环整个压在 paint 之前跑完。
    *
-   * **没有依赖数组** —— 每次提交都重量一次。判据见文件顶部「为什么放弃枚举」。代价如实记账：
+   * **没有依赖数组**（= 文件顶部的**采样器①**）—— 每次提交都重量一次，覆盖**瞬时**内容变化。
+   * 它单独并不够：带 CSS 过渡的高度变化在这一刻量到的还是过渡前的值（那一维归采样器③
+   * `transitionend`），容器盒子变化根本不经过本屏 commit（归采样器② RO）。三条的分工见文件顶部。
+   * 代价如实记账：
    *  · 每次本屏 commit 多一次强制 layout 读（`scrollHeight`/`clientHeight`）。按延迟排序的一轮
    *    测速里父层每个回包都重渲 ⇒ 约 200 次；但那些 layout 本来在 paint 时也要做，这里只是提前，
    *    不是凭空多出一遍（真正被消掉的重渲在别处：非 `lat` 档的条件订阅 + 单卡 memo）。

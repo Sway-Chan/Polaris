@@ -60,15 +60,31 @@ export interface ScrollMetrics {
  *
  * 注意这条同时兼两个身份：滚动时是「快到底了，预取下一批」；每次提交后由消费方主动调用时是
  * 「内容还没撑出滚动条（距底 ≤ 余量），再来一批」——后者正是「初批必须覆盖视口」那条保证的实现。
+ *
+ * # `clientHeight <= 0` 必须先短路（**量不到就不判**）
+ *
+ * 全零输入（`scrollHeight = scrollTop = clientHeight = 0`）下 `0 <= 240` 恒真 ⇒「不该推进」这条
+ * 分支永不成立 ⇒ [`advanceBatch`] 的 bail-out 只剩 `c >= total`。而节点屏的补批循环跑在 layout 档、
+ * 同步、无上限：`total = 3000` 要 50 轮，正好撞上 React 的 `NESTED_UPDATE_LIMIT = 50` ⇒
+ * `Maximum update depth exceeded`（白屏 / 落进错误边界），而不是「就地 bail-out」。
+ *
+ * 容器量到 0 的真实入口是 `ResizeObserver`：被观测元素停止渲染时会投递一次 0×0
+ * （窗口最小化 / 被完全遮挡时 WebView2 与 WKWebView 保不保留 layout 值，靠 code review 判不准）。
+ * 这里**不**走 fail-open：为一个最小化的窗口渲染三千张卡是把一个不可见的问题换成一个可见的卡顿。
+ * 量不到就不判，盒子恢复成真实尺寸时 RO 会再投递一次，这条路径自愈。
  */
 export function shouldAdvance(m: ScrollMetrics): boolean {
+  if (m.clientHeight <= 0) return false;
   return m.scrollHeight - m.scrollTop - m.clientHeight <= SCROLL_BATCH_AHEAD_PX;
 }
 
 /**
- * 分批计数的状态机：不该推进、或已取完，都返回**原值**（React 就地 bail-out ⇒ 补批循环收敛，不自激）。
+ * 分批计数的状态机：不该推进、或已取完，都返回**原值**（React 就地 bail-out ⇒ 补批循环收敛）。
  * 越过 `total` 不裁剪：消费方一律 `slice(0, count)`，裁不裁结果一样，而不裁能让「已取完」这件事
  * 只由 `c >= total` 一条判据表达。
+ *
+ * 「不自激」有**两条**前提，缺一条循环就只靠 `c >= total` 兜底、轮数 = `total / PAGE`：
+ * ① 容器有真实高度（否则 [`shouldAdvance`] 恒真，见其头注的全零输入）；② `total` 有限。
  */
 export function advanceBatch(count: number, total: number, m: ScrollMetrics): number {
   if (!shouldAdvance(m)) return count;

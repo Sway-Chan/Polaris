@@ -411,22 +411,74 @@ describe('门 3 · 分批接线', () => {
   });
 
   /**
-   * **可视区/宽度这一维靠观测，不靠 `window resize`**。观测的是 `.main-scroll` 的盒子：
-   * 它是「内容够不够高」唯一的外生变量，且侧栏折叠的整个 300ms 过渡里会连续回报 —— 而
-   * `window resize` 在那段过渡里一次都不发。RO 观测滚动容器不构成自激（追加内容涨的是
-   * `scrollHeight`，不涨它的 border-box；自激只发生在观测被撑高的那个元素本身，即 `.node-grid`）。
+   * 采样器② / ③ 的接线。**断言必须落在装监听那条 effect 的函数体切片内**，不能是几条互不约束的
+   * 存在性 `toMatch`：那样把 `closest('.main-scroll')` 换成 `document.body`、或把
+   * `ro.disconnect()` 从 cleanup 里挪到 `observe()` 后一行，全部照绿，而 RO 装错元素 ⇒ 侧栏折叠
+   * 不再回报 ⇒ 第一轮那条 High 原样复发。
    */
-  it('`.main-scroll` 上挂 ResizeObserver，且不再依赖 window resize', () => {
-    expect(NODES).toMatch(/new ResizeObserver\(topUpBatch\)/);
-    expect(NODES).toMatch(/ro\.observe\(scroller\)/);
-    expect(NODES, 'RO 没退订 ⇒ 切屏泄漏一个观测').toMatch(/ro\.disconnect\(\)/);
-    // 观测的必须是滚动容器，不是网格本身（后者才会自激）。
-    expect(NODES, 'RO 观测到 `.node-grid` 上了 ⇒ 追加内容撑高它 ⇒ 通知循环').not.toMatch(
+  const scrollerEffect = (() => {
+    const at = NODES.indexOf("scroller.addEventListener('scroll'");
+    if (at < 0) return '';
+    const start = NODES.lastIndexOf('useEffect(', at);
+    const end = NODES.indexOf('\n  }, [', at);
+    return start < 0 || end < 0 ? '' : NODES.slice(start, end);
+  })();
+
+  it('自检：装监听那条 effect 的函数体切到了（切不到则本节全部空跑）', () => {
+    expect(scrollerEffect.length, '切片为空 —— effect 结构变了，下面几条已失去判据').toBeGreaterThan(
+      200
+    );
+    expect(scrollerEffect).toContain('useEffect(');
+  });
+
+  it('采样器②：RO 观测的是 `closest(.main-scroll)` 拿到的那个元素，且在 cleanup 里 disconnect', () => {
+    // 同一条 effect 内：scroller 来自 closest，RO 观测的就是它。
+    expect(scrollerEffect).toMatch(
+      /const scroller = gridRef\.current\?\.closest<HTMLElement>\('\.main-scroll'\)/
+    );
+    expect(scrollerEffect).toMatch(/new ResizeObserver\(topUpBatch\)/);
+    expect(scrollerEffect, 'RO 装到别的元素上了 ⇒ 侧栏折叠不再回报').toMatch(
+      /ro\.observe\(scroller\)/
+    );
+    // disconnect 必须在 cleanup 里 —— 位置比存在性重要。
+    const ret = scrollerEffect.indexOf('return () => {');
+    expect(ret, 'cleanup 不见了 ⇒ 切屏泄漏一个观测').toBeGreaterThan(-1);
+    expect(
+      scrollerEffect.slice(ret),
+      'ro.disconnect() 不在 cleanup 里 ⇒ 装完就退订 / 或根本不退订'
+    ).toContain('ro.disconnect()');
+  });
+
+  /**
+   * `observe()` **不得带 `box` 参数**（默认 content-box）。`.main-scroll` 是 `overflow-y:auto`：
+   * Win/Linux 经典滚动条下，内容从「不溢出」跨到「溢出」会让 content-box 宽缩约 15px —— 那一维
+   * 恰恰要观测（网格变窄 ⇒ auto-fill 列数变 ⇒ 行数变）。改成 `border-box` 会整条丢掉它而全绿。
+   */
+  it('采样器②：`ro.observe` 不带 box 参数（border-box 会丢掉滚动条出现/消失这一维）', () => {
+    expect(scrollerEffect, 'observe 带了 box 选项').not.toMatch(/ro\.observe\([^)]*box\s*:/);
+    // 观测的必须是滚动容器，不是网格本身（后者才是真自激：追加内容直接撑高被观测元素）。
+    expect(scrollerEffect, 'RO 观测到 `.node-grid` 上了 ⇒ 追加内容撑高它 ⇒ 通知循环').not.toMatch(
       /\.observe\(\s*gridRef\.current/
     );
-    expect(NODES, 'window resize 监听是 RO 的真子集，留着就是第二条要同步的路径').not.toMatch(
-      /window\.addEventListener\('resize'/
+  });
+
+  /**
+   * 采样器③。`.nd-card{transition:.14s}` 是简写 ⇒ `transition-property:all`，列表档把
+   * `min-height` 141→0 一并改掉 ⇒ 切视图档那一次，采样器①（每次 commit）量到的是**过渡前**的
+   * 卡高，而采样器②只看容器盒子、内容变矮不改它。缺这条，`view` 这一维就只有一次陈旧采样。
+   */
+  it('采样器③：委派 `transitionend` 在同一条 effect 里挂上、且在 cleanup 里摘掉', () => {
+    expect(scrollerEffect, '带 CSS 过渡的内容高度变化没有采样器').toMatch(
+      /scroller\.addEventListener\('transitionend', topUpBatch\)/
     );
+    const ret = scrollerEffect.indexOf('return () => {');
+    expect(scrollerEffect.slice(ret), 'transitionend 监听没摘 ⇒ 切屏泄漏').toMatch(
+      /scroller\.removeEventListener\('transitionend', topUpBatch\)/
+    );
+  });
+
+  it('采样器②取代了 `window resize`（旧监听是它的子集，留着就是第二条要同步的路径）', () => {
+    expect(NODES).not.toMatch(/window\.addEventListener\('resize'/);
   });
 
   it('每批数至少覆盖窗口最小尺寸下的一屏（980×740、200px 最小列宽、141px 卡高）', () => {
