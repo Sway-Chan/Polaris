@@ -353,7 +353,7 @@ const EXEMPT: Record<string, Record<string, string>> = {
   TailscaleSettings: {
     allowInternet:
       'Tailscale 的「是否允许作外网出口」两侧谓词都由 exitNode 派生，存量字段被明确忽略：' +
-      'TS 侧 domain/endpoint-routes.ts 是 `!!exitNode`、Rust 侧 builder/endpoint_routes.rs 是' +
+      'TS 侧 domain/endpoint-routes.ts 是 `!!exitNode`、Rust 侧 builder/endpoint_routes.rs 是 ' +
       'exit_node 非空判定，前者注释写明「存量 tailscaleSettings.allowInternet 字段谓词层忽略（向后兼容、不迁移）」。' +
       '给它做开关 = 一个拨了不生效的假控件 + 第二个默认值真值源。改法是改 exitNode，不是加控件。',
   },
@@ -1515,12 +1515,17 @@ describe('锁 3：豁免表反向锁（豁免不许变成永久盲区）', () =>
    * 反向（豁免有、依据表没有）不拦 —— 有的理由陈述的是设计取舍，未必句句是代码位置。
    */
   it('EXEMPT 理由引用的代码位置机核（从不核对的引用等于装饰）', () => {
-    // 反恒真：EXEMPT 还有豁免时依据表不许被清空（否则上面的循环零次即恒绿，新锁可被无声拆光）。
+    // 反恒真：EXEMPT 还有豁免时依据表不许被清空/掏空（否则循环零次即恒绿，新锁可被无声拆光）。
+    // 逐 row 断言而非「至少一条非空」：留键空数组 = 该条豁免的机核静默退役，必须逐条转红。
     expect(
       Object.keys(EXEMPT).length > 0 && Object.keys(EXEMPT_CITES).length === 0,
       'EXEMPT 非空而 EXEMPT_CITES 是空的 —— 依据表被清空了，恢复它而不是删断言'
     ).toBe(false);
     for (const [row, cites] of Object.entries(EXEMPT_CITES)) {
+      expect(
+        cites.length,
+        `${row} 的依据数组是空的 —— 掏空等于没有；恢复依据，或整行删除并同步改写那条豁免的理由`
+      ).toBeGreaterThan(0);
       const [structName, k] = row.split('.');
       const reason = EXEMPT[structName]?.[k];
       expect(reason, `${row} 在 EXEMPT 里已不存在 —— 依据表比豁免表多，先对齐再改这里`).toBeDefined();
