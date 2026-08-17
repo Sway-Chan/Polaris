@@ -451,7 +451,7 @@ fn map_singbox_outbound(
                 }
             }
         }
-        s.tor_settings = Some(TorSettings {
+        s.tor_settings = Some(Box::new(TorSettings {
             executable_path: str_ne(ob.get("executable_path")),
             data_directory: str_ne(ob.get("data_directory")),
             extra_args: str_array(ob.get("extra_args")).unwrap_or_default(),
@@ -465,7 +465,7 @@ fn map_singbox_outbound(
                 })
                 .unwrap_or_default(),
             extra,
-        });
+        }));
         return MapOutcome::Server(Box::new(s));
     }
 
@@ -573,7 +573,7 @@ fn map_singbox_outbound(
                     }
                 }
             }
-            s.hysteria_settings = Some(hy);
+            s.hysteria_settings = Some(Box::new(hy));
             apply_tls(&mut s, ob.get("tls"));
         }
         "hysteria2" => {
@@ -624,7 +624,7 @@ fn map_singbox_outbound(
                 }
             }
             if hy2 != Hysteria2Settings::default() {
-                s.hysteria2_settings = Some(hy2);
+                s.hysteria2_settings = Some(Box::new(hy2));
             }
         }
         "naive" => {
@@ -692,7 +692,7 @@ fn map_singbox_outbound(
                 ..Default::default()
             };
             if ssh != SshSettings::default() {
-                s.ssh_settings = Some(ssh);
+                s.ssh_settings = Some(Box::new(ssh));
             }
         }
         "snell" => {
@@ -1092,7 +1092,7 @@ fn map_endpoint_vpn_client(
     let mut s = new_server(id_gen, ep, protocol, addr, port, sub_id, now);
 
     if ty == "openconnect" {
-        s.openconnect_settings = Some(OpenconnectSettings {
+        s.openconnect_settings = Some(Box::new(OpenconnectSettings {
             server: Some(raw_server),
             username: str_ne(ep.get("username")),
             password: str_ne(ep.get("password")),
@@ -1107,7 +1107,7 @@ fn map_endpoint_vpn_client(
             reported_os: str_ne(ep.get("reported_os")),
             system: ep.get("system").map(|v| bool_true(Some(v))),
             extra: bag(MODELED_OC),
-        });
+        }));
     } else {
         let pem = |k: &str| -> Vec<String> {
             ep.get("tls")
@@ -1116,7 +1116,7 @@ fn map_endpoint_vpn_client(
                 .map(|a| a.iter().filter_map(|x| str_val(Some(x))).collect())
                 .unwrap_or_default()
         };
-        s.openvpn_client_settings = Some(OpenvpnClientSettings {
+        s.openvpn_client_settings = Some(Box::new(OpenvpnClientSettings {
             server: Some(raw_server),
             server_port: Some(port),
             username: str_ne(ep.get("username")),
@@ -1149,7 +1149,7 @@ fn map_endpoint_vpn_client(
                     .unwrap_or_default(),
             }),
             extra: bag(MODELED_OV),
-        });
+        }));
     }
     Some(s)
 }
@@ -1501,7 +1501,7 @@ mod tests {
                 ech_config: Some("ECHLINE1\nECHLINE2".into()),
                 ..Default::default()
             }),
-            hysteria2_settings: Some(Hysteria2Settings {
+            hysteria2_settings: Some(Box::new(Hysteria2Settings {
                 obfs: Some(Hysteria2ObfsSettings {
                     type_field: Some("gecko".into()),
                     password: Some("obfspw".into()),
@@ -1512,7 +1512,7 @@ mod tests {
                 server_ports: Some("20000:30000".into()),
                 hop_interval: Some("30s".into()),
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         };
 

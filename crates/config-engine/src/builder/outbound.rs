@@ -1031,7 +1031,7 @@ mod tests {
     fn hysteria2_obfs_gecko() {
         let mut s = server(Protocol::Hysteria2, "h.com");
         s.password = Some("pw".into());
-        s.hysteria2_settings = Some(ps::Hysteria2Settings {
+        s.hysteria2_settings = Some(Box::new(ps::Hysteria2Settings {
             obfs: Some(ps::Hysteria2ObfsSettings {
                 type_field: Some("gecko".into()),
                 password: Some("obfspw".into()),
@@ -1039,7 +1039,7 @@ mod tests {
                 max_packet_size: Some(200),
             }),
             ..Default::default()
-        });
+        }));
         let ob = build_proxy_outbound(&s, "proxy-s1", &test_dial_resolver(), "x64", "linux");
         let obfs = ob.obfs.as_ref().unwrap();
         let crate::singbox::outbound::ObfsField::Object(obfs) = obfs else {
@@ -1055,16 +1055,16 @@ mod tests {
     fn hysteria2_no_chrome_parrot_key_by_default() {
         let mut s = server(Protocol::Hysteria2, "h.com");
         s.password = Some("pw".into());
-        s.hysteria2_settings = Some(ps::Hysteria2Settings::default());
+        s.hysteria2_settings = Some(Box::new(ps::Hysteria2Settings::default()));
         let ob = build_proxy_outbound(&s, "proxy-s1", &test_dial_resolver(), "x64", "linux");
         assert_eq!(ob.disable_chrome_parrot, None);
         let json = serde_json::to_value(&ob).unwrap();
         assert!(json.get("disable_chrome_parrot").is_none());
         // 显式关（Some(false)）与没填一样不下发——`false` 与省略在核心侧等价。
-        s.hysteria2_settings = Some(ps::Hysteria2Settings {
+        s.hysteria2_settings = Some(Box::new(ps::Hysteria2Settings {
             disable_chrome_parrot: Some(false),
             ..Default::default()
-        });
+        }));
         let ob = build_proxy_outbound(&s, "proxy-s1", &test_dial_resolver(), "x64", "linux");
         assert!(serde_json::to_value(&ob)
             .unwrap()
@@ -1086,22 +1086,22 @@ mod tests {
         s.password = Some("pw".into());
 
         // 0 ≡ 不设（内核 `actualTx > 0` 才走 Brutal，否则 BBR）⇒ 整键不出现。
-        s.hysteria2_settings = Some(ps::Hysteria2Settings {
+        s.hysteria2_settings = Some(Box::new(ps::Hysteria2Settings {
             up_mbps: Some(0),
             down_mbps: Some(0),
             ..Default::default()
-        });
+        }));
         let ob = build_proxy_outbound(&s, "proxy-s1", &test_dial_resolver(), "x64", "linux");
         let json = serde_json::to_value(&ob).unwrap();
         assert!(json.get("up_mbps").is_none(), "0 不该下发：{json}");
         assert!(json.get("down_mbps").is_none(), "0 不该下发：{json}");
 
         // 非零是用户/订阅的真实意图（遵循订阅下发，2026-08-06 定），必须原样带上。
-        s.hysteria2_settings = Some(ps::Hysteria2Settings {
+        s.hysteria2_settings = Some(Box::new(ps::Hysteria2Settings {
             up_mbps: Some(100),
             down_mbps: Some(500),
             ..Default::default()
-        });
+        }));
         let ob = build_proxy_outbound(&s, "proxy-s1", &test_dial_resolver(), "x64", "linux");
         let json = serde_json::to_value(&ob).unwrap();
         assert_eq!(json["up_mbps"], 100);
@@ -1113,10 +1113,10 @@ mod tests {
     fn hysteria2_chrome_parrot_disabled_when_opted_in() {
         let mut s = server(Protocol::Hysteria2, "h.com");
         s.password = Some("pw".into());
-        s.hysteria2_settings = Some(ps::Hysteria2Settings {
+        s.hysteria2_settings = Some(Box::new(ps::Hysteria2Settings {
             disable_chrome_parrot: Some(true),
             ..Default::default()
-        });
+        }));
         let ob = build_proxy_outbound(&s, "proxy-s1", &test_dial_resolver(), "x64", "linux");
         assert_eq!(ob.disable_chrome_parrot, Some(true));
         assert_eq!(
@@ -1140,10 +1140,10 @@ mod tests {
     #[test]
     fn ssh_no_tls() {
         let mut s = server(Protocol::Ssh, "ssh.com");
-        s.ssh_settings = Some(ps::SshSettings {
+        s.ssh_settings = Some(Box::new(ps::SshSettings {
             user: Some("root".into()),
             ..Default::default()
-        });
+        }));
         let ob = build_proxy_outbound(&s, "proxy-s1", &test_dial_resolver(), "x64", "linux");
         assert!(ob.tls.is_none());
         assert_eq!(ob.user.as_deref(), Some("root"));

@@ -555,13 +555,13 @@ fn bundled_core_accepts_hysteria_v1_and_tor() {
         protocol: Protocol::Hysteria,
         address: "h.example.com".into(),
         port: 443,
-        hysteria_settings: Some(HysteriaSettings {
+        hysteria_settings: Some(Box::new(HysteriaSettings {
             auth_str: Some("secret".into()),
             up_mbps: Some(10),
             down_mbps: Some(50),
             obfs: Some("obfs-pw".into()),
             ..Default::default()
-        }),
+        })),
         ..Default::default()
     };
 
@@ -574,10 +574,10 @@ fn bundled_core_accepts_hysteria_v1_and_tor() {
         // `outbounds[0].server: json: unknown field "server"`，**整个核起不来**。
         address: "should-be-dropped.example.com".into(),
         port: 9050,
-        tor_settings: Some(TorSettings {
+        tor_settings: Some(Box::new(TorSettings {
             executable_path: Some("/usr/bin/tor".into()),
             ..Default::default()
-        }),
+        })),
         ..Default::default()
     };
 
@@ -931,13 +931,13 @@ fn endpoint_family_vpn_clients_land_in_endpoints_and_the_core_accepts_them() {
         protocol: Protocol::Openconnect,
         address: "vpn.example.com".into(),
         port: 443,
-        openconnect_settings: Some(OpenconnectSettings {
+        openconnect_settings: Some(Box::new(OpenconnectSettings {
             server: Some("vpn.example.com:443".into()),
             username: Some("u".into()),
             password: Some("p".into()),
             flavor: Some("anyconnect".into()),
             ..Default::default()
-        }),
+        })),
         ..Default::default()
     };
     let ov = ServerConfig {
@@ -946,7 +946,7 @@ fn endpoint_family_vpn_clients_land_in_endpoints_and_the_core_accepts_them() {
         protocol: Protocol::OpenvpnClient,
         address: "ovpn.example.com".into(),
         port: 1194,
-        openvpn_client_settings: Some(OpenvpnClientSettings {
+        openvpn_client_settings: Some(Box::new(OpenvpnClientSettings {
             server: Some("1.2.3.4".into()),
             server_port: Some(1194),
             username: Some("u".into()),
@@ -956,7 +956,7 @@ fn endpoint_family_vpn_clients_land_in_endpoints_and_the_core_accepts_them() {
                 ..Default::default()
             }),
             ..Default::default()
-        }),
+        })),
         ..Default::default()
     };
 
@@ -1043,13 +1043,13 @@ fn unmodeled_keys_survive_the_passthrough_bag() {
         protocol: Protocol::Hysteria,
         address: "h.example.com".into(),
         port: 443,
-        hysteria_settings: Some(HysteriaSettings {
+        hysteria_settings: Some(Box::new(HysteriaSettings {
             auth_str: Some("a".into()),
             up_mbps: Some(100),
             down_mbps: Some(500),
             extra,
             ..Default::default()
-        }),
+        })),
         ..Default::default()
     };
     let input = UserConfig {

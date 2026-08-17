@@ -1043,14 +1043,14 @@ fn roundtrip_hysteria2() {
             server_name: Some("hy.sni.com".into()),
             ..Default::default()
         }),
-        hysteria2_settings: Some(Hysteria2Settings {
+        hysteria2_settings: Some(Box::new(Hysteria2Settings {
             obfs: Some(Hysteria2ObfsSettings {
                 type_field: Some("salamander".into()),
                 password: Some("obfspw".into()),
                 ..Default::default()
             }),
             ..Default::default()
-        }),
+        })),
         ..Default::default()
     };
     let r = roundtrip(&c);
