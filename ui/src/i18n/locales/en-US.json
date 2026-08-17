@@ -695,6 +695,8 @@
       "appVersionCard": "App version",
       "upToDate": "Up to date",
       "foundNew": "New version available",
+      "prereleaseTag": "Pre-release",
+      "prereleaseNote": "An alpha / beta / rc build that may contain unfixed issues. The startup check and the tray check only ever offer stable releases.",
       "releaseNotes": "Release notes",
       "download": "Download",
       "downloadingApp": "Downloading the update…",

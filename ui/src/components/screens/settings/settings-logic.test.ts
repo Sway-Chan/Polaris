@@ -908,62 +908,85 @@ describe('progressResetsIntegrity —— 对整个 status 联合闭合的真值�
   });
 });
 
+/**
+ * 剥注释内核：用 TS 自己的 parser 逐 token 取注释区间并抹成空格（保留换行与偏移，行号不漂）。
+ *
+ * # 为什么本文件所有源码级判据都必须先剥注释
+ *
+ * 本仓已被这一格坑过一次（跨批复审 Low：「TS 取材器不剥块注释 ⇒ 注释伪造订阅 + 真订阅被删仍
+ * 全绿」）。两个方向都被污染过：正向断言可以被一句注释**假装满足**；负向断言（「不得直接读
+ * `.sha256`」）会被一句解释该字段的注释**误判成违规**。
+ *
+ * 2026-08-17 由 [`readTsx`] 内提出来：「全仓 `updateApi.check(` 普查」那道门要对**任意**
+ * `ui/src` 下的源码剥注释，而 `readTsx` 的自检是给单个组件文件量身做的（要求含块注释、要求
+ * `export default function <Component>`）。两份剥法早晚会漂，且漂的时候两边都还是绿的。
+ */
+function stripTsComments(file: string, raw: string): string {
+  const sf = ts.createSourceFile(file, raw, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const out = [...raw];
+  const blank = (pos: number, end: number) => {
+    for (let i = pos; i < end; i++) if (out[i] !== '\n') out[i] = ' ';
+  };
+  // `forEachChild` 跳过 token 节点，而 `{/* … */}` 这类 JSX 注释正挂在 token 的前导上，
+  // 故必须走 `getChildren`（含 token）。
+  const walk = (n: ts.Node) => {
+    for (const r of ts.getLeadingCommentRanges(raw, n.getFullStart()) ?? []) blank(r.pos, r.end);
+    for (const r of ts.getTrailingCommentRanges(raw, n.getEnd()) ?? []) blank(r.pos, r.end);
+    for (const c of n.getChildren(sf)) walk(c);
+  };
+  walk(sf);
+  return out.join('');
+}
+
+/**
+ * 单个组件文件的取材器（缺省 `SettingsUpdate.tsx`）：读盘 → [`stripTsComments`] → 三条自检。
+ *
+ * 自检存在的理由与判据本身同等重要：路径漂走 / 剥过头都会让下游断言在**空串**上「恰好」通过 =
+ * 假绿。故断言「文件够长」「剥完与原文不同」「注释标记没了」「代码骨架还在」四件事，其中骨架那条
+ * 按 `rel` 推出组件名走，参数化之后才不会恒真。
+ *
+ * **2026-08-17 由「无摘要明示」describe 内提到模块作用域**（原地不动地搬，行为零变化）：预发布
+ * 档次那道门要断言的也是这张更新卡的分状态结构。两份取材器 + 两份「什么算一个 `us` 态分支」的
+ * 定义早晚会对不上，而它们对不上时**两边都还是绿的** —— 那正是本文件反复在防的形态。
+ */
+async function readTsx(rel = 'SettingsUpdate.tsx') {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { fileURLToPath: toPath } = await import('node:url');
+  const dir = path.dirname(toPath(import.meta.url));
+  const file = path.join(dir, rel);
+  const raw = fs.readFileSync(file, 'utf8');
+  // 取材自检：路径漂走会让下面全部断言在空串上「恰好」通过 = 假绿。
+  expect(raw.length, `取材文件太短或不对：${file}`).toBeGreaterThan(2000);
+
+  const src = stripTsComments(file, raw);
+  // 剥注释自检（正负对照）：本文件必有块注释 ⇒ 剥完必须**真的不一样**，且注释标记没了、
+  // 代码骨架还在（不能把整份剥成空白还一路绿）。
+  // 不写 `src.length === raw.length`：`blank()` 是原地单字符替换，那条恒真、零信息量。
+  expect(src, '剥注释后与原文逐字相同 ⇒ 什么都没剥掉').not.toBe(raw);
+  expect(raw.includes('/**'), '取材文件本应含块注释（否则本自检无信息量）').toBe(true);
+  expect(src.includes('/**'), '注释未被剥掉').toBe(false);
+  // 骨架自检按**取材的那个文件**走（`rel` 换了组件名也得跟着换），否则参数化之后这条会恒假/恒真。
+  const component = rel.replace(/^.*\//, '').replace(/\.tsx$/, '');
+  expect(
+    src.includes(`export default function ${component}`),
+    `剥过头，${component} 的代码骨架没了`,
+  ).toBe(true);
+  return src;
+}
+
+/** 抽出 `{us === 'X' && (` 起、到下一个 `{us === ` 为止的那一段 JSX。 */
+function stateBlock(src: string, state: string): string {
+  const start = src.indexOf(`{us === '${state}'`);
+  expect(start, `SettingsUpdate 里找不到 ${state} 态分支`).toBeGreaterThan(-1);
+  const rest = src.slice(start + 1);
+  const nextIdx = rest.indexOf('{us === ');
+  const block = nextIdx === -1 ? rest : rest.slice(0, nextIdx);
+  expect(block.length, `${state} 态分支取材为空`).toBeGreaterThan(200);
+  return block;
+}
+
 describe('无摘要明示：接线面 + 五语文案', () => {
-  /**
-   * 取材器**先剥注释**再断言。
-   *
-   * 本仓已被这一格坑过一次（跨批复审 Low：「TS 取材器不剥块注释 ⇒ 注释伪造订阅 + 真订阅
-   * 被删仍全绿」）。本门两个方向都被注释污染过：正向断言可以被一句注释假装满足，
-   * 负向断言（「不得直接读 `.sha256`」）会被一句解释该字段的注释误判成违规。
-   * 用 TS 自己的 parser 逐 token 取注释区间并抹成空格（保留换行与偏移，行号不漂）。
-   */
-  async function readTsx() {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const { fileURLToPath: toPath } = await import('node:url');
-    const dir = path.dirname(toPath(import.meta.url));
-    const file = path.join(dir, 'SettingsUpdate.tsx');
-    const raw = fs.readFileSync(file, 'utf8');
-    // 取材自检：路径漂走会让下面全部断言在空串上「恰好」通过 = 假绿。
-    expect(raw.length, `取材文件太短或不对：${file}`).toBeGreaterThan(2000);
-
-    const sf = ts.createSourceFile(file, raw, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-    const out = [...raw];
-    const blank = (pos: number, end: number) => {
-      for (let i = pos; i < end; i++) if (out[i] !== '\n') out[i] = ' ';
-    };
-    // `forEachChild` 跳过 token 节点，而 `{/* … */}` 这类 JSX 注释正挂在 token 的前导上，
-    // 故必须走 `getChildren`（含 token）。
-    const walk = (n: ts.Node) => {
-      for (const r of ts.getLeadingCommentRanges(raw, n.getFullStart()) ?? []) blank(r.pos, r.end);
-      for (const r of ts.getTrailingCommentRanges(raw, n.getEnd()) ?? []) blank(r.pos, r.end);
-      for (const c of n.getChildren(sf)) walk(c);
-    };
-    walk(sf);
-    const src = out.join('');
-    // 剥注释自检（正负对照）：本文件必有块注释 ⇒ 剥完必须**真的不一样**，且注释标记没了、
-    // 代码骨架还在（不能把整份剥成空白还一路绿）。
-    // 不写 `src.length === raw.length`：`blank()` 是原地单字符替换，那条恒真、零信息量。
-    expect(src, '剥注释后与原文逐字相同 ⇒ 什么都没剥掉').not.toBe(raw);
-    expect(raw.includes('/**'), '取材文件本应含块注释（否则本自检无信息量）').toBe(true);
-    expect(src.includes('/**'), '注释未被剥掉').toBe(false);
-    expect(src.includes('export default function SettingsUpdate'), '剥过头，代码骨架没了').toBe(
-      true,
-    );
-    return src;
-  }
-
-  /** 抽出 `{us === 'X' && (` 起、到下一个 `{us === ` 为止的那一段 JSX。 */
-  function stateBlock(src: string, state: string): string {
-    const start = src.indexOf(`{us === '${state}'`);
-    expect(start, `SettingsUpdate 里找不到 ${state} 态分支`).toBeGreaterThan(-1);
-    const rest = src.slice(start + 1);
-    const nextIdx = rest.indexOf('{us === ');
-    const block = nextIdx === -1 ? rest : rest.slice(0, nextIdx);
-    expect(block.length, `${state} 态分支取材为空`).toBeGreaterThan(200);
-    return block;
-  }
-
   it('组件消费两个判据本身，不并行复刻字段读法', async () => {
     const src = await readTsx();
     expect(src.includes('releaseShipsDigest'), '必须消费 releaseShipsDigest').toBe(true);
@@ -1092,5 +1115,272 @@ describe('无摘要明示：接线面 + 五语文案', () => {
     // 下载前那条必须明说不阻断（用户此刻要决定的正是「还下不下」）。
     expect(zh.digestMissingBefore, 'zh-CN 未说明不阻断更新').toMatch(/不会因此被阻断|不阻断/);
     expect(en.digestMissingBefore, 'en-US 未说明不阻断更新').toMatch(/not blocked/i);
+  });
+});
+
+/**
+ * 预发布档次明示：接线面 + 五语文案。
+ *
+ * # 为什么必须有这道门
+ *
+ * 本页的手动「检查更新」是**全仓唯一**会返回预发布的 App 更新入口（`updateApi.check(true)`）——
+ * 启动自动检查、托盘检查更新（连同弹窗点「更新」时的复查）共用后端
+ * `PUSH_UPDATE_INCLUDE_PRERELEASE` 恒只看正式版，顶部常驻横幅同口径。于是「用户手里这份是不是
+ * 预发布」这件事，只有在这张卡上说得出来。
+ *
+ * 不说的话，用户只能从 tag 文本里猜档次 —— 而 GitHub 的 `prerelease` 是一个与 tag 命名**无关**的
+ * 独立布尔，一个打成 `v1.3.0` 的 release 完全可以是预发布。`isPrerelease` 一路从 `AppUpdateInfo`
+ * 传到前端却零消费，正是这个缺口的形态。
+ *
+ * # 与「无摘要明示」正交
+ *
+ * 那道门管**校验状态**（这份字节能不能验真），本门管**版本档次**（这个版本成不成熟）。一个版本
+ * 完全可能既是预发布又没带摘要，两条明示会同框出现 —— 故本门只断言自己那一半，不碰对方的判据。
+ */
+describe('预发布档次明示：接线面 + 五语文案', () => {
+  it('前提自检：本页确实还在拉预发布（否则本门无的放矢）', async () => {
+    const src = await readTsx();
+    // 前提没了要连同标注一并复核，而不是让本门恒绿空转。
+    expect(src.includes('updateApi.check(true)'), '本页不再以 check(true) 拉预发布').toBe(true);
+    // 反向：真值源必须是后端那个布尔，不是从版本号字符串里猜档次。
+    expect(src.includes('isPrerelease'), '拿得到 isPrerelease 却不消费').toBe(true);
+    expect(
+      /includes\(['"`]beta|match\(\/.*(alpha|beta|rc)/.test(src),
+      '不得从 tag 文本反推档次 —— GitHub 的 prerelease 与 tag 命名无关',
+    ).toBe(false);
+  });
+
+  /**
+   * 三条腿必须都挂徽标：`available` 是「要不要下」的决策点，`downloaded` 是「要不要重启装上去」
+   * （不可逆，离真的执行这些字节最近），`manual` 与 `downloaded` **互斥** —— 便携腿转 manual 后
+   * `downloaded` 整块不渲染，只挂两条等于在便携用户那里静默撤掉标注。判据与「无摘要」那条同源。
+   *
+   * **变异探针**：任删一条腿的徽标 ⇒ 该腿转红。
+   */
+  it('徽标挂在三条腿上（available / downloaded / manual），不只挂决策那一屏', async () => {
+    const src = await readTsx();
+    for (const state of ['available', 'downloaded', 'manual'] as const) {
+      const block = stateBlock(src, state);
+      // 两个字符串各自出现还不够 —— 徽标必须**由档次判据本身**驱动。只查「都出现过」时，
+      // 写成 `{true && <Pill>prereleaseTag</Pill>}` 再在别处提一句 isPrerelease 也能过。
+      // 允许前置一个资格判据（安装屏那两条腿有 `downloadedPath &&`，见下一条门），但
+      // `isPrerelease` 必须仍在**同一个表达式**里 —— 否则 `{true && <Pill>}` 加一句无关的
+      // `isPrerelease` 也能过。
+      expect(
+        /\{(?:downloadedPath && )?updateInfo\??\.isPrerelease\s*&&\s*\([\s\S]{0,240}?prereleaseTag/.test(
+          block,
+        ),
+        `${state} 态的预发布徽标没有挂在 updateInfo.isPrerelease 这个条件上`,
+      ).toBe(true);
+    }
+  });
+
+  /**
+   * 两枚徽标同为 `Pill variant="warn"`、会同框出现（一个版本完全可能既是预发布又没带摘要），
+   * 靠**位置**分工：预发布贴在版本号后（限定版本），无摘要留在行尾（限定制品）。都堆到行尾就是
+   * 一坨警告色，读者无从判断谁在说谁。
+   *
+   * 这条论证此前一个字的判据都没有 —— 把预发布 Pill 挪到行尾 digest Pill 旁边，整段论证被推翻
+   * 而门全绿。源码顺序即渲染顺序，故「预发布出现在无摘要之前」同时蕴含了「两者不在同一个槽位」。
+   *
+   * **变异探针**：把预发布 Pill 挪到 `</div>` 之后（行尾槽位，digest Pill 旁）⇒ 转红。
+   */
+  it('两枚徽标按「版本先、制品后」排布，不挤在同一个槽位', async () => {
+    const src = await readTsx();
+    // 三条腿都是两枚 Pill 同框（`downloaded`/`manual` 挂的是 digestMissingAfter 那一档），
+    // 位置约定对三处同样成立 —— 只钉 available 等于给另两处发了免死金牌。
+    for (const state of ['available', 'downloaded', 'manual'] as const) {
+      const block = stateBlock(src, state);
+      const pre = block.indexOf('prereleaseTag');
+      const digest = block.indexOf('digestMissingTag');
+      expect(pre, `${state} 态缺预发布徽标`).toBeGreaterThan(-1);
+      expect(digest, `${state} 态缺无摘要徽标（本门的对照方没了）`).toBeGreaterThan(-1);
+      expect(pre, `${state} 态：预发布徽标必须排在无摘要徽标之前（版本先、制品后）`).toBeLessThan(
+        digest,
+      );
+    }
+  });
+
+  /**
+   * 说明文案只挂在 `available`：那是用户决定「要不要拿一份预发布」的那一屏。
+   *
+   * **刻意不跟着重复三遍**（与「无摘要」腿的处置不同，这里如实记下差异）：那边 before/after 说的
+   * 是两件不同的事（「将要取回未署摘要的包」vs「即将执行未经校验的字节」），而档次的说明三处一字
+   * 不差 —— 抄三遍只是噪声。档次这个**事实**由徽标在三条腿上持续持有，**解释**留在做决定的那屏。
+   */
+  /**
+   * 徽标的**资格判据**：安装屏那两条腿只在「盘上这份是本页下的」时才敢说档次。
+   *
+   * `updateInfo` 描述的是本页**上一次检查**的结果，而 `us` 会被**别的窗口**的下载广播推到
+   * `downloaded`（弹窗「更新/重试」、`spawn_auto_download`）—— 那时两者毫无因果关系：用户查到
+   * `v1.3.0-beta.1` 没下、外部腿下了 `v1.2.0` 正式包 ⇒ 卡片举着预发布徽标去描述一份正式包。
+   *
+   * 判据取 `downloadedPath`：它的**唯一**写点是 `downloadUpdate` 的成功分支（外部广播那条腿从不
+   * 设它）⇒ 恰好等价于「这次下载是本页完成的」。漏报（外部腿下的预发布不显示徽标）方向安全，
+   * 正解归 W5。
+   *
+   * **为什么不是「清空 `updateInfo`」**：那条会让 `us==='error'` 的「重试」（该分支唯一按钮，
+   * 直通 `downloadUpdate` 首行 `if (!updateInfo) return`）变成哑键 —— 用真缺陷换假话，不划算。
+   * 本门连带把这条也钉住：`downloadUpdate` 的入口守卫仍在，且监听器**不得**清空 `updateInfo`。
+   *
+   * **变异探针**：任一腿去掉 `downloadedPath &&` ⇒ 转红；监听器里加回 `setUpdateInfo(null)` ⇒ 转红。
+   */
+  it('安装屏的徽标只描述本页下的那份包（不清数据，只收窄断言）', async () => {
+    const src = await readTsx();
+    for (const state of ['downloaded', 'manual'] as const) {
+      const block = stateBlock(src, state);
+      expect(
+        /\{downloadedPath && updateInfo\?\.isPrerelease &&/.test(block),
+        `${state} 态的预发布徽标没有由 downloadedPath 把关 —— 会贴到别的窗口下的正式包上`,
+      ).toBe(true);
+    }
+    // `available` 是本页自己刚查出来的结果，数据源就是对的，不该也被这条判据挡住
+    // （那一屏 `downloadedPath` 恒为 null ⇒ 加了资格判据 = 徽标在**决策那一屏**彻底消失，
+    // 而那正是整批的立项理由）。
+    //
+    // ⚠️ 正则必须一路咬到 `prereleaseTag`：该 block 里 `updateInfo.isPrerelease` 出现**两次**
+    // （徽标 + 下面的 `prereleaseNote` 说明），只判「有没有这个开头」会被**说明那条**喂饱 ——
+    // 给徽标也加上 `downloadedPath &&` 时本条照样绿。这与 Rust 侧「别的臂替本臂作证」同形，
+    // 换到了 JSX 上。
+    //
+    // `\??` 与 `\s*` 两轴与 sibling（上一条门）对齐：把这里规范成 `updateInfo?.isPrerelease`
+    // 纯属风格统一，不该让本门红而 sibling 绿、消息还说「被多加了资格判据」—— 那是在与意图无关的
+    // 轴上更严。放宽零削弱：`\{` 紧接 `updateInfo` 已经排除任何前置资格判据。
+    expect(
+      /\{updateInfo\??\.isPrerelease\s*&&\s*\([\s\S]{0,240}?prereleaseTag/.test(
+        stateBlock(src, 'available'),
+      ),
+      'available 态的徽标被多加了资格判据 —— 那一屏的 updateInfo 本来就是本页查的，加了等于徽标消失',
+    ).toBe(true);
+    // 反向：绝不能回到「清空 updateInfo」那条路（会让 error 态的「重试」变哑键）。
+    expect(
+      src.includes('setUpdateInfo(null)'),
+      '监听器又开始清空 updateInfo —— error 态的「重试」会变成哑键',
+    ).toBe(false);
+    expect(
+      src.includes('if (!updateInfo) return'),
+      'downloadUpdate 的入口守卫没了 —— 上面那条反向断言就失去了意义',
+    ).toBe(true);
+  });
+
+  it('说明文案挂在决策那一屏', async () => {
+    const src = await readTsx();
+    expect(stateBlock(src, 'available').includes('prereleaseNote'), 'available 态缺档次说明').toBe(
+      true,
+    );
+  });
+
+  /**
+   * 前端「推」面的**普查**，不是点名。
+   *
+   * 上一版只 `readTsx('../../layout/AppUpdateBanner.tsx')` 点名横幅一个文件 —— 覆盖面由夹具定，
+   * 不由判据定：**新增第三个推面写 `check(true)`，前端全绿，Rust 那道门也管不着（它只扫 `.rs`）**。
+   * 这与 Rust 侧刚修掉的「按函数名点三条腿」是同一条教训的另一条腿，故同形修：递归 `ui/src`
+   * 收全部 `updateApi.check(`，断言**恰好一处**传 `true` 且位于设置页，其余一律「看得出是正式版」。
+   *
+   * 缺省值 `check(includePrerelease = false)` 只挡得住裸调用，挡不住显式 `true`，所以判据看实参。
+   * 折行写法（源码里是 `updateApi\n  .check(false)`）由 `\s*` 接住。
+   *
+   * # ⚠️ 与后端同名门的方向**相反**，别改宽
+   *
+   * Rust 侧 `every_update_check_call_site_uses_the_shared_prerelease_scope` **要求**写共享常量、
+   * 拒收字面量；本门恰好反过来 —— 因为两边的处境不同：后端三条腿共用一个口径，常量是**单点真值**；
+   * 前端两处口径**天生不同**（横幅是推、设置页是拉），没有可共用的常量，能静态读出的只有字面量。
+   *
+   * 但「只认字面量」会挡住一次正当重构：前端真长出第三条推腿、按后端那条纪律提一个共享常量出来时，
+   * `updateApi.check(PUSH_INCLUDE_PRERELEASE)` 会被判 murky 而转红。故留一个**具名白名单**
+   * [`ALLOWED_SCOPE_IDENTS`]：要新增一个名字，就得来这里加一行——判据面显式扩张，而不是把门改宽。
+   *
+   * # 射程自曝
+   *
+   * needle 是 `updateApi.check(`，**绕得过去**：直接 `invoke(IPC_CHANNELS.UPDATE_CHECK, {...})`
+   * 不经这层封装（今天全仓没有这种写法，`api-client.ts` 是唯一拆包点）。同理，运行期拼出来的实参
+   * （`check(cond ? a : b)`）会被判 murky 转红而不是放行 —— 方向安全，但那是拒收不是识别。
+   *
+   * **变异探针**：横幅改 `check(true)` / 任意新文件里写一处 `check(true)` ⇒ 转红。
+   */
+  it('全仓前端只有一处含预发布的 App 检查，且在设置页（其余推面一律正式版）', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { fileURLToPath: toPath } = await import('node:url');
+    const uiSrc = path.resolve(path.dirname(toPath(import.meta.url)), '../../..');
+
+    const files: { rel: string; src: string }[] = [];
+    const walk = (dir: string) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (/\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) {
+          files.push({
+            rel: path.relative(uiSrc, p).replace(/\\/g, '/'),
+            src: stripTsComments(p, fs.readFileSync(p, 'utf8')),
+          });
+        }
+      }
+    };
+    walk(uiSrc);
+    // 取材自检：扫到 0 个文件会让下面所有断言在空集上「恰好」通过。
+    expect(files.length, `${uiSrc} 下扫到的源文件太少`).toBeGreaterThan(100);
+
+    const sites: { rel: string; arg: string }[] = [];
+    for (const { rel, src } of files) {
+      for (const m of src.matchAll(/\bupdateApi\s*\.\s*check\s*\(([^)]*)\)/g)) {
+        sites.push({ rel, arg: m[1].replace(/\s+/g, '') });
+      }
+    }
+    expect(sites.length, '一处 updateApi.check( 都没扫到 —— 判据面塌了').toBeGreaterThanOrEqual(2);
+
+    const withTrue = sites.filter((s) => s.arg === 'true').map((s) => s.rel);
+    expect(withTrue, '含预发布的 App 检查必须**恰好**只有设置页那一处「拉」').toEqual([
+      'components/screens/settings/SettingsUpdate.tsx',
+    ]);
+    // 其余一律「看得出是正式版」：显式 `false`、空参（缺省即 false），或白名单里的具名常量。
+    // 白名单今天是空的 —— 前端还没有可共用的口径常量（横幅是推、设置页是拉，两处天生不同）。
+    // 真要提一个出来，在这里加一行即可；**判据面显式扩张，不许把 murky 那条改宽**。
+    const ALLOWED_SCOPE_IDENTS: readonly string[] = [];
+    const murky = sites.filter(
+      (s) => !['true', 'false', ''].includes(s.arg) && !ALLOWED_SCOPE_IDENTS.includes(s.arg),
+    );
+    expect(murky, '有调用点的预发布口径既不是字面量、也不在具名白名单里，无法静态判定').toEqual(
+      [],
+    );
+    // ⚠️ **前瞻守卫，本增量零执行覆盖**（口径同本文件 `.verified` 那条）：`ALLOWED_SCOPE_IDENTS`
+    // 今天是空数组 ⇒ 下面这条 `filter` 恒得空集、断言恒真，**不算进本批的变异收据**。它挡的是
+    // 将来第一次往白名单加名字的那一刻。
+    // 白名单只认**名字**是不够的：某条推腿写 `check(SCOPE)` 而 `SCOPE = true` 会全绿放行，
+    // 横幅零标注地举着一条 beta —— 正是这道门存在的理由。故名字进白名单还不算完，它的**值**
+    // 必须能在 `ui/src` 里静态解析到 `= false`。加名字仍是显式扩张，口径依旧被读出来。
+    const unresolved = ALLOWED_SCOPE_IDENTS.filter(
+      (ident) =>
+        !files.some(({ src }) =>
+          new RegExp(`\\b(?:const|let|var)\\s+${ident}\\s*(?::[^=]+)?=\\s*false\\b`).test(src),
+        ),
+    );
+    expect(
+      unresolved,
+      '白名单里的常量在 ui/src 里解析不到 `= false` 的初始化式 —— 名字进了白名单，口径却没人读',
+    ).toEqual([]);
+  });
+
+  it('两个键在五个语种里都非空，且说明都点名 alpha/beta/rc（档次不可从 tag 反推）', async () => {
+    const fs = await import('node:fs');
+    for (const loc of ['zh-CN', 'zh-TW', 'en-US', 'ru', 'fa']) {
+      const json = JSON.parse(
+        fs.readFileSync(
+          fileURLToPath(new URL(`../../../i18n/locales/${loc}.json`, import.meta.url)),
+          'utf8',
+        ),
+      ) as { settings: { update: Record<string, string> } };
+      for (const k of ['prereleaseTag', 'prereleaseNote'] as const) {
+        const v = json.settings.update[k];
+        expect(v, `${loc} 缺 settings.update.${k}`).toBeTypeOf('string');
+        expect(v.trim().length, `${loc} 的 ${k} 是空串`).toBeGreaterThan(0);
+      }
+      // 只写「预发布版」等于把解释权推回给 tag 文本；必须说出这是 alpha / beta / rc 那一档。
+      expect(
+        json.settings.update.prereleaseNote,
+        `${loc} 的说明未点名 alpha / beta / rc`,
+      ).toMatch(/alpha/i);
+    }
   });
 });

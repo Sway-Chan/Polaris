@@ -695,6 +695,8 @@
       "appVersionCard": "應用程式版本",
       "upToDate": "已是最新",
       "foundNew": "發現新版本",
+      "prereleaseTag": "預發布版",
+      "prereleaseNote": "alpha / beta / rc 版本，可能存在未修復的問題。啟動時的自動檢查與工具列檢查只會提示正式版。",
       "releaseNotes": "更新說明",
       "download": "下載",
       "downloadingApp": "下載更新中…",

@@ -1026,6 +1026,8 @@ pub fn tray_screen_boot_script(screen: &str) -> String {
 ///
 /// 链本身与 `startup_tasks::spawn_update_check` 逐段相同（check → hasUpdate → version → popup），
 /// 含「`hasUpdate:true` 却缺 version = 后端契约破损，宁可不弹也不弹个空版本号」这条边界。
+/// 预发布口径同样共用 [`crate::commands::updater::PUSH_UPDATE_INCLUDE_PRERELEASE`]：本腿检出的版本
+/// 号会被写进弹窗，而用户点「更新」时的复查读的是同一个常量。
 ///
 /// 错误串随 [`crate::i18n::app_lang`] 分档（浮层把它原样显示在 notice 行、原生菜单腿把它发进
 /// 系统通知）—— 2026-07-31 前先是硬编码中文、后是 zh/en 二态，俄语 / 波斯语 / 繁中用户拿到的
@@ -1036,7 +1038,7 @@ pub async fn tray_check_update(app: AppHandle) -> ApiResponse<bool> {
     let resp = match crate::commands::update_check(
         app.clone(),
         app.state::<crate::runtime::AppRuntime>(),
-        Some(false),
+        Some(crate::commands::updater::PUSH_UPDATE_INCLUDE_PRERELEASE),
     )
     .await
     {

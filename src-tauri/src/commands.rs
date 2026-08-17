@@ -61,6 +61,81 @@ pub(crate) mod guard_scan {
         strip_line_comments(&rest[..end])
     }
 
+    /// 取 `match` 里**某一条臂**的臂体：从臂头之后起、到**下一条臂头**为止。
+    ///
+    /// # 为什么必须封顶（同一形态本仓已踩过两次）
+    ///
+    /// 切到函数体尾的臂切片，射程由**臂的书写顺序**决定，而不是由判据决定：只要别的臂里有一句
+    /// 形状相同的代码，它就会替被守的那条臂作证。实测过两次 —— `update_open_releases(app,
+    /// popup.version.clone())` 在 `ViewLog` 与 `ManualDownload` 两臂里逐字相同（把后者搬到前者
+    /// 之前、实参换成 `None`，编译通过、全仓测试全绿）；`force_popup_state(...progress(0))` 挪进
+    /// `ViewLog` 臂后，守它的门同样全绿。
+    ///
+    /// # 判据是**臂头形状**，不是缩进宽度
+    ///
+    /// 第一版按 `"\n            PopupAction::"`（写死 12 空格）封顶，而实际臂缩进是 8 ⇒ needle 恒不
+    /// 命中 ⇒ 封顶那行代码**本身是哑的**。故改为逐行 `trim_start()` 后判「以 `<enum>::` 起手且
+    /// 含 `=>`」，与缩进无关。
+    ///
+    /// **输出自检不可省**（P1-2：抽本 helper 时它一度被合成单测顶替掉，那是换了型不是搬了家）。
+    /// 单测检的是「**列举到的**几种输入形状」，自检检的是**输出**（切出来的片段里不得再有臂头），
+    /// 形状无关 —— 二者不可互相替代。**推理**（非实测：本仓今天没有折行臂头样本进入任何执行
+    /// 路径）：rustfmt 把长 or-pattern 臂头折行后（`|` 起手续行），逐行前缀判据认不出下一条臂
+    /// ⇒ 静默吞掉它；那是合成单测没列举到、而本自检必红的形态。
+    ///
+    /// 不对称也是理由本身：**臂头找不到 ⇒ panic（响）；封顶失效 ⇒ 静默多切（哑）**。哑的那一半
+    /// 必须自己长嘴。
+    ///
+    /// `arm_head` 传臂头的**前缀**（如 `"PopupAction::Update | PopupAction::Retry =>"`），
+    /// `variant_prefix` 传该 match 所有臂头的公共前缀（如 `"PopupAction::"`）用于识别下一条臂。
+    /// 找不到臂头一律 panic —— 守卫失去判据必须转红。
+    ///
+    /// # 射程：单行臂头，且臂头以 `variant_prefix` 起手
+    ///
+    /// 识别「下一条臂」靠**逐行**前缀匹配 ⇒ 只认**写在一行里**的臂头（含单行 or-pattern
+    /// `A::Y | A::Z =>`）。臂头被折成多行时前缀判据失效，此时兜住它的是下面那条输出自检
+    /// （泄漏进来的续行仍以 `variant_prefix` 起手）—— **凡下一条臂头以 `variant_prefix` 起手者
+    /// 必红**。
+    ///
+    /// **通配臂 `_ => {}` 与绑定臂 `other => {}` 两者皆逃**：既不触发 break（不以前缀起手），
+    /// 泄漏进来后也不含前缀（逃过自检）—— 那才是真正「哑」的一格。今天不可达（本仓用它的那个
+    /// match 五臂穷举、无通配臂），**给 `PopupAction` 加变体并顺手补一条 `_ => {}` 时必须回来看
+    /// 这里**。
+    pub(crate) fn match_arm_body(body: &str, arm_head: &str, variant_prefix: &str) -> String {
+        let at = body
+            .find(arm_head)
+            .unwrap_or_else(|| panic!("锚点消失，守卫已失去判据（臂头不见了）: {arm_head}"));
+        let rest = &body[at + arm_head.len()..];
+        let mut out = String::new();
+        for line in rest.lines() {
+            let t = line.trim_start();
+            if t.starts_with(variant_prefix) && t.contains("=>") {
+                break;
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        // 自检按**行首**判，不按「整段里出现过」判：后者会把臂体内的正当写法误当成泄漏
+        // —— `matches!(act, PopupAction::Retry)`（合并臂将来分开埋点的自然写法）、**行尾**注释
+        // （`strip_line_comments` 只剥整行）、日志字面量，任一命中就让三道真门同时红，而消息还
+        // 咬定「封顶失效」= 错误诊断。本仓在 `top_level_fn_body` 的 doc 里已登记过这个失效模式
+        // （「注释里出现禁词就会误红，逼后人把断言改宽 = 门被磨钝」）。
+        //
+        // 行级判据仍**严格宽于** break 谓词（不要求 `=>`）⇒ 折行 or-pattern 的首行照样必红，
+        // 上面「射程」段的结论不变；唯一放过的是「多条臂挤在同一行」，rustfmt 不产出该形态。
+        let leaked = out
+            .lines()
+            .find(|l| l.trim_start().starts_with(variant_prefix));
+        assert!(
+            leaked.is_none(),
+            "臂切片里还有下一个臂头 —— 封顶失效，调用点守卫已退化成「函数体里有没有这句话」，\
+             别的臂会替被守的那条作证。臂头={arm_head:?}／变体前缀={variant_prefix:?}／\
+             首条泄漏行={:?}",
+            leaked.unwrap_or_default().trim()
+        );
+        out
+    }
+
     /// 把整行注释换成空行（保留行数与行序）。[`top_level_fn_body`] 与各文件的二次封顶取材器共用。
     pub(crate) fn strip_line_comments(body: &str) -> String {
         body.lines()
@@ -255,6 +330,67 @@ pub(crate) mod guard_scan {
             "缩进的右花括号不是函数结束，不得据此提前截断"
         );
         assert!(!body.contains("outside()"));
+    }
+
+    /// **守卫的守卫**：[`match_arm_body`] 三种形态各来一格。
+    ///
+    /// 合成 body 而不是拿真源码：真源码里被守的那条臂**恰好是末臂**（`ManualDownload`），封顶循环
+    /// 永不 `break` ⇒ 封顶与它的自检**零执行覆盖**，靠「它恰好排在最后」兜住。本轮复审实测把封顶
+    /// 判据打死后那道门仍 ok，正是这个盲区。这里用合成样本把三格都跑到。
+    ///
+    /// 变异锁：把 `t.starts_with(variant_prefix) && t.contains("=>")` 换回按缩进宽度匹配
+    /// （或整个删掉 `break`）⇒ 「臂在中间」那格转红。
+    ///
+    /// ⚠️ **本单测只覆盖列举到的输入形状，不担保封顶的正确性** —— 那由 [`match_arm_body`] 自身的
+    /// 输出自检担保（形状无关）。实证：把封顶判据打死时，若只有本单测，三道真门全绿、只有这里红；
+    /// 而折行 or-pattern 臂头这一格本单测根本列举不到。两者同时在，才既说得出「哪种输入」也拦得住
+    /// 「没列举到的输入」。
+    #[test]
+    fn match_arm_body_stops_at_the_next_arm() {
+        let body = "\
+        A::First => {
+            first_call();
+        }
+        A::Middle => {
+            middle_call();
+        }
+        A::Last => {
+            last_call();
+        }
+";
+        // ① 臂在中间：必须封到下一条臂头，不得把后面的臂吞进来。
+        let mid = match_arm_body(body, "A::Middle =>", "A::");
+        assert!(mid.contains("middle_call()"), "臂体自己的内容没了");
+        assert!(
+            !mid.contains("last_call()"),
+            "**封顶失效**：吞掉了下一条臂 → 别的臂会替被守的那条作证"
+        );
+        assert!(
+            !mid.contains("first_call()"),
+            "切片起点错了：不该包含臂头之前的内容"
+        );
+
+        // ② 臂在末尾：没有下一条臂头，切到结尾即可（不得 panic、不得吐空）。
+        let last = match_arm_body(body, "A::Last =>", "A::");
+        assert!(last.contains("last_call()"));
+        assert!(!last.contains("middle_call()"));
+
+        // ③ **单行** or-pattern 臂头（且缩进不同）照样识别为「下一条臂」。折行 or-pattern 不在
+        //    本格射程内 —— 那一形由 `match_arm_body` 的输出自检兜住（见其 doc 的「射程」段）。
+        let or_body = "\
+    A::X => {
+        x_call();
+    }
+        A::Y | A::Z => {
+            yz_call();
+        }
+";
+        let x = match_arm_body(or_body, "A::X =>", "A::");
+        assert!(x.contains("x_call()"));
+        assert!(
+            !x.contains("yz_call()"),
+            "or-pattern 臂头（且缩进不同）没被认出来 —— 判据别再回到缩进宽度"
+        );
     }
 
     /// 锚点消失必须 panic（转红），而不是返回空切片让断言恒真。

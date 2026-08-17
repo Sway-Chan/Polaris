@@ -248,6 +248,21 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
     return off;
   }, []);
 
+  /**
+   * 手动「检查更新」——**全仓唯一**含预发布的 App 更新入口（`check(true)`）。
+   *
+   * 这是「拉」：用户自己按的按钮，且结果卡会用 `isPrerelease` 明确标出拿到的是不是预发布。
+   * 与之相对的「推」腿恒只看正式版 —— 启动自动检查与托盘检查更新（连同弹窗点「更新」时的复查）
+   * 共用后端 `commands/updater.rs::PUSH_UPDATE_INCLUDE_PRERELEASE`，顶部常驻横幅同口径
+   * （`AppUpdateBanner` 的 `check(false)`）。我们主动推到用户脸上的东西不能是预发布，因为 App 侧
+   * **没有**任何「更新通道」开关（`coreUpdateChannel` 只管内核）。
+   *
+   * # 如实登记：一处**故意不修**的残留不一致
+   *
+   * 顶部横幅可能举着 `v1.2.0`（正式版），用户点「去更新」进到本页、再点「检查更新」，拿到的却是
+   * `v1.3.0-beta.1`。这与弹窗那条缺陷**不同形**：中间隔着一次用户主动点击，不是我们替他换的包；
+   * 且拿到的那份会带预发布徽标，用户看得见。真要消除得给 App 加更新通道设置，属独立一批。
+   */
   async function checkUpdate() {
     setUs('checking');
     // 上一轮下载的校验结论对新查到的版本不成立，先清空再查。
@@ -649,10 +664,39 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
               <Dot variant="flow" style={{ background: 'hsl(var(--flow))', boxShadow: '0 0 0 3px hsl(var(--flow)/0.18)' }} />
               <div style={{ flex: 1 }}>
                 <b>{t('settings.update.foundNew')}</b> <span className="cv-tag">{updateInfo.version}</span>
+                {/* 预发布标记。本卡的检查是**全仓唯一**会返回预发布的 App 更新入口
+                    （上面 `checkUpdate()` 的 `updateApi.check(true)`）：启动自动检查与托盘检查更新
+                    由后端 `PUSH_UPDATE_INCLUDE_PRERELEASE` 钉死只看正式版，顶部常驻横幅同口径
+                    （`AppUpdateBanner` 的 `check(false)`）。
+                    不标出来的话，用户在这里点「下载」拿到的是什么档次的版本只能靠 tag 文本自己猜 ——
+                    而「是不是预发布」在 GitHub 上是一个**独立的布尔**，与 tag 怎么命名无关
+                    （`updater.rs` 的内核通道注释同样点过这一条：档次不可从字符串反推）。
+                    `isPrerelease` 一路从 `AppUpdateInfo` 传到这里，此前零消费。
+
+                    **与「无摘要」徽标的位置约定**（两者同为 `Pill variant="warn"`，会同框出现）：
+                    徽标紧挨着它限定的那个东西。**预发布 = 版本档次** ⇒ 贴在版本号后面；
+                    **无摘要 = 这份字节的校验状态** ⇒ 留在行尾（摘要腿既有的槽位，本批不动它）。
+                    两枚都堆到行尾就成了一坨警告色，看不出谁在说谁。 */}
+                {updateInfo.isPrerelease && (
+                  <>
+                    {' '}
+                    <Pill variant="warn">{t('settings.update.prereleaseTag')}</Pill>
+                  </>
+                )}
                 <CardSub>
                   {new Date(updateInfo.publishedAt).toLocaleDateString()} ·{' '}
                   {(updateInfo.fileSize / 1024 / 1024).toFixed(1)} MB
                 </CardSub>
+                {/* 两条明示**语义正交，可以同时出现**：版本档次（这个版本成不成熟）与校验状态
+                    （这份字节能不能验真）是两回事，一个版本完全可能既是预发布又没带摘要。
+                    顺序按「先版本、后这份下载」：上一行说的就是版本号，紧跟着谈它的档次，
+                    再谈即将取回的那份字节。样式沿用摘要腿那份（marginTop/lineHeight），
+                    两条叠在一起时行距一致，不会看出是两批人写的。 */}
+                {updateInfo.isPrerelease && (
+                  <CardSub style={{ marginTop: 4, lineHeight: 1.7 }}>
+                    {t('settings.update.prereleaseNote')}
+                  </CardSub>
+                )}
                 {releaseDigestMissing && (
                   <CardSub style={{ marginTop: 4, lineHeight: 1.7 }}>
                     {t('settings.update.digestMissingBefore')}
@@ -708,6 +752,45 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
               <Dot variant="ok" />
               <div style={{ flex: 1 }}>
                 <b>{t('settings.update.downloadDone')}</b> <span className="cv-tag">{updateInfo?.version}</span>
+                {/* 姊妹腿（与摘要腿同一条纪律，理由也同源）：`available` 是「要不要下」的决策点，
+                    这里是「要不要重启装上去」的决策点 —— 后者不可逆，离用户真的跑这些字节最近。
+                    只挂在 `available` 就等于：用户下完包、切个屏回来，界面上再没有任何字说这是预发布。
+                    **说明文案不跟着重复三遍**：摘要腿的 before/after 说的是两件不同的事
+                    （「将要取回未署摘要的包」vs「即将执行未经校验的字节」），而预发布的说明三处一字不差，
+                    抄三遍只是噪声；档次这个事实由徽标持续持有，解释留在做决定的那一屏。
+
+                    ⚠️ **`downloadedPath` 不是装饰，是这枚徽标的资格判据**。`updateInfo` 描述的是
+                    本页**上一次检查**的结果，而 `us` 会被**别的窗口**的下载广播推到 `downloaded`
+                    （弹窗「更新/重试」、`spawn_auto_download`）—— 那时两者毫无因果关系：用户查到
+                    `v1.3.0-beta.1` 没下，外部腿下了 `v1.2.0` 正式包，卡片就会举着预发布徽标去描述
+                    一份正式包。`downloadedPath` 的**唯一**写点是 `downloadUpdate` 的成功分支
+                    （外部广播那条腿从不设它）⇒ 它为真说明本页下载过**某个**包。
+
+                    ⚠️ 「那个包就是当前 `updateInfo` 描述的这个」还靠**第二条、非局部**的不变量，
+                    写成状态无关的蕴含式：**`us === 'idle'` ⟹ `downloadedPath === null`**
+                    （写 path 的唯一点之后 `us` 恒非 idle；进入 idle 的两个入口都来自 path 为 null
+                    的态）。而 `setUpdateInfo` 只在 `checkUpdate()` 里执行、「检查更新」按钮只挂在
+                    idle 那一格 ⇒ 每次写 `updateInfo` 时 `downloadedPath` 必为 null。
+
+                    **不按「哪些态回不到 idle」枚举**：那样警告面会短于射程 —— `error` 同样可能带着
+                    非空 path（外部腿广播 error 只置 `us`、不清 path），而「下载失败 → 给个重新检查」
+                    比「已下载 → 重新检查」更自然，恰好落在枚举之外。射程是**任何**新增的
+                    `setUs('idle')` 与**任何**新增的 `checkUpdate()` 入口，不限于本卡：破坏它 ⇒ 旧正式
+                    包路径 + 新查到的 beta 同时在手 ⇒ 徽标贴回外部腿下的正式包，而守这条的门拦不住。
+                    真要加，随入口一起清 `downloadedPath`，或直接走 W5 的正解。
+
+                    代价是外部腿下的包不显示徽标（**漏报，方向安全**）——正解是让那条腿把随行事实
+                    随事件带过来，属 W5 射程；本处只负责不说假话。**版本号那半仍未修**：本卡的
+                    `{updateInfo?.version}` 照旧可能是上一次检查的那个（无徽标、但数字是错的），
+                    同归 W5。
+                    **不走「清空 `updateInfo`」那条**：清空会让 `us==='error'` 那格的「重试」
+                    （唯一按钮，直通 `downloadUpdate` 的 `if (!updateInfo) return`）变成哑键。 */}
+                {downloadedPath && updateInfo?.isPrerelease && (
+                  <>
+                    {' '}
+                    <Pill variant="warn">{t('settings.update.prereleaseTag')}</Pill>
+                  </>
+                )}
                 <CardSub>{t('settings.update.restartToInstall')}</CardSub>
                 {downloadUnverified && (
                   <CardSub style={{ marginTop: 4, lineHeight: 1.7 }}>
@@ -732,6 +815,17 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
               <Dot variant="ok" />
               <div style={{ flex: 1 }}>
                 <b>{t('settings.update.downloadedManual')}</b> <span className="cv-tag">{updateInfo?.version}</span>
+                {/* 第三条腿：`manual` 与 `downloaded` 互斥，转 manual 后上面那枚徽标整块消失，
+                    而这里恰是「你自己解压覆盖当前程序」的一刻 —— 与摘要腿完全同形的理由。
+                    资格判据同上（`downloadedPath`）：本态只能由 `installUpdate` 进入，而它首行就是
+                    `if (!downloadedPath) return` ⇒ 这里 `downloadedPath` 恒非空，判据在此不改变行为，
+                    写出来是为了两条腿的判据**逐字同形**，不让人以为只有 `downloaded` 那条需要把关。 */}
+                {downloadedPath && updateInfo?.isPrerelease && (
+                  <>
+                    {' '}
+                    <Pill variant="warn">{t('settings.update.prereleaseTag')}</Pill>
+                  </>
+                )}
                 <CardSub style={{ lineHeight: 1.7, wordBreak: 'break-all' }}>{errMsg}</CardSub>
                 {/* 姊妹腿：`manual` 与 `downloaded` 是**互斥**的两个态，一旦转 manual，
                     `downloaded` 那条明示就整块消失 —— 而这里恰恰是「你自己去解压覆盖」的那一刻，
