@@ -170,6 +170,44 @@ pub trait UpdateFs {
     /// 调用方负责确保父目录存在（经 [`UpdateFs::create_dir_all`]）。
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), std::io::Error>;
 
+    /// 打开 `path` 的**流式写句柄**（截断已存在内容；父目录须已存在，同 [`UpdateFs::write`]）。
+    ///
+    /// # 为什么 `write` 不够用
+    ///
+    /// [`UpdateFs::write`] 吃 `&[u8]` ⇒ 调用方必须先把整个负载攒在内存里。App 安装包是几十 MiB
+    /// 到上百 MiB 量级，「整包入内存再落盘」把内存峰值与包体积绑死，还逼下载腿在校验前
+    /// 一直持有全部字节。有了写句柄，下载腿才能边收边写、边写边算摘要。
+    ///
+    /// # 为什么返回 `Box<dyn std::io::Write + Send>` 而不是自造句柄 trait
+    ///
+    /// `std::io::Write` 就是 stdlib 给写句柄定的契约（`write_all` / `flush` 齐备），
+    /// 再定义一个同形的本地 trait 只会多一层适配（简约阶梯：stdlib 优先）。
+    /// `Send` 是硬要求 —— 句柄要被移进下载 task。
+    ///
+    /// # Errors
+    ///
+    /// 透传底层 IO 错误（父目录不存在 / 无权限 / 磁盘满）。
+    fn open_write(&self, path: &Path) -> Result<Box<dyn std::io::Write + Send>, std::io::Error>;
+
+    /// 把 `path` 已写出的内容**刷到存储介质**（`fsync`），返回后内容才算真的落了盘。
+    ///
+    /// # 为什么落位路径需要它
+    ///
+    /// 「写完 → rename」中间没有 `sync` 时，断电 / 内核崩溃后完全可能出现「dest 这个名字在、
+    /// 内容却是零或半截」：rename 只保证目录项的原子替换，不保证被替换的那个 inode 的**数据**
+    /// 已经离开 page cache。而 dest 一旦存在就会被复用判定与安装腿当成完整包
+    /// （`commands/updater.rs` 的 `cached_download_is_reusable` / `update_install`）。
+    ///
+    /// # 实现须持**写句柄**
+    ///
+    /// Windows 的 `FlushFileBuffers` 要求句柄带写权限，只读句柄会直接失败；
+    /// 故 [`StdFs`] 用 `OpenOptions::new().write(true)` 而不是 `File::open`。
+    ///
+    /// # Errors
+    ///
+    /// 透传底层 IO 错误（文件不存在 / 无写权限 / 介质错误）。
+    fn sync_file(&self, path: &Path) -> Result<(), std::io::Error>;
+
     /// 读取 `path` 全部字节。= 上游 `fs.readFileSync`。
     fn read(&self, path: &Path) -> Result<Vec<u8>, std::io::Error>;
 
@@ -212,6 +250,20 @@ pub struct StdFs;
 impl UpdateFs for StdFs {
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
         std::fs::write(path, bytes)
+    }
+
+    fn open_write(&self, path: &Path) -> Result<Box<dyn std::io::Write + Send>, std::io::Error> {
+        // `File::create` = 建新 / 截断已存在，与 `write` 的覆盖语义一致。
+        Ok(Box::new(std::fs::File::create(path)?))
+    }
+
+    fn sync_file(&self, path: &Path) -> Result<(), std::io::Error> {
+        // **必须带写权限**：Windows 的 `FlushFileBuffers` 对只读句柄直接失败（见 trait 文档）。
+        // 不用 `File::create`（会截断）也不用 `append`（无谓地改变文件偏移语义）。
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)?
+            .sync_all()
     }
 
     fn read(&self, path: &Path) -> Result<Vec<u8>, std::io::Error> {
@@ -282,6 +334,11 @@ pub enum MockFailOp {
     Remove,
     Read,
     List,
+    /// 落位前的 `fsync` 失败（介质错误 / 磁盘满在 flush 时才暴露）。
+    ///
+    /// **不与 [`Self::Write`] 合流**：`write` 成功而 `sync` 失败正是本注入要覆盖的那一格
+    /// —— 合流的话「写都写不进去」会盖掉「写进了 page cache 但没落到介质」这条腿。
+    SyncFile,
 }
 
 impl<'a> MockFs<'a> {
@@ -324,6 +381,27 @@ impl<'a> UpdateFs for MockFs<'a> {
             return Err(std::io::Error::other("mock injected failure: Write"));
         }
         std::fs::write(self.resolve(path), bytes)
+    }
+
+    fn open_write(&self, path: &Path) -> Result<Box<dyn std::io::Write + Send>, std::io::Error> {
+        // 与 `write` 同归 `MockFailOp::Write`：二者是同一件事（往 path 写内容）的两种粒度，
+        // 分成两个注入口会让「写失败」的测试覆盖按调用形式分叉。
+        if matches!(self.next_fail, Some(MockFailOp::Write)) {
+            return Err(std::io::Error::other("mock injected failure: Write"));
+        }
+        Ok(Box::new(std::fs::File::create(self.resolve(path))?))
+    }
+
+    fn sync_file(&self, path: &Path) -> Result<(), std::io::Error> {
+        if matches!(self.next_fail, Some(MockFailOp::SyncFile)) {
+            return Err(std::io::Error::other("mock injected failure: SyncFile"));
+        }
+        // 未注入失败时**真的做一次 fsync**（不是无脑 Ok）：这样「文件根本不存在就调 sync」
+        // 在 mock 上同样会报错，与 StdFs 的行为一致。
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(self.resolve(path))?
+            .sync_all()
     }
 
     fn read(&self, path: &Path) -> Result<Vec<u8>, std::io::Error> {
@@ -445,6 +523,50 @@ mod tests {
         fs.remove_file(&fs.join(root, "moved.bin")).unwrap();
         // 二次 remove 不存在 → no-op（对齐 上游 `if exists` 语义）。
         fs.remove_file(&fs.join(root, "moved.bin")).unwrap();
+    }
+
+    /// 写句柄与 `write` 的落盘结果必须一致（覆盖语义、分片无关）。
+    ///
+    /// 这条是流式下载腿的地基：句柄写出来的文件与整包 `write` 出来的不是同一个东西，
+    /// 后面的 sha256 校验就会在真机大包上莫名其妙地不过。
+    #[test]
+    fn open_write_handle_matches_whole_buffer_write() {
+        use std::io::Write as _;
+
+        let tmpdir = tempfile::tempdir().unwrap();
+        let fs = StdFs;
+        let streamed = fs.join(tmpdir.path(), "streamed.bin");
+        let whole = fs.join(tmpdir.path(), "whole.bin");
+
+        // 先放一份旧内容：句柄必须**截断**，不是追加。
+        fs.write(&streamed, b"XXXXXXXXXXXXXXXXXXXXXXXX").unwrap();
+        {
+            let mut h = fs.open_write(&streamed).unwrap();
+            h.write_all(b"chunk-1").unwrap();
+            h.write_all(b"chunk-2").unwrap();
+            h.flush().unwrap();
+        }
+        fs.write(&whole, b"chunk-1chunk-2").unwrap();
+        assert_eq!(fs.read(&streamed).unwrap(), fs.read(&whole).unwrap());
+    }
+
+    /// MockFs 的 `Write` 注入必须同时管住 `write` 与 `open_write`。
+    ///
+    /// 只管一个的话，「落盘失败」的清理路径在流式腿上就没有测试杠杆可用。
+    #[test]
+    fn mock_fs_write_injection_also_covers_open_write() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let mut fs = MockFs::new(tmpdir.path());
+        fs.fail_next(MockFailOp::Write);
+        // `Box<dyn Write + Send>` 无 Debug ⇒ 不能用 `unwrap_err()`。
+        let Err(err) = fs.open_write(Path::new("blocked.bin")) else {
+            panic!("注入 Write 失败后 open_write 必须报错");
+        };
+        assert!(err.to_string().contains("Write"));
+        assert!(
+            !tmpdir.path().join("blocked.bin").exists(),
+            "注入失败时不得留下空文件"
+        );
     }
 
     #[test]

@@ -66,10 +66,30 @@ use tauri_plugin_shell::ShellExt;
 
 use crate::commands::helper::with_uninstall_core_guard;
 use crate::response::{ok_void, ApiResponse};
-use crate::runtime::http::{app_user_agent, CoreDownloader, SystemDnsLookup};
+use crate::runtime::http::{app_user_agent, CoreDownloader, SystemDnsLookup, MAX_DOWNLOAD_BYTES};
 use crate::runtime::uninstall::UninstallReport;
 use crate::runtime::update_popup::{close_update_popup, show_update_popup};
 use crate::runtime::{core_paths, core_swap, uninstall, update_install, AppRuntime};
+
+// ── 宿主指针宽度绊线（非 64 位直接编不过）────────────────────────────────────────
+//
+// 本文件的写入闸全程以 `u64` 表达（`fileSize` / [`APP_UPDATE_MAX_BYTES`]），而
+// [`CoreDownloader::with_max_bytes`](crate::runtime::http::CoreDownloader::with_max_bytes) 吃
+// `usize` ⇒ 中间必有一次 `u64 → usize` 换算。在 <64 位宿主上装不下的闸值只能退到 `usize::MAX`，
+// 也就是**把闸悄悄变成「不设闸」**：一个报 100 GiB 的 `fileSize` 会一路写到 ENOSPC，
+// 而这恰恰是 [`APP_UPDATE_MAX_BYTES`] 自陈要防的那件事。
+//
+// 这条降级腿从未被测过（Polaris 三平台均为 64 位构建，CI 的交叉编译矩阵也只有 64 位目标），
+// 与其留一条**静默**失效的闸，不如让非 64 位目标当场编不过 —— 失效面从「用户的盘被写满」
+// 降到「构建期一条明确的错误」。
+//
+// 将来真要支持 32 位：不是放宽本绊线，而是把这些闸改成**全程 u64 比较、不经 usize**
+// （即 `with_max_bytes` 也收 `u64`，读侧比较在 u64 上做）。
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!(
+    "polaris 的 App 更新写入闸以 u64 表达，非 64 位宿主上 `u64 → usize` 会退化成 usize::MAX（闸形同不设）。\
+     支持 32 位前须先把 http.rs 的体积闸改成全程 u64 比较。"
+);
 
 /// 单次 GitHub releases 响应体上限（16 MiB；= 上游 `MAX_GITHUB_JSON_BYTES`：被劫持/WAF 回灌 GB 级
 /// 响应会撞堆，流式超限即中断）。
@@ -247,7 +267,17 @@ fn core_base_dir<T>() -> Result<&'static std::path::Path, ApiResponse<T>> {
 ///
 /// `pub(crate)`：内核自动更新调度器（`runtime/core_update_scheduler.rs`）复用**同一个**构造入口 ——
 /// 各建一份必然在 gh 前缀读法上漂移。
-pub(crate) fn updater_downloader(state: &AppRuntime) -> CoreDownloader {
+///
+/// # `max_bytes` 为什么是形参
+///
+/// 三条生产腿的体积闸**语义不同**：两条内核腿把整包收进 `Vec<u8>` 再解归档 ⇒ 闸是**内存闸**，
+/// 恒传 [`MAX_DOWNLOAD_BYTES`]（16 MiB，与形参化之前逐字一致）；App 安装包腿改成流式落盘后
+/// 内存不随包体积长 ⇒ 16 MiB 只会把所有正常安装包拒掉，闸改由「清单声明大小 + 裕度」注入
+/// （见 [`app_update_size_limit`]）。
+///
+/// 选形参而非「再开一个构造入口」：gh 前缀读法只该有一份。两个入口意味着有一天 App 腿
+/// 读不到用户配的镜像前缀，而没有任何测试会发现。
+pub(crate) fn updater_downloader(state: &AppRuntime, max_bytes: usize) -> CoreDownloader {
     let prefix = state
         .config()
         .get_value("ghProxyPrefix")
@@ -256,6 +286,7 @@ pub(crate) fn updater_downloader(state: &AppRuntime) -> CoreDownloader {
         .unwrap_or_default();
     CoreDownloader::new(state.http().clone(), tokio::runtime::Handle::current())
         .with_gh_proxy(prefix)
+        .with_max_bytes(max_bytes)
 }
 
 /// GitHub releases API 的**状态码 → 成因文案**（纯函数）。`None` = 2xx，调用方继续读 body。
@@ -469,20 +500,461 @@ fn download_gate(dest: &Path) -> Arc<DownloadGate> {
     keyed_download_gate(&mut guard, dest)
 }
 
+// ── App 更新包：期望摘要的来源（D1）────────────────────────────────────────────
+
+/// 期望 sha256 的**来源**。当前**只有一级**（GitHub asset `digest`）。
+///
+/// # 为什么是枚举而不是「读一个字段」
+///
+/// 让「摘要是谁给的」成为**结果契约的一部分**（`digestSource` 回给前端 / 进日志）：出事时能追责
+/// 到具体信任根，而不是只知道「校验过了」。这一条与「将来好不好扩展」无关，今天就有价值。
+///
+/// # ⚠️ 它**不是**「加一级只改一处」的形状（2026-08-16 订正）
+///
+/// 本段原写「加一级只需在 [`EXPECTED_DIGEST_SOURCES`] 里插一行」。**那句话不成立**，因为
+/// [`DigestSource::field`] + `info.get(field)` 已经把来源的取法**锁死**成「`update_info` 顶层的一个
+/// 字符串字段」，而 U3 要加的随包 `SHA256SUMS` 是**另一次网络下载 + 按资产名查表**：既不在
+/// `update_info` 里，也不是一个纯函数拿得到的东西。U3 落地时必然要动本枚举、[`Self::field`]、
+/// [`resolve_expected_digest`] 的签名，以及钉住当前表的那条单测。
+///
+/// **刻意不预先抽象**（YAGNI）：把 `field()` 换成 `extract(self, info, ctx)` 这类「每个来源自带
+/// 取法」的形状，等于今天就为一个尚未落地、形态还会变的需求付设计税。留一条诚实的注释比留一个
+/// 猜出来的抽象更有用 —— 本条注释本身就是 U3 的交接单。
+///
+/// **本批只实现「asset digest / 无摘要降级」两态**，`SHA256SUMS` 属 U3，刻意不实现——不留假接线。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DigestSource {
+    /// GitHub release asset 的 `digest` 字段（经 `parse_asset_digest` 解析后放在 `updateInfo.sha256`）。
+    GithubAssetDigest,
+}
+
+impl DigestSource {
+    /// `updateInfo` 里承载该来源摘要的字段名。
+    const fn field(self) -> &'static str {
+        match self {
+            Self::GithubAssetDigest => "sha256",
+        }
+    }
+
+    /// 回给前端 / 日志的来源标识（**如实标注摘要是谁给的**，便于事后追责到具体信任根）。
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::GithubAssetDigest => "githubAssetDigest",
+        }
+    }
+}
+
+/// 期望摘要来源的**优先级序**（靠前者优先）。当前只有一项 —— U3 要加的 `SHA256SUMS` 不是
+/// 「在这里插一行」就能接上的，成因见 [`DigestSource`] 文档的订正段。
+const EXPECTED_DIGEST_SOURCES: [DigestSource; 1] = [DigestSource::GithubAssetDigest];
+
+/// 一条选定的期望摘要。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExpectedDigest {
+    hex: String,
+    source: DigestSource,
+}
+
+/// 按 [`EXPECTED_DIGEST_SOURCES`] 的优先级挑第一条可用的期望摘要。
+///
+/// `Ok(None)` = 一条都没有：**不拒装**，降级为「Content-Length + `fileSize` 完整性校验 + 结果里
+/// 如实标记未校验」（否则所有旧 release 都更新不了）。字段**整个缺失**是旧 release 的正常形态
+/// （`AppUpdateInfo.sha256` 带 `skip_serializing_if = "Option::is_none"`），空串/纯空白同理。
+///
+/// # 两类「拿不到摘要」必须分开（本函数的全部难点）
+///
+///  - **本来就没有**（字段缺失 / 空串）→ `Ok(None)`，降级放行；
+///  - **有，但不是个字符串**（`123` / `null` / `["…"]`）→ `Err`，**显式早退**。
+///
+/// 原实现两类都走 `Value::as_str` ⇒ 后者被**静默丢弃**成前者 ⇒ `verified:false` 放行 ——
+/// 而本函数自己的文档写的正是「静默丢弃会把『摘要写坏了』伪装成『本来就没摘要』而放行」。
+/// 一个把 `sha256` 序列化成数字的发布流程，本该当场炸掉、而不是让全体用户静默地少一道校验。
+///
+/// hex **格式**仍不在此校验（非法 hex 走到校验步报 `VerifyError::InvalidExpectedHash`，
+/// 那里才分得出「发布方写坏了」与「包被篡改」两种文案）。
+///
+/// **纯函数**（吃 `Value`，无 IO）⇒ 可单测。
+///
+/// # Errors
+///
+/// 某一级来源的字段存在、但不是字符串。
+fn resolve_expected_digest(info: &Value) -> Result<Option<ExpectedDigest>, String> {
+    for src in EXPECTED_DIGEST_SOURCES {
+        let Some(raw) = info.get(src.field()) else {
+            continue; // 字段缺失 = 旧 release 的正常形态。
+        };
+        let Some(hex) = raw.as_str() else {
+            return Err(format!(
+                "更新信息里的 {} 字段不是字符串（实得 {}）——摘要写坏了，绝不当成「本来就没摘要」放行",
+                src.field(),
+                raw
+            ));
+        };
+        let hex = hex.trim();
+        if hex.is_empty() {
+            continue; // 空串 / 纯空白 = 等同没有。
+        }
+        return Ok(Some(ExpectedDigest {
+            hex: hex.to_string(),
+            source: src,
+        }));
+    }
+    Ok(None)
+}
+
+// ── App 更新包：写入体积闸（D4）────────────────────────────────────────────────
+
+// `APP_UPDATE_SIZE_MARGIN`（声明值之上的 8 MiB 裕度）已删（2026-08-17）。
+//
+// 它自陈的唯一作用是「给清单 `fileSize` 与真实资产差一点点留条活路（改包名/重传后忘了同步清单
+// 之类），免得一次人为疏忽把全体用户的更新卡死」。而**同批**新增的 [`check_declared_size`] 对
+// `received != declared` 是**零容差**的等值判据 ⇒ 落在 `(declared, declared + 8 MiB]` 里的任何
+// 差异都只有一条归宿：预检放行 → 白下满整包 → 等值判据拒绝。裕度已不存在任何「成功放行」的输入，
+// 留着只会让人误以为清单写偏一点还能更新得动。
+//
+// 删掉裕度不会把「大小恰好等于声明值」的正常包卡掉，理由见 [`app_update_size_limit`] 头注
+// （三处体积闸都是**严格大于**才拒）。
+
+/// App 安装包写入闸的**绝对上限**（512 MiB）—— 不只是「清单没声明时的回落值」。
+///
+/// Polaris 三平台安装包在几十 MiB 量级，512 MiB 留了一个数量级以上的余量；
+/// 它的职责只是「别让一个撒谎的服务端把盘写满」，不是精确判定。
+///
+/// # 为什么它必须同时压住**有**声明值的那条分支（原名 `APP_UPDATE_FALLBACK_MAX_BYTES`）
+///
+/// 原实现只在 `None`/`0` 分支用它，`Some(n)` 分支是 `n + 裕度` 且**不与任何上限取 min**：
+/// `fileSize` 若是 100 GiB（发布流程写错 / GitHub 异常 / 前端构造的 `updateInfo`），闸值就是
+/// 100 GiB ⇒ Content-Length 预检放行 ⇒ 一路写到 ENOSPC，用户系统盘被写满 —— 而这恰恰是本常量
+/// 文档自陈要防的那件事。「回落值」这个名字本身就是那个洞的成因：它读起来只管一条分支。
+const APP_UPDATE_MAX_BYTES: u64 = 512 * 1024 * 1024;
+
+/// App 安装包的写入闸取值。
+///
+/// # 陷阱：`fileSize` 为 0 不等于「包是空的」
+///
+/// [`AppUpdateInfo::file_size`](polaris_updater::github::AppUpdateInfo::file_size) 在 GitHub asset
+/// 缺 `size` 字段时按 **0** 填（`github.rs` 的 `#[serde(default)]`）。直接拿它当闸 ⇒ 闸值 0，
+/// **任何**包都过不去 —— 而且失败长得像「下载超限」，没人会想到成因是清单少了个字段。
+/// 故声明值有效（`> 0`）才拿它当闸，为 0 / 缺失一律回落 [`APP_UPDATE_MAX_BYTES`]。
+///
+/// # 闸值就等于声明值，**不再加裕度**（2026-08-17 核实后删）
+///
+/// 「闸 == 声明值」不会把一个大小恰好等于声明值的正常包卡掉 —— 三处体积闸全是**严格大于**才拒
+/// （实测源码，非推断）：
+///  - Content-Length 预检：`runtime/http.rs` `open_download_response` 的 `if n > self.max_bytes`；
+///  - 内存腿读侧：`read_body_capped_with_progress` 的 `if buf.len() + chunk.len() > limit`；
+///  - 流式腿读侧：`read_body_to_sink_with_progress` 的 `if received + chunk.len() > limit`。
+///
+/// 这条边界本身有门钉着（`runtime::http` 的 `size_limit_boundary_admits_a_body_of_exactly_the_limit`
+/// 逐处拿「恰好等于闸值」的响应体撞过），故三处任一被改成 `>=` 会先在那条门上转红，而不是等到
+/// 真机上「更新永远差一个字节」。
+///
+/// 裕度被删的成因见上方注释块：同批的 [`check_declared_size`] 是零容差等值判据，
+/// `(declared, declared + 裕度]` 区间里的输入无论如何都会被拒，裕度只是让它**多下满一个整包**。
+///
+/// # 两条分支都封在 [`APP_UPDATE_MAX_BYTES`] 之下
+///
+/// 声明值是**服务端给的数**，闸不能由它单方面顶到任意高（成因见该常量文档）。
+///
+/// **纯函数** ⇒ 三条路径各有单测。
+fn app_update_size_limit(declared: Option<u64>) -> usize {
+    let limit = match declared.filter(|n| *n > 0) {
+        Some(n) => n.min(APP_UPDATE_MAX_BYTES),
+        None => APP_UPDATE_MAX_BYTES,
+    };
+    // 本回落（装不下 → usize::MAX）在受支持的宿主上**不可达**：本文件顶部的
+    // `compile_error!` 已把非 64 位目标挡在编译期之外。保留 `try_from` 而不写 `as usize`，
+    // 是因为 `as` 会**静默截断**成一个小值（闸比声明值还紧 ⇒ 正常包被拒）。
+    usize::try_from(limit).unwrap_or(usize::MAX)
+}
+
+/// 发布清单声明的 `fileSize` 当**等值判据**（无摘要腿的硬化）。
+///
+/// # 为什么不能只靠 Content-Length
+///
+/// [`update_download`] 在无摘要时「回落 Content-Length 完整性校验」—— 但 Content-Length 是
+/// **撒谎方自己给的数**，对撒谎方零约束：服务端/镜像返 `Content-Length: 1000` 且真发 1000 字节，
+/// 完整性校验就过了，然后「无摘要 ⇒ 不校验」⇒ 一个 1000 字节的假包被 promote，返
+/// `{success:true, verified:false}`，UI 给出安装入口。极端版 `Content-Length: 0` ⇒
+/// 0 字节文件「下载成功」。
+///
+/// `fileSize` 来自 GitHub release 清单（与 `downloadUrl` 同一次 API 响应），镜像**改不动**它。
+/// 故 `declared > 0` 时它是这条腿唯一有牙的等值判据 —— 零成本，且不影响旧 release
+/// （缺 `size` 字段 ⇒ 0 ⇒ 不判，与本判据引入之前逐字一致）。
+///
+/// 判定委托 [`check_content_length`](crate::runtime::http::check_content_length)（同一条「实收 vs
+/// 声明」判据，不另写一份）；本函数只负责 App 腿特有的 `> 0` 过滤。
+///
+/// # Errors
+///
+/// [`DownloadError::Incomplete`](polaris_updater::traits::DownloadError::Incomplete)：实收字节数
+/// 与清单声明不符。
+fn check_declared_size(
+    received: u64,
+    declared: Option<u64>,
+) -> Result<(), polaris_updater::traits::DownloadError> {
+    crate::runtime::http::check_content_length(received, declared.filter(|n| *n > 0))
+}
+
+/// 流式下载的**部分写入残件**（tmp）的所有权凭证：**drop 即删**，落位成功才 [`Self::disarm`]。
+///
+/// 形态照 [`ExtractWorkDir`]（本文件既有的 RAII 清理守卫）：构造即持有、`Drop` 里尽力清、
+/// 清理失败只记日志。差别只有一个 —— 本守卫多一个「解除」出口，因为落位成功后那个文件
+/// **已经变成 dest 了**，再删就是把刚下好的包删掉。
+///
+/// # 为什么是类型，不是「数一数清理调用」的守卫
+///
+/// 改造之前下载失败**不产生任何磁盘残留**（字节只在内存里）。流式之后「网络失败 / 停滞 / 超限 /
+/// 摘要不符 / 落位失败」每一条早退都会留下一个写了一半的 tmp，故 U1 曾配了一条源码级守卫
+/// （`every_failure_path_after_staging_discards_the_partial_tmp`），数
+/// 「`ApiResponse::err(` 出现次数 == `discard_partial_download(&tmp)` 出现次数」。
+///
+/// **那条守卫是假的**，三条独立反例，每条都能让「漏清理」照样全绿：
+///  1. 把落位失败的早退降级成「只 log 不早退」⇒ 两侧计数**同减**，仍相等；
+///  2. 给一条早退配**两次**清理即可把另一条漏掉的配平；
+///  3. 它**不匹配** `ApiResponse::err_with_code(`（`err` 后面是 `_` 不是 `(`）—— tmp 之后新增
+///     一条带 code 且漏清理的早退，守卫全盲。
+///
+/// 计数守卫守的是「代码里有没有写那一行」，而不变量是「控制流离开这个作用域时残件在不在」。
+/// 后者是**作用域**的性质，只有类型（`Drop`）表达得了：`?`、panic、以及任何将来新增的早退
+/// 都自动被覆盖，不需要任何人记得配一行清理，也就没有「配平」可言。
+struct PartialDownload {
+    /// `None` = 已解除（落位成功，那个 inode 现在叫 dest 了）⇒ `Drop` 不再删。
+    tmp: Option<PathBuf>,
+}
+
+impl PartialDownload {
+    fn new(tmp: PathBuf) -> Self {
+        Self { tmp: Some(tmp) }
+    }
+
+    /// 残件路径。
+    ///
+    /// [`Self::disarm`] **消费 self** ⇒ 能调到本方法的实例必然还持着路径，`expect` 不可达。
+    fn path(&self) -> &Path {
+        self.tmp
+            .as_deref()
+            .expect("PartialDownload 在 disarm 之后被使用（不可达：disarm 消费 self）")
+    }
+
+    /// 解除清理（**仅落位成功后**调）：tmp 已被 rename 成 dest，再删就是删掉成品。
+    fn disarm(mut self) {
+        self.tmp = None;
+    }
+}
+
+impl Drop for PartialDownload {
+    fn drop(&mut self) {
+        use polaris_updater::traits::UpdateFs;
+        let Some(tmp) = self.tmp.take() else {
+            return; // 已解除：落位成功，什么都不该删。
+        };
+        // `StdFs::remove_file` 把「文件不存在」视作成功，故「还没来得及建文件就失败」是 no-op。
+        // 清理失败只记日志不改变结论：本守卫恒在一条**已经失败**的路径上析构，
+        // 让清理错误盖掉真正的失败成因是本末倒置。
+        if let Err(e) = polaris_updater::traits::StdFs.remove_file(&tmp) {
+            log::warn!("清理更新包临时文件失败 {}: {e}", tmp.display());
+        }
+    }
+}
+
+/// 落位结论（[`land_payload`] 的产物）。**不含任何事件语义** —— 发不发 `downloaded` 由调用方按
+/// 本枚举分支决定，这正是把它抽出来的全部目的。
+#[derive(Debug, PartialEq, Eq)]
+enum LandingOutcome {
+    /// rename 成功，dest 现在是一个完整文件。
+    Landed,
+    /// 落位失败（dest 未动）。载荷是给用户看的成因。
+    Failed(String),
+}
+
+/// tmp → dest 的落位**纯编排**（吃 `&dyn UpdateFs` ⇒ 可注入失败，可单测）。
+///
+/// # 为什么这一步必须是可注入的运行时判据，而不是一条文本守卫
+///
+/// 「`downloaded` 只在 rename 成功之后发」此前由一条**文本下标比较**守着
+/// （`promote_staged(` 的位置 < `emit_progress("downloaded")` 的位置）。那条守卫表达不了
+/// 「rename **成功**才执行」：把落位失败的早退降级成「只 log 不早退」，文本序**照样成立**，
+/// 而运行时会在 rename 失败时广播 `downloaded(100)` 外加一个**根本不存在**的 `filePath` ——
+/// 设置页据此给出一个点不开的安装入口。
+///
+/// 分成「判定」与「发事件」两半之后，判定这一半吃 trait、可注入 `MockFailOp::Rename`，
+/// 于是「rename 失败时 dest 必须不存在、结论必须是 Failed」变成一条**运行得起来**的断言。
+///
+/// # rename **之前**先 `fsync` 文件（2026-08-17 新增）
+///
+/// 此前这一步是纯「写完 → rename」，中间没有任何 `sync`。rename 只保证**目录项**的原子替换，
+/// 不保证被替换的那个 inode 的**数据**已经离开 page cache ⇒ 断电 / 内核崩溃后完全可能出现
+/// 「dest 这个名字在、内容是零或半截」。而 dest 一旦存在，[`cached_download_is_reusable`]
+/// （摘要对不上 → 重下，还算好）与 [`update_install`]（**直接拿去装**）都会把它当成完整包。
+/// sync 失败按落位失败处理：残件由 [`PartialDownload`] 守卫在调用方的早退上清掉。
+///
+/// # 已知限制：**不做目录级 fsync**（如实登记，本批刻意不做）
+///
+/// 严格的崩溃一致性还需要在 rename **之后** `fsync` 父目录，否则崩溃后可能丢失那条目录项。
+/// 本批不做，因为两种失效的后果不对称：
+///  - 少了**文件级** fsync ⇒ 可能产生「名字在、内容是半截」的 dest ⇒ 装一个坏包（**这是本次修的**）；
+///  - 少了**目录级** fsync ⇒ 最坏只是那次 rename 没落盘，dest 干脆不存在 ⇒ 退化成「更新包不见了」，
+///    下次进 [`update_download`] 会重下一遍。**不会**产生半截包。
+///
+/// 即目录级 fsync 换来的是「少重下一次」，而文件级 fsync 换来的是「不装坏包」。要补目录级
+/// fsync 还得在 `UpdateFs` 上再开一个 `sync_dir`（Windows 上没有可移植的目录句柄 fsync 等价物，
+/// 得走 `FlushFileBuffers` on volume handle 这类平台分支）—— 半径与收益不成比例。
+fn land_payload(
+    fs: &dyn polaris_updater::traits::UpdateFs,
+    tmp: &Path,
+    dest: &Path,
+) -> LandingOutcome {
+    // 先刷盘再改名：顺序不可换（换了就等于没做 —— 崩溃窗口正好在 rename 之后）。
+    if let Err(e) = fs.sync_file(tmp) {
+        return LandingOutcome::Failed(format!("刷盘更新包失败 {}: {e}", tmp.display()));
+    }
+    match polaris_updater::verify::promote_staged(fs, tmp, dest) {
+        Ok(()) => LandingOutcome::Landed,
+        Err(e) => LandingOutcome::Failed(format!("写入更新包失败 {}: {e}", dest.display())),
+    }
+}
+
+/// 孤儿 tmp 的存活阈值（24h）：**跨进程**残件早于此才删。
+///
+/// 为什么是 mtime 而不是 pid 存活探测：跨平台判「这个 pid 还活着吗」不可靠（Windows 无
+/// `kill(0)` 等价物、pid 复用），而判错的代价是删掉另一个实例正在写的文件。mtime 阈值判错的
+/// 代价只是「多留一天」。
+const ORPHAN_TMP_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// tmp 命名族的中缀 —— 与 [`verify::tmp_name`](polaris_updater::verify::tmp_name) 生成的
+/// `{dest}.polaris-new-{pid}-{seq}` 逐字对齐。
+const ORPHAN_TMP_INFIX: &str = ".polaris-new-";
+
+/// 纯判定：这个文件名是不是 [`verify::tmp_name`](polaris_updater::verify::tmp_name) 的产物。
+///
+/// 判据 = 含 [`ORPHAN_TMP_INFIX`]，且其后是 `{pid}-{seq}` 形态（两段都非空、都是纯十进制数字）。
+/// **不**只看中缀：一个用户自己放的 `notes.polaris-new-draft` 不该被当成在飞下载的残件删掉。
+/// 取**最后**一次中缀出现（`rsplit_once`）：`tmp_name` 是往 dest 名末尾追加，故末段才是它写的那一截。
+fn is_orphan_tmp_name(name: &str) -> bool {
+    let Some((_, tail)) = name.rsplit_once(ORPHAN_TMP_INFIX) else {
+        return false;
+    };
+    let Some((pid, seq)) = tail.split_once('-') else {
+        return false;
+    };
+    !pid.is_empty()
+        && !seq.is_empty()
+        && pid.bytes().all(|b| b.is_ascii_digit())
+        && seq.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// 清扫 `dir` 下的**孤儿** tmp 残件（best-effort，失败只记日志）。
+///
+/// # 主触发器不是崩溃，是「下载途中退出 App」
+///
+/// [`update_download`] 是 **async command**：tmp 建立之后唯一的 await 点是
+/// `spawn_blocking(...).await`。用户在下载完成前退出 App ⇒ tauri runtime **drop 掉那个 future**
+/// ⇒ 从 [`PartialDownload`] 的 `Drop` 到各条早退，**全部被绕过**（future 被 drop 时局部变量确实
+/// 会析构，但 `spawn_blocking` 的 blocking 线程**不可取消**，它会继续把 tmp 写完 —— 于是残件在
+/// 守卫析构之后才出现）。开着 `autoDownloadUpdate` 时，每个「启动 → 后台下载 → 用户在完成前
+/// 关 App」周期必留一个几十 MiB 的孤儿，而全仓唯一会碰这个目录的回收点是**完全卸载**
+/// （`app_uninstall_all`）—— 长期累积到 GB 级。
+///
+/// 注意 `verify::tmp_name` 文档里那条「换核暂存目录每次 stage 整目录重建会一并清掉」的兜底
+/// **只对换核腿成立**：App 更新落在 `<cache>/updates/`，没有任何整目录重建（该注释已一并订正）。
+///
+/// # 匹配面是**命名族**，不是「本次资产名」（2026-08-17 订正）
+///
+/// 原实现的前缀是 `{file_name}.polaris-new-` —— 只收**本次资产名**的残件。而 App 更新的资产名
+/// 里带版本号（`Polaris_0.3.0_x64.dmg`），版本一换前缀就变，于是上面那个主触发器留下的残件
+/// （必然是**旧版本名**的：这次要下的是新版本）**永远收不回来**，直到用户完全卸载 ——
+/// 本函数自陈要防的那件事，恰好落在它的射程之外。
+///
+/// 故匹配面改成整个 `.polaris-new-` 命名族（判据见 [`is_orphan_tmp_name`]），不限资产名。
+///
+/// # 判据分两档（都不探测别的进程死活）
+///
+///  - **本次资产名 + 本 pid**：调用点在**单飞闸之内**，而闸按 dest 加锁 ⇒ 此刻本进程绝无第二条腿
+///    在写同一个 `file_name` 的 tmp ⇒ 直接删（不看 mtime）。
+///  - **其余全部**（别的资产名 / 别的 pid / 上次运行留下的）：只按 [`ORPHAN_TMP_MAX_AGE`]（≥24h）
+///    删。读不到 mtime 一律当「新鲜」保留（失败安全的那一侧）。
+///
+/// 两档的边界就是单飞闸的射程：**闸只按 dest 串行**，管不到别的资产名 —— 本进程完全可能有另一条腿
+/// 正在下另一个资产（版本回退、或用户手动触发了别的包），把「别的资产名」也放进即时档就会删掉
+/// 一个在飞的下载。反过来，超过 24h 的残件不可能还是在飞下载（下载腿自带 30s 停滞看门狗 +
+/// 15s 逐跳超时），故陈旧档对**任何** pid、**任何**资产名都安全。
+///
+/// 目录遍历走 [`UpdateFs::list_files`](polaris_updater::traits::UpdateFs::list_files)（它只列文件、
+/// 跳过子目录）而不是手搓 `read_dir`：本函数因此可注入 `MockFs` 测试，也不会在 FS 抽象层上开
+/// 第二个口子。mtime 不在 trait 面上（那是 trait 刻意不管的东西），故只对**需要**它的那一档
+/// 读一次 `std::fs::metadata`。
+///
+/// 零新增依赖；失败一律吞掉（清扫是附带收益，**绝不**改变本次下载的结论）。
+fn sweep_orphan_downloads(fs: &dyn polaris_updater::traits::UpdateFs, dir: &Path, file_name: &str) {
+    // 即时档的前缀：本次资产名 + 本进程 pid（两者都对上才走即时删）。
+    let self_prefix = format!("{file_name}{ORPHAN_TMP_INFIX}{}-", std::process::id());
+    let Ok(names) = fs.list_files(dir) else {
+        return; // 目录不存在 / 读不动：不是本次下载的问题，静默跳过。
+    };
+    let now = std::time::SystemTime::now();
+    for name in names {
+        if !is_orphan_tmp_name(&name) {
+            continue; // 不是 tmp 命名族（含落位好的成品）。
+        }
+        let path = dir.join(&name);
+        if !name.starts_with(&self_prefix) {
+            // 别的资产名 / 别的 pid：只按 mtime 阈值收。读不到时间 → 当新鲜 → 保留。
+            let stale = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| now.duration_since(t).ok())
+                .is_some_and(|age| age >= ORPHAN_TMP_MAX_AGE);
+            if !stale {
+                continue;
+            }
+        }
+        match fs.remove_file(&path) {
+            Ok(()) => log::info!("已清理更新包孤儿残件: {}", path.display()),
+            Err(e) => log::debug!("清理更新包孤儿残件失败 {}: {e}", path.display()),
+        }
+    }
+}
+
 /// 纯判定（吃真实 FS）：已落盘的更新包能否被单飞的**后到者**直接复用。
 ///
 /// 判据只有一条：文件在 **且** sha256 与本次期望相符。
 ///
 /// **缺 sha256 时一律不复用**（返 false）：没有判据就不能声称「磁盘上这份就是你要的包」——
 /// 旧 release 的 asset 没有 `digest` 字段，那种情况老老实实重下一遍，不拿文件名当身份。
+///
+/// # 摘要走流式（与下载腿同一个根因）
+///
+/// 原实现是 `std::fs::read(dest)` —— 为了一个 64 字节的判定，把整个安装包搬进内存。
+/// 这与「下载时整包入内存」是**同一条缺陷的另一条腿**：下载腿改流式后若不一并修，
+/// 单飞的后到者仍会在复用探测这一步把内存顶到包体积。判定结论逐字不变
+/// （格式非法 / 摘要不符 / 文件不在 → 一律 false）。
+///
+/// # 比对委托 [`verify_hex_digest`](polaris_updater::verify::verify_hex_digest)（全 crate 单点）
+///
+/// 末行原本是手搓的 `actual.eq_ignore_ascii_case(sha)` —— 那是绕开该单点的第 4 处判定，
+/// 而它的文档明写着不许手搓（两个变体处置相反，手搓必然把分野压成一个 bool）。本函数只需要
+/// bool，但「只需要 bool」不是各写一份比较逻辑的理由：分叉只会在「大小写敏不敏感」
+/// 这类地方发生，且只在真机大包上暴露。
+///
+/// 前置的 [`is_valid_sha256_hex`](polaris_updater::verify::is_valid_sha256_hex) 早退**保留**，
+/// 理由与 `verify_bytes` 里那句「先验格式再算摘要」相同：期望值本身非法时，不该为一个必然
+/// 返 false 的判定，白读一遍几十 MiB 的文件算流式摘要。
 fn cached_download_is_reusable(dest: &Path, expected_sha: Option<&str>) -> bool {
     let Some(sha) = expected_sha.map(str::trim).filter(|s| !s.is_empty()) else {
         return false;
     };
-    let Ok(bytes) = std::fs::read(dest) else {
+    if !polaris_updater::verify::is_valid_sha256_hex(sha) {
+        return false;
+    }
+    let Ok(file) = std::fs::File::open(dest) else {
         return false;
     };
-    verify_bytes(&bytes, sha).is_ok()
+    let Ok(actual) = polaris_updater::verify::sha256_reader_hex(std::io::BufReader::new(file))
+    else {
+        return false;
+    };
+    polaris_updater::verify::verify_hex_digest(&actual, sha).is_ok()
 }
 
 /// 上游 `UPDATE_DOWNLOAD`：下载更新包到本地缓存目录。
@@ -491,13 +963,44 @@ fn cached_download_is_reusable(dest: &Path, expected_sha: Option<&str>) -> bool 
 /// 停滞看门狗 / 镜像回退 / 16MiB 闸 / 15s 超时 / 403 限流分类），**不在此复制第二份编排**
 /// —— 上游的 `core-downloader.ts` 与 `UpdateService.ts` 各写 ~170 行同构编排正是前车之鉴。
 ///
-/// 落盘：`app_cache_dir()/updates/<fileName>`，经 `verify::atomic_replace`（tmp→rename）。
+/// # 流式落盘（**不再把整包读进内存**）
 ///
-/// **完整性**：`updateInfo.sha256`（来自 GitHub release asset 的 `digest` 字段）存在时做**强校验**，
-/// 不符即拒绝落盘（防截断/镜像投毒）；缺失时回落 Content-Length 校验（= 上游 基线），
-/// **不因缺摘要就拒绝更新**——否则所有旧 release 都更新不了。
+/// 字节从网络下来即写进 `dest` 旁的同目录临时文件（`verify::tmp_name`），sha256 由
+/// `verify::Sha256Stream` **边写边算**，全部收完且摘要相符后经 `verify::promote_staged`
+/// 一次原子 rename 提升为 dest。内存占用与包体积**解耦**（原实现的 `Vec<u8>` 峰值 = 包体积，
+/// 几十 MiB 到上百 MiB 的安装包直接顶在堆上）。
 ///
-/// **进度事件**：走 [`CoreDownloader::download_with_progress`] 的逐 chunk 回调，发
+/// 三条不变式：
+///  - **全程只碰 tmp**：dest 从「不存在」瞬间变为「完整文件」，故并发单飞的后到者经
+///    [`cached_download_is_reusable`] 绝不会读到半截包；
+///  - **失败即清理**：由 [`PartialDownload`] 这个 RAII 守卫承担 —— 不变量是「控制流离开这个作用域时
+///    残件不在」，那是**作用域**的性质，只有类型表达得了（原先那条「数一数清理调用」的守卫为什么是
+///    假的，见 [`PartialDownload`] 文档的三条反例）；
+///  - **`downloaded` 只在 rename 成功之后发**：下载完成 ≠ 校验完成 ≠ 落位完成，早发一步就是
+///    广播一个 dest 尚不存在的假成功态。落位判定与发事件被拆成 [`land_payload`] + 分支
+///    （文本序守不住「成功才发」，成因见该函数文档）。
+///
+/// 落盘：`app_cache_dir()/updates/<fileName>`。同目录下**整个 `.polaris-new-` 命名族的孤儿 tmp**
+/// （不限资产名 —— 残件多半带着**旧版本**的资产名）在拿到单飞闸之后顺手清一遍
+/// （[`sweep_orphan_downloads`]）——「下载途中退出 App」会绕过上面那个 RAII 守卫。
+///
+/// **体积闸**：按 `updateInfo.fileSize` 声明值注入（**无裕度**，成因见 [`app_update_size_limit`]），
+/// 并封在 [`APP_UPDATE_MAX_BYTES`] 之下；声明缺失/为 0 时直接取该上限。
+/// **不**再与两条内核腿共用 16 MiB 内存闸 —— 那个闸的语义是「别把堆撑爆」，对流式落盘腿既无必要
+/// 也卡不住正常安装包。
+///
+/// **完整性**（三级，由强到弱，**逐级都在**）：
+///  1. 有期望摘要（[`resolve_expected_digest`]，当前只有 GitHub asset `digest`；随包 `SHA256SUMS`
+///     属 U3 未实现）→ sha256 **强校验**，不符即丢弃 tmp、绝不落位（防截断/镜像投毒）；
+///  2. 清单声明了 `fileSize` → **等值判据**（[`check_declared_size`]）。这一级是无摘要腿的主防线：
+///     `fileSize` 来自 GitHub release 清单，镜像改不动；
+///  3. 兜底 `Content-Length` 完整性（`CoreDownloader` 内）。**它对撒谎方零约束**——那个数就是撒谎方
+///     自己给的，故绝不可把它当作「无摘要也安全」的理由（原文档正是这么写的，已订正）。
+///
+/// 三级全无（旧 release + 清单无 `fileSize`）时**不拒装**，但结果里 `verified:false`
+/// **如实标记未校验**——否则所有旧 release 都更新不了。
+///
+/// **进度事件**：走 [`CoreDownloader::download_to_sink_with_progress`] 的逐 chunk 回调，发
 /// `downloading(0%)` → `downloading(n%)`（**按整数百分比去重**，见下）→ `downloaded(100%)`。
 /// 服务端不给 `Content-Length` 时算不出分母 → 中间那段没有百分比可发，进度条停在 0% 走
 /// indeterminate（**不拿已收字节瞎凑一个分母**）。同一份进度由 [`emit_progress`] 一并镜像进 mini 弹窗。
@@ -507,7 +1010,8 @@ fn cached_download_is_reusable(dest: &Path, expected_sha: Option<&str>) -> bool 
 ///
 /// **失败即发 `error`**：本命令的**每一条**失败早退都先 [`emit_progress`] `error` 再返错误信封 ——
 /// 弹窗被推进 progress 后只有 `error`/`downloaded` 能把它推出去，静默 return 会让它永远转圈。
-/// 该不变式由单测 `every_failure_path_emits_an_error_progress_event` 按计数锁住。
+/// 该不变式由单测 `every_failure_path_emits_an_error_progress_event` 按计数锁住
+/// （计数用**前缀** `ApiResponse::err`，故带 code 的早退同样在射程内）。
 #[tauri::command]
 pub async fn update_download(
     app: AppHandle,
@@ -537,10 +1041,18 @@ pub async fn update_download(
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "polaris-update".to_string());
-    let expected_sha = update_info
-        .get("sha256")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    // 期望摘要：按来源优先级挑（D1）。字段在但不是字符串 ⇒ **显式早退**，绝不静默降级成
+    // 「本来就没摘要」（那等于把发布方的失误偷偷换成少一道校验）。
+    let expected_digest = match resolve_expected_digest(&update_info) {
+        Ok(d) => d,
+        Err(msg) => {
+            emit_progress(&app, "error", 0, &msg);
+            return Ok(ApiResponse::err(msg));
+        }
+    };
+    let expected_sha = expected_digest.as_ref().map(|d| d.hex.clone());
+    // 声明大小 → 写入闸（**新增读取点**：改造之前本 command 根本没读过 fileSize）。
+    let declared_size = update_info.get("fileSize").and_then(Value::as_u64);
 
     let dir = match app.path().app_cache_dir() {
         Ok(d) => d.join("updates"),
@@ -562,6 +1074,11 @@ pub async fn update_download(
     let gate = download_gate(&dest);
     let _in_flight = gate.lock().await;
 
+    // ── 孤儿 tmp 清扫（best-effort）：位置必须在**闸之内、`tmp_name` 之前** ——
+    //    闸保证本进程此刻无人在写同名 tmp；`tmp_name` 之前保证不会误删自己这一次的残件。
+    //    主触发器是「下载途中退出 App」（见 `sweep_orphan_downloads` 文档），RAII 守卫覆盖不到。
+    sweep_orphan_downloads(&polaris_updater::traits::StdFs, &dir, &file_name);
+
     // 复用先完成者的成果（有 sha256 判据时才敢认，见 [`cached_download_is_reusable`]）。
     let reuse_probe = {
         let dest = dest.clone();
@@ -580,22 +1097,40 @@ pub async fn update_download(
             "success": true,
             "filePath": dest.to_string_lossy(),
             "verified": true,
+            // 复用分支**最有资格**标注来源：它之所以敢认盘上这份，正是靠这条 asset digest 比中的
+            // （`cached_download_is_reusable` 的唯一判据）。此前这里漏了 `digestSource`，于是
+            // 「复用」与「刚下的」两条成功路径的响应形状不一致，前端分不出摘要是谁给的。
+            "digestSource": expected_digest.as_ref().map(|d| d.source.as_str()),
         })));
     }
 
     emit_progress(&app, "downloading", 0, "");
 
-    let dl = updater_downloader(&state);
+    // ── 落盘目标：**全程只碰 tmp**，dest 直到最后一次 rename 之前一个字节都不动。
+    //    tmp 由 `verify::tmp_name` 生成 ⇒ 与 dest 同目录同卷（原子 rename 的前提），
+    //    且每次调用唯一 ⇒ 并发的另一条腿写的是另一个 tmp，不会互相截断。
+    //
+    //    RAII：从这一行起，**任何**离开本作用域的方式（早退 / `?` / panic / future 被 drop）
+    //    都会删掉残件；只有落位成功那一条路才 `disarm`。不需要任何人记得配一行清理。
+    let partial = PartialDownload::new(polaris_updater::verify::tmp_name(&dest));
+    let dl = updater_downloader(&state, app_update_size_limit(declared_size));
+    // 写句柄经 `UpdateFs` trait 取（生产 StdFs / 测试 MockFs 的注入纪律）。
+    // 传**工厂**而非句柄：镜像回退换候选重下时要一个截断过的干净句柄。
+    let sink_path = partial.path().to_path_buf();
+    let new_sink: Arc<crate::runtime::http::DownloadSinkFactory> = Arc::new(move || {
+        use polaris_updater::traits::UpdateFs;
+        polaris_updater::traits::StdFs.open_write(&sink_path)
+    });
     // `CoreDownloader::download*` 是**同步**桥（其 doc 明令须在 blocking 线程调用：
     // 在 async 上下文直调会阻塞 executor，Tauri 同步 command 更是跑在主线程上会冻 UI）。
     let url_for_task = url.clone();
     let on_progress = download_progress_emitter(&app);
-    let bytes = match tokio::task::spawn_blocking(move || {
-        dl.download_with_progress(&url_for_task, on_progress)
+    let streamed = match tokio::task::spawn_blocking(move || {
+        dl.download_to_sink_with_progress(&url_for_task, new_sink, on_progress)
     })
     .await
     {
-        Ok(Ok(b)) => b,
+        Ok(Ok(s)) => s,
         Ok(Err(e)) => {
             let msg = format!("下载更新包失败: {e}");
             emit_progress(&app, "error", 0, &msg);
@@ -615,28 +1150,72 @@ pub async fn update_download(
         }
     };
 
-    // sha256 强校验（有摘要才做）——**校验通过才落盘**，坏字节绝不进磁盘。
-    if let Some(sha) = expected_sha.as_deref().filter(|s| !s.is_empty()) {
-        if let Err(e) = verify_bytes(&bytes, sha) {
-            let msg = format!("更新包校验失败（可能被截断或篡改）: {e}");
+    // ── 完整性第 2 级：清单声明的 `fileSize` 等值判据（见 [`check_declared_size`]）。
+    //    这一级专治无摘要腿：Content-Length 是撒谎方自己给的数，对撒谎方零约束。
+    if let Err(e) = check_declared_size(streamed.bytes, declared_size) {
+        let msg = format!("更新包大小与发布清单声明不符（可能被截断或掉包）: {e}");
+        emit_progress(&app, "error", 0, &msg);
+        return Ok(ApiResponse::err(msg));
+    }
+
+    // ── 完整性第 1 级：sha256 强校验（有摘要才做）——摘要是**边下边算**的，零额外 IO、零额外内存。
+    //    判定委托 `verify::verify_hex_digest`（全 crate 单点），**按变体分流文案**：
+    //    「发布方 digest 写坏了」重下一万次也不会好，把它显示成「可能被截断或篡改」只会引导用户
+    //    反复重下。原实现手搓 `!is_valid_sha256_hex(..) || !eq_ignore_ascii_case(..)`，
+    //    正是把这条分野压成了一个 bool。
+    if let Some(d) = expected_digest.as_ref() {
+        if let Err(e) = polaris_updater::verify::verify_hex_digest(&streamed.sha256_hex, &d.hex) {
+            let msg = match e {
+                polaris_updater::verify::VerifyError::InvalidExpectedHash(_) => format!(
+                    "更新信息里的 sha256 摘要不是合法的 64 位十六进制（发布方写坏了，重试无用）: {}",
+                    d.hex
+                ),
+                polaris_updater::verify::VerifyError::HashMismatch { .. } => format!(
+                    "更新包校验失败（可能被截断或篡改）: expected {}, actual {}",
+                    d.hex, streamed.sha256_hex
+                ),
+            };
             emit_progress(&app, "error", 0, &msg);
             return Ok(ApiResponse::err(msg));
         }
     }
 
-    if let Err(e) =
-        polaris_updater::verify::atomic_replace(&polaris_updater::traits::StdFs, &dest, &bytes)
-    {
-        let msg = format!("写入更新包失败 {}: {e}", dest.display());
-        emit_progress(&app, "error", 0, &msg);
-        return Ok(ApiResponse::err(msg));
+    // ── 落位：tmp 已在盘 ⇒ **只做 rename**，绝不把刚写完的文件读回内存（那会抵消整个改造）。
+    //    dest 从「不存在」瞬间变成「完整文件」，故并发单飞的后到者经
+    //    `cached_download_is_reusable` 绝不会读到半截包。
+    //
+    //    判定与发事件**必须分开**：文本序表达不了「rename 成功才发 downloaded」，
+    //    成因见 [`land_payload`]。先求值再 match，让 `partial` 的借用在 match 之前就结束。
+    let landing = land_payload(&polaris_updater::traits::StdFs, partial.path(), &dest);
+    match landing {
+        LandingOutcome::Failed(msg) => {
+            // `promote_staged` 自己已尽力删过 tmp；`partial` 在此 return 时析构再兜一次。
+            emit_progress(&app, "error", 0, &msg);
+            return Ok(ApiResponse::err(msg));
+        }
+        LandingOutcome::Landed => {
+            // tmp 这个 inode 现在叫 dest 了 —— 先解除守卫，再广播成功。
+            partial.disarm();
+            // 「下载完成 / 校验完成 / 落位完成」三点分离后，`downloaded` **只在这一支**发：
+            // 早一步发就是广播一个 dest 尚不存在的假成功态，设置页会给出一个点不开的安装入口。
+            emit_progress(&app, "downloaded", 100, "");
+        }
     }
-
-    emit_progress(&app, "downloaded", 100, "");
+    log::info!(
+        "更新包已落位: {}（{} 字节，校验来源 {}）",
+        dest.display(),
+        streamed.bytes,
+        expected_digest
+            .as_ref()
+            .map_or("none", |d| d.source.as_str())
+    );
     Ok(ApiResponse::ok(json!({
         "success": true,
         "filePath": dest.to_string_lossy(),
-        "verified": expected_sha.is_some(),
+        // `verified` 特指**摘要**这一级。无摘要时如实标记未校验（不拒装）——此时仍过了
+        // `fileSize` 等值判据与 Content-Length，但那两级都弱于摘要，不配叫 verified。
+        "verified": expected_digest.is_some(),
+        "digestSource": expected_digest.as_ref().map(|d| d.source.as_str()),
     })))
 }
 
@@ -1199,7 +1778,8 @@ pub async fn core_update_run(
     }
 
     let asset_name = url.rsplit('/').next().unwrap_or("core-asset").to_string();
-    let dl = updater_downloader(&state);
+    // 内核腿整包入内存（解归档要用）⇒ 闸就是内存闸，逐字沿用形参化之前的 16 MiB。
+    let dl = updater_downloader(&state, MAX_DOWNLOAD_BYTES);
     let url_for_task = url.clone();
     let bytes = match tokio::task::spawn_blocking(move || dl.download(&url_for_task)).await {
         Ok(Ok(b)) => b,
@@ -2719,6 +3299,198 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    // ── App 更新包：写入体积闸（D4）─────────────────────────────────────────
+
+    /// 🟡 **`fileSize` 为 0 / 缺失时必须回落宽松上限，绝不能拿 0 当闸。**
+    ///
+    /// `AppUpdateInfo.file_size` 在 GitHub asset 缺 `size` 字段时按 **0** 填
+    /// （`github.rs` 的 `#[serde(default)]`）。直接拿它当闸 ⇒ 闸值 = 0，
+    /// **任何包都过不去**，且失败长得像「下载超限」，成因（清单少个字段）无从追起。
+    ///
+    /// **变异探针**：把 `declared.filter(|n| *n > 0)` 改回 `declared` ⇒ 后三条转红。
+    #[test]
+    fn app_update_size_limit_falls_back_when_the_declared_size_is_absent_or_zero() {
+        // 声明值有效 → 闸就等于声明值（**无裕度**，2026-08-17 删）。
+        //
+        // 本条原是一对断言：`== declared + MARGIN` 与 `> declared`（「闸不得小于等于声明值本身」）。
+        // 随裕度一并订正为**等值**：三处体积闸都是**严格大于**才拒（预检 `n > limit`、两条读侧
+        // `已收 + 本 chunk > limit`），故 `limit == declared` 时一个恰好 `declared` 字节的包
+        // **仍然过得去**。那条边界不是推断，由 `runtime::http` 的
+        // `size_limit_boundary_admits_a_body_of_exactly_the_limit` 逐处拿等长响应体撞过。
+        let declared = 40 * 1024 * 1024;
+        assert_eq!(
+            app_update_size_limit(Some(declared)),
+            declared as usize,
+            "有声明值时闸 = 声明值本身：等长包靠三处闸的严格大于语义放行，不靠裕度"
+        );
+
+        // 声明为 0（GitHub asset 缺 size 的真实形态）→ 回落宽松绝对上限。
+        assert_eq!(
+            app_update_size_limit(Some(0)),
+            APP_UPDATE_MAX_BYTES as usize,
+            "fileSize=0 是「清单没给」，不是「包是空的」——拿 0 当闸会拒掉一切"
+        );
+        // 字段整个缺失 → 同上。
+        assert_eq!(app_update_size_limit(None), APP_UPDATE_MAX_BYTES as usize);
+        // 回落上限必须容得下真实量级的安装包（几十 MiB）。
+        assert!(
+            app_update_size_limit(None) > 200 * 1024 * 1024,
+            "回落上限卡得比真实安装包还紧 = 换了个姿势拒掉一切"
+        );
+    }
+
+    /// 🟡 **声明分支必须有天花板：闸值绝不由服务端单方面顶到任意高。**
+    ///
+    /// 本条**推翻了**它的前身（`app_update_size_limit_saturates_instead_of_wrapping`）：那条断言
+    /// `Some(u64::MAX) → usize::MAX`，即**把洞当成期望固化了下来** —— 只防「回绕成一个极小的闸」，
+    /// 完全不防「闸大到形同不设」。而 `APP_UPDATE_MAX_BYTES` 的文档写的正是「别让一个撒谎的
+    /// 服务端把盘写满」：`fileSize` 报 100 GiB ⇒ 闸值 100 GiB ⇒ Content-Length 预检放行 ⇒
+    /// 一路写到 ENOSPC，用户的系统盘被写满。
+    ///
+    /// **变异探针**（2026-08-17 实测订正，原写「前三条逐条转红」是错的）：去掉
+    /// `.min(APP_UPDATE_MAX_BYTES)` ⇒ **第 1 条**转红（断言在此中止，故一次运行只看得到这一条）；
+    /// 单独摘掉第 1、2 条后重跑，**第 3、4 条仍绿** —— 第 3 条的声明值恰好等于天花板，`min`
+    /// 在那一点是恒等映射，本就落不到差异上；第 4 条在天花板之下同理。
+    /// 即本条真正的判据是**第 1、2 条**，第 3 条只钉 `min` 的等值分支不越界。
+    #[test]
+    fn app_update_size_limit_is_capped_by_the_absolute_ceiling() {
+        // 极端声明值（前身守的那一半，保留）。裕度删掉后 `saturating_add` 也一并没了 ⇒
+        // 「回绕成极小值」这条失效形态结构性不存在，只剩「顶到天上」要防。
+        assert_eq!(
+            app_update_size_limit(Some(u64::MAX)),
+            APP_UPDATE_MAX_BYTES as usize,
+            "u64::MAX 的声明值必须被压回绝对上限"
+        );
+        // 撒谎的服务端：100 GiB 的声明值必须被压回天花板。
+        assert_eq!(
+            app_update_size_limit(Some(100 * 1024 * 1024 * 1024)),
+            APP_UPDATE_MAX_BYTES as usize,
+            "声明值再大也不得把闸顶上去——那正是本闸要防的那件事"
+        );
+        // 边界：声明值恰好等于天花板 → 就取天花板（`min` 的等值分支）。
+        assert_eq!(
+            app_update_size_limit(Some(APP_UPDATE_MAX_BYTES)),
+            APP_UPDATE_MAX_BYTES as usize
+        );
+        // 天花板之下的正常量级不受影响（封顶不得把正常包一起卡掉）。
+        let normal = 40 * 1024 * 1024;
+        assert_eq!(app_update_size_limit(Some(normal)), normal as usize);
+    }
+
+    // ── App 更新包：期望摘要的来源（D1）─────────────────────────────────────
+
+    /// 摘要来源按优先级挑；全无 → `Ok(None)`（**不拒装**，降级为弱校验并如实标记未校验）。
+    #[test]
+    fn expected_digest_is_resolved_by_source_priority_and_degrades_honestly() {
+        let sha = "a".repeat(64);
+        let got = resolve_expected_digest(&json!({ "sha256": sha }))
+            .expect("合法字符串不该报错")
+            .expect("应挑出 asset digest");
+        assert_eq!(got.hex, sha);
+        assert_eq!(got.source, DigestSource::GithubAssetDigest);
+        assert_eq!(got.source.as_str(), "githubAssetDigest");
+
+        // 无摘要 / 空串 / 纯空白 → Ok(None)（旧 release 的真实形态：`AppUpdateInfo.sha256` 带
+        // `skip_serializing_if = "Option::is_none"`，故缺摘要时**字段整个不出现**）。
+        assert_eq!(resolve_expected_digest(&json!({})), Ok(None));
+        assert_eq!(resolve_expected_digest(&json!({ "sha256": "" })), Ok(None));
+        assert_eq!(
+            resolve_expected_digest(&json!({ "sha256": "   " })),
+            Ok(None)
+        );
+
+        // 格式非法的摘要**不得**在此静默丢弃 —— 那会把「摘要写坏了」伪装成「本来就没摘要」而放行。
+        // 它要一路走到校验步，才分得出「发布方写坏了」与「包被篡改」两种文案。
+        let bad = resolve_expected_digest(&json!({ "sha256": "not-a-hash" }))
+            .expect("非法 hex 是字符串，不在本函数报错")
+            .expect("格式非法也要挑出来，交给校验步报错");
+        assert_eq!(bad.hex, "not-a-hash");
+    }
+
+    /// 🟡 **字段在、但不是字符串 ⇒ 显式早退，绝不静默降级成「本来就没摘要」。**
+    ///
+    /// 原实现三种形态（`123` / `null` / `["…"]`）全走 `Value::as_str` → `None` → 与「字段缺失」
+    /// 合流 → `verified:false` 放行。即一个把 `sha256` 序列化成数字的发布流程，会让**全体用户**
+    /// 静默地少一道校验，而返回体上只显示 `verified:false`（长得和旧 release 一模一样）。
+    /// 这与 [`resolve_expected_digest`] 自己文档写的「静默丢弃会把『摘要写坏了』伪装成
+    /// 『本来就没摘要』而放行」正相反。
+    ///
+    /// **变异探针**：把非字符串分支改回 `continue`（或退回 `and_then(Value::as_str)`）⇒ 三条转红。
+    #[test]
+    fn a_non_string_digest_field_is_rejected_not_silently_dropped() {
+        for bad in [json!(123), json!(null), json!(["a".repeat(64)]), json!({})] {
+            let err = resolve_expected_digest(&json!({ "sha256": bad }))
+                .expect_err("非字符串的 sha256 必须显式早退");
+            assert!(err.contains("sha256"), "错误必须点名是哪个字段坏了：{err}");
+        }
+        // 反向对照：字段**整个缺失**仍是合法的「本来就没摘要」，不得被一起拒掉
+        // （否则所有旧 release 立刻更新不了）。
+        assert_eq!(resolve_expected_digest(&json!({ "other": 1 })), Ok(None));
+    }
+
+    /// 摘要来源表：**当前只有一级**，且每一级都必须自报字段名与对外标识。
+    ///
+    /// # 本条不再声称「加一级只改一处」（2026-08-16 订正）
+    ///
+    /// 前身叫 `digest_source_table_is_ordered_and_extensible`，配的文档说「U3 只需在表最前面
+    /// 插一行」。那是**自相矛盾**的：本条自己就 `assert_eq!` 死了当前表，U3 必然要改它 ——
+    /// 一个声称「只改一处」的断言，本身就是必然要改的第二处。真正的成因是
+    /// [`DigestSource::field`] 把取法锁死成「`update_info` 顶层字符串字段」，而 `SHA256SUMS`
+    /// 是另一次网络下载 + 按资产名查表（详见 [`DigestSource`] 文档）。
+    ///
+    /// 所以本条现在只钉两件**今天为真**的事：表是单元素的（不留假接线），以及每一级都自报身份。
+    /// U3 落地时**本条会被改**，那是预期之内的，不是回归。
+    #[test]
+    fn digest_source_table_is_the_single_current_source() {
+        assert_eq!(
+            EXPECTED_DIGEST_SOURCES,
+            [DigestSource::GithubAssetDigest],
+            "本批只实现 GitHub asset digest 一级（SHA256SUMS 属 U3，刻意未实现，不留假接线）"
+        );
+        // 每个来源都必须自报字段名与标识（新增一级时忘了补 → 编译期就红）。
+        for src in EXPECTED_DIGEST_SOURCES {
+            assert!(!src.field().is_empty());
+            assert!(!src.as_str().is_empty());
+        }
+    }
+
+    /// 🟡 **清单声明的 `fileSize` 是等值判据（无摘要腿的主防线）。**
+    ///
+    /// 无摘要腿此前**只有** Content-Length 兜底，而那个数是撒谎方自己给的：服务端/镜像返
+    /// `Content-Length: 1000` 且真发 1000 字节 ⇒ 完整性校验过 ⇒ 无摘要不校验 ⇒ 1000 字节的
+    /// 假包被 promote，返 `{success:true, verified:false}`，UI 给出安装入口。
+    /// 极端版 `Content-Length: 0` ⇒ 0 字节文件「下载成功」。
+    ///
+    /// `fileSize` 来自 GitHub release 清单，镜像改不动 —— 零成本堵上这条。
+    ///
+    /// **变异探针**：把 [`check_declared_size`] 改成恒 `Ok(())` ⇒ 第 2、3 条转红；
+    /// 去掉 `.filter(|n| *n > 0)` ⇒ 第 4 条转红（缺 size 的旧 release 会被全部拒掉）。
+    #[test]
+    fn declared_file_size_is_enforced_as_an_equality_criterion() {
+        use polaris_updater::traits::DownloadError;
+
+        // 声明值匹配 → 放行。
+        assert!(check_declared_size(1000, Some(1000)).is_ok());
+
+        // 不匹配 → Incomplete（结构化，带两个数）。收得少（截断）与收得多（掉包/注入）都算。
+        assert!(matches!(
+            check_declared_size(1000, Some(52_000_000)),
+            Err(DownloadError::Incomplete {
+                received: 1000,
+                expected: 52_000_000
+            })
+        ));
+        assert!(
+            check_declared_size(0, Some(52_000_000)).is_err(),
+            "`Content-Length: 0` + 真发 0 字节的假包必须被这一级拦下"
+        );
+        assert!(check_declared_size(52_000_001, Some(52_000_000)).is_err());
+
+        // 声明为 0 / 缺失 = 「清单没给」，**不判**（旧 release 的正常形态；判了就全拒）。
+        assert!(check_declared_size(1000, Some(0)).is_ok());
+        assert!(check_declared_size(1000, None).is_ok());
+    }
+
     /// 🟡 **调用点守卫：单飞闸必须早于「发进度」与「真下载」。**
     ///
     /// 闸拿在后面 = 等待中的那条腿照样先发一发 `downloading(0)`，把已在跑的另一条腿的百分比顶回 0。
@@ -2732,12 +3504,191 @@ mod tests {
         let emit_at = body
             .find(r#"emit_progress(&app, "downloading", 0, "")"#)
             .expect("锚点消失：守卫已失去判据");
+        // 锚点随 U1（整包入内存 → 流式落盘）从 `download_with_progress(` 换成
+        // `download_to_sink_with_progress(`：守的东西**一个字没变**（闸必须早于发进度与真下载），
+        // 只是「真下载」那一句的名字变了。
         let dl_at = body
-            .find("download_with_progress(")
+            .find("download_to_sink_with_progress(")
             .expect("锚点消失：守卫已失去判据");
         assert!(
             gate_at < emit_at && gate_at < dl_at,
             "单飞闸必须在「发 downloading(0)」与「真下载」之前拿到（实得 {gate_at} / {emit_at} / {dl_at}）"
+        );
+    }
+
+    /// 🟡 **调用点守卫：落位只许 rename，绝不许把刚流式写完的文件读回内存。**
+    ///
+    /// `atomic_replace` 吃 `&[u8]`。谁要是图省事把落位写回 `atomic_replace(&StdFs, &dest, &bytes)`，
+    /// 就等于在流式下载之后又做一次「整包读回内存 + 整包重写」—— 本次改造的收益**当场归零**，
+    /// 而且四条 gate 全绿、行为完全正确，只有真机上几十 MiB 的内存峰值会告诉你。
+    /// 源码扫描是这条不变式**唯一**够得着的判据。
+    ///
+    /// **变异探针**：把 `promote_staged(...)` 换回 `atomic_replace(...)` ⇒ 两条断言同时转红。
+    #[test]
+    fn payload_is_promoted_by_rename_not_re_read_into_memory() {
+        let body =
+            crate::commands::guard_scan::top_level_fn_body(SRC, "pub async fn update_download(");
+        assert!(
+            body.contains("land_payload("),
+            "落位必须走 `land_payload` → `verify::promote_staged`（tmp 已在盘 → 只 rename）"
+        );
+        // ── 「整包回内存」按**族**禁，不按单个字面量禁 ──────────────────────────
+        //
+        // 前身只禁 `atomic_replace(` 与 `verify_bytes(` 两个字面量，而被守的语义面远大于这两项：
+        // 在落位前插一行 `let bytes = std::fs::read(&tmp)?;`（动机很自然 —— 落位前补一次大小复核）
+        // 内存峰值就回到包体积、整个改造收益归零，而两条断言**全绿**。
+        // 故改为禁掉「先把字节攒齐」这一族的全部入口。
+        for banned in [
+            "std::fs::read(",
+            ".read(&tmp",
+            "read_to_end(",
+            "atomic_replace(",
+            "verify_bytes(",
+        ] {
+            assert!(
+                !body.contains(banned),
+                "`{banned}` 属「整包入内存」族 —— 流式下载之后再把文件读回内存，本次改造的收益当场归零，\
+                 而四条 gate 会全绿、行为完全正确，只有真机上几十 MiB 的内存峰值会告诉你"
+            );
+        }
+    }
+
+    /// 🟡 **调用点守卫：全程只碰 tmp，dest 只在最后一次 rename 时出现。**
+    ///
+    /// dest 一旦被中途写入（哪怕只是 `open_write(&dest)` 建个空文件），并发单飞的**后到者**
+    /// 就会经 [`cached_download_is_reusable`] 读到一个半截包 —— 而它的判据是 sha256，
+    /// 半截包会被判「不可复用」从而重下，看起来还挺正常；真正的坏形态是 dest 上留下一个
+    /// 长度不对的文件，`update_install` 拿它去装。
+    ///
+    /// **变异探针**：把 sink 的目标从 tmp 改成 dest ⇒ 白名单计数对不上 ⇒ 转红。
+    #[test]
+    fn streaming_download_only_ever_touches_the_tmp_path() {
+        let body =
+            crate::commands::guard_scan::top_level_fn_body(SRC, "pub async fn update_download(");
+        assert!(
+            body.contains("verify::tmp_name(&dest)"),
+            "tmp 必须由 `verify::tmp_name` 生成（同目录同卷 = 原子 rename 的前提）"
+        );
+        assert!(
+            body.contains("open_write(&sink_path)")
+                && body.contains("let sink_path = partial.path().to_path_buf()"),
+            "写句柄必须指向 tmp（经 RAII 守卫持有的那条路径）"
+        );
+
+        // ── dest 侧改**白名单计数**（前身是单字面量黑名单 `!contains("open_write(&dest")`）──
+        //
+        // 黑名单挡不住同一语义的任何别的写法：`File::create(&dest)` / `StdFs.write(&dest, ..)` /
+        // `open_write(dest.as_path())` 全都绕得过去，而后果一样 —— dest 上留下一个长度不对的文件，
+        // `update_install` 拿它去装。故反过来：**列出 dest 的全部合法用法**，
+        // 出现次数钉死；新增任何一处对 dest 的引用都必须显式改这张表，并在改的时候回答
+        // 「它会不会在落位之前碰 dest」。
+        const DEST_USES: [&str; 8] = [
+            "let dest = dir.join(&file_name);",
+            "let gate = download_gate(&dest);",
+            "let dest = dest.clone();",
+            "cached_download_is_reusable(&dest, sha.as_deref())",
+            "dest.display()",
+            "dest.to_string_lossy()",
+            "verify::tmp_name(&dest)",
+            "land_payload(&polaris_updater::traits::StdFs, partial.path(), &dest)",
+        ];
+        /// dest 在 `update_download` 里的**总出现次数**（含上表每一项各自的出现次数之和）。
+        const DEST_MENTIONS: usize = 11;
+        let total = body.matches("dest").count();
+        let covered: usize = DEST_USES
+            .iter()
+            .map(|p| body.matches(p).count() * p.matches("dest").count())
+            .sum();
+        assert_eq!(
+            total, DEST_MENTIONS,
+            "对 dest 的引用数变了（实得 {total}，钉死 {DEST_MENTIONS}）—— \
+             新增/删除任何一处都必须显式改白名单，并复核它没有在落位之前碰 dest"
+        );
+        assert_eq!(
+            covered, total,
+            "出现了不在白名单里的 dest 用法（白名单覆盖 {covered} / 实得 {total}）—— \
+             dest 必须从「不存在」瞬间变为「完整文件」，中途碰它就会让后到者读到半截包"
+        );
+
+        // ── `downloaded` 的位置：**降级为弱断言**（真正的门是运行时的
+        //    `landing_reports_failure_and_leaves_dest_untouched_when_rename_fails`）。
+        //
+        // 文本下标比较表达不了「rename **成功**才发」：把落位失败的早退降级成「只 log 不早退」，
+        // 文本序照样成立。故这里只钉一件文本层面**确实**表达得了的事：下载腿的 `downloaded`
+        // 落在 `LandingOutcome::Landed` 那一支里。
+        //
+        // 注意 `downloaded` 在本函数里有**两个**合法产地：① 复用分支（文件已在盘且 sha256 复核过，
+        // 此时根本没下载）② 本次下载落位成功之后。故不能拿首个匹配比大小 —— 那只会量到 ①。
+        let landed_at = body
+            .find("LandingOutcome::Landed =>")
+            .expect("落位成功分支消失：守卫已失去判据");
+        let download_began_at = body
+            .find(r#"emit_progress(&app, "downloading", 0, "")"#)
+            .expect("锚点消失：守卫已失去判据");
+        let downloaded_after_start: Vec<usize> = body
+            .match_indices(r#"emit_progress(&app, "downloaded", 100, "")"#)
+            .map(|(i, _)| i)
+            .filter(|i| *i > download_began_at)
+            .collect();
+        assert!(
+            !downloaded_after_start.is_empty(),
+            "锚点消失：守卫已失去判据（下载腿一发 `downloaded` 都不发？）"
+        );
+        for at in downloaded_after_start {
+            assert!(
+                at > landed_at,
+                "`downloaded` 必须落在 `LandingOutcome::Landed` 分支内（实得 Landed {landed_at} / downloaded {at}）"
+            );
+        }
+    }
+
+    /// 🟡 **调用点守卫：残件清理必须是**类型**（RAII），不是「数一数清理调用」。**
+    ///
+    /// # 前身（计数守卫）为什么是假的
+    ///
+    /// 它数「`ApiResponse::err(` 出现次数 == `discard_partial_download(&tmp)` 出现次数」。
+    /// 三条独立反例，每条都能让「漏清理」照样全绿：
+    ///  1. 把落位失败的早退降级成「只 log 不早退」⇒ 两侧计数**同减**，仍相等；
+    ///  2. 给一条早退配**两次**清理即可把另一条漏掉的配平；
+    ///  3. 它**不匹配** `ApiResponse::err_with_code(` ⇒ tmp 之后新增一条带 code 且漏清理的早退，
+    ///     守卫全盲。
+    ///
+    /// 根因是它守错了对象：不变量是「控制流离开这个作用域时残件不在」——那是**作用域**的性质，
+    /// 计数表达不了。换成 [`PartialDownload`] 之后，`?` / panic / 将来新增的任何早退都自动覆盖，
+    /// 也就没有「配平」这回事。
+    ///
+    /// 本条因此只守**形态**（真正的行为门是运行时的
+    /// [`partial_download_deletes_the_tmp_on_drop_and_keeps_it_after_disarm`]）：
+    ///
+    /// **变异探针**：删掉 `PartialDownload::new(` ⇒ 第 1 条转红；把 `partial.disarm()` 挪出
+    /// `Landed` 分支（例如提到 match 之前，失败路径就不再清残件了）⇒ 第 3 条转红；
+    /// 再引入一个手工清理函数 ⇒ 第 2 条转红。
+    #[test]
+    fn the_partial_tmp_is_owned_by_an_raii_guard_not_by_counted_cleanup_calls() {
+        let body =
+            crate::commands::guard_scan::top_level_fn_body(SRC, "pub async fn update_download(");
+        assert!(
+            body.contains("PartialDownload::new("),
+            "残件必须由 RAII 守卫持有 —— 计数守卫守不住「离开作用域时残件不在」（三条反例见本测试文档）"
+        );
+        assert!(
+            !body.contains("discard_partial_download("),
+            "回到了手工清理 ⇒ 又要靠「每条早退都记得配一行」，而那正是被推翻的形态"
+        );
+        let disarms = body.matches("disarm()").count();
+        assert_eq!(
+            disarms, 1,
+            "`disarm()` 只该有一处（落位成功那一支），实得 {disarms} 处 —— \
+             多一处就意味着某条失败路径也把守卫解除了，残件从此无人清"
+        );
+        assert!(
+            body.contains("LandingOutcome::Landed => {")
+                && body[body
+                    .find("LandingOutcome::Landed => {")
+                    .expect("锚点消失：守卫已失去判据")..]
+                    .contains("partial.disarm()"),
+            "`disarm()` 必须在**落位成功**分支内：提到分支之外（哪怕只是 match 之前一行），\
+             落位失败时残件就不再被清"
         );
     }
 
@@ -2746,24 +3697,339 @@ mod tests {
     /// 弹窗被 `force progress(0)` 推进 Progress 后，只有 `error` / `downloaded` 能把它推出去；
     /// 静默 return 会让它永远转圈（只剩 Cancel 可点）。原实现的三条前置校验早退正是这样。
     ///
-    /// 按**计数**锁而不是逐条锁：新增任何一条 `ApiResponse::err(` 早退却忘了配一发 error 事件，
+    /// 按**计数**锁而不是逐条锁：新增任何一条失败早退却忘了配一发 error 事件，
     /// 两个计数立刻对不上 ⇒ 转红。
+    ///
+    /// # 计数用**前缀** `ApiResponse::err`（2026-08-16 订正）
+    ///
+    /// 前身数的是 `ApiResponse::err(` —— 它**不匹配** `ApiResponse::err_with_code(`（`err` 后面是
+    /// `_` 不是 `(`），于是新增一条带 code 的早退时守卫全盲。改成前缀后，代价是
+    /// BackendUnavailable 那条分支（一个 `match` 里两个 `ApiResponse::err*` **共用同一发**
+    /// error 事件）会被多数一次；把它作为**具名常数**扣掉，而不是把 `err_with_code` 排除在
+    /// 计数之外 —— 后者等于把射程重新缩回去。
     #[test]
     fn every_failure_path_emits_an_error_progress_event() {
+        /// 「一条早退里出现两个 `ApiResponse::err*`、但只发一发 error 事件」的已知分支数。
+        /// 当前唯一一处：下载失败时按 `BackendUnavailable` 与否二选一造信封。
+        const SHARED_ERR_BRANCHES: usize = 1;
+
         let body =
             crate::commands::guard_scan::top_level_fn_body(SRC, "pub async fn update_download(");
-        let errors = body.matches("ApiResponse::err(").count();
+        let errors = body.matches("ApiResponse::err").count();
         let emits = body.matches(r#"emit_progress(&app, "error""#).count();
         assert!(errors > 0, "锚点消失：守卫已失去判据");
         assert_eq!(
-            errors, emits,
-            "失败早退 {errors} 条、error 进度事件 {emits} 发 —— 对不上的那条会让弹窗永远转圈"
+            errors,
+            emits + SHARED_ERR_BRANCHES,
+            "失败信封 {errors} 处、error 进度事件 {emits} 发（另计 {SHARED_ERR_BRANCHES} 处共用分支）\
+             —— 对不上的那条会让弹窗永远转圈"
         );
-        // `err_with_code` 只有一处（BackendUnavailable 映射），与它同分支的 error 事件已计入上面那对。
         assert_eq!(
             body.matches("ApiResponse::err_with_code(").count(),
-            1,
-            "新增了带 code 的失败早退 → 请一并确认它也发了 error 进度事件，并更新本断言"
+            SHARED_ERR_BRANCHES,
+            "带 code 的失败早退数变了 → 请确认它也发了 error 进度事件，并更新 SHARED_ERR_BRANCHES"
+        );
+    }
+
+    // ── 残件所有权：RAII（H1）───────────────────────────────────────────────
+
+    /// 🟡 **运行时门：drop 即删；`disarm` 之后 drop 什么都不删。**
+    ///
+    /// 这是把「失败即清理」从**源码计数**换成**类型**之后，真正有牙的那条门 ——
+    /// 它测的是行为（离开作用域时文件在不在），不是「代码里写没写那一行」。
+    ///
+    /// **变异探针**：删掉 `impl Drop for PartialDownload` ⇒ 第 1 条转红；
+    /// 把 `disarm` 改成不置 `None`（或直接删掉这个方法体的赋值）⇒ 第 2 条转红
+    /// （落位成功后会把刚下好的包删掉）。
+    #[test]
+    fn partial_download_deletes_the_tmp_on_drop_and_keeps_it_after_disarm() {
+        let dir = scratch("partial-raii");
+
+        // ① 未解除 → drop 即删（= 每一条失败早退）。
+        let armed = dir.join("armed.pkg.polaris-new-1-0");
+        std::fs::write(&armed, b"half-written").unwrap();
+        {
+            let guard = PartialDownload::new(armed.clone());
+            assert_eq!(guard.path(), armed, "守卫必须原样交出它持有的那条路径");
+            assert!(armed.is_file(), "守卫存活期间不得提前删");
+        }
+        assert!(
+            !armed.exists(),
+            "守卫 drop 后残件必须消失 —— 否则每次下载失败都在缓存目录里攒一个几十 MiB 的垃圾"
+        );
+
+        // ② 已解除 → drop 什么都不做（= 落位成功，那个 inode 现在叫 dest 了）。
+        let landed = dir.join("landed.pkg");
+        std::fs::write(&landed, b"complete").unwrap();
+        PartialDownload::new(landed.clone()).disarm();
+        assert!(
+            landed.is_file(),
+            "disarm 之后 drop 绝不能删 —— 那删掉的是刚落位成功的更新包本身"
+        );
+        assert_eq!(std::fs::read(&landed).unwrap(), b"complete");
+
+        // ③ 文件本来就不存在（「还没来得及建就失败」）→ drop 不得 panic。
+        drop(PartialDownload::new(dir.join("never-created")));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // ── 落位：可注入的运行时判据（H2）──────────────────────────────────────
+
+    /// 🟡 **运行时门：rename 失败 ⇒ `Failed` 且 dest 不存在；成功 ⇒ `Landed` 且 tmp 消失。**
+    ///
+    /// 这条替掉的是一条**表达不了自己声称之事**的文本守卫（`promote_at < downloaded_at` 的下标
+    /// 比较）：把落位失败的早退降级成「只 log 不早退」，文本序照样成立，而运行时会广播
+    /// `downloaded(100)` 外加一个根本不存在的 `filePath`。
+    ///
+    /// [`land_payload`] 吃 `&dyn UpdateFs` ⇒ 可注入 `MockFailOp::Rename`，
+    /// 于是「rename 成功才算落位」变成一条真跑得起来的断言。
+    ///
+    /// **变异探针**：把 [`land_payload`] 的 `Err(e) =>` 改成 `Ok(())` 一样返回
+    /// `LandingOutcome::Landed`（即「只 log 不早退」那个降级）⇒ 第 1 条转红。
+    #[test]
+    fn landing_reports_failure_and_leaves_dest_untouched_when_rename_fails() {
+        use polaris_updater::traits::{MockFailOp, MockFs, StdFs};
+
+        let dir = scratch("landing");
+
+        // ① rename 失败 → Failed(_)，且 dest **不存在**（绝不广播一个不存在的 filePath）。
+        let dest_fail = dir.join("fail.pkg");
+        let tmp_fail = polaris_updater::verify::tmp_name(&dest_fail);
+        std::fs::write(&tmp_fail, b"streamed").unwrap();
+        let mut fs = MockFs::new(&dir);
+        fs.fail_next(MockFailOp::Rename);
+        let outcome = land_payload(&fs, &tmp_fail, &dest_fail);
+        assert!(
+            matches!(outcome, LandingOutcome::Failed(_)),
+            "rename 失败必须报 Failed，实得 {outcome:?}"
+        );
+        assert!(
+            !dest_fail.exists(),
+            "落位失败时 dest 必须仍不存在 —— 否则 `update_install` 会拿一个半截文件去装"
+        );
+        if let LandingOutcome::Failed(msg) = outcome {
+            assert!(
+                msg.contains("写入更新包失败"),
+                "失败文案须与同文件其它早退一致：{msg}"
+            );
+        }
+
+        // ② 成功 → Landed，dest 是完整内容，tmp 消失。
+        let dest_ok = dir.join("ok.pkg");
+        let tmp_ok = polaris_updater::verify::tmp_name(&dest_ok);
+        std::fs::write(&tmp_ok, b"streamed-bytes").unwrap();
+        assert_eq!(
+            land_payload(&StdFs, &tmp_ok, &dest_ok),
+            LandingOutcome::Landed
+        );
+        assert_eq!(std::fs::read(&dest_ok).unwrap(), b"streamed-bytes");
+        assert!(!tmp_ok.exists(), "落位成功后 tmp 必须已被 rename 掉");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 🟡 **运行时门：rename **之前**必须先 `fsync`；刷盘失败 ⇒ `Failed` 且 dest 不存在。**
+    ///
+    /// 没有这一步时，rename 只保证目录项的原子替换，不保证那个 inode 的**数据**已离开 page
+    /// cache ⇒ 断电/内核崩溃后可能出现「dest 名字在、内容是零或半截」，而 dest 一旦存在
+    /// [`update_install`] 就会**直接拿去装**。
+    ///
+    /// **变异探针**（2026-08-17 逐条实测，两条各红一处、互不重叠）：
+    ///  - 删掉 `land_payload` 里的 `sync_file` 调用（或把失败改成「只 log 不早退」）
+    ///    ⇒ **第 1 条**转红（注入的刷盘失败无处可发，结论成了 `Landed`）；
+    ///  - 把 `sync_file` 挪到 `promote_staged` **之后** ⇒ **第 2 条**转红（结论仍是 `Failed`，
+    ///    但 rename 已经发生 ⇒ dest 已存在）。顺序因此也在射程内，不是只靠注释声明。
+    ///
+    /// **不是探针、是运行期后果**（本仓 CI 只跑 Linux/macOS/Windows 的 64 位构建，但**没有**
+    /// 任何门会因它转红，故不列在上面）：把
+    /// [`StdFs::sync_file`](polaris_updater::traits::StdFs) 的 `OpenOptions::write(true)`
+    /// 改成 `File::open`（只读句柄），Linux 上照常绿，**Windows 上落位会全线失败** ——
+    /// `FlushFileBuffers` 对只读句柄直接报错。这条只能靠 trait 文档里的那句约束守住。
+    #[test]
+    fn landing_fsyncs_the_payload_before_renaming_it_into_place() {
+        use polaris_updater::traits::{MockFailOp, MockFs};
+
+        let dir = scratch("landing-fsync");
+        let dest = dir.join("synced.pkg");
+        let tmp = polaris_updater::verify::tmp_name(&dest);
+        std::fs::write(&tmp, b"streamed").unwrap();
+
+        let mut fs = MockFs::new(&dir);
+        fs.fail_next(MockFailOp::SyncFile);
+        // 残件的清理归 RAII 守卫（`land_payload` 自己不删）——照生产的形态过一遍：
+        // 失败分支**不** disarm，守卫在离开作用域时把 tmp 收掉。
+        let outcome = {
+            let partial = PartialDownload::new(tmp.clone());
+            land_payload(&fs, partial.path(), &dest)
+        };
+
+        assert!(
+            matches!(outcome, LandingOutcome::Failed(_)),
+            "刷盘失败必须报 Failed（内容可能还在 page cache 里），实得 {outcome:?}"
+        );
+        assert!(
+            !dest.exists(),
+            "刷盘失败时绝不能已经 rename —— dest 一旦存在就会被 `update_install` 当成完整包"
+        );
+        assert!(
+            !tmp.exists(),
+            "失败路径上的残件必须由 RAII 守卫收掉（`land_payload` 不负责删）"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // ── 孤儿 tmp 清扫（H3）──────────────────────────────────────────────────
+
+    /// 把文件的 mtime 往前拨 `age`（测跨进程残件的 24h 阈值；不引第三方 crate）。
+    fn backdate(path: &std::path::Path, age: std::time::Duration) {
+        let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        f.set_modified(std::time::SystemTime::now() - age).unwrap();
+    }
+
+    /// 🟡 **运行时门：本资产 + 本 pid 的孤儿直接收；其余一律只按 mtime 阈值收；无关文件不碰。**
+    ///
+    /// 主触发器是「下载途中退出 App」：`update_download` 是 async command，tmp 建立后唯一的
+    /// await 点是 `spawn_blocking(...).await`，退出 App 会让 runtime **drop 掉那个 future** ⇒
+    /// RAII 守卫连同三条早退全被绕过，而 blocking 线程不可取消、可能把 tmp 写完。开着
+    /// `autoDownloadUpdate` 时每个「启动 → 后台下载 → 提前关 App」周期必留一个几十 MiB 的孤儿，
+    /// 而唯一的回收点是完全卸载。
+    ///
+    /// # 第 ⑤ 条已**反向**（2026-08-17）
+    ///
+    /// 它原先钉的是「别的资产的残件不归本次清扫管」—— 而那正是缺陷本身：App 更新的资产名带版本号，
+    /// 版本一换前缀就变，于是上面那个主触发器留下的残件（必然是**旧版本名**）永远收不回来。
+    /// 现在钉的是「别资产残件：新鲜保留、陈旧收」，并由第 ⑥ 条做真实缺陷回放。
+    ///
+    /// **变异探针**（2026-08-17 逐条实测，末条原写「去掉它 ⇒ 第 4 条转红」是错的）：
+    /// 把本资产+本 pid 那一档也改成走 mtime 阈值 ⇒ 第 1 条转红；
+    /// 把匹配面缩回 `{file_name}.polaris-new-` ⇒ 第 6 条转红（旧版本名的陈旧残件又收不回来了）；
+    /// 把即时档改成只看 pid、不看资产名 ⇒ 第 5 条转红；
+    /// 把 `>= ORPHAN_TMP_MAX_AGE` 改成 `<` ⇒ 第 2、3、5、6 条同时转红。
+    ///
+    /// `is_orphan_tmp_name` 无论**放宽成「只看中缀」还是整个去掉**，转红的都是**第 7 条**，
+    /// 不是第 4 条：第 4 条的 `dest` 夹具是新鲜写的，判据没了它只是落进 mtime 档 → 保留 → 仍绿。
+    /// 真正被这条判据护住的是「陈旧的非 tmp 文件」，而夹具里那个正是 `not_a_tmp`。
+    #[test]
+    fn orphan_sweep_collects_only_what_it_can_prove_is_abandoned() {
+        use polaris_updater::traits::StdFs;
+
+        let dir = scratch("orphan-sweep");
+        let file_name = "polaris-0.2.0.dmg";
+        let pid = std::process::id();
+
+        // ① 本资产 + 本进程留下的残件：调用点在单飞闸内 ⇒ 此刻绝无第二条腿在写它 ⇒ 直接收（不看 mtime）。
+        let mine = dir.join(format!("{file_name}.polaris-new-{pid}-7"));
+        // ② 其它进程 + 陈旧（> 24h）：跨进程兜底，收。
+        let stale = dir.join(format!("{file_name}.polaris-new-{}-0", pid.wrapping_add(1)));
+        // ③ 其它进程 + 新鲜：可能正有另一个实例在写 ⇒ **不收**（失败安全的那一侧）。
+        let fresh = dir.join(format!("{file_name}.polaris-new-{}-1", pid.wrapping_add(2)));
+        // ④ 落位好的成品：绝不能碰。
+        let dest = dir.join(file_name);
+        // ⑤ 别的资产名 + 新鲜：**保留**。单飞闸只按 dest 串行，管不到别的资产名 ——
+        //    本进程完全可能有另一条腿正在下它，故别资产不许走即时档（哪怕 pid 是自己的）。
+        let other_fresh = dir.join(format!("polaris-0.1.9.dmg.polaris-new-{pid}-0"));
+        // ⑥ **真实缺陷回放**：上次运行下到一半被关掉，留下的是**旧版本名**的残件（资产名含版本号，
+        //    这次要下的是新版本 ⇒ 前缀必然不同）。陈旧了就必须收，否则每次版本更迭攒一个几十 MiB
+        //    的垃圾，直到完全卸载才回收。
+        let stale_old_version = dir.join(format!(
+            "polaris-0.1.9.dmg.polaris-new-{}-4",
+            pid.wrapping_add(3)
+        ));
+        // ⑦ 含中缀但**形态不符**（`{pid}-{seq}` 不是纯数字）：不是 `tmp_name` 的产物，一律不碰。
+        let not_a_tmp = dir.join("notes.polaris-new-draft");
+
+        for p in [
+            &mine,
+            &stale,
+            &fresh,
+            &dest,
+            &other_fresh,
+            &stale_old_version,
+            &not_a_tmp,
+        ] {
+            std::fs::write(p, b"x").unwrap();
+        }
+        let over_age = ORPHAN_TMP_MAX_AGE + std::time::Duration::from_secs(60);
+        backdate(&stale, over_age);
+        backdate(&stale_old_version, over_age);
+        backdate(&not_a_tmp, over_age); // 陈旧也不该被收：判据是命名形态，不是年龄
+        backdate(&mine, std::time::Duration::from_secs(1)); // 新鲜也照收（判据是 pid 不是时间）
+
+        sweep_orphan_downloads(&StdFs, &dir, file_name);
+
+        assert!(
+            !mine.exists(),
+            "本资产 + 本进程留下的残件必须被收（闸已保证无人在写它）"
+        );
+        assert!(!stale.exists(), "超过 24h 的跨进程残件必须被收");
+        assert!(
+            fresh.exists(),
+            "新鲜的跨进程残件必须保留 —— 另一个实例可能正在写它，而 pid 存活探测跨平台不可靠"
+        );
+        assert!(dest.exists(), "落位好的更新包绝不能被当成残件删掉");
+        assert!(
+            other_fresh.exists(),
+            "别的资产名的**新鲜**残件必须保留 —— 单飞闸只按 dest 串行，管不到别的资产名"
+        );
+        assert!(
+            !stale_old_version.exists(),
+            "旧版本名的陈旧残件必须被收 —— 资产名含版本号，只收本次资产名等于这条腿永不回收"
+        );
+        assert!(
+            not_a_tmp.exists(),
+            "含 `.polaris-new-` 但不是 `{{pid}}-{{seq}}` 形态的文件不是清扫的对象"
+        );
+
+        // 交叉核对：上面五个夹具的名字是**手搓**的，与 `sweep_orphan_downloads` 的前缀判据同出一人
+        // ⇒ 二者可以互相印证却**双双跑偏于真实命名**（`verify::tmp_name` 改个后缀就全盲）。
+        // 故再用真产物过一遍：这条是「判据被自己污染」的唯一报警。
+        let real_tmp = polaris_updater::verify::tmp_name(&dest);
+        std::fs::write(&real_tmp, b"x").unwrap();
+        sweep_orphan_downloads(&StdFs, &dir, file_name);
+        assert!(
+            !real_tmp.exists(),
+            "`verify::tmp_name` 的真实产物落在清扫的前缀判据之外 —— 手搓夹具全绿也没有意义"
+        );
+        assert!(dest.exists(), "第二次清扫同样不得碰成品");
+
+        // 目录不存在也不得 panic（best-effort，绝不改变本次下载的结论）。
+        sweep_orphan_downloads(&StdFs, &dir.join("nope"), file_name);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 🟡 **调用点守卫：清扫必须夹在「拿到单飞闸」与「生成本次 tmp」之间。**
+    ///
+    /// 两侧都是硬要求：
+    ///  - 早于闸 ⇒ 本进程可能有另一条腿正在写同名 tmp，那一档是**不看 mtime 直接删**的，会删掉在飞的下载；
+    ///  - 晚于 `tmp_name` ⇒ 本次自己的 tmp 也带着本进程 pid，会被当场删掉。
+    ///
+    /// **变异探针**：删掉调用 / 挪到 `gate.lock()` 之前 / 挪到 `verify::tmp_name(&dest)` 之后
+    /// ⇒ 逐条转红。
+    #[test]
+    fn orphan_sweep_runs_inside_the_gate_and_before_this_download_stages_its_tmp() {
+        let body =
+            crate::commands::guard_scan::top_level_fn_body(SRC, "pub async fn update_download(");
+        let lock_at = body
+            .find("gate.lock().await")
+            .expect("锚点消失：守卫已失去判据");
+        let sweep_at = body.find("sweep_orphan_downloads(").expect(
+            "孤儿清扫被删了 —— 下载途中退出 App 会绕过 RAII 守卫，每个周期攒一个几十 MiB 的残件",
+        );
+        let tmp_at = body
+            .find("verify::tmp_name(&dest)")
+            .expect("锚点消失：守卫已失去判据");
+        assert!(
+            lock_at < sweep_at,
+            "清扫必须在单飞闸**之内**（实得 lock={lock_at} / sweep={sweep_at}）：\
+             闸外清扫会删掉本进程另一条腿正在写的 tmp"
+        );
+        assert!(
+            sweep_at < tmp_at,
+            "清扫必须在生成本次 tmp **之前**（实得 sweep={sweep_at} / tmp={tmp_at}）：\
+             之后清扫会把自己这一次的 tmp 当孤儿删掉"
         );
     }
 

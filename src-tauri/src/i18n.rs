@@ -89,6 +89,49 @@
 //! 3. `en-US` 也缺 → 返回**键名本身**（`native.allFiles` 这样的裸串），显式坏相、不静默显示
 //!    别的语言。这一档不该发生：本文件的键覆盖门（`every_declared_key_resolves_in_all_five_locales`）
 //!    与 `locale-parity.test.ts` 会先转红。口径与 `ui/src/i18n/auxiliary.ts` 逐条相同。
+//!
+//! ══ ⚠️ 本门射程之外的用户可见出口（**显式待办**，2026-08-17 登记）══
+//!
+//! **门绿 ≠ 全仓没有硬编码文案。** 下方 `tests::SINKS` 只枚举了 10 个**原生**出口
+//! （对话框 / 菜单 / tooltip / 通知）。用户可见的文案还有第二条路：Rust 侧构造中文串 → 经 IPC
+//! 递给前端 → 前端**原样显示**。这条路一个字都不在 `no_hardcoded_cjk_in_user_facing_native_sinks`
+//! 的射程里，故那条门恒绿也说明不了这两个出口的情况。
+//!
+//! **六**个已知出口（**刻意不加进 `SINKS`**：全仓命中量级在数百条，加进去会让门当场大面积
+//! 转红，属独立批次的工作量。此处如实登记，不假装不存在）。前两条随 U1 复审登记，后四条是
+//! 2026-08-17 全仓复核补上的 —— 原文写「两个已知出口」是**错的**，那不是保守估计而是漏检：
+//!
+//! | # | 出口 | 载荷 | 显示点（前端原样展示） |
+//! |---|---|---|---|
+//! | 1 | `commands/updater.rs::emit_progress(app, "error", _, msg)` | `update:progress` 的 `error` | `SettingsUpdate.tsx` 的 `setErrMsg(p.error ?? …)`；同一真值经 `popup_state_for` 镜像进 mini 更新弹窗 error 态 |
+//! | 2 | `response::ApiResponse::err(msg)` / `err_with_code(msg, _)` | 响应**信封**的 `msg` | `ipc-client.ts` 抛 `IpcError(msg)`，各调用点多以 `e.message` 直落 toast / 错误行 |
+//! | 3 | `commands/subscription.rs::update_failure(...)`（`:330`；文案来自 `:813`「订阅不存在」/ `:821`「订阅缺少 URL」/ `:861` / `:917` 等 9 处调用点） | `event:subscriptionUpdateProgress` 终态帧的 `error` | `SubInfoBar.tsx:372` 的 `data-tip={failure.error \|\| t('nodes.subRefreshFail')}` |
+//! | 4 | `runtime/subscription_scheduler.rs:302`（兜底串 `"订阅更新失败"`，其余透传 #3 的文案） | `event:subscriptionAutoUpdate` 的 `error` | `App.tsx:679` 的 `toast.error(t('nodes.subAutoUpdateFail'), data.error)` —— 第 2 参数是 toast 描述行 |
+//! | 5 | **`ApiResponse::ok` 的载荷内嵌 `error` 字段**（≠ #2 的信封通道）：`commands/proxy.rs:522` / `:532`、`commands/misc.rs:1035` / `:1036` | `{ ok:false, error }` / `{ error }` | `components/dialogs/node-spec.ts:1050` 的 `message: r.error ?? ''`（NodeDialog 探测结果条）；misc 那两条落进诊断导出正文 |
+//! | 6 | `runtime/proxy.rs:752` 的 `emit_proxy_error(message, error_code)` 的 `message` | `event:proxyError` / `event:proxyLifecycle` 的 `message` | `domain/proxy-error-text.ts` **三段式的第 2 段**（`STARTUP_FAILED` / `ROOT_ORPHAN_BLOCKED` 等无键码走这一段）→ `PendingChangesBar` 的「应用失败：{{reason}}」 |
+//!
+//! **#6 已有前端侧对账文档与门**，不必在此重复：判据写在 `ui/src/domain/proxy-error-text.ts`
+//! 的头注（含「为什么不把 Rust message 也翻译了」的取舍），覆盖门是
+//! `ui/src/contracts/proxy-error-key-coverage.test.ts`（读 Rust 源码对账 `pub mod code`）。
+//! 本表只留指针。
+//!
+//! 后果是具体的：俄语/波斯语用户在更新失败时看到的是**俄语按钮 + 整段中文正文**
+//! （如「更新包校验失败（可能被截断或篡改）: expected …」）。
+//!
+//! # 两个**做对了**的反例（修法不用另行发明，仓内已有两处可抄）
+//!
+//!  · `commands/proxy.rs:286` 的 indeterminate 腿同样构造了一句中文，但前端**刻意不采信**
+//!    （`node-spec.ts:1038` 明写「`indeterminate` 腿不采信后端 `error` 文案」），改由前端出键 ——
+//!    同一个文件里紧挨着的两条腿，一条对一条错，说明这不是「做不到」。
+//!  · `SubDialog.tsx:142` 走 `r.errorKind` → `SUBSCRIPTION_ERROR_I18N_KEY` 查表，
+//!    与 `proxy-error-text.ts` 的 `errorCode` 三段式同形：**跨进程只传分类、不传文案**。
+//!
+//! 为什么不在本批一起改：改造要动各通道的**载荷契约**（`error: string` → 结构化
+//! `{code, params}`，否则前端无从翻译）、六个显示点、以及五份 locale。那是一次跨 Rust/TS
+//! 契约的改动，与「把一条文案搬进 JSON」不是同一量级。规模估算见交接单（U3 批次）。
+//!
+//! 本节的存在本身就是判据：谁要把这些 sink 加进 `SINKS`，先读这一节再决定批次边界；
+//! 谁要给上面任一通道**新加**一条中文文案，本表就是它欠下的账。
 
 use std::collections::HashMap;
 use std::sync::LazyLock;

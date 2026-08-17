@@ -62,8 +62,18 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 /// 对付 slow-loris / 半死连接：整请求超时管不了「一直有数据但极慢」，idle 才管得了「彻底没数据」。
 const STALL_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// 单次下载体积硬闸（16 MiB）。核二进制 ~10MiB 量级；超此即拒，防 OOM。
-const MAX_DOWNLOAD_BYTES: usize = 16 * 1024 * 1024;
+/// **内存型**下载的体积硬闸（16 MiB）。核二进制 ~10MiB 量级；超此即拒，防 OOM。
+///
+/// # 它是「内存闸」，不是「文件闸」
+///
+/// 两条内核腿（手动换核 / 自动换核）走的是 `download` → `Vec<u8>` → 解归档，字节全程在堆上，
+/// 故上限就该按**内存**定。App 安装包腿改成流式落盘后内存占用与包体积解耦，再拿 16 MiB 卡它
+/// 只会把所有正常安装包拒之门外 —— 那条腿的闸值改由调用方按「清单声明大小 + 裕度」注入
+/// （见 [`CoreDownloader::with_max_bytes`]）。
+///
+/// `pub(crate)`：三个 `updater_downloader` 调用点里的两条内核腿要**逐字传这个值**
+/// （语义与形参化之前完全一致）；各写一份字面量必然漂移。
+pub(crate) const MAX_DOWNLOAD_BYTES: usize = 16 * 1024 * 1024;
 
 /// 下载路径的重定向上限（GitHub release 资产必然 302 到 objects.githubusercontent.com）。
 const MAX_DOWNLOAD_REDIRECTS: usize = 5;
@@ -442,6 +452,15 @@ enum BodyReadError {
     TooLarge(usize),
     /// 传输/解码失败。`received` = 断掉前已收字节数（下载侧据此判 Incomplete）。
     Io { received: usize, message: String },
+    /// **落盘**失败（仅流式腿可能出现：磁盘满 / 权限 / 卷被拔）。
+    ///
+    /// 与 [`Self::Io`] 分开是因为映射目标不同：`Io` 在已知 Content-Length 时会被还原成
+    /// [`DownloadError::Incomplete`]（「网络把包送少了」），而写盘失败**不是**下载不完整 ——
+    /// 把磁盘满报成「下载不完整」会让用户一遍遍重下一个永远装不满的盘。
+    Sink {
+        received: usize,
+        source: std::io::Error,
+    },
 }
 
 impl std::fmt::Display for BodyReadError {
@@ -450,6 +469,7 @@ impl std::fmt::Display for BodyReadError {
             Self::Stalled => write!(f, "读取响应体停滞"),
             Self::TooLarge(limit) => write!(f, "响应体超过上限 {limit} 字节，已中断"),
             Self::Io { message, .. } => write!(f, "读取响应体失败: {message}"),
+            Self::Sink { source, .. } => write!(f, "写入下载文件失败: {source}"),
         }
     }
 }
@@ -508,6 +528,64 @@ async fn read_body_capped_with_progress(
                 buf.extend_from_slice(&chunk);
                 if let Some(cb) = on_progress {
                     cb(buf.len() as u64, expected);
+                }
+            }
+        }
+    }
+}
+
+/// [`read_body_capped_with_progress`] 的**落盘版姊妹函数**：字节直接进 `sink`，不在内存里攒。
+///
+/// # 为什么是姊妹函数而不是就地改造
+///
+/// 上面那个是 App 腿与内核腿**唯一共用**的字节累积点。把它改成泛型/多一个 sink 参数，等于让
+/// 两条内核腿（手动换核 / 自动换核）跟着换一条代码路径 —— 而它们的语义一个字都不该变。
+/// 故上面那份**原样保留**给内核腿与订阅腿，本函数只服务流式落盘的 App 腿。
+///
+/// 三项语义与上面**逐字对齐**（漂了就是两条腿的失败面分叉）：
+///  - 停滞看门狗：`tokio::time::timeout(stall, resp.chunk())`，**每个 chunk 单独计时**；
+///  - 进度回调时机：每个 chunk **落定之后**以累计 `received` + 同一个 `expected` 触发；
+///  - 超限判定：`已收 + 本 chunk > limit` 即 [`BodyReadError::TooLarge`] 并**中断连接**
+///    （drop `resp`），绝不把已写出的部分当成功 —— 落盘版由调用方负责删残件。
+///
+/// 唯一新增的失败形态是 [`BodyReadError::Sink`]（写盘失败），它**不能**折叠进
+/// [`BodyReadError::Io`]：后者在已知 Content-Length 时会被还原成
+/// [`DownloadError::Incomplete`]，而磁盘满不是「下载不完整」。
+///
+/// 返回累计写出的字节数（内存版返回 `Vec` 的位置）。
+async fn read_body_to_sink_with_progress(
+    resp: &mut reqwest::Response,
+    max: Option<usize>,
+    stall: Duration,
+    expected: Option<u64>,
+    on_progress: Option<&DownloadProgressFn>,
+    // `+ Send`：本函数的 future 要被 spawn 到 tokio runtime（见 `try_candidates`），
+    // 跨 await 持有的引用必须 Send。
+    sink: &mut (dyn std::io::Write + Send),
+) -> Result<u64, BodyReadError> {
+    let mut received: usize = 0;
+    loop {
+        // 每个 chunk 单独计时 = 停滞看门狗（整请求超时管不了「极慢但有数据」）。
+        let next = tokio::time::timeout(stall, resp.chunk())
+            .await
+            .map_err(|_| BodyReadError::Stalled)?;
+        match next.map_err(|e| BodyReadError::Io {
+            received,
+            message: e.to_string(),
+        })? {
+            None => return Ok(received as u64),
+            Some(chunk) => {
+                if let Some(limit) = max {
+                    if received + chunk.len() > limit {
+                        // 中断连接（drop resp 即断）+ Err —— **不把已写出的部分当成功**。
+                        return Err(BodyReadError::TooLarge(limit));
+                    }
+                }
+                sink.write_all(&chunk)
+                    .map_err(|source| BodyReadError::Sink { received, source })?;
+                received += chunk.len();
+                if let Some(cb) = on_progress {
+                    cb(received as u64, expected);
                 }
             }
         }
@@ -636,6 +714,138 @@ fn classify_download_status(status: u16, headers: &[(String, String)]) -> Option
     Some(DownloadError::HttpStatus(status))
 }
 
+/// body 读取失败 → 下载错误的**唯一**映射（两个消费端共用，避免失败分类在两条腿上分叉）。
+///
+/// 逐条与形参化之前的 `download_once` 内联 match 一致：
+///  - `Stalled` → [`DownloadError::Stalled`]（看门狗间隔，非请求超时）；
+///  - `TooLarge` → [`DownloadError::Other`]（带上限数字）；
+///  - `Io` + 已知 Content-Length → [`DownloadError::Incomplete`]。hyper 会先于我们发现
+///    「连接早于 Content-Length 关闭」并报成解码错，故靠 received + expected 还原成结构化
+///    Incomplete，而非泛化 Other；长度未知时才回落 Other。
+///  - `Sink` → [`DownloadError::Io`]（**写盘失败原样透传**，不冒充「下载不完整」）。
+///
+/// **纯函数**（无 IO）⇒ 可单测。
+fn map_body_error(e: BodyReadError, expected: Option<u64>) -> DownloadError {
+    match e {
+        BodyReadError::Stalled => DownloadError::Stalled(STALL_TIMEOUT.as_millis() as u64),
+        BodyReadError::TooLarge(limit) => {
+            DownloadError::Other(format!("下载体积超过上限 {limit} 字节，已中断"))
+        }
+        BodyReadError::Io { received, message } => match expected {
+            Some(n) => DownloadError::Incomplete {
+                received: received as u64,
+                expected: n,
+            },
+            None => DownloadError::Other(message),
+        },
+        // `received` 在此**真被消费**（不是死字段）：磁盘满的诊断价值一半在「写到第几字节才满」，
+        // 而 `DownloadError::Io` 只装得下一个 `io::Error` ⇒ 把它并进消息里，
+        // `kind` 原样保留（上层若按 kind 分流不受影响）。
+        BodyReadError::Sink { received, source } => DownloadError::Io(std::io::Error::new(
+            source.kind(),
+            format!("写入下载文件失败（已写出 {received} 字节）: {source}"),
+        )),
+    }
+}
+
+/// 完整性：实收 vs 一个**声明值**（= 上游 `parseExpectedBytes`）。**纯函数**。
+///
+/// 覆盖「连接干净关闭但字节偏少/偏多」的情形（[`map_body_error`] 的 `Io` 分支覆盖「连接异常断」）。
+///
+/// **三个消费端共用同一条判据**（各写一份 ⇒ 某条腿会少一道完整性门）：
+///  1. 内存腿传 `bytes.len()` vs `Content-Length`；
+///  2. 落盘腿传实际写出的字节数 vs `Content-Length`；
+///  3. App 更新腿（`commands/updater.rs` 的 `check_declared_size`）传实收字节 vs
+///     **发布清单声明的 `fileSize`**。第 3 条与前两条的信任根不同：`Content-Length` 是
+///     「撒谎方自己给的数」，对撒谎方零约束；`fileSize` 来自 GitHub release 清单，
+///     镜像/中间人改不动它。故它是无摘要腿（旧 release）唯一有牙的等值判据。
+///
+/// `pub(crate)`：第 3 个消费端在 `commands/` 层，但判据不该因此复制一份。
+pub(crate) fn check_content_length(
+    received: u64,
+    expected: Option<u64>,
+) -> Result<(), DownloadError> {
+    if let Some(n) = expected {
+        if received != n {
+            return Err(DownloadError::Incomplete {
+                received,
+                expected: n,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// 流式落盘下载的结果：写出的字节数 + **边写边算**出来的 sha256。
+///
+/// 摘要随下载一遍算完（不是落盘后再读一遍文件），故「校验」这一步零额外 IO、零额外内存。
+#[derive(Debug, Clone)]
+pub struct StreamedDownload {
+    /// 实际写出的字节数。
+    pub bytes: u64,
+    /// 全部字节的 sha256（小写 hex）。
+    pub sha256_hex: String,
+}
+
+/// 建写句柄的工厂：**每个候选 URL 试一次就要一个新句柄**。
+///
+/// 镜像回退会换一个候选重下，那时已写出的部分必须被丢弃、从头写起 —— 传一个句柄进去做不到
+/// （句柄已被写脏），传工厂才能让每次尝试都拿到截断过的干净句柄。
+pub type DownloadSinkFactory =
+    dyn Fn() -> std::io::Result<Box<dyn std::io::Write + Send>> + Send + Sync;
+
+/// 边写边算 sha256 的写入包装：一遍数据流同时喂给文件与 hasher。
+///
+/// 落盘后再读回来算摘要 = 把刚省下的那次全量 IO 又花掉；先攒内存再算 = 把刚省下的内存又占回来。
+struct HashingSink {
+    inner: Box<dyn std::io::Write + Send>,
+    hasher: polaris_updater::verify::Sha256Stream,
+}
+
+impl HashingSink {
+    fn new(inner: Box<dyn std::io::Write + Send>) -> Self {
+        Self {
+            inner,
+            hasher: polaris_updater::verify::Sha256Stream::new(),
+        }
+    }
+
+    /// flush 底层句柄并交出 `(喂进 hasher 的累计字节数, 摘要)`。
+    ///
+    /// # `flush` 覆盖什么、**不**覆盖什么（别把它当持久化）
+    ///
+    /// **必须 flush**：`BufWriter` 之类的包装在 drop 里吞掉写错误，不 flush 就可能出现
+    /// 「摘要算对了、盘上少一截」——而后续 rename 会把这个残包提升成 dest。
+    ///
+    /// 但生产注入的是 `StdFs::open_write` 给的**裸 `std::fs::File`**，对它
+    /// `Write::flush` 是 **no-op**（`File` 无用户态缓冲）—— 即这一句在生产路径上什么都没做，
+    /// 它守的是「将来有人在中间塞一层带缓冲的包装」。**且本类型全程没有 `sync_all`**：
+    /// 字节只到 page cache，随后的 rename 先于数据持久化落地，断电后 dest 可能是半截文件，
+    /// 而 `update_install` 只做 `is_file()`、不复核摘要。这条**不是本批引入的回归**
+    /// （旧的 `atomic_replace` 同样无 fsync），故此处只如实标注、不擅自加 fsync。
+    ///
+    /// 返回累计字节数是为让调用方与**网络侧**独立维护的 `received` 互校：两个数分别回答
+    /// 「网络收了多少」与「sink 真吃下多少」，对不上就说明摘要算在了一份与盘上不同的内容上。
+    fn finish(mut self) -> std::io::Result<(u64, String)> {
+        self.inner.flush()?;
+        let hashed = self.hasher.len();
+        Ok((hashed, self.hasher.finish()))
+    }
+}
+
+impl std::io::Write for HashingSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        // 先落盘再喂 hasher：写失败时 hasher 不能已经吃进这段，否则重试路径的摘要会脏。
+        let n = self.inner.write(buf)?;
+        self.hasher.update(&buf[..n]);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 /// **唯一**的下载适配器（= `UpdateDownloader` 的生产实现，取代 `UnavailableDownloader`）。
 ///
 /// 收口 `UpdateDownloader` doc 划给「实现侧」的全部细节：重定向跟随 / UA /
@@ -650,21 +860,36 @@ fn classify_download_status(status: u16, headers: &[(String, String)]) -> Option
 /// **调用方必须在 blocking 线程上调**（`spawn_blocking` / 非 async command）：
 /// 在 async 上下文里直接调会阻塞 executor 线程。Tauri 的同步 command 跑在**主线程**上 ——
 /// 15s 下载会冻 UI，故消费该适配器的 command 一律 `async fn` + `spawn_blocking`。
+///
+/// # 为什么 `derive(Clone)` 而不是手抄一个克隆器
+///
+/// [`Self::try_candidates`] 要把一份自身移进 spawn 出去的 task（`&self` 借用不能跨 spawn）。
+/// 原先那份手写的 `for_task` 逐字段抄一遍，四个字段全是 `Clone` —— 手抄版的唯一「能力」
+/// 是**漏抄新字段而编译得过**：`max_bytes` 形参化那次就差点漏掉，漏了的话 App 腿会静默地
+/// 拿 16 MiB 内存闸去下几十 MiB 的安装包。派生版漏字段直接编译不过。
+#[derive(Clone)]
 pub struct CoreDownloader {
     http: Arc<HttpRuntime>,
     handle: tokio::runtime::Handle,
     /// gh 加速前缀（如 `https://ghproxy.net/`）；空 = 不用镜像。
     gh_proxy_prefix: String,
+    /// 单次下载体积硬闸。默认 [`MAX_DOWNLOAD_BYTES`]（内存腿口径），由
+    /// [`Self::with_max_bytes`] 按腿覆盖。
+    max_bytes: usize,
 }
 
 impl CoreDownloader {
     /// 新建。`handle` 须是活着的 tokio runtime handle（command 层 `Handle::current()`）。
+    ///
+    /// 体积闸默认取 [`MAX_DOWNLOAD_BYTES`]（= 形参化之前的行为）；流式落盘腿须显式
+    /// [`Self::with_max_bytes`] 覆盖。
     #[must_use]
     pub fn new(http: Arc<HttpRuntime>, handle: tokio::runtime::Handle) -> Self {
         Self {
             http,
             handle,
             gh_proxy_prefix: String::new(),
+            max_bytes: MAX_DOWNLOAD_BYTES,
         }
     }
 
@@ -672,6 +897,18 @@ impl CoreDownloader {
     #[must_use]
     pub fn with_gh_proxy(mut self, prefix: impl Into<String>) -> Self {
         self.gh_proxy_prefix = prefix.into().trim().to_string();
+        self
+    }
+
+    /// 覆盖单次下载的体积硬闸。
+    ///
+    /// **闸值属于「这一腿下多大的东西」，不属于传输层**：内核腿把整包收进内存（`Vec<u8>`）
+    /// ⇒ 闸就是内存闸，恒取 [`MAX_DOWNLOAD_BYTES`]；App 安装包腿流式落盘 ⇒ 内存不随包体积长，
+    /// 闸改由「清单声明大小 + 裕度」注入。写死一个常量给两条腿共用，必然是「要么卡死大安装包、
+    /// 要么给换核腿开一个 OOM 口子」二选一。
+    #[must_use]
+    pub fn with_max_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_bytes = max_bytes;
         self
     }
 
@@ -685,15 +922,21 @@ impl CoreDownloader {
         out
     }
 
-    /// 真实下载一个 URL（含重定向跟随 + 完整性 + 看门狗 + 可选逐 chunk 进度）。
-    async fn download_once(
+    /// 请求 + 跟随重定向 + 状态分类 + Content-Length 预检；返回**就绪待读**的响应与期望字节数。
+    ///
+    /// # 为什么抽出来
+    ///
+    /// 两个消费端（[`Self::download_once`] 整包入内存 / [`Self::download_once_to_sink`] 流式落盘）
+    /// 在「读 body」之前要做的事**一模一样**：重定向跟随（GitHub 资产必然 302）、非 http/https 拒绝、
+    /// 403 限流分类、超上限早拒。复制第二份必然漂移 —— 上游 `core-downloader.ts` 与
+    /// `UpdateService.ts` 两份同构编排就是前车之鉴（见模块文档）。
+    async fn open_download_response(
         &self,
         url: &str,
-        on_progress: Option<&DownloadProgressFn>,
-    ) -> Result<Vec<u8>, DownloadError> {
+    ) -> Result<(reqwest::Response, Option<u64>), DownloadError> {
         let mut current = url.to_string();
         for _ in 0..=MAX_DOWNLOAD_REDIRECTS {
-            let mut resp =
+            let resp =
                 tokio::time::timeout(RESPONSE_TIMEOUT, self.http.client().get(&current).send())
                     .await
                     .map_err(|_| DownloadError::Stalled(RESPONSE_TIMEOUT.as_millis() as u64))?
@@ -733,70 +976,86 @@ impl CoreDownloader {
                 return Err(e);
             }
 
-            // Content-Length 预检（16MiB 闸的早拒腿：不用先下完才发现超）。
+            // Content-Length 预检（体积闸的早拒腿：不用先下完才发现超）。
             let expected = resp.content_length();
             if let Some(n) = expected {
-                if n > MAX_DOWNLOAD_BYTES as u64 {
+                if n > self.max_bytes as u64 {
+                    let limit = self.max_bytes;
                     return Err(DownloadError::Other(format!(
-                        "下载体积 {n} 字节超过上限 {MAX_DOWNLOAD_BYTES}，已拒绝"
+                        "下载体积 {n} 字节超过上限 {limit}，已拒绝"
                     )));
                 }
             }
-
-            // 流式读 + 停滞看门狗 + 硬闸（content-length 可缺失/撒谎 → 读取侧必须再拦一次）。
-            let bytes = match read_body_capped_with_progress(
-                &mut resp,
-                Some(MAX_DOWNLOAD_BYTES),
-                STALL_TIMEOUT,
-                expected,
-                on_progress,
-            )
-            .await
-            {
-                Ok(b) => b,
-                Err(BodyReadError::Stalled) => {
-                    return Err(DownloadError::Stalled(STALL_TIMEOUT.as_millis() as u64))
-                }
-                Err(BodyReadError::TooLarge(limit)) => {
-                    return Err(DownloadError::Other(format!(
-                        "下载体积超过上限 {limit} 字节，已中断"
-                    )))
-                }
-                // 传输在半路断掉：若已知期望字节，这**就是** Incomplete（下载侧的核心语义）。
-                // hyper 会先于我们发现「连接早于 Content-Length 关闭」并把它报成解码错，
-                // 故这里靠 received + expected 还原成结构化 Incomplete，而非泛化 Other。
-                Err(BodyReadError::Io { received, message }) => {
-                    if let Some(n) = expected {
-                        return Err(DownloadError::Incomplete {
-                            received: received as u64,
-                            expected: n,
-                        });
-                    }
-                    return Err(DownloadError::Other(message));
-                }
-            };
-
-            // 完整性：实收 vs Content-Length（= 上游 `parseExpectedBytes`）。
-            // 覆盖「连接干净关闭但字节偏少/偏多」的情形（前一分支覆盖「连接异常断」）。
-            if let Some(n) = expected {
-                if bytes.len() as u64 != n {
-                    return Err(DownloadError::Incomplete {
-                        received: bytes.len() as u64,
-                        expected: n,
-                    });
-                }
-            }
-            return Ok(bytes);
+            return Ok((resp, expected));
         }
         Err(DownloadError::Other(format!(
             "重定向次数超过上限（{MAX_DOWNLOAD_REDIRECTS}）"
         )))
     }
 
+    /// 真实下载一个 URL 到内存（含重定向跟随 + 完整性 + 看门狗 + 可选逐 chunk 进度）。
+    async fn download_once(
+        &self,
+        url: &str,
+        on_progress: Option<&DownloadProgressFn>,
+    ) -> Result<Vec<u8>, DownloadError> {
+        let (mut resp, expected) = self.open_download_response(url).await?;
+        // 流式读 + 停滞看门狗 + 硬闸（content-length 可缺失/撒谎 → 读取侧必须再拦一次）。
+        let bytes = read_body_capped_with_progress(
+            &mut resp,
+            Some(self.max_bytes),
+            STALL_TIMEOUT,
+            expected,
+            on_progress,
+        )
+        .await
+        .map_err(|e| map_body_error(e, expected))?;
+        check_content_length(bytes.len() as u64, expected)?;
+        Ok(bytes)
+    }
+
+    /// 真实下载一个 URL **直接写进 `sink`**（字节不在内存里攒）。
+    ///
+    /// 与 [`Self::download_once`] 共用 [`Self::open_download_response`]（重定向 / 状态分类 /
+    /// 预检）、[`map_body_error`]（失败分类）与 [`check_content_length`]（完整性）——
+    /// **没有第二份平行编排**。差别只有一处：body 走 [`read_body_to_sink_with_progress`]。
+    ///
+    /// 返回实际写出的字节数。**失败时 sink 里可能已有部分内容**（本函数不知道 sink 是什么，
+    /// 清理残件是调用方的责任）。
+    async fn download_once_to_sink(
+        &self,
+        url: &str,
+        sink: &mut (dyn std::io::Write + Send),
+        on_progress: Option<&DownloadProgressFn>,
+    ) -> Result<u64, DownloadError> {
+        let (mut resp, expected) = self.open_download_response(url).await?;
+        let received = read_body_to_sink_with_progress(
+            &mut resp,
+            Some(self.max_bytes),
+            STALL_TIMEOUT,
+            expected,
+            on_progress,
+            sink,
+        )
+        .await
+        .map_err(|e| map_body_error(e, expected))?;
+        check_content_length(received, expected)?;
+        Ok(received)
+    }
+
     /// 同步下载 **+ 逐 chunk 进度回调**（见类型文档「sync trait 的 async 桥」：须在 blocking 线程调用）。
     ///
     /// [`UpdateDownloader::download`] 的签名是 trait 定的（无进度参数），故细粒度进度只能走这条
     /// 固有方法。二者共用 [`Self::download_inner`] —— **不复制第二份镜像回退/重定向编排**。
+    ///
+    /// **当前无生产调用点**（如实登记，2026-08-16 全仓反查：定义 + 一条单测，无第三处）——
+    /// App 安装包腿改流式落盘后已换走 [`Self::download_to_sink_with_progress`]，两条内核腿走
+    /// 无进度的 trait 方法。保留为「内存腿 + 进度」的**成对 API**，理由有二：
+    ///  1. 它与 [`Self::download_to_sink_with_progress`] 是同一条 `read_body_*_with_progress`
+    ///     语义的两个形态，流式腿那条门（`streaming_download_reports_progress_like_the_memory_leg`）
+    ///     声称「与内存腿同时机同分母」，删掉这一半就没有参照物了；
+    ///  2. 删它要连带把 `download_inner` / `read_body_capped_with_progress` 的进度参数一并摘掉，
+    ///     那是动内核腿的代码路径 —— 收益（少一个未调用的 pub 方法）与半径不成比例。
     ///
     /// 回调在每个 chunk 到达时触发，可能高频（几百次）；**限频归调用方**（发 IPC 前按整数百分比
     /// 去重），此处不替调用方决定节流策略。镜像回退时回调会从新候选的 0 重新开始 —— 这是真值
@@ -809,31 +1068,28 @@ impl CoreDownloader {
         self.download_inner(url, Some(on_progress))
     }
 
-    /// 下载编排单点：候选列表（原址→镜像）逐个试，首个成功即返；全败返最后一个错。
-    fn download_inner(
-        &self,
-        url: &str,
-        on_progress: Option<Arc<DownloadProgressFn>>,
-    ) -> Result<Vec<u8>, DownloadError> {
+    /// 下载编排**单点**：候选列表（原址→镜像）逐个试，首个成功即返；全败返最后一个错。
+    ///
+    /// 泛型化是为让内存腿与流式落盘腿共用**同一条**候选编排 —— 「镜像何时回退、失败如何记账、
+    /// runtime 关掉怎么算」各写一份必然漂移。`attempt` 收到的是一份可移进 task 的
+    /// `self.clone()`（`&self` 借用不能跨 spawn）与该次候选 URL。
+    fn try_candidates<T, F, Fut>(&self, url: &str, attempt: F) -> Result<T, DownloadError>
+    where
+        T: Send + 'static,
+        F: Fn(Self, String) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<T, DownloadError>> + Send + 'static,
+    {
         let mut last: Option<DownloadError> = None;
         for cand in self.candidates(url) {
             let (tx, rx) = std::sync::mpsc::sync_channel(1);
-            // 注：`&self` 借用不能跨 spawn，故把所需状态克隆进 task。
-            let http = self.http.clone();
-            let handle = self.handle.clone();
-            let prefix = self.gh_proxy_prefix.clone();
+            let dl = self.clone();
+            let attempt = attempt.clone();
             let url_owned = cand.clone();
-            let cb = on_progress.clone();
             self.handle.spawn(async move {
-                let dl = CoreDownloader {
-                    http,
-                    handle,
-                    gh_proxy_prefix: prefix,
-                };
-                let _ = tx.send(dl.download_once(&url_owned, cb.as_deref()).await);
+                let _ = tx.send(attempt(dl, url_owned).await);
             });
             match rx.recv() {
-                Ok(Ok(bytes)) => return Ok(bytes),
+                Ok(Ok(v)) => return Ok(v),
                 Ok(Err(e)) => {
                     log::warn!("下载失败（{cand}）: {e}");
                     last = Some(e);
@@ -846,6 +1102,65 @@ impl CoreDownloader {
             }
         }
         Err(last.unwrap_or_else(|| DownloadError::Other("无可用下载地址".into())))
+    }
+
+    /// 整包入内存的下载（[`UpdateDownloader::download`] 与 [`Self::download_with_progress`] 共用）。
+    fn download_inner(
+        &self,
+        url: &str,
+        on_progress: Option<Arc<DownloadProgressFn>>,
+    ) -> Result<Vec<u8>, DownloadError> {
+        self.try_candidates(url, move |dl, cand| {
+            let cb = on_progress.clone();
+            async move { dl.download_once(&cand, cb.as_deref()).await }
+        })
+    }
+
+    /// **流式落盘**下载 + 逐 chunk 进度 + 增量 sha256（见类型文档「sync trait 的 async 桥」：
+    /// 须在 blocking 线程调用）。
+    ///
+    /// 与 [`Self::download_with_progress`] 的差别只有「字节去哪」：那条把整包攒进 `Vec<u8>`
+    /// （内存峰值 = 包体积），本条把每个 chunk 直接写进 `new_sink()` 给出的句柄，
+    /// 内存占用与包体积**解耦**。摘要随写一遍算完（[`HashingSink`]），故校验不需要再读一遍。
+    ///
+    /// `new_sink` 是**工厂**不是句柄：镜像回退换候选重下时要拿一个截断过的干净句柄，
+    /// 否则第二次的字节会接在第一次的残料后面（长度对不上、摘要也对不上）。
+    ///
+    /// **失败时句柄里可能已有部分内容** —— 本方法不知道 sink 背后是什么，**清理残件是调用方的责任**。
+    ///
+    /// # Errors
+    ///
+    /// 除 [`Self::download_with_progress`] 的全部失败形态外，多一条建句柄/写盘失败
+    /// （[`DownloadError::Io`]，**不冒充** `Incomplete`）。
+    pub fn download_to_sink_with_progress(
+        &self,
+        url: &str,
+        new_sink: Arc<DownloadSinkFactory>,
+        on_progress: Arc<DownloadProgressFn>,
+    ) -> Result<StreamedDownload, DownloadError> {
+        self.try_candidates(url, move |dl, cand| {
+            let new_sink = new_sink.clone();
+            let cb = on_progress.clone();
+            async move {
+                // 每个候选各拿一个新句柄（截断已写出的残料）。
+                let mut sink = HashingSink::new(new_sink().map_err(DownloadError::Io)?);
+                let bytes = dl
+                    .download_once_to_sink(&cand, &mut sink, Some(cb.as_ref()))
+                    .await?;
+                let (hashed, sha256_hex) = sink.finish().map_err(DownloadError::Io)?;
+                // 网络侧的 `bytes` 与 hasher 侧的 `hashed` 是**两个独立维护的计数**：前者由
+                // `read_body_to_sink_with_progress` 按 chunk 累加，后者由 `HashingSink::write`
+                // 按**实际写出的 n** 累加。二者相等才证明「摘要算的就是盘上那份」——不等意味着
+                // 某个 `write` 短写了却被当成全写（`write_all` 之外的路径），此时摘要会对着一份
+                // 与文件不同的内容成立，而它正是落位前的唯一校验。零成本换一条硬证据。
+                if hashed != bytes {
+                    return Err(DownloadError::Other(format!(
+                        "下载内部不一致：sink 收下 {hashed} 字节、网络侧记 {bytes} 字节"
+                    )));
+                }
+                Ok(StreamedDownload { bytes, sha256_hex })
+            }
+        })
     }
 }
 
@@ -1352,7 +1667,10 @@ mod tests {
     #[test]
     fn download_follows_redirect_and_returns_bytes() {
         // 下载路径**必须**自己跟随 30x（GitHub 资产必然 302 到 objects.githubusercontent.com），
-        // 因为 client 全局关了 redirect。若把 download_once 的 30x 分支删掉 → 本测试转红。
+        // 因为 client 全局关了 redirect。若把 `open_download_response` 的 30x 分支删掉 → 本测试转红
+        // （U1 把重定向跟随从 `download_once` 抽进了两条腿共用的 `open_download_response`，
+        //  故锚点是后者 —— 与下方 `streaming_download_follows_redirects_and_hashes_while_writing`
+        //  的措辞对齐）。
         let rt = tokio::runtime::Runtime::new().unwrap();
         let addr = spawn_server(vec![
             // 首跳 302 → 同 server 的 /asset
@@ -1463,6 +1781,567 @@ mod tests {
                 }
             ),
             "应报 Incomplete{{received:5,expected:100}}，实得: {err:?}"
+        );
+    }
+
+    // ── 流式落盘腿（U1）───────────────────────────────────────────────────────
+    //
+    // 全部走本文件既有的**回环** mock server（`spawn_server`，见其上方注释：stdlib TcpListener
+    // 绑 127.0.0.1，不触碰宿主网络），与内存腿的门同形态。
+
+    /// 收进内存的假 sink（测试用）：验「写进去的字节 == 服务端发的字节」。
+    #[derive(Clone, Default)]
+    struct MemSink(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for MemSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// 写到第 `fail_after` 字节就报错的 sink（测「写盘失败**不得**冒充下载不完整」）。
+    struct FailingSink {
+        written: usize,
+        fail_after: usize,
+    }
+
+    impl std::io::Write for FailingSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.written + buf.len() > self.fail_after {
+                return Err(std::io::Error::other("mock: disk full"));
+            }
+            self.written += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// 🟡 **流式腿必须与内存腿走同一条编排：重定向照跟、字节一个不少、摘要边写边算。**
+    ///
+    /// **变异探针**：把 `download_once_to_sink` 里的 `open_download_response` 换成一份
+    /// 自己复制的请求逻辑（漏掉 30x 分支）⇒ 本条转红。
+    #[test]
+    fn streaming_download_follows_redirects_and_hashes_while_writing() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let payload = vec![b'q'; 5000];
+        let addr = spawn_server(vec![
+            b"HTTP/1.1 302 Found\r\nLocation: /asset\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+            http_response("200 OK", &[], &payload),
+        ]);
+        let http = Arc::new(HttpRuntime::new().unwrap());
+        let dl = CoreDownloader::new(http, rt.handle().clone());
+
+        let sink = MemSink::default();
+        let sink_for_factory = sink.clone();
+        let factory: Arc<DownloadSinkFactory> =
+            Arc::new(move || Ok(Box::new(sink_for_factory.clone())));
+        let noop: Arc<DownloadProgressFn> = Arc::new(|_, _| {});
+
+        let out = std::thread::spawn(move || {
+            dl.download_to_sink_with_progress(&format!("http://{addr}/start"), factory, noop)
+        })
+        .join()
+        .unwrap()
+        .expect("流式下载应成功");
+
+        assert_eq!(out.bytes, payload.len() as u64);
+        assert_eq!(
+            *sink.0.lock().unwrap(),
+            payload,
+            "写进 sink 的字节必须与服务端发的逐字相同"
+        );
+        assert_eq!(
+            out.sha256_hex,
+            polaris_updater::verify::sha256_hex(&payload),
+            "边写边算的摘要必须等于整包摘要"
+        );
+    }
+
+    /// 🟡 **进度回调在流式腿上必须与内存腿同时机同分母。**
+    ///
+    /// 前端契约零改动的前提就是这条：回调仍在每个 chunk 到达时以 `(累计已收, Content-Length)` 触发。
+    ///
+    /// **变异探针**：把 sink 版循环里的 `cb(...)` 删掉、或把 `expected` 换成 `None` ⇒ 转红。
+    #[test]
+    fn streaming_download_reports_progress_like_the_memory_leg() {
+        use std::sync::Mutex as StdMutex;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let payload = vec![b'w'; 4000];
+        let total = payload.len() as u64;
+        let addr = spawn_server(vec![http_response("200 OK", &[], &payload)]);
+        let http = Arc::new(HttpRuntime::new().unwrap());
+        let dl = CoreDownloader::new(http, rt.handle().clone());
+
+        /// 一次进度回调的观测记录：`(已收字节, Content-Length)`（同内存腿那条门）。
+        type ProgressLog = Arc<StdMutex<Vec<(u64, Option<u64>)>>>;
+        let seen: ProgressLog = Arc::new(StdMutex::new(Vec::new()));
+        let log = seen.clone();
+        let cb: Arc<DownloadProgressFn> = Arc::new(move |received, expected| {
+            log.lock().unwrap().push((received, expected));
+        });
+        let factory: Arc<DownloadSinkFactory> = Arc::new(|| Ok(Box::new(std::io::sink())));
+
+        std::thread::spawn(move || {
+            dl.download_to_sink_with_progress(&format!("http://{addr}/asset"), factory, cb)
+        })
+        .join()
+        .unwrap()
+        .expect("流式下载应成功");
+
+        let seen = seen.lock().unwrap();
+        assert!(!seen.is_empty(), "进度回调一次都没触发 = 进度腿是死的");
+        assert_eq!(
+            seen.last().copied(),
+            Some((total, Some(total))),
+            "末次回调须是 (总字节, Content-Length)——分母缺失则百分比算不出来"
+        );
+        assert!(
+            seen.windows(2).all(|w| w[0].0 <= w[1].0),
+            "received 必须是累计值：{seen:?}"
+        );
+    }
+
+    /// 🟡 **Content-Length 撒谎在流式腿上照样报 Incomplete（不得因为字节已落盘就当成功）。**
+    #[test]
+    fn streaming_download_reports_incomplete_body_too() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf);
+                let _ = sock.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nshort",
+                );
+                let _ = sock.flush();
+            }
+        });
+        let http = Arc::new(HttpRuntime::new().unwrap());
+        let dl = CoreDownloader::new(http, rt.handle().clone());
+        let factory: Arc<DownloadSinkFactory> = Arc::new(|| Ok(Box::new(std::io::sink())));
+        let noop: Arc<DownloadProgressFn> = Arc::new(|_, _| {});
+
+        let err = std::thread::spawn(move || {
+            dl.download_to_sink_with_progress(&format!("http://{addr}/x"), factory, noop)
+        })
+        .join()
+        .unwrap()
+        .expect_err("Content-Length 不符必须报错");
+        assert!(
+            matches!(
+                err,
+                DownloadError::Incomplete {
+                    received: 5,
+                    expected: 100
+                }
+            ),
+            "应报 Incomplete{{received:5,expected:100}}，实得: {err:?}"
+        );
+    }
+
+    /// 🟡 **写盘失败必须原样报 IO，绝不冒充「下载不完整」。**
+    ///
+    /// 磁盘满被报成 Incomplete ⇒ 上层判「网络把包送少了」→ 引导用户一遍遍重下一个永远装不满的盘。
+    ///
+    /// **变异探针**：把 [`BodyReadError::Sink`] 折叠进 [`BodyReadError::Io`] ⇒ 本条转红
+    /// （会变成 `Incomplete`，因为服务端给了 Content-Length）。
+    #[test]
+    fn sink_write_failure_is_reported_as_io_not_incomplete_download() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let payload = vec![b'p'; 8000];
+        let addr = spawn_server(vec![http_response("200 OK", &[], &payload)]);
+        let http = Arc::new(HttpRuntime::new().unwrap());
+        let dl = CoreDownloader::new(http, rt.handle().clone());
+        // 只允许写 10 字节 → 必然在中途失败（服务端要发 8000）。
+        let factory: Arc<DownloadSinkFactory> = Arc::new(|| {
+            Ok(Box::new(FailingSink {
+                written: 0,
+                fail_after: 10,
+            }))
+        });
+        let noop: Arc<DownloadProgressFn> = Arc::new(|_, _| {});
+
+        let err = std::thread::spawn(move || {
+            dl.download_to_sink_with_progress(&format!("http://{addr}/asset"), factory, noop)
+        })
+        .join()
+        .unwrap()
+        .expect_err("写盘失败必须报错");
+        assert!(
+            matches!(err, DownloadError::Io(_)),
+            "写盘失败必须报 Io（磁盘满不是「下载不完整」），实得: {err:?}"
+        );
+        assert!(format!("{err}").contains("disk full"), "实得: {err}");
+        // `BodyReadError::Sink.received` 必须**真被消费**（此前它构造后即被 `..` 丢弃 = 死字段）：
+        // 磁盘满的诊断价值一半在「写到第几字节才满」。
+        assert!(
+            format!("{err}").contains("已写出"),
+            "写盘失败的消息须带上已写出的字节数，实得: {err}"
+        );
+    }
+
+    /// 独占的临时目录（本 crate 无 tempfile dev-dep；用完即删，同 `commands/updater.rs` 的形态）。
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let d = std::env::temp_dir().join(format!(
+            "polaris-http-test-{tag}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// 🟡 **镜像回退必须让下一个候选从「空文件」重写，绝不把字节接在上一次的残料后面。**
+    ///
+    /// [`DownloadSinkFactory`] 传**工厂**而非句柄，唯一理由就是这条。而此前唯一验字节的用例
+    /// （`streaming_download_follows_redirects_and_hashes_while_writing`）用的是共享
+    /// `Arc<Mutex<Vec<u8>>>` 的 `MemSink`：工厂每次返回的「新句柄」共享同一个 buffer 且**不截断**，
+    /// 于是「换候选时句柄到底有没有被截断」在结构上根本检不出 —— 实现正确但零覆盖。
+    ///
+    /// 本条用**真文件**（生产就是 `StdFs::open_write` → `File::create`）复现真实回退形态：
+    /// 首候选写出 5 字节后报 Incomplete，次候选返完整包。
+    ///
+    /// **变异探针**：把 `StdFs::open_write` 的 `File::create` 换成
+    /// `OpenOptions::new().append(true).create(true)` ⇒ 盘上变成 `short` + payload，
+    /// 三条断言（字节数 / 逐字内容 / sha256）同时转红。
+    #[test]
+    fn mirror_fallback_rewrites_the_sink_from_scratch() {
+        use polaris_updater::traits::UpdateFs;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let payload = vec![b'm'; 3000];
+        let addr = spawn_server(vec![
+            // 首候选：声明 100 字节只发 5 → 写出 5 字节后判 Incomplete（镜像回退的真实触发形态）。
+            b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nshort".to_vec(),
+            // 次候选：完整包。
+            http_response("200 OK", &[], &payload),
+        ]);
+
+        // 候选表要产出「原址 + 镜像」两条，故 host 必须是 GitHub 资产域名；用 resolve 覆盖把它们
+        // 都钉到回环 mock server 上（**端口必须写在 URL 里** —— reqwest 的 resolve 覆盖只改 IP，
+        // 端口取自 URL）。不出网。
+        let http = Arc::new(
+            HttpRuntime::with_resolve_overrides(&[
+                ("github.com", addr),
+                ("ghmirror.invalid", addr),
+            ])
+            .unwrap(),
+        );
+        let url = format!("http://github.com:{}/a/b/core.zip", addr.port());
+        let dl = CoreDownloader::new(http, rt.handle().clone())
+            .with_gh_proxy(format!("http://ghmirror.invalid:{}/", addr.port()));
+        assert_eq!(dl.candidates(&url).len(), 2, "本用例的前提是真有两个候选");
+
+        let dir = scratch("mirror-fallback");
+        let tmp = dir.join("update.pkg.polaris-new");
+        let created = Arc::new(AtomicUsize::new(0));
+        let factory: Arc<DownloadSinkFactory> = {
+            let (tmp, created) = (tmp.clone(), created.clone());
+            Arc::new(move || {
+                created.fetch_add(1, Ordering::SeqCst);
+                polaris_updater::traits::StdFs.open_write(&tmp)
+            })
+        };
+        let noop: Arc<DownloadProgressFn> = Arc::new(|_, _| {});
+
+        let out =
+            std::thread::spawn(move || dl.download_to_sink_with_progress(&url, factory, noop))
+                .join()
+                .unwrap()
+                .expect("首候选失败后应由镜像候选把包下完");
+
+        assert_eq!(
+            created.load(Ordering::SeqCst),
+            2,
+            "换候选必须**重新**建句柄（传工厂的全部意义）"
+        );
+        assert_eq!(
+            out.bytes,
+            payload.len() as u64,
+            "字节数带上了首候选的残料 = 句柄没被截断"
+        );
+        assert_eq!(
+            std::fs::read(&tmp).unwrap(),
+            payload,
+            "盘上必须**只有**次候选的完整包，不得是 `short` + payload"
+        );
+        assert_eq!(
+            out.sha256_hex,
+            polaris_updater::verify::sha256_hex(&payload),
+            "摘要必须算在干净的那一份上（否则落位校验会对着一份拼接内容成立）"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 🟡 **流式腿的读侧超限：与内存腿同一条判定，且已写出的部分绝不算成功。**
+    ///
+    /// 刻意**不给 Content-Length** ⇒ `open_download_response` 的预检不参与，只剩
+    /// [`read_body_to_sink_with_progress`] 的读侧闸 —— 那正是内存腿有门、流式腿此前没门的一格。
+    ///
+    /// **变异探针**：删掉 sink 版循环里的 `if received + chunk.len() > limit` 判定 ⇒ 转红。
+    #[test]
+    fn streaming_leg_rejects_an_oversized_body_on_the_read_side_too() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let payload = vec![b'o'; 4096];
+        // 无 Content-Length（靠 close 定界）⇒ 预检无从早拒。
+        let mut raw = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec();
+        raw.extend_from_slice(&payload);
+        let addr = spawn_server(vec![raw]);
+
+        let http = Arc::new(HttpRuntime::new().unwrap());
+        let dl = CoreDownloader::new(http, rt.handle().clone()).with_max_bytes(1024);
+        let sink = MemSink::default();
+        let sink_for_factory = sink.clone();
+        let factory: Arc<DownloadSinkFactory> =
+            Arc::new(move || Ok(Box::new(sink_for_factory.clone())));
+        let noop: Arc<DownloadProgressFn> = Arc::new(|_, _| {});
+
+        let err = std::thread::spawn(move || {
+            dl.download_to_sink_with_progress(&format!("http://{addr}/big"), factory, noop)
+        })
+        .join()
+        .unwrap()
+        .expect_err("超本腿闸值必须报错，不得把已落盘的部分当成功");
+        assert!(format!("{err}").contains("超过上限 1024"), "实得: {err}");
+
+        let written = sink.0.lock().unwrap().len();
+        assert!(
+            written <= 1024 && written < payload.len(),
+            "超限那一 chunk 不得写出去（实得已写 {written} 字节）"
+        );
+    }
+
+    /// 🟡 **流式腿的停滞看门狗：与内存腿同一条判定，且已写出的部分绝不算成功。**
+    ///
+    /// 走**直调**而非端到端：`STALL_TIMEOUT` 是 30s 常量，端到端跑要等半分钟；
+    /// 而 [`read_body_to_sink_with_progress`] 的 `stall` 本就是形参，直调即可注入 150ms。
+    ///
+    /// **变异探针**：把 sink 版循环里的 `tokio::time::timeout(stall, resp.chunk())` 换成裸
+    /// `resp.chunk().await` ⇒ 本条挂死（超时转红）；把 `Stalled` 折叠进 `Io` ⇒ 首条断言转红。
+    #[tokio::test]
+    async fn streaming_leg_reports_a_stall_without_accepting_the_partial_write() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hold = Arc::new(AtomicBool::new(true));
+        let hold_srv = hold.clone();
+        thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf);
+                // 发头 + 一小段 body 后**不再发也不关连接** —— 关了就变成 Io/Incomplete，测不到 Stalled。
+                let _ = sock.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\npart",
+                );
+                let _ = sock.flush();
+                while hold_srv.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        });
+
+        let rt = HttpRuntime::new().unwrap();
+        let mut resp = rt
+            .client()
+            .get(format!("http://{addr}/slow"))
+            .send()
+            .await
+            .expect("首字节应到达");
+        let sink = MemSink::default();
+        let mut sink_handle = sink.clone();
+        let err = read_body_to_sink_with_progress(
+            &mut resp,
+            Some(1024),
+            Duration::from_millis(150),
+            Some(100),
+            None,
+            &mut sink_handle,
+        )
+        .await
+        .expect_err("两个 chunk 之间超过看门狗间隔必须报停滞");
+
+        assert!(
+            matches!(err, BodyReadError::Stalled),
+            "停滞必须报 Stalled（折叠进 Io 会被还原成「下载不完整」，引导用户白重下），实得: {err:?}"
+        );
+        assert_eq!(
+            sink.0.lock().unwrap().len(),
+            4,
+            "停滞前已写出的字节留在 sink 里（清残件是调用方的责任），但结论必须是失败"
+        );
+        // 与内存腿共用同一条映射（`DownloadError::Stalled`，不是 Incomplete）。
+        assert!(matches!(
+            map_body_error(err, Some(100)),
+            DownloadError::Stalled(_)
+        ));
+        hold.store(false, Ordering::Relaxed);
+    }
+
+    /// 🟡 **三处体积闸都是「严格大于才拒」——恰好等于上限的包必须放行。**
+    ///
+    /// 三处判定（Content-Length 预检 / 内存腿读侧 / 流式腿读侧）今日全用 `>`，但**此前无任何测试
+    /// 钉住边界**：现有的门一律拿 `limit + 1` 去撞，把任一处改成 `>=` 全套仍绿。
+    ///
+    /// 本条现在**是 App 腿的地基**（2026-08-17 订正：原写「App 腿的闸值是『声明值 + 裕度』」，
+    /// 那个裕度已删）。`commands/updater.rs::app_update_size_limit` 现在让闸值**恰好等于**
+    /// 清单声明的 `fileSize`，删裕度不卡正常包的**全部理由**就是这三处的严格大于语义 ——
+    /// 任一处改成 `>=`，一个大小正好等于声明值的正常安装包就会被拒，且失败长得像
+    /// 「服务端给多了」。两边互引，口径必须一致。
+    ///
+    /// **变异探针**：把三处任一的 `>` 改成 `>=` ⇒ 对应那一段转红。
+    #[test]
+    fn size_limit_boundary_admits_a_body_of_exactly_the_limit() {
+        const LIMIT: usize = 2048;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let payload = vec![b'e'; LIMIT];
+
+        // ① Content-Length 预检：`n > max_bytes` —— CL 恰好等于闸值必须放行。
+        let addr = spawn_server(vec![http_response("200 OK", &[], &payload)]);
+        let http = Arc::new(HttpRuntime::new().unwrap());
+        let dl = CoreDownloader::new(http, rt.handle().clone()).with_max_bytes(LIMIT);
+        let bytes = std::thread::spawn(move || dl.download(&format!("http://{addr}/exact")))
+            .join()
+            .unwrap()
+            .expect("Content-Length 恰好等于闸值不得被预检拒掉");
+        assert_eq!(bytes.len(), LIMIT);
+
+        // ② 内存腿读侧：`buf.len() + chunk.len() > limit`。无 Content-Length ⇒ 预检不参与。
+        let mut raw = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec();
+        raw.extend_from_slice(&payload);
+        let addr2 = spawn_server(vec![raw.clone()]);
+        let http2 = Arc::new(HttpRuntime::new().unwrap());
+        let dl2 = CoreDownloader::new(http2, rt.handle().clone()).with_max_bytes(LIMIT);
+        let bytes2 = std::thread::spawn(move || dl2.download(&format!("http://{addr2}/exact")))
+            .join()
+            .unwrap()
+            .expect("读侧累计恰好等于闸值不得被拒（内存腿）");
+        assert_eq!(bytes2.len(), LIMIT);
+
+        // ③ 流式腿读侧：`received + chunk.len() > limit`，同上。
+        let addr3 = spawn_server(vec![raw]);
+        let http3 = Arc::new(HttpRuntime::new().unwrap());
+        let dl3 = CoreDownloader::new(http3, rt.handle().clone()).with_max_bytes(LIMIT);
+        let sink = MemSink::default();
+        let sink_for_factory = sink.clone();
+        let factory: Arc<DownloadSinkFactory> =
+            Arc::new(move || Ok(Box::new(sink_for_factory.clone())));
+        let noop: Arc<DownloadProgressFn> = Arc::new(|_, _| {});
+        let out = std::thread::spawn(move || {
+            dl3.download_to_sink_with_progress(&format!("http://{addr3}/exact"), factory, noop)
+        })
+        .join()
+        .unwrap()
+        .expect("读侧累计恰好等于闸值不得被拒（流式腿）");
+        assert_eq!(out.bytes, LIMIT as u64);
+        assert_eq!(sink.0.lock().unwrap().len(), LIMIT);
+    }
+
+    /// 🟡 **体积闸是**形参**：内核腿的 16MiB 与 App 腿的清单闸互不干扰。**
+    ///
+    /// **变异探针**：把 `open_download_response` 里的 `self.max_bytes` 改回常量
+    /// `MAX_DOWNLOAD_BYTES` ⇒ 第一条断言转红（一个 1KiB 的闸拦不住 2KiB 的响应）。
+    #[test]
+    fn per_leg_size_limit_is_honoured_not_the_global_constant() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let payload = vec![b'x'; 2048];
+
+        // ① 闸收紧到 1 KiB → Content-Length 预检就该早拒（远小于全局 16MiB 常量）。
+        let addr = spawn_server(vec![http_response("200 OK", &[], &payload)]);
+        let http = Arc::new(HttpRuntime::new().unwrap());
+        let tight = CoreDownloader::new(http, rt.handle().clone()).with_max_bytes(1024);
+        let err = std::thread::spawn(move || tight.download(&format!("http://{addr}/asset")))
+            .join()
+            .unwrap()
+            .expect_err("超本腿闸值必须早拒");
+        assert!(format!("{err}").contains("超过上限"), "实得: {err}");
+
+        // ② 闸放宽到远超全局常量 → 同一份响应照常通过（证明常量已不再是硬编码的天花板）。
+        let addr2 = spawn_server(vec![http_response("200 OK", &[], &payload)]);
+        let http2 = Arc::new(HttpRuntime::new().unwrap());
+        let loose =
+            CoreDownloader::new(http2, rt.handle().clone()).with_max_bytes(MAX_DOWNLOAD_BYTES * 8);
+        let bytes = std::thread::spawn(move || loose.download(&format!("http://{addr2}/asset")))
+            .join()
+            .unwrap()
+            .expect("闸放宽后应成功");
+        assert_eq!(bytes.len(), payload.len());
+    }
+
+    /// 失败分类映射是纯函数，两个消费端共用同一条 —— 逐条钉住。
+    #[test]
+    fn body_error_maps_to_the_same_download_error_for_both_legs() {
+        assert!(matches!(
+            map_body_error(BodyReadError::Stalled, Some(10)),
+            DownloadError::Stalled(_)
+        ));
+        assert!(
+            format!("{}", map_body_error(BodyReadError::TooLarge(99), None)).contains("超过上限")
+        );
+        // Io + 已知 Content-Length → Incomplete（结构化，不是泛化 Other）。
+        assert!(matches!(
+            map_body_error(
+                BodyReadError::Io {
+                    received: 5,
+                    message: "boom".into()
+                },
+                Some(100)
+            ),
+            DownloadError::Incomplete {
+                received: 5,
+                expected: 100
+            }
+        ));
+        // Io + 长度未知 → Other（算不出 Incomplete 就不许编一个）。
+        assert!(matches!(
+            map_body_error(
+                BodyReadError::Io {
+                    received: 5,
+                    message: "boom".into()
+                },
+                None
+            ),
+            DownloadError::Other(_)
+        ));
+        // 写盘失败即便有 Content-Length 也**不得**变成 Incomplete。
+        assert!(matches!(
+            map_body_error(
+                BodyReadError::Sink {
+                    received: 5,
+                    source: std::io::Error::other("disk full")
+                },
+                Some(100)
+            ),
+            DownloadError::Io(_)
+        ));
+    }
+
+    #[test]
+    fn content_length_check_is_shared_by_both_legs() {
+        assert!(check_content_length(100, Some(100)).is_ok());
+        assert!(check_content_length(100, None).is_ok(), "长度未知即不判");
+        assert!(matches!(
+            check_content_length(5, Some(100)),
+            Err(DownloadError::Incomplete {
+                received: 5,
+                expected: 100
+            })
+        ));
+        assert!(
+            check_content_length(101, Some(100)).is_err(),
+            "多给也是不完整（服务端撒谎/被注入）"
         );
     }
 
