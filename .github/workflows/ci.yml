@@ -132,8 +132,10 @@ jobs:
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
 
-      # 原生构建前置：protoc（singbox-grpc build.rs 三平台都要）、Windows NASM（boring-sys2/
-      # BoringSSL 汇编）、Linux webkit/gtk（Tauri）。首次 CI 运行前 workspace 从未在 runner 上
+      # 原生构建前置：protoc（singbox-grpc build.rs 三平台都要）、Windows NASM（喂 btls-sys
+      # 的 BoringSSL 汇编；曾名 boring-sys2，grep "boring" 会扑空——2026-08-18 探针实测移除本步
+      # ⇒ Windows 腿 CMake configure 死在 btls-sys v0.5.6，run 32058640935，**活步，勿删**）、
+      # Linux webkit/gtk（Tauri）。首次 CI 运行前 workspace 从未在 runner 上
       # 全量构建过，这些系统依赖一直缺 → clippy/build 在 build-script 阶段就炸。
       #
       # ── protoc：钉扎常量与版本依据的唯一真值在 scripts/fetch-protoc.mjs（2026-08-18，CI-4）──
