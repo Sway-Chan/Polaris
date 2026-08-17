@@ -1631,6 +1631,19 @@ pub async fn update_popup_action(
                 // 而全局广播会让设置页的 `onProgress` 显示「已下载」并给出一个不存在的安装入口
                 // （`SettingsUpdate` 据 status==='downloaded' 判定包已就位）。弹窗是本次动作的
                 // 唯一相关方，故状态只推给它。
+                //
+                // ⚠️ **如实登记：这一档的 `done` 是句半真话，本批未修**。弹窗 `done` 渲染的是
+                // `updatePopup.downloaded`（「已下载」），而这条路径一个字节都没下。除了「你已经是
+                // 最新版」，它还有第二种到达方式：用户在设置页/横幅对**同一个版本**按过「跳过此版本」，
+                // 再回弹窗点「更新」—— 复查被 `skipped_version` 过滤成 NoUpdate，于是弹窗打个勾关掉。
+                // 与下面那道版本对账**同源**（复查结果与弹窗承诺不符），但处置不同：那边有新版本号
+                // 可以退回 `remind` 重新征求，这边没有任何可展示的目标。
+                //
+                // 不在本批修，因为诚实的处置需要一个**新的弹窗 phase**（「该版本已不再可用」）：
+                // `PopupPhase` 是四态封闭枚举，加一档要连同 `is_valid_for` 白名单、弹窗渲染分支、
+                // 五语文案与 `update-popup-action-parity` 那道双向对拍门一起动。硬塞进现有四态只能
+                // 二选一：`done`（谎称已下载，即现状）或 `error`（把用户自己的「跳过」说成故障）——
+                // 两个都不比现状更诚实。单列一批做，判据就是这段。
                 push_popup_state(&app, UpdatePopupState::done());
                 schedule_popup_auto_close(&app);
                 return Ok(ApiResponse::ok(
