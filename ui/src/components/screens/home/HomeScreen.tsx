@@ -418,9 +418,9 @@ export function HomeScreen() {
   }, [connected, unlock.lastRunAt]);
 
   /* ── 连接流需求生命周期 ──
-   * aggregate topic 在这里只持有共享连接流的需求令牌；ConnectionTopology 监听完整表变化信号，
-   * 并按当前 SVG 槽位拉取有界投影。失焦/隐藏 300ms 后退订，回到前台重订并取最新投影，
-   * 避免无人消费时仍保持 gRPC 连接流。 */
+   * 首页持有的是 topology topic：它同时声明「保持共享连接流」与「要完整表变化信号」两件事，
+   * 但**不**要 Top-N 聚合载荷。ConnectionTopology 收到信号后按当前 SVG 槽位拉取有界投影。
+   * 失焦/隐藏 300ms 后退订，回到前台重订并取最新投影，避免无人消费时仍保持 gRPC 连接流。 */
   useEffect(() => {
     let debounceId: ReturnType<typeof setTimeout> | null = null;
 
@@ -428,21 +428,24 @@ export function HomeScreen() {
        两条不变式（各自守着一个真机缺陷，见该文件头注），并可脱离组件直测。 */
     const sub = createTopicSubscription<ConnectionsAggregate>(
       {
-        /* aggregate 帧不供首页任何读点，此处仅维持订阅令牌 —— 故**不挂真监听**，返回空注销函数。
+        /* 这枚端口只发**令牌**，不收帧：完整表变化信号的真监听在 ConnectionTopology 自己那条
+         * effect 上（`onConnectionsTopologyChangedReady`），故此处返回空注销函数。
          *
          * 别把它当成漏接的监听补回来：Tauri 只在「该 webview 对该事件有 JS 监听」时才向本窗口发
          * 一段 eval 脚本。挂一个空回调不是零成本，而是让整条 eval 链每帧真实发生一遍：一份 UTF-16
          * 源码字符串 + 一次 JSC parse/bytecode 分配（源码逐帧不同 ⇒ code cache 恒不命中）+ 一份
-         * JS 对象图，随即全成垃圾。250ms 的 `AGGREGATE_POLL_INTERVAL` 下这是每秒 4 次白付。
+         * JS 对象图，随即全成垃圾。250ms 的拓扑闸门下这是每秒最多 4 次白付。
          *
-         * `subscribe`/`unsubscribe` 必须留着：三条 topic 共用一条 gRPC 连接流，后端按
-         * `should_stream_connections()`（aggregate ∪ detail ∪ closed）判需求，三者全零才停流。
-         * 撤掉这枚**令牌**会在首页可见时误停整条流；而连接导航排名页自带真监听
-         * （`connections/ConnectionsScreen.tsx` 的 `setAggregate` 腿），事件按监听独立投递，
-         * 首页这条空监听撤掉对它零影响。令牌与数据帧是两件事，别一起撤。 */
+         * topic 必须是 `topology` 而**不是** `aggregate`：后者是排名页要的 Top-N 聚合载荷，后端每
+         * 次 emit 要在完整活动表上做一次 O(n log n) 聚合 + 载荷序列化 + 跨进程搬运，而首页一个读点
+         * 都没有（它拿到信号后自己拉有界投影）。订成 `aggregate` = 首页在场时那次聚合永远白做。
+         *
+         * `subscribe`/`unsubscribe` 必须留着：四条 topic 共用一条 gRPC 连接流，后端按
+         * `should_stream_connections()`（aggregate ∪ topology ∪ detail ∪ closed）判需求，全零才停流。
+         * 撤掉这枚令牌会在首页可见时误停整条流，拓扑随即冻结。令牌与数据帧是两件事，别一起撤。 */
         onFrame: () => () => {},
-        subscribe: () => api.stats.subscribe('aggregate'),
-        unsubscribe: () => api.stats.unsubscribe('aggregate'),
+        subscribe: () => api.stats.subscribe('topology'),
+        unsubscribe: () => api.stats.unsubscribe('topology'),
       },
       () => {
         // 恒不会被调用（上面不挂监听）；留形参位是 createTopicSubscription 的签名要求。
