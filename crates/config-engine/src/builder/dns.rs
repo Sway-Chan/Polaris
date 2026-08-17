@@ -1964,11 +1964,11 @@ mod tests {
             protocol: Protocol::Tailscale,
             address: "".into(),
             port: 0,
-            tailscale_settings: Some(TailscaleSettings {
+            tailscale_settings: Some(Box::new(TailscaleSettings {
                 resolve_by_name: Some(true),
                 accept_default_resolvers: Some(true),
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         });
         let mut id_map = BTreeMap::new();
@@ -2005,10 +2005,10 @@ mod tests {
             protocol: Protocol::Tailscale,
             address: "".into(),
             port: 0,
-            tailscale_settings: Some(TailscaleSettings {
+            tailscale_settings: Some(Box::new(TailscaleSettings {
                 resolve_by_name: Some(true),
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         });
         let mut id_map = BTreeMap::new();

@@ -2075,11 +2075,13 @@ mod tests {
                 protocol: Protocol::Wireguard,
                 address: "1.2.3.4".into(),
                 port: 443,
-                wireguard_settings: Some(crate::user_config::server_config::WireGuardSettings {
-                    allowed_ips: vec!["10.0.0.0/24".into()],
-                    allow_internet: Some(true),
-                    ..Default::default()
-                }),
+                wireguard_settings: Some(Box::new(
+                    crate::user_config::server_config::WireGuardSettings {
+                        allowed_ips: vec!["10.0.0.0/24".into()],
+                        allow_internet: Some(true),
+                        ..Default::default()
+                    },
+                )),
                 ..Default::default()
             });
         let mut id_map = BTreeMap::new();
@@ -2116,10 +2118,12 @@ mod tests {
                 protocol: Protocol::Wireguard,
                 address: "1.2.3.4".into(),
                 port: 443,
-                wireguard_settings: Some(crate::user_config::server_config::WireGuardSettings {
-                    allowed_ips: vec!["10.0.0.0/24".into()],
-                    ..Default::default()
-                }),
+                wireguard_settings: Some(Box::new(
+                    crate::user_config::server_config::WireGuardSettings {
+                        allowed_ips: vec!["10.0.0.0/24".into()],
+                        ..Default::default()
+                    },
+                )),
                 ..Default::default()
             });
         let mut id_map = BTreeMap::new();
@@ -2440,12 +2444,14 @@ mod tests {
                 protocol: Protocol::Wireguard,
                 address: "1.2.3.4".into(),
                 port: 443,
-                wireguard_settings: Some(crate::user_config::server_config::WireGuardSettings {
-                    allowed_ips: vec!["10.0.0.0/24".into()],
-                    // 关外网 ⇒ carriesFullTunnel=false ⇒ 用户出口整体回退 direct。
-                    allow_internet: Some(false),
-                    ..Default::default()
-                }),
+                wireguard_settings: Some(Box::new(
+                    crate::user_config::server_config::WireGuardSettings {
+                        allowed_ips: vec!["10.0.0.0/24".into()],
+                        // 关外网 ⇒ carriesFullTunnel=false ⇒ 用户出口整体回退 direct。
+                        allow_internet: Some(false),
+                        ..Default::default()
+                    },
+                )),
                 ..Default::default()
             });
 

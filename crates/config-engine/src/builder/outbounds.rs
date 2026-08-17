@@ -1792,13 +1792,15 @@ mod tests {
             port: 51820,
             ..Default::default()
         };
-        wg.wireguard_settings = Some(crate::user_config::server_config::WireGuardSettings {
-            private_key: Some("priv".into()),
-            peer_public_key: Some("pub".into()),
-            local_address: vec!["10.0.0.2/32".into()],
-            allow_internet: Some(true),
-            ..Default::default()
-        });
+        wg.wireguard_settings = Some(Box::new(
+            crate::user_config::server_config::WireGuardSettings {
+                private_key: Some("priv".into()),
+                peer_public_key: Some("pub".into()),
+                local_address: vec!["10.0.0.2/32".into()],
+                allow_internet: Some(true),
+                ..Default::default()
+            },
+        ));
         config.servers = vec![
             ServerConfig {
                 id: "s1".into(),

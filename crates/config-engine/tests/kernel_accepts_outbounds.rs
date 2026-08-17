@@ -775,7 +775,7 @@ fn resolve_before_dial_is_suppressed_in_the_two_states_where_it_backfires() {
         protocol: Protocol::Wireguard,
         address: "wg.example.com".into(),
         port: 51820,
-        wireguard_settings: Some(WireGuardSettings {
+        wireguard_settings: Some(Box::new(WireGuardSettings {
             private_key: Some("aGVsbG8gd29ybGQgaGVsbG8gd29ybGQgaGVsbG8gd29yaGE=".into()),
             local_address: vec!["10.0.0.2/32".into()],
             peer_public_key: Some("aGVsbG8gd29ybGQgaGVsbG8gd29ybGQgaGVsbG8gd29yaGE=".into()),
@@ -783,7 +783,7 @@ fn resolve_before_dial_is_suppressed_in_the_two_states_where_it_backfires() {
             // 关外网 = 该节点不承载全隧道 ⇒ 用户出口整体回退 direct。
             allow_internet: Some(false),
             ..Default::default()
-        }),
+        })),
         ..Default::default()
     };
     let mesh_cfg = UserConfig {
@@ -844,14 +844,14 @@ fn dns_remote_detour_follows_the_same_exit_fallback_as_route() {
         protocol: Protocol::Wireguard,
         address: "wg.example.com".into(),
         port: 51820,
-        wireguard_settings: Some(WireGuardSettings {
+        wireguard_settings: Some(Box::new(WireGuardSettings {
             private_key: Some("aGVsbG8gd29ybGQgaGVsbG8gd29ybGQgaGVsbG8gd29yaGE=".into()),
             local_address: vec!["10.0.0.2/32".into()],
             peer_public_key: Some("aGVsbG8gd29ybGQgaGVsbG8gd29ybGQgaGVsbG8gd29yaGE=".into()),
             allowed_ips: vec!["10.0.0.0/24".into()],
             allow_internet: Some(allow_internet),
             ..Default::default()
-        }),
+        })),
         ..Default::default()
     };
     let cfg_of = |s: ServerConfig| UserConfig {
@@ -1110,7 +1110,7 @@ fn bundled_core_accepts_tailscale_endpoint() {
         id: "ts1".into(),
         name: "ts1".into(),
         protocol: Protocol::Tailscale,
-        tailscale_settings: Some(TailscaleSettings {
+        tailscale_settings: Some(Box::new(TailscaleSettings {
             auth_key: Some("tskey-auth-example".into()),
             control_url: Some("https://controlplane.example.com".into()),
             hostname: Some("polaris-node".into()),
@@ -1123,7 +1123,7 @@ fn bundled_core_accepts_tailscale_endpoint() {
             exit_node: Some("peer-exit".into()),
             exit_node_allow_lan_access: Some(true),
             ..Default::default()
-        }),
+        })),
         ..Default::default()
     };
 

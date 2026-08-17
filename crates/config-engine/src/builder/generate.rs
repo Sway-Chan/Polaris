@@ -595,10 +595,10 @@ mod tests {
             id: "ts1".into(),
             name: "我的 headscale".into(),
             protocol: Protocol::Tailscale,
-            tailscale_settings: Some(TailscaleSettings {
+            tailscale_settings: Some(Box::new(TailscaleSettings {
                 control_url: Some(control_url.to_string()),
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         });
         cfg
@@ -1014,12 +1014,14 @@ mod tests {
             protocol: Protocol::Wireguard,
             address: "engage.cloudflareclient.com".into(),
             port: 2408,
-            wireguard_settings: Some(crate::user_config::server_config::WireGuardSettings {
-                private_key: Some("priv".into()),
-                local_address: vec!["172.16.0.2/32".into()],
-                peer_public_key: Some("pub".into()),
-                ..Default::default()
-            }),
+            wireguard_settings: Some(Box::new(
+                crate::user_config::server_config::WireGuardSettings {
+                    private_key: Some("priv".into()),
+                    local_address: vec!["172.16.0.2/32".into()],
+                    peer_public_key: Some("pub".into()),
+                    ..Default::default()
+                },
+            )),
             ..Default::default()
         };
         cfg.selected_server_id = Some("wg1".into());
@@ -1073,13 +1075,13 @@ mod tests {
             address: "wg.example.com".into(),
             port: 51820,
             detour: Some("front".into()),
-            wireguard_settings: Some(WireGuardSettings {
+            wireguard_settings: Some(Box::new(WireGuardSettings {
                 private_key: Some("priv".into()),
                 peer_public_key: Some("pub".into()),
                 local_address: vec!["10.0.0.2/32".into()],
                 allow_internet: Some(true),
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         };
         // WARP：判据是端点域名（`domain/warp.ts` / `crate::warp::is_warp_server`），不是名字。
@@ -1092,14 +1094,14 @@ mod tests {
             address: "engage.cloudflareclient.com".into(),
             port: 2408,
             detour: Some("front".into()),
-            wireguard_settings: Some(WireGuardSettings {
+            wireguard_settings: Some(Box::new(WireGuardSettings {
                 private_key: Some("priv".into()),
                 peer_public_key: Some("pub".into()),
                 local_address: vec!["172.16.0.2/32".into()],
                 allow_internet: Some(true),
                 reverse_mesh: Some(true),
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         };
         let ts = ServerConfig {
@@ -1107,10 +1109,10 @@ mod tests {
             name: "TS".into(),
             protocol: Protocol::Tailscale,
             detour: Some("front".into()),
-            tailscale_settings: Some(TailscaleSettings {
+            tailscale_settings: Some(Box::new(TailscaleSettings {
                 exit_node: Some("exit-peer".into()),
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         };
         UserConfig {
@@ -1175,7 +1177,7 @@ mod tests {
             id: "ts1".into(),
             name: "TS".into(),
             protocol: Protocol::Tailscale,
-            tailscale_settings: Some(TailscaleSettings::default()),
+            tailscale_settings: Some(Box::new(TailscaleSettings::default())),
             ..Default::default()
         });
         cfg.servers.push(ServerConfig {
@@ -1185,13 +1187,13 @@ mod tests {
             address: "wg.example.com".into(),
             port: 51820,
             detour: Some("ts1".into()), // ← 目标是 endpoint
-            wireguard_settings: Some(WireGuardSettings {
+            wireguard_settings: Some(Box::new(WireGuardSettings {
                 private_key: Some("priv".into()),
                 peer_public_key: Some("pub".into()),
                 local_address: vec!["10.0.0.2/32".into()],
                 allow_internet: Some(true),
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         });
         let result = generate_sing_box_config(&cfg, &BTreeMap::new(), &deps_default()).unwrap();
@@ -1355,13 +1357,13 @@ mod tests {
             address: "wg.example.com".into(),
             port: 51820,
             detour: Some("nv".into()),
-            wireguard_settings: Some(WireGuardSettings {
+            wireguard_settings: Some(Box::new(WireGuardSettings {
                 private_key: Some("priv".into()),
                 peer_public_key: Some("pub".into()),
                 local_address: vec!["10.0.0.2/32".into()],
                 allow_internet: Some(true),
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         });
         let mut deps = deps_default();
@@ -1507,9 +1509,9 @@ mod tests {
             protocol: Protocol::Tailscale,
             address: "".into(),
             port: 0,
-            tailscale_settings: Some(
+            tailscale_settings: Some(Box::new(
                 crate::user_config::server_config::TailscaleSettings::default(),
-            ),
+            )),
             ..Default::default()
         };
         cfg.selected_server_id = Some("ts1".into());

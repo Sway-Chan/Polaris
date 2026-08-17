@@ -584,12 +584,12 @@ mod tests {
             id: id.into(),
             name: id.into(),
             protocol: Protocol::Wireguard,
-            wireguard_settings: Some(WireGuardSettings {
+            wireguard_settings: Some(Box::new(WireGuardSettings {
                 allow_internet,
                 always_route_subnets: always_route,
                 allowed_ips: vec!["10.9.0.0/24".into()],
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         }
     }

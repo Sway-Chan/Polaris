@@ -223,7 +223,7 @@ mod tests {
             id: "ts1".to_string(),
             name: "myts".to_string(),
             protocol: Protocol::Tailscale,
-            tailscale_settings: Some(over),
+            tailscale_settings: Some(Box::new(over)),
             ..Default::default()
         }
     }

@@ -266,33 +266,82 @@ pub struct TailscaleSettings {
 ///
 /// 装箱的判据是 **体积大 × 极少出现**（2026-08-17 实测 `size_of` 逐个量过，牙在本文件的
 /// `server_config_stays_narrow`）：openvpnClient 280 B / ssh 264 B / openconnect 232 B /
-/// hysteria2 184 B / hysteria 160 B / tor 120 B —— 合计 1240 B，占装箱前 3096 B 的 40%，
-/// 而它们对应的协议在真实配置里近乎不出现。装箱后各占 8 B，只有真正带该协议设置的节点才付
-/// 一次堆分配。
+/// [`WireGuardSettings`] 216 B / [`TailscaleSettings`] 192 B / hysteria2 184 B / hysteria 160 B /
+/// tor 120 B —— 合计 1648 B，占装箱前 3096 B 的 53%，而它们对应的协议在真实配置里近乎不出现。
+/// 装箱后各占 8 B，只有真正带该协议设置的节点才付一次堆分配。
+/// 实测口径：3096 B → 1904 B（前六项）→ 1512 B（补 wireguard / tailscale 两项）。
+///
+/// **两者的出现率证据不同强度，分开记**（真机 60 节点配置实测均 0/60，但那只是一台机器一份配置）：
+///
+/// - `tailscaleSettings` 有**近似结构性的上限**：`store/src/sanitize.rs` 的 `first_tailscale`
+///   只留第一个 tailscale 节点、其余整条剔除（前端 `tailscaleSlotTaken` 同源）。
+///   ⚠️ 该闸**只按 `protocol == "tailscale"` 计数**，且同函数里那段 `tailscaleSettings` 清洗对**所有**
+///   保留节点都跑、只洗 CIDR 不剥键 ⇒ 一个协议不是 tailscale 却挂着该键的脏节点既不占槽也不被清掉。
+///   所以准确说法是「**tailscale 协议节点**恒 ≤ 1」，不是「该键的出现率恒 ≤ 1/n」。实践上后者仍成立
+///   （没有写入路径会给非 TS 节点造这个键），但它是经验而非闸门保证。
+///
+/// - `wireguardSettings` **能被订阅量产，N 无界** —— 这条别再写成「量产腿产不出它」：
+///   三条量产导入腿里，分享链接侧 `wireguard://` 不在 `is_supported_share_url`（实测）、Clash 侧
+///   `clash_parser.rs` 恒填 `None`（WG 不在 Clash proxies 支持面），**但 sing-box JSON 订阅这条腿能**：
+///   `subscription.rs` 的 `SingboxJson` 分支无条件把 `endpoints[]` 交给 `parse_singbox_endpoints`，
+///   那里的 `"wireguard"` 臂**不看 `origin`**（隔壁 `openconnect`/`openvpn-client` 臂才有
+///   `if origin != ImportOrigin::LocalFile` 闸），直接进 `map_wireguard_endpoint` 填本字段；而订阅刷新
+///   正是以 `ImportOrigin::RemoteSubscription` 调进来的。前端批量准入 `meshSingletonConflict` 也只挡
+///   WARP 与 tailscale，普通 WG **不占槽、无上限**。「机场下发 WireGuard 组网」本就是这条腿的立项理由
+///   （见 `parse_subscription` 头注）。
+///
+/// **即便如此仍该装**，因为盈亏平衡点极高：WG 内联 216 B，装箱后在场节点付 `8 B + 224 B` glibc chunk
+/// （`align16(216+8)`）= 232 B ⇒ 每节点亏 **16 B**；缺席节点省 `216−8 = 208 B` ⇒
+/// `p* = 208/224 ≈ 92.9%`。也就是说**哪怕全库 100% 是 WG 节点，代价也只有 16 B/节点加一次 malloc**，
+/// 而常见的「一个 WG 都没有」直接省 208 B/节点。TS 同法：chunk `align16(192+8)` = 208，
+/// 在场亏 24 B、缺席省 184 B，`p* = 184/208 ≈ 88.5%`。判据的「罕见」在这两项上不是必要条件，
+/// 只是把收益放大 —— 这与 `tlsSettings` 那种 `p*` 只有 87.5–95.5% 却实测 60/60 的情形是两回事。
 ///
 /// **`tlsSettings` 刻意不装箱**（176 B）：它是**最常出现**的那个 —— 绝大多数 vless/trojan/vmess
-/// 节点都带它。装箱后每个 TLS 节点省下 168 B 内联却多付 176 B 堆加一次 malloc，字节上近乎打平
-/// 甚至更差，且它的调用面（78 处）是这批里最大的一个。判据是「大 × 罕见」，不是「大」。
+/// 节点都带它（真机实测 60/60）。装箱后每个 TLS 节点省下 168 B 内联却多付 176 B 堆加一次 malloc，
+/// 字节上近乎打平甚至更差，且它的调用面是全部协议设置里最大的一个（2026-08-17 `\btls_settings\b`
+/// 全仓实测 80 处，次大的 wireguard 42 / tailscale 32）。判据是「大 × 罕见」，不是「大」。
 /// 它在**本文件 + `protocol_settings.rs` 全部 21 个子结构**里排第 7，只在 `protocol_settings.rs`
-/// 单独排序时才是第 5 —— 别引用后一个排名做取舍。
+/// 单独排序时才是第 5 —— 别引用后一个排名做取舍。装箱面补齐 WG/TS 后它仍是**最大的未装箱项**，
+/// 也就是「为压数字而装箱」最诱人的那个目标，故门里那条内联保持断言钉的就是它。
 ///
-/// 🔴 **两个比它更大、也更该装箱的候选本批没做**：[`WireGuardSettings`] 216 B 与
-/// [`TailscaleSettings`] 192 B。它们同样满足「大 × 罕见」（复审 2026-08-17 在真机配置上实测
-/// 出现率 0/60），装箱可再省 `(216−8)+(192−8) = 392 B/节点`，把 1904 B 压到 1512 B ——
-/// 比本批装的 tor（省 112 B）大得多。**没做的原因不是判断，是取样面漏了**：它俩定义在本文件
-/// 而非 `protocol_settings.rs`，最初按模块枚举候选时整个漏掉。已单独立项（调用面 42 / 32 处，
-/// 是独立工作量，不宜顺手夹带）。下一个人做取舍时按这份排序，别按上一段那个残缺清单。
+/// ⚠️ **取样面教训**：wireguard / tailscale 是上一批**漏掉**的，不是权衡后不做 —— 那次按**定义所在
+/// 模块**枚举候选，只扫了 `protocol_settings.rs` 里的子结构，而这两个定义在本文件，整个不在取样面内。
+/// 后果是「判据没错、清单不全」：漏掉的两项比当时装的任何一个都大，也比刻意不装的 `tlsSettings` 大。
+/// 下次增删协议设置时，候选面按**本结构体的字段**枚举，别按定义所在的模块。
+///
+/// 🔴 **按字段枚举一遍后，桌上还剩 384 B —— 本批没做，是独立立项，不是已补齐**
+/// （2026-08-17 `size_of_val` 逐个实测，按宽度降序）：
+///
+/// | 未装箱字段 | 宽度 | 备注 |
+/// |---|---|---|
+/// | `tlsSettings` | 176 B | **刻意内联**，账见上文；不是候选 |
+/// | `snellSettings` | **128 B** | 比本批之前就已装箱的 `torSettings`（120 B）**还大**，同样 0/60 |
+/// | `httpSettings` | 104 B | |
+/// | `shadowsocksSettings` | 96 B | |
+/// | `wsSettings` | 88 B | |
+/// | `tuicSettings` / `shadowTlsSettings` | 80 B | |
+/// | 其余（custom 64 / anyTls 56 / multiplex 48 / reality 48 / grpc 32 / naive 1） | ≤64 B | 收益递减 |
+///
+/// 后四项里 `snell + http + shadowsocks + ws` 合计 416 B，装箱后 32 B ⇒ 可再省 **384 B/节点**，
+/// 与本批省下的 392 B 同量级。**按同一条判据，`snellSettings` 严格优于本批之前已装的 `tor`**。
+/// 之所以本批不顺手做：那是独立工作量（各自的调用面 + 各自的门），夹带会让这份 diff 失去可审性。
+/// ⚠️ 这段前瞻清单**不许在补装后删掉改写成回顾**——上一批就是把它写成回顾性教训、前瞻内容随之消失，
+/// 下一个人读到的是「清单已补齐」而不是「还有 384 B 在桌上」，于是同一根因连着复发了三次。
+/// 补装某项时**只划掉那一行**，别动整段。
 ///
 /// 装箱**不改变任何序列化产物**：`Box<T>` 的 `Serialize`/`Deserialize` 逐字转发给 `T`，
 /// `skip_serializing_if = "Option::is_none"` 语义不变，`Debug`/`PartialEq` 同样转发。
 ///
 /// ⚠️ **钉住这件事的只有本文件那条 `boxed_protocol_settings_serialize_transparently`**，
-/// 别以为「反正还有几道既有门兜着」就可以删它 —— 2026-08-17 逐条实测过那三道的射程：
+/// 别以为「反正还有几道既有门兜着」就可以删它 —— 2026-08-17 逐条实测过那三道对**八个**装箱键的射程：
 /// `tests/serde_roundtrip.rs` 全文件只碰 `singbox::*`，`UserConfig`/`ServerConfig` **零出现**；
-/// `tests/user_config_key_contract.rs` 的夹具是 `"servers": []`，六个键 **0 命中**；
+/// `tests/user_config_key_contract.rs` 的夹具是 `"servers": []`，八个键 **0 命中**；
 /// `tests/golden_config_snapshot.rs` 的 `fixtures/config-snapshot.json`（37 case）只有
-/// `hysteria2Settings` × 1 与 `sshSettings` × 1，另外四个键 **0 命中**。
-/// 即：两道射程为零、一道覆盖 6 个里的 2 个。删掉本文件那条 = 保护归零。
+/// `hysteria2Settings` × 1 / `sshSettings` × 1 / `wireguardSettings` × 1，
+/// 另外五个键（含 `tailscaleSettings`）**0 命中**。
+/// 即：两道射程为零、一道覆盖 8 个里的 3 个，且那一道只走**生成侧**（UserConfig → sing-box 配置），
+/// 磁盘往返与订阅导入导出这两条腿一条都不碰。删掉本文件那条 = 保护归零。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub id: String,
@@ -404,9 +453,9 @@ pub struct ServerConfig {
     pub openvpn_client_settings:
         Option<Box<crate::user_config::protocol_settings::OpenvpnClientSettings>>,
     #[serde(rename = "wireguardSettings", skip_serializing_if = "Option::is_none")]
-    pub wireguard_settings: Option<WireGuardSettings>,
+    pub wireguard_settings: Option<Box<WireGuardSettings>>,
     #[serde(rename = "tailscaleSettings", skip_serializing_if = "Option::is_none")]
-    pub tailscale_settings: Option<TailscaleSettings>,
+    pub tailscale_settings: Option<Box<TailscaleSettings>>,
     #[serde(rename = "customSettings", skip_serializing_if = "Option::is_none")]
     pub custom_settings: Option<crate::user_config::protocol_settings::CustomSettings>,
     #[serde(rename = "anyTlsSettings", skip_serializing_if = "Option::is_none")]
@@ -752,18 +801,27 @@ mod tests {
     /// 于是「又内联进来一个 200 B 的协议设置」这件事的代价是 `200 × 节点数`，而它**不会让任何
     /// 行为测试转红**：序列化产物一个字节不变、全仓功能照常。本门就是补这个盲区。
     ///
-    /// 基线（2026-08-17 实测）：装箱前 3096 B，把 6 个「体积大 × 极少出现」的协议设置改
-    /// `Option<Box<T>>` 后 1904 B；按真机 119 节点算，单次反序列化的 `Vec` 底层分配
-    /// 368,424 B → 226,576 B。
+    /// 基线（2026-08-17 实测）：装箱前 3096 B，把 8 个「体积大 × 极少出现」的协议设置改
+    /// `Option<Box<T>>` 后 1512 B（分两批落地：前 6 项 → 1904 B，补 wireguard / tailscale
+    /// 两项再省 `(216−8)+(192−8) = 392 B` → 1512 B）；按真机 119 节点算，单次反序列化的 `Vec`
+    /// 底层分配 368,424 B → 179,928 B。
     ///
-    /// **红了不等于有 bug，红了等于「该看一眼」**。字段尺寸之和 = 1900 B，`size_of` = 1904 B ⇒
-    /// **只剩 4 B 尾隙**，所以两种情形都会让它红，处方**完全相反**，先分清是哪一种：
+    /// **红了不等于有 bug，红了等于「该看一眼」**。字段尺寸之和 = 1508 B，`size_of` = 1512 B ⇒
+    /// **仍只剩 4 B 尾隙**（装箱不改变尾隙：换掉的两个字段本就 8 字节对齐）。所以两种情形都会
+    /// 让它红，处方**完全相反**，先分清是哪一种：
     ///
-    /// - **本仓有意新增了一个小标量 / 字符串字段**（`Option<u32>` 8 B、`Option<String>` 24 B ——
-    ///   `meshRoutes` / `disableChromeParrot` 就是这个形态，也是本结构体最常见的演进方式）：
-    ///   4 B 尾隙一个都吃不下，**必红**。实测：加一个 `Option<u32>` ⇒ 1904 → 1912。
+    /// - **本仓有意新增了一个 ≥8 B 的标量 / 字符串字段**（`meshRoutes` / `disableChromeParrot`
+    ///   就是这个形态，也是本结构体最常见的演进方式）：4 B 尾隙吃不下，**必红**。
+    ///   2026-08-17 逐档实测：`Option<u32>`（8 B）⇒ 1512 → **1520 红**；
+    ///   `Option<String>`（24 B）⇒ **1536 红**。
     ///   处方是**重新实测 `size_of` 并连同日期更新常量** —— 不是把那个 24 B 的 String 装箱
     ///   （那毫无意义，只多一次 malloc）。工具链换版改了布局而本仓一字未动，同理。
+    ///   ⚠️ **≤4 B 的小标量塞得进尾隙，门会保持绿，这不是漏网**：同批实测
+    ///   `bool` / `Option<bool>`（1 B）与 `Option<u16>`（4 B）加进来后 `size_of` 仍是 1512。
+    ///   那 4 B 是真空位（当前 `protocol` 1 + `port` 2 + `naive_settings` 1 = 4 B 已占的另一半），
+    ///   而 `Option<u16>` 不是假想形态 —— `TailscaleSettings` 里就有两个端口字段是它。
+    ///   这类字段本就**不在本门射程内**：本门量的是「按节点数放大的宽度」，4 B 塞进既有空位
+    ///   等于零成本，没有可报的事。
     /// - **有人又内联了一个大结构体**（几十上百 B 的协议设置）：这才是本门要拦的那一类。
     ///   按结构体头注的判据（体积大 × 罕见）决定它该不该装箱，**不得为了让它过门而调大常量**。
     ///
@@ -772,18 +830,35 @@ mod tests {
     ///
     /// # 为什么还有第二条断言（上界单独一条是**会奖励错误做法**的）
     ///
-    /// 上界只守判据的「大」那一半：把 `tlsSettings` 装箱能让 `size_of` 掉到 1736 B，上界**更绿** ——
+    /// 上界只守判据的「大」那一半：把 `tlsSettings` 装箱能让 `size_of` 掉到 1344 B，上界**更绿** ——
     /// 而按判据那恰恰不该做（它 60/60 出现，装箱等于每个节点多一次 malloc 换字节打平）。
     /// 只有上界的门不但不拦这种「压数字」的改法，还给它发绿灯。故第二条钉住高频字段**保持内联**。
     ///
+    /// # 为什么第二条只钉 `tlsSettings` 一个字段
+    ///
+    /// 2026-08-17 补装 WG/TS 后重新问过「要不要扩到别的字段」，结论是**不扩**，两条理由：
+    ///
+    /// ① **手上的样本面撑不起第二条禁令**。同一份 60 节点真机配置实测：`tlsSettings` 60/60、
+    /// `realitySettings` 30/60、`naiveSettings` 30/60、其余全 0/60。数是有的，但那是**一台机器
+    /// 一份配置**；把某字段的**内联**冻成禁令，需要的证据强度高于「这份样本里它常见」。
+    /// `tlsSettings` 是唯一一个 60/60 且有独立机制解释（几乎所有 vless/trojan/vmess 都带 TLS）的，
+    /// 才配得上一条门。
+    ///
+    /// ② **最像候选的那个算下来其实边缘可做**。`realitySettings` 48 B，glibc 下 48 B 载荷落 64 B
+    /// chunk：装箱后在场节点 `8 + 64 = 72 B` vs 内联 48 B ⇒ 每节点亏 24 B，缺席省 40 B，
+    /// `p* = 40/64 = 62.5%`；实测 50% ⇒ 装箱它在字节上**是净赚的**，只是多一次 malloc。
+    /// 也就是说它是**边缘可做**而非明确不该做 —— 写进断言等于用一条门把一个边缘取舍冻成禁令。
+    ///
+    /// 要扩这条断言，先把出现率样本面补厚（多机器 / 多订阅源），别照着 `size_of` 排序扩。
+    ///
     /// **变异探针**：把任一 `Option<Box<T>>` 改回 `Option<T>` ⇒ 上界转红；
-    /// 反过来把 `tls_settings` 改成 `Option<Box<TlsSettings>>` ⇒ 上界照绿（1736 ≤ 1904），
+    /// 反过来把 `tls_settings` 改成 `Option<Box<TlsSettings>>` ⇒ 上界照绿（1344 ≤ 1512），
     /// 由第二条转红接住。
     #[test]
     #[cfg(target_pointer_width = "64")]
     fn server_config_stays_narrow() {
-        /// 2026-08-17 实测值（装箱前 3096 B）。
-        const MEASURED: usize = 1904;
+        /// 2026-08-17 实测值（装箱前 3096 B；只装前 6 项时 1904 B）。
+        const MEASURED: usize = 1512;
         let actual = std::mem::size_of::<ServerConfig>();
         assert!(
             actual <= MEASURED,
@@ -854,6 +929,19 @@ mod tests {
                 private_key: Some("KEY".into()),
                 ..Default::default()
             })),
+            // WG/TS 各多填一个 `Vec` 字段，钉住装箱后**数组仍是数组**、不多包一层。
+            // 注意这一态给不了 `skip_serializing_if = "Vec::is_empty"` 任何牙（这里它们恒非空）
+            // —— 那半边由下面第三态接住。
+            wireguard_settings: Some(Box::new(WireGuardSettings {
+                private_key: Some("PRIV".into()),
+                allowed_ips: vec!["0.0.0.0/0".into()],
+                ..Default::default()
+            })),
+            tailscale_settings: Some(Box::new(TailscaleSettings {
+                auth_key: Some("tskey-auth-X".into()),
+                advertise_routes: vec!["192.168.1.0/24".into()],
+                ..Default::default()
+            })),
             ..Default::default()
         };
         let v = serde_json::to_value(&s).expect("节点应可序列化");
@@ -871,6 +959,11 @@ mod tests {
                 "openconnectSettings": { "server": "vpn.example.com:443" },
                 "openvpnClientSettings": { "server_port": 1194 },
                 "sshSettings": { "privateKey": "KEY" },
+                "wireguardSettings": { "privateKey": "PRIV", "allowedIPs": ["0.0.0.0/0"] },
+                "tailscaleSettings": {
+                    "authKey": "tskey-auth-X",
+                    "advertiseRoutes": ["192.168.1.0/24"]
+                },
             }),
             "装箱字段的键名/嵌套形状必须与未装箱时逐字节一致 —— 多一层包装 = 老配置读不回来。\
              ⚠️ 本条是整份 JSON 相等，射程覆盖全部字段：若红在一个**新增字段**上（左侧多出一个键），\
@@ -893,7 +986,49 @@ mod tests {
             serde_json::json!({
                 "id": "s2", "name": "n2", "protocol": "vless", "address": "b.com", "port": 443
             }),
-            "六个装箱字段缺席时一个键都不该出现"
+            "八个装箱字段缺席时一个键都不该出现"
+        );
+        // 第三态：装箱字段**在场、但内容全缺省**。前两态都盖不到它，而它才是两个谓词分岔的地方：
+        // 字段级的 `Option::is_none` 只看**字段在不在**、与内容无关；一旦有人把它换成内容相关的
+        // 谓词（图省事写成「空对象就别发了」），一个只建了没填的节点就会**静默丢键**，
+        // 而前两态一条都不红。顺带这也是子结构里那些 `skip_serializing_if = "Vec::is_empty"`
+        // 唯一有牙的一态 —— 满字段态里那些 `Vec` 恒非空，碰不到该谓词。
+        //
+        // 🔴 **八个装箱字段一个都不能少**：本态的判据是「字段级谓词是否与内容无关」，那是**每个**
+        // 装箱字段各自的属性，不是可以抽样的共性。少写一个，同一个变异换到那个字段上就一态不红。
+        // 本态初版只放了 wireguard/tailscale 两个（补装它俩那批顺手加的），另外六个在三态里的形态
+        // 是「填了个标量 / 缺席 / 缺席」—— 恰好绕开本态要拦的那件事，等于门只补到 2/8。
+        // 期望值 `{}` 是**实测**来的（八个结构 `Default` 逐个序列化确认），不是「反正全带
+        // skip_serializing_if 所以应该是空」的推断：哪天有人给某个结构加一个不带 skip 的必填字段，
+        // 该改的是这里的期望值，而本条会先红出来提醒。
+        let empty_boxed = ServerConfig {
+            id: "s3".into(),
+            name: "n3".into(),
+            protocol: Protocol::Wireguard,
+            address: "c.com".into(),
+            port: 51820,
+            hysteria2_settings: Some(Box::new(ps::Hysteria2Settings::default())),
+            hysteria_settings: Some(Box::new(ps::HysteriaSettings::default())),
+            tor_settings: Some(Box::new(ps::TorSettings::default())),
+            openconnect_settings: Some(Box::new(ps::OpenconnectSettings::default())),
+            openvpn_client_settings: Some(Box::new(ps::OpenvpnClientSettings::default())),
+            ssh_settings: Some(Box::new(ps::SshSettings::default())),
+            wireguard_settings: Some(Box::new(WireGuardSettings::default())),
+            tailscale_settings: Some(Box::new(TailscaleSettings::default())),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&empty_boxed).expect("节点应可序列化"),
+            serde_json::json!({
+                "id": "s3", "name": "n3", "protocol": "wireguard",
+                "address": "c.com", "port": 51820,
+                "hysteria2Settings": {}, "hysteriaSettings": {}, "torSettings": {},
+                "openconnectSettings": {}, "openvpnClientSettings": {}, "sshSettings": {},
+                "wireguardSettings": {}, "tailscaleSettings": {}
+            }),
+            "在场的装箱字段即使内容全缺省，键也必须在、值恰为 `{{}}` —— 空对象与缺席是两回事：\
+             真机上「新建了 TS 节点还没填任何设置」就是这个形态（`tailscaleSettings: {{}}`），\
+             丢了它，节点回读时会当成从没配过。子结构里的 `Vec` 字段也不得因为空就冒出 `[]`。"
         );
     }
 
