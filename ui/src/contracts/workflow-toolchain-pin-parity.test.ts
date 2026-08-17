@@ -23,7 +23,7 @@
  *   Linux 腿真正会红的是脚本里的 createHash 比对，win/mac 腿只有 CI 真跑才知道。
  * - **版本选得对不对**：选 35.1 的依据在 `scripts/fetch-protoc.mjs` 头注（一次性实测结论）。
  * - **URL 还在不在**：资产被上游删除只有真下载才知道。
- * - `ui.yml` 的 pnpm 钉扎不在射程内 —— 它只有一处，没有对拍对象。
+ * - pnpm 在 **win/mac 打包腿**上的行为（CI-2 统一到 10 后，首个全矩阵之前的残余风险，登记在案）。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -104,6 +104,21 @@ describe('CI 工具链钉扎守门', () => {
       fetchProtoc.includes('appendFileSync(process.env.GITHUB_PATH'),
       'CI 的 PATH 注册线没了 —— 装了但断言步解析不到；此处防整段被误删'
     ).toBe(true);
+  });
+
+  it('pnpm 版本两处一致且都已精确钉扎', () => {
+    // CI-2（2026-08-18）：package.yml 从 9 统一到 10 之后，pnpm 钉扎就有了对拍对象（此前 ui.yml
+    // 独一份，无从对拍）。两个 workflow 的安装机制不同（ui.yml 为 `cache: pnpm` 装在 setup-node
+    // 之前、package.yml 装在其后），但**版本必须同**——分家 = 门腿与出包腿的 node_modules
+    // 又不是同一套安装语义（pnpm 9 跑生命周期脚本、10 默认不跑），「门验过的」再度≠「出包用的」。
+    const ui = envPin(read('ui.yml'), 'PNPM_VERSION');
+    const pkg = envPin(sources['package.yml'], 'PNPM_VERSION');
+    expect(ui, 'ui.yml 里没有精确钉扎的 PNPM_VERSION —— pnpm 又浮动了？').toHaveLength(1);
+    expect(pkg, 'package.yml 里没有精确钉扎的 PNPM_VERSION —— 出包腿工具链不可复现').toHaveLength(1);
+    expect(
+      pkg[0],
+      'ui 门与出包腿的 pnpm 版本不同：两侧装出来的 node_modules 不是一回事（见 CI-2）'
+    ).toBe(ui[0]);
   });
 
   it('NASM 版本与 sha256 两处一致', () => {

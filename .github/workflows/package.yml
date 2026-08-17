@@ -279,14 +279,24 @@ jobs:
 
       # pnpm：不再经 pnpm/action-setup@v4（2026-08-17）。被替掉的 action 做的就是「按 version
       # 装一份 pnpm 并加进 PATH」，`npm install -g` 等价 —— 少一次 action tarball 拉取，
-      # 顺手把版本从浮动的 `9`（= 9.x 最新，当时解析到 9.15.9）钉成精确值，工具链才谈得上可复现。
+      # 顺手把版本钉成精确值，工具链才谈得上可复现。
       # 放在 Setup Node **之后**：这样 npm 与全局 bin 目录都属于上一步装的 node 26，不跨版本。
-      # ⚠️ 这里是 9 而 `ui.yml` 是 10 —— 这个分歧是既存的，**本次刻意没动**：pnpm 10 默认不跑
-      #    依赖的生命周期脚本，改它会动到出包腿的安装语义，属于另一件事，要单独判。
+      #
+      # ── CI-2（2026-08-18）：9 → 10，与 ui.yml 统一 ──
+      # 此前这里 9 / ui.yml 10 的分歧不只是数字：pnpm 10 默认不跑依赖的生命周期脚本（ui gate
+      # 实测 `Ignored build scripts: esbuild@0.21.5`）⇒ 门腿与出包腿装出来的 node_modules 不是
+      # 一回事——「门验过的」不等于「出包用的」。统一到 10 的依据：
+      #   · 本地开发机就是 pnpm 10（10.33），tsc + 全量 vitest + vite build 恒绿 ⇒ 脚本被跳过
+      #     的安装语义对构建面无害（esbuild 的平台二进制走 optionalDependencies，不靠
+      #     postinstall；全树无 sharp/electron 这类真依赖编译脚本的包）；
+      #   · ui gate 用 10 已绿了很久，出包腿没有任何只属于 pnpm 9 的用法；
+      #   · 两个 workflow 的版本钉扎同时进了 parity 测试对拍，再分家会红。
+      # 收据：linux 打包腿 dispatch（run 见 SoT CI-2 条目）；windows/macos 打包腿的首验
+      # 留给下一次全矩阵（pnpm 10 在 win/mac 的行为与 linux 同源同配置，风险登记不动）。
       - name: Setup pnpm (pinned)
         shell: bash
         env:
-          PNPM_VERSION: '9.15.9'
+          PNPM_VERSION: '10.34.5'
         run: |
           set -euo pipefail
           npm install -g "pnpm@${PNPM_VERSION}"
