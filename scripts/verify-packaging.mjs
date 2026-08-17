@@ -37,10 +37,19 @@
  *     且便携候选与安装态候选不相交。per-job 口径断言「不得出现另一架构」，
  *     聚合侧两架构本就都在，故必须分开，不能复用。
  *
+ *     assets 模式除命名外还有**两道内容门**（射程都只覆盖 updater 会真正命中的那些资产）：
+ *       - **体积门（U2）**：`> MAX_UPDATE_ASSET_BYTES` 即红。见该常量文档；
+ *       - **摘要门（U3）**：`--label release` 下 `SHA256SUMS` 缺失、格式坏、覆盖面对不上或
+ *         逐条摘要不符即红。见 [`checkSha256Sums`]。
+ *     `--names-only` 供**发布后**那一遍用：那时喂进来的是按真实资产名造的**同名空文件**
+ *     （不回下 ~600 MB 真产物），体积与摘要在其上不可判定，故显式跳过并在输出里如实标注 ——
+ *     缺了这个开关，那一遍会用 0 字节的假文件去比摘要，得到一片恒红。
+ *
  * 退出码：0 = 全部不变量成立；1 = 有违反（逐条打印）。
  */
 
 import { readFileSync, existsSync, statSync, readdirSync } from 'fs';
+import { createHash } from 'crypto';
 import { join, dirname, resolve, basename, relative } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -825,7 +834,214 @@ function updaterMacCandidates(names, archTag) {
   return names.filter((n) => n.includes(archTag) && n.endsWith('.dmg'));
 }
 
-function checkAssets(label, dir) {
+// ───────────── U2：updater 目标资产的体积门 ─────────────
+/**
+ * updater **真正会下载**的那个资产的体积上限。超过即红。
+ *
+ * # 为什么它不等于客户端的 `APP_UPDATE_MAX_BYTES`（512 MiB）
+ *
+ * 那个常量是客户端的**绝对写入闸**（`src-tauri/src/commands/updater.rs`），职责是「别让一个撒谎的
+ * 服务端把用户的盘写满」，故留了一个数量级以上的余量。拿它当发布门等于**没有门**：安装包从
+ * 52 MiB 涨到 300 MiB 照样全绿，而这道门的全部理由是「体积再涨在发布时自曝」——U1 那个缺陷
+ * （产物 52 MiB 撞上 16 MiB 下载闸、构建 CI 一路绿、只有用户真机更新失败才暴露）正是这么长出来的。
+ * 早警值必须**贴着真实量级**设，不是贴着灾难值设。
+ *
+ * # 96 MiB 是怎么定出来的（实测，非拍脑袋）
+ *
+ * 本机留存的真实 CI 产物逐个 `stat`（updater 目标资产口径）：
+ *
+ * | 资产 | 字节 | MiB | 出处 |
+ * |---|---|---|---|
+ * | `*-mac-arm64.dmg` | 54,232,313（12 份留存里的最大值） | 51.72 | 本地 `/tmp/polaris-mac*` CI 产物 |
+ * | `*-mac-x64.dmg`   | 51,102,510 | 48.73 | run 30990315709（`docs/polaris/design/polaris-windows-packaging-first-green-2026-08-05.md`） |
+ * | `*-win-setup.exe` | 39,015,611 | 37.21 | run 31659532293 |
+ * | `polaris-portable-*.zip` | 53,347,731 | 50.88 | run 31659532293 |
+ * | `.deb` / `.AppImage` | **未测** | — | 本机无留存产物，且本轮不联网取；见下 |
+ *
+ * 取 **96 MiB ≈ 实测最大值（51.72 MiB）的 1.86 倍**：
+ *  - 常规增长（内核/cronet/dashboard 版本迭代，每次几 MiB）撞不到，不会假红；
+ *  - 已知的两类**阶跃式**回潮全部落在门外：四平台内核死重（§10.2，约 210 MiB）、
+ *    误把 WebView2 离线负载打进主安装包（离线版实测 251,392,830 B = 239.75 MiB）；
+ *  - 比客户端绝对闸早 5.3 倍触发 —— 它才是「早警」的那一份。
+ *
+ * Linux 两形态未测是**如实登记的判据缺口**：它们与 win/mac 同一份 payload（sing-box 内核 +
+ * dashboard + 前端），量级同族，96 MiB 有近一倍余量；但这是推断不是实测。真红时先看输出里印的
+ * 实际字节数再决定是「产物真涨了」还是「门定紧了」，别直接调门。
+ *
+ * # 射程：只覆盖 updater 会命中的资产
+ *
+ * `*-offline-setup.exe`（239.75 MiB）**故意不在射程内** —— 它是 LTSC/内网的**手动下载**变体，
+ * 名字里没有 `win`，`find_suitable_update_asset` 结构性选不到它，自动更新腿永远不会去下它。
+ * 把它一并卡掉只会让这道门在第一次跑的时候就假红。
+ *
+ * # 改这个值 = 改两处
+ *
+ * 另一份在 `src-tauri/src/commands/updater.rs` 的测试模块（`PACKAGING_MAX_UPDATE_ASSET_MIB`），
+ * 由 `packaging_size_gate_is_mirrored_and_stays_under_the_client_write_gate` 逐字比对本行文本，
+ * 两份漂开即转红（D5：维护两份 + 一条一致性测试钉死）。**改这里必须同步改那里**，
+ * 且那条测试还会拦住「把它调到客户端写入闸之上」——那等于发一个客户端结构性下不动的包。
+ */
+const MAX_UPDATE_ASSET_BYTES = 96 * 1024 * 1024;
+
+/** 随 release 一起发布的摘要清单（U3）。名字是**资产名**，不是路径。 */
+const SHA256SUMS_NAME = 'SHA256SUMS';
+
+const mib = (n) => `${(n / 1024 / 1024).toFixed(2)} MiB`;
+
+/**
+ * 本 label 下 **updater 会真正命中**的资产名 —— 体积门的射程恰好是这些。
+ *
+ * 判据一律**复用**上面那三个候选函数（与 `github.rs::find_suitable_update_asset` 同口径），
+ * 本函数只负责「哪个 label 该看哪几条规则」的装配，不另写一套过滤条件：选包规则一改，
+ * 这里跟着改，不会出现「命名门还在绿、体积门量错了对象」。
+ *
+ * - `windows` 腿只装配 installed 形态：该 job 的 `--dir dist-win` 里**没有**便携 zip
+ *   （它打在仓库根），装上去等于加一条恒为空、永远不可能转红的断言；便携 zip 的体积由
+ *   `release` 聚合口径覆盖（那里它确实在）。
+ * - `linux` 腿两形态都算：per-job 口径只断言「各至少一个」，故这里也不假设恰好一个。
+ */
+function updaterTargetNames(label, names) {
+  switch (label) {
+    case 'windows':
+      return updaterWindowsCandidates(names);
+    case 'macos-arm64':
+    case 'macos-x64':
+      return updaterMacCandidates(names, LABEL_TO_CORE[label]);
+    case 'linux':
+      return names.filter((n) => n.endsWith('.deb') || n.endsWith('.AppImage'));
+    case 'release':
+      return [
+        ...updaterMacCandidates(names, 'mac-arm64'),
+        ...updaterMacCandidates(names, 'mac-x64'),
+        ...updaterWindowsCandidates(names),
+        ...updaterPortableCandidates(names),
+        ...names.filter((n) => n.endsWith('.deb') || n.endsWith('.AppImage')),
+      ];
+    default:
+      return [];
+  }
+}
+
+/**
+ * 体积门本体。**逐个印出实际体积**（不只在超限时印）：这道门将来要不要调、调到哪，
+ * 唯一的依据就是历次 CI 日志里的这些数 —— 只在红的时候才印，等于把定阈值的数据丢了。
+ */
+function checkUpdateAssetSizes(label, targets, pathOf) {
+  for (const name of targets) {
+    const p = pathOf(name);
+    if (!p) continue; // 命名门已经在报这一条了，这里不重复报。
+    const size = statSync(p).size;
+    if (size > MAX_UPDATE_ASSET_BYTES) {
+      fail(
+        `体积门（U2）：updater 目标资产 '${name}' 为 ${mib(size)}（${size} B），超过上限 ${mib(MAX_UPDATE_ASSET_BYTES)}。\n` +
+          `  这道门是**早警**，不是客户端能力上限：客户端绝对写入闸是 512 MiB，走到那儿才炸就等于没警。\n` +
+          `  先判定是「产物真的涨了」（查 payload：内核 / cronet / dashboard / 是否误把离线负载打进主包）\n` +
+          `  还是「上限定紧了」；确属预期增长再同步改两处常量（本文件 MAX_UPDATE_ASSET_BYTES +\n` +
+          `  src-tauri/src/commands/updater.rs 测试模块的 PACKAGING_MAX_UPDATE_ASSET_MIB），否则一致性测试会红。`
+      );
+    } else {
+      note(`体积：${label} → '${name}' ${mib(size)} ≤ 上限 ${mib(MAX_UPDATE_ASSET_BYTES)}`);
+    }
+  }
+}
+
+// ───────────── U3：随包 SHA256SUMS ─────────────
+/**
+ * `SHA256SUMS` 门：缺失 / 格式坏 / 覆盖面对不上 / 逐条摘要不符，任一即红。
+ *
+ * # 它守的是什么（别夸大）
+ *
+ * 守的是**发布流程**：生成步骤压根没跑、跑了但漏了某个平台的资产、或者清单与真实产物对不上。
+ * 缺了这道门，「发布带摘要」就只是 workflow 里一句无人核对的 shell —— 而一个静默不产出的
+ * 生成步骤，与产出正确的生成步骤，在 CI 日志里长得一模一样。
+ *
+ * 它**不是**安全边界：`SHA256SUMS` 与安装包走同一 HTTPS 通道、同一 release、同一发布账号，
+ * 能替换安装包的人同样能替换它。它防的是**传输损坏与截断**，不防「GitHub 账号或 TLS 被攻破」。
+ * 端到端完整性需要签名（公钥内置于应用），那是独立决策，本轮不做，也不假装 SHA 等价于它。
+ *
+ * # 判据不是「文件在不在」
+ *
+ * 逐条**重算** sha256 与清单比对，并要求清单与实际资产**双向**覆盖（少一条 = 有资产没被摘要，
+ * 多一条 = 摘要指向一个不存在的资产）。只查在场的话，一个空文件、或者上一轮遗留的旧清单，
+ * 照样能让门全绿。
+ */
+function checkSha256Sums(names, pathOf, namesOnly) {
+  if (!names.includes(SHA256SUMS_NAME)) {
+    fail(
+      `摘要门（U3）：release 资产里缺 \`${SHA256SUMS_NAME}\` —— 发布流程的生成步骤没跑或产物没被上传。\n` +
+        `  缺了它，「随包发布摘要」这条承诺在真实 release 上不成立（消费侧将来要不要接是另一回事）。`
+    );
+    return;
+  }
+  if (namesOnly) {
+    note(`摘要：${SHA256SUMS_NAME} 在场（--names-only：内容比对不可判定，见文件头）`);
+    return;
+  }
+
+  // 清单按**资产名**索引（release 里的资产是平铺的）。同名文件出现在两个子目录时，
+  // 「这条摘要说的是哪一个」无从判定 —— 不可判定就必须红，不能挑一个继续。
+  const dupes = names.filter((n, i) => names.indexOf(n) !== i);
+  if (dupes.length > 0) {
+    fail(`摘要门（U3）：出现同名资产 ${JSON.stringify([...new Set(dupes)])} —— 摘要按资产名索引，同名即不可判定`);
+    return;
+  }
+
+  const text = readFileSync(pathOf(SHA256SUMS_NAME), 'utf8');
+  const listed = new Map();
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === '') continue;
+    // `sha256sum` 的两种输出形态：文本模式两个空格、二进制模式 ` *`。两者都收。
+    const m = /^([0-9a-f]{64}) [ *](.+)$/.exec(line);
+    if (!m) {
+      fail(`摘要门（U3）：${SHA256SUMS_NAME} 第 ${i + 1} 行不是 sha256sum 格式：${JSON.stringify(line)}`);
+      return;
+    }
+    if (listed.has(m[2])) {
+      fail(`摘要门（U3）：${SHA256SUMS_NAME} 里 '${m[2]}' 有重复条目 —— 取哪条不确定`);
+      return;
+    }
+    listed.set(m[2], m[1]);
+  }
+
+  const assets = names.filter((n) => n !== SHA256SUMS_NAME);
+  const missing = assets.filter((n) => !listed.has(n));
+  const extra = [...listed.keys()].filter((n) => !assets.includes(n));
+  if (missing.length > 0) {
+    fail(
+      `摘要门（U3）：${SHA256SUMS_NAME} 漏了 ${missing.length} 个资产 ${JSON.stringify(missing)}。\n` +
+        `  漏掉的那个资产等于没随包发摘要 —— 生成步骤的过滤条件与实际产物集对不上。`
+    );
+  }
+  if (extra.length > 0) {
+    fail(
+      `摘要门（U3）：${SHA256SUMS_NAME} 里有 ${extra.length} 条指向不存在的资产 ${JSON.stringify(extra)}。\n` +
+        `  多半是上一轮的残留清单被当成本轮产物 —— 它会让「摘要齐了」这件事变成假的。`
+    );
+  }
+
+  let checked = 0;
+  for (const [name, want] of listed) {
+    const p = pathOf(name);
+    if (!p) continue; // 已由上面的 extra 报了。
+    const got = createHash('sha256').update(readFileSync(p)).digest('hex');
+    if (got !== want) {
+      fail(
+        `摘要门（U3）：'${name}' 的实际 sha256 与 ${SHA256SUMS_NAME} 不符。\n` +
+          `  清单：${want}\n  实际：${got}\n` +
+          `  清单是在产物落定**之后**生成的，对不上意味着两者之间还有一步在改产物（改名 / 重打 / 覆盖）。`
+      );
+    } else {
+      checked++;
+    }
+  }
+  if (missing.length === 0 && extra.length === 0 && checked === assets.length) {
+    note(`摘要：${SHA256SUMS_NAME} 覆盖全部 ${checked} 个资产且逐条重算相符`);
+  }
+}
+
+function checkAssets(label, dir, namesOnly = false) {
   const abs = resolve(ROOT, dir);
   if (!existsSync(abs)) {
     fail(`assets 模式：目录不存在 ${abs}`);
@@ -836,7 +1052,11 @@ function checkAssets(label, dir) {
     fail(`assets 模式：--dir 指向的不是目录：${abs}`);
     return;
   }
-  const names = walk2(abs);
+  // 命名契约按**文件名**判，体积/摘要两道内容门要按**路径**读 —— 故收全路径再投影出名字，
+  // 而不是像原来那样只收名字（dist-release 下平铺与嵌套并存，名字回不去路径）。
+  const paths = walk2(abs);
+  const names = paths.map((p) => basename(p));
+  const pathOf = (n) => paths.find((p) => basename(p) === n);
   if (names.length === 0) {
     fail(`assets 模式：${abs} 下没有任何文件`);
     return;
@@ -977,14 +1197,26 @@ function checkAssets(label, dir) {
   } else {
     fail(`未知 label '${label}'，合法值：${Object.keys(LABEL_TO_CORE).join(', ')}, release`);
   }
+
+  // ── 内容门（命名门之后跑：命名不成立时「哪个是 updater 目标」本身就不确定）──
+  if (namesOnly) {
+    // 如实标注跳过了什么。不打这条 note 的话，发布后那一遍看起来与内容门跑过的那遍一模一样。
+    note(`assets：${label} → **仅命名口径**（--names-only）：喂进来的是同名空文件，体积门与摘要内容比对不可判定，已跳过`);
+  } else {
+    checkUpdateAssetSizes(label, updaterTargetNames(label, names), pathOf);
+  }
+  // 摘要门只挂**聚合口径**：`SHA256SUMS` 是四个 job 的产物汇进 dist-release 之后才生成的
+  // （一个 release 一份，按资产名索引），per-job 目录里结构性不存在它 —— 在那儿断言它必然恒红。
+  // `--names-only` 下仍验它**在场**（那一层用空文件也判得了），只跳过内容比对。
+  if (label === 'release') checkSha256Sums(names, pathOf, namesOnly);
 }
 
-/** 递归收集文件**名**（不含路径），用于命名契约判定。 */
+/** 递归收集文件**全路径**（命名契约用 `basename` 投影，内容门直接拿路径读）。 */
 function walk2(dir, out = [], depth = 0) {
   if (depth > 8) return out;
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     if (e.isDirectory()) walk2(join(dir, e.name), out, depth + 1);
-    else if (e.isFile()) out.push(e.name);
+    else if (e.isFile()) out.push(join(dir, e.name));
   }
   return out;
 }
@@ -1028,11 +1260,12 @@ switch (mode) {
     break;
   }
   case 'assets':
-    checkAssets(argOf('--label'), argOf('--dir') ?? '.');
+    // `--names-only`：只跑命名口径（发布后那一遍喂的是同名空文件），见文件头。
+    checkAssets(argOf('--label'), argOf('--dir') ?? '.', process.argv.includes('--names-only'));
     break;
   default:
     console.error(
-      '用法: node scripts/verify-packaging.mjs <confs|payload|assets> [--label <label>] [--root <bundle 根>] [--dir <dir>]'
+      '用法: node scripts/verify-packaging.mjs <confs|payload|assets> [--label <label>] [--root <bundle 根>] [--dir <dir>] [--names-only]'
     );
     process.exit(2);
 }

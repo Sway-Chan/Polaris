@@ -521,7 +521,10 @@ fn download_gate(dest: &Path) -> Arc<DownloadGate> {
 /// 取法」的形状，等于今天就为一个尚未落地、形态还会变的需求付设计税。留一条诚实的注释比留一个
 /// 猜出来的抽象更有用 —— 本条注释本身就是 U3 的交接单。
 ///
-/// **本批只实现「asset digest / 无摘要降级」两态**，`SHA256SUMS` 属 U3，刻意不实现——不留假接线。
+/// **U3 已落地，但只落发布侧**（2026-08-17）：`SHA256SUMS` 现在**随每个 release 产出并有门守着**
+/// （`.github/workflows/package.yml` 的 `Generate SHA256SUMS` + `scripts/verify-packaging.mjs` 的摘要门），
+/// 而**消费侧刻意未接** —— 本枚举因此仍是单变体。判断与依据登记在
+/// [`resolve_expected_digest`] 文档的「第 1 级已产出、消费侧未接」段，不在此重复。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DigestSource {
     /// GitHub release asset 的 `digest` 字段（经 `parse_asset_digest` 解析后放在 `updateInfo.sha256`）。
@@ -544,8 +547,9 @@ impl DigestSource {
     }
 }
 
-/// 期望摘要来源的**优先级序**（靠前者优先）。当前只有一项 —— U3 要加的 `SHA256SUMS` 不是
-/// 「在这里插一行」就能接上的，成因见 [`DigestSource`] 文档的订正段。
+/// 期望摘要来源的**优先级序**（靠前者优先）。当前只有一项：U3 的 `SHA256SUMS` 虽已在发布侧产出，
+/// 消费侧**经判断不接**（依据见 [`resolve_expected_digest`] 文档末节），且它也不是「在这里插一行」
+/// 就能接上的（成因见 [`DigestSource`] 文档的订正段）。
 const EXPECTED_DIGEST_SOURCES: [DigestSource; 1] = [DigestSource::GithubAssetDigest];
 
 /// 一条选定的期望摘要。
@@ -574,6 +578,32 @@ struct ExpectedDigest {
 /// 那里才分得出「发布方写坏了」与「包被篡改」两种文案）。
 ///
 /// **纯函数**（吃 `Value`，无 IO）⇒ 可单测。
+///
+/// # 第 1 级（随包 `SHA256SUMS`）已产出，消费侧**经判断不接**（2026-08-17 登记）
+///
+/// 发布侧已落地：每个 release 都产出 `SHA256SUMS`，缺失/覆盖面不符/摘要不符任一即红
+/// （`.github/workflows/package.yml` + `scripts/verify-packaging.mjs`）。本函数**仍然只看 asset
+/// digest**，是判断结果，不是没做完。三条依据：
+///
+///  1. **增量价值的射程接近空集**。它只在「GitHub 没给 asset `digest`」∩「该 release 有
+///     `SHA256SUMS`」这一个交集里有用。而 `SHA256SUMS` 从本轮才开始产出 ⇒ 有它的 release 都是
+///     此后新发的 ⇒ 那些 release 的 asset `digest` 由 GitHub 在资产上传时算好、随
+///     `update_check` 的同一次响应返回。老 release 两样都没有，接了也救不了。
+///  2. **把它排在 asset digest 之前是拿弱的换强的**。asset `digest` 来自 `api.github.com` 的
+///     JSON，与安装包**不同源**（包走下载域重定向），且由 GitHub 侧对已存字节算出，镜像改不动；
+///     `SHA256SUMS` 是与安装包**同源、同一个 release** 的另一个资产，能替换包的人同样能替换它。
+///     两者防的都只是传输损坏与截断（都不防账号或 TLS 被攻破 —— 那需要签名，公钥内置于应用，
+///     属独立决策，本轮不做，也不假装 SHA 等价于它），而在同一档防护里，同源的那份更容易被一起换掉。
+///  3. **成本不是「插一行」**：要多一次网络往返（多一条会超时/被截断/被限流的失败腿）、要把本函数
+///     从纯函数变成带 IO 的异步函数（现有这套纯函数单测随之作废）、要把清单 URL 从
+///     `check_app_update` 一路穿到这里、还要动前端 `digestSource` 的字面量联合。付这些去覆盖第 1 条
+///     那个近乎空的交集，是负收益。
+///
+/// **若将来要接**：正确形状不是「第 1 级」，而是 asset `digest` **缺失时的惰性回落** ——
+/// 只在真正没摘要那条腿上多花一次往返，好路径一行不动。
+///
+/// **重开这个决定的触发条件**（可观测，不必提前押注）：我们自己发的 release 上出现
+/// `verified:false`（即 GitHub 没给 `digest`，而 `SHA256SUMS` 明明在）。那一刻第 1 条的前提才不成立。
 ///
 /// # Errors
 ///
@@ -991,7 +1021,8 @@ fn cached_download_is_reusable(dest: &Path, expected_sha: Option<&str>) -> bool 
 ///
 /// **完整性**（三级，由强到弱，**逐级都在**）：
 ///  1. 有期望摘要（[`resolve_expected_digest`]，当前只有 GitHub asset `digest`；随包 `SHA256SUMS`
-///     属 U3 未实现）→ sha256 **强校验**，不符即丢弃 tmp、绝不落位（防截断/镜像投毒）；
+///     虽已在发布侧产出，消费侧经判断不接，依据见该函数文档末节）→ sha256 **强校验**，
+///     不符即丢弃 tmp、绝不落位（防截断/镜像投毒）；
 ///  2. 清单声明了 `fileSize` → **等值判据**（[`check_declared_size`]）。这一级是无摘要腿的主防线：
 ///     `fileSize` 来自 GitHub release 清单，镜像改不动；
 ///  3. 兜底 `Content-Length` 完整性（`CoreDownloader` 内）。**它对撒谎方零约束**——那个数就是撒谎方
@@ -3377,6 +3408,77 @@ mod tests {
         assert_eq!(app_update_size_limit(Some(normal)), normal as usize);
     }
 
+    // ── U2：打包体积门 ↔ 客户端写入闸的一致性（D5）───────────────────────────
+
+    /// 打包体积门源码（`scripts/verify-packaging.mjs`），只为**逐字读出它那行常量**。
+    const PACKAGING_GATE_JS: &str = include_str!("../../../scripts/verify-packaging.mjs");
+
+    /// 打包体积门阈值在本仓的**第二份**（单位 MiB），真值在
+    /// `scripts/verify-packaging.mjs` 的 `MAX_UPDATE_ASSET_BYTES`。
+    ///
+    /// D5 拍板的形态是「维护两份 + 一条一致性测试钉死」。两份不是冗余：Rust 侧这一份让本文件能
+    /// 提出一条 JS 侧**提不出**的断言 —— 打包阈值必须待在 [`APP_UPDATE_MAX_BYTES`] 之下。
+    /// 打包侧看不见客户端的写入闸，客户端也读不到打包脚本，只有这里两边都在射程内。
+    const PACKAGING_MAX_UPDATE_ASSET_MIB: u64 = 96;
+
+    /// 从打包门源码里读出 `MAX_UPDATE_ASSET_BYTES = N * 1024 * 1024` 的 `N`。
+    ///
+    /// 取不到就返回 `None` ⇒ 调用方**转红**。这是刻意的失败方向：判据取不到时若默认「没变」，
+    /// 一次 JS 侧改写形态（比如换成裸字面量）就会让这条一致性测试**静默失效**，
+    /// 而它看起来还是绿的 —— 那正是本测试要防的那类事。
+    fn packaging_gate_mib_from_js(src: &str) -> Option<u64> {
+        let expr = src
+            .split_once("const MAX_UPDATE_ASSET_BYTES = ")?
+            .1
+            .split_once(';')?
+            .0
+            .trim()
+            .strip_suffix(" * 1024 * 1024")?
+            .trim()
+            .to_string();
+        expr.parse().ok()
+    }
+
+    /// 🟡 **打包体积门的两份常量不得漂开，且它必须待在客户端绝对写入闸之下。**
+    ///
+    /// 两条断言各防一件事：
+    ///  - **漂开**：只改 JS 那一份 ⇒ 本条转红。没有它，「两份」就是两个各说各话的数；
+    ///  - **越顶**：把打包门调到 [`APP_UPDATE_MAX_BYTES`] 之上 ⇒ 本条转红。那种配置下打包门会
+    ///    放行一个**客户端结构性下不动**的包（写入闸在 512 MiB 处拒，用户侧表现为更新永远失败），
+    ///    等于把 U1 那个缺陷换了个数量级重来一遍。
+    ///
+    /// 还有一条**下界**：门不得低于真实产物量级（实测最大 51.72 MiB，mac-arm64 dmg），
+    /// 否则每次发布都假红 —— 一道恒红的门与一道没有的门，信息量一样是零。
+    ///
+    /// **变异探针**：把 `MAX_UPDATE_ASSET_BYTES` 改成 `128 * 1024 * 1024` 而不动这里 ⇒ 第 1 条转红；
+    /// 改成 `1024 * 1024 * 1024` 并同步改这里 ⇒ 第 2 条转红；同步改成 `32` ⇒ 第 3 条转红。
+    #[test]
+    fn packaging_size_gate_is_mirrored_and_stays_under_the_client_write_gate() {
+        let js = packaging_gate_mib_from_js(PACKAGING_GATE_JS).expect(
+            "读不出 verify-packaging.mjs 的 MAX_UPDATE_ASSET_BYTES —— \
+             判据取不到时必须红，不能默认「没变」（形态要求：`N * 1024 * 1024`）",
+        );
+        assert_eq!(
+            js, PACKAGING_MAX_UPDATE_ASSET_MIB,
+            "打包体积门的两份常量漂开了：JS 侧 {js} MiB / 本文件 {PACKAGING_MAX_UPDATE_ASSET_MIB} MiB。\
+             D5 的形态是「维护两份 + 本条钉死」，改一处必须同步改另一处"
+        );
+        // 下面两条一律拿**从 JS 读出来的那个数**去判，不拿本文件的镜像：真正在 CI 上拦包的是
+        // JS 那一份，镜像只是用来发现漂开。拿镜像判等于自己判自己（clippy 也会直接指出这是
+        // 一条常量断言）。
+        assert!(
+            js * 1024 * 1024 < APP_UPDATE_MAX_BYTES,
+            "打包门（{js} MiB）越过了客户端绝对写入闸（{} MiB）：\
+             那样打包门会放行一个客户端根本下不动的包，用户侧表现为更新永远失败",
+            APP_UPDATE_MAX_BYTES / 1024 / 1024
+        );
+        assert!(
+            js >= 64,
+            "打包门（{js} MiB）卡到了真实产物量级（实测最大 51.72 MiB）附近：\
+             那会让每次发布都假红，与没有这道门等价"
+        );
+    }
+
     // ── App 更新包：期望摘要的来源（D1）─────────────────────────────────────
 
     /// 摘要来源按优先级挑；全无 → `Ok(None)`（**不拒装**，降级为弱校验并如实标记未校验）。
@@ -3439,13 +3541,18 @@ mod tests {
     /// 是另一次网络下载 + 按资产名查表（详见 [`DigestSource`] 文档）。
     ///
     /// 所以本条现在只钉两件**今天为真**的事：表是单元素的（不留假接线），以及每一级都自报身份。
-    /// U3 落地时**本条会被改**，那是预期之内的，不是回归。
+    ///
+    /// # U3 落地后本条**仍然为真**（2026-08-17）
+    ///
+    /// 前身预期「U3 落地时本条会被改」。实际落地的是「发布侧产出 `SHA256SUMS` + 门」，
+    /// 消费侧经判断**不接**（三条依据见 [`resolve_expected_digest`] 文档末节），故表仍是单元素。
+    /// 这条断言因此从「本批还没做」变成「做过判断后的现状」—— 将来真要接第 2 个来源时它才会红。
     #[test]
     fn digest_source_table_is_the_single_current_source() {
         assert_eq!(
             EXPECTED_DIGEST_SOURCES,
             [DigestSource::GithubAssetDigest],
-            "本批只实现 GitHub asset digest 一级（SHA256SUMS 属 U3，刻意未实现，不留假接线）"
+            "消费侧只认 GitHub asset digest 一级（随包 SHA256SUMS 已产出但经判断不接，不留假接线）"
         );
         // 每个来源都必须自报字段名与标识（新增一级时忘了补 → 编译期就红）。
         for src in EXPECTED_DIGEST_SOURCES {

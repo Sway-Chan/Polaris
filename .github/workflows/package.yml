@@ -532,7 +532,9 @@ jobs:
 
       # Linux 产物命名 ↔ updater 选包契约（与 mac / windows 腿对称）。
       # deb 与 AppImage 各自对应 updater 的 installed / loose 形态，掉任一个该形态就选不到包。
-      - name: Verify Linux update-asset naming contract
+      # 同一步还跑**体积门**（U2）：射程恰为 updater 会命中的那些资产，上限见 verify-packaging.mjs
+      # 的 MAX_UPDATE_ASSET_BYTES。挂在这里而不是新开 job —— 目标资产在这一步已经解析出来了。
+      - name: Verify Linux update-asset naming and size contract
         if: runner.os == 'Linux'
         shell: bash
         run: node scripts/verify-packaging.mjs assets --label linux --dir target/release/bundle
@@ -647,7 +649,9 @@ jobs:
 
       # 产物命名 ↔ updater 选包规则的机器断言（与 github.rs::find_suitable_update_asset 同口径）：
       # 本 job 的 dmg 必须恰好命中本架构、且不得出现另一架构 tag。改名步一旦失效即红。
-      - name: Verify macOS update-asset naming contract
+      # 同一步还跑**体积门**（U2）：dmg 是 U1 那个缺陷的现场（52 MiB 撞 16 MiB 下载闸），
+      # 这一腿的体积从此每次构建都自曝，不必等 tag 才发现。
+      - name: Verify macOS update-asset naming and size contract
         if: runner.os == 'macOS'
         shell: bash
         run: node scripts/verify-packaging.mjs assets --label ${{ matrix.label }} --dir target/${{ matrix.rust_target }}/release/bundle/dmg
@@ -776,7 +780,10 @@ jobs:
       # 产物命名 ↔ updater 选包规则的机器断言（与 github.rs::find_suitable_update_asset 同口径）：
       # dist-win/ 下「`.exe` 且名含 `win`」必须**恰好一个**且含 `setup`。
       # 0 个 = 用户永远收不到更新且静默；>1 个 = 选哪个取决于 release 资产顺序，不确定。
-      - name: Verify Windows update-asset naming contract
+      # 同一步还跑**体积门**（U2），射程只有 bootstrapper：`*-offline-setup.exe`（约 240 MiB）
+      # 名字里没有 `win`，updater 结构性选不到它，把它一并卡掉只会让门第一次跑就假红。
+      # 便携 zip 打在仓库根、不在 dist-win 里，它的体积由聚合口径（--label release）覆盖。
+      - name: Verify Windows update-asset naming and size contract
         if: runner.os == 'Windows'
         shell: bash
         run: node scripts/verify-packaging.mjs assets --label windows --dir dist-win
@@ -863,10 +870,45 @@ jobs:
         shell: bash
         run: find dist-release -type f | sort
 
-      # 上传**之前**先验命名契约：契约不成立就不该产生一个坏 release 再去修。
+      # ── U3：随 release 发布 SHA256SUMS ──
+      #
+      # 位置必须在**下一步那道门之前**：门会重算 dist-release 里每个资产的 sha256 与本文件双向比对，
+      # 故「生成步骤静默失败」（没跑 / 漏了某个平台的资产 / 写出个空文件）在 release 建出来之前就红。
+      # 一个静默不产出的生成步骤与一个产出正确的生成步骤，在 CI 日志里长得一模一样 —— 门是唯一的分辨器。
+      #
+      # 覆盖面 = dist-release 下**除本文件外的全部文件**，不止 updater 目标：手动下载离线版 / 便携版的
+      # 用户同样要校验，且门那侧是**双向**覆盖判据（少一条、多一条都红），两边口径必须逐字一致。
+      #
+      # 🔴 诚实边界（不夸大）：`SHA256SUMS` 与安装包走**同一 HTTPS 通道、同一 release、同一发布账号**，
+      #    能替换安装包的人同样能替换它。它防的是**传输损坏与截断**，**不防**「GitHub 账号或 TLS 被攻破」。
+      #    真正的端到端完整性需要签名（公钥内置于应用），那是独立决策，本轮不做，也不假装 SHA 等价于它。
+      #
+      # 客户端**当前不消费**本文件（期望摘要仍只取 GitHub asset `digest`，理由见
+      # `src-tauri/src/commands/updater.rs` 的 `resolve_expected_digest` 文档「第 1 级已产出、消费侧未接」段）。
+      # 本步与下一道门的价值不依赖客户端接不接：它让「随包发摘要」这条承诺在真实 release 上可被机器核对。
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/dist-release"
+          # 清单先写在 dist-release **之外**再搬进来：直接在目录里写会被同一条 find 捞进自己的清单
+          # （`find` 与 `while` 是管道的并发两端，文件何时出现在扫描面上不确定）。
+          sums="$(mktemp)"
+          find . -type f ! -name SHA256SUMS | sort | while IFS= read -r f; do
+            # 条目名取 **basename**：release 里的资产是平铺的，而 dist-release 下平铺与嵌套并存
+            # （upload-artifact v4 按实际命中文件的最近公共祖先建树）。判据侧同口径。
+            printf '%s  %s\n' "$(sha256sum "$f" | cut -d' ' -f1)" "$(basename "$f")"
+          done > "$sums"
+          [ -s "$sums" ] || { echo "::error::dist-release/ 下没有可摘要的文件 —— 生成步骤等于没跑"; exit 1; }
+          mv "$sums" SHA256SUMS
+          chmod 644 SHA256SUMS
+          cat SHA256SUMS
+
+      # 上传**之前**先验命名契约 + 两道内容门：契约不成立就不该产生一个坏 release 再去修。
       # 聚合口径（--label release）≠ per-job 口径：per-job 断言「本 job 不得出现另一架构」，
       # 聚合侧两架构本就都在，故用独立分支断言「每架构恰一个」。
-      - name: Verify release asset naming contract
+      # 本步是**唯一**能判 SHA256SUMS 内容的地方（它只在聚合侧存在），也是体积门的聚合口径。
+      - name: Verify release asset naming, size and digest contract
         shell: bash
         # `--dir` 按仓库根解析（见下方 publish 步注释），故用 $GITHUB_WORKSPACE 显式锚定。
         run: node "$GITHUB_WORKSPACE/scripts/verify-packaging.mjs" assets --label release --dir "$GITHUB_WORKSPACE/dist-release"
@@ -881,6 +923,8 @@ jobs:
 
           # 显式收集文件列表：`dist-release/*` 会把目录喂给 gh 导致报错，且空目录时
           # 通配符原样传入会静默上传一个名为 `dist-release/*` 的不存在文件。
+          # 上一步生成的 `SHA256SUMS` 就在 dist-release 里，故**由这条 find 一并带上**，
+          # 不需要（也不该）单列一次上传：单列会多出一条「忘了跟着改」的腿。
           mapfile -t files < <(find dist-release -type f | sort)
           if [ "${#files[@]}" -eq 0 ]; then
             echo "::error::dist-release/ 下没有任何文件 —— 四个打包 job 的 artifact 未下载成功"
@@ -923,6 +967,14 @@ jobs:
       # `.N` 重复项由 verify-packaging 的 release 分支单独查 —— 它逃过所有扩展名断言
       # （`foo.dmg.1` 不 endsWith('.dmg')），不单独查就抓不到。
       #
+      # ⚠️ `--names-only`：本步喂的是按资产名造的**同名空文件**（不回下 ~600 MB 真产物），
+      #    故体积门与 SHA256SUMS 的**内容**比对在这里结构性不可判定，显式跳过并在输出里如实标注。
+      #    仍然判得了、也确实在判的是「`SHA256SUMS` 有没有真的进 release」——上传掉了它就是红。
+      #    不加这个开关的话，本步会拿 0 字节的假文件去比摘要，得到一片与真实状态无关的恒红。
+      #    **未被本步覆盖**（如实登记）：资产在上传途中被截断 / 被换成别的字节。上传前那道门验的是
+      #    本地文件，本步验的是名字，两者之间那段没有判据；补它需要拿 GitHub 侧的 asset digest 或
+      #    size 回比，属独立一项，本轮不做。
+      #
       # 本步是**转公开前的最后一道闸门**：release 此时仍是草稿，验不过就停在草稿态，不会公开半套。
       - name: Verify published release assets
         shell: bash
@@ -951,7 +1003,7 @@ jobs:
           while IFS= read -r name; do
             : > "$outdir/$name"
           done < published-names.txt
-          node "$GITHUB_WORKSPACE/scripts/verify-packaging.mjs" assets --label release --dir "$outdir"
+          node "$GITHUB_WORKSPACE/scripts/verify-packaging.mjs" assets --label release --dir "$outdir" --names-only
 
       # 验过才转公开。
       #

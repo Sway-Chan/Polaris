@@ -1046,9 +1046,14 @@ export const updateApi = {
    * 信任根。复用本地已有包的那条路径同样带这个字段（它恰恰是靠这条摘要比中的）。
    *
    * 类型写成**字面量联合**而不是 `string`：后端的信任根是闭集（`DigestSource` 枚举，当前只有
-   * `updater.rs` 的 `Self::GithubAssetDigest => "githubAssetDigest"` 一个变体）。将来 U3 的
-   * `SHA256SUMS` 落地时会多一个来源，届时所有按来源分流的调用点必须被编译器点名——用 `string`
-   * 就等于把那一刻本该编不过的地方全放过去。
+   * `updater.rs` 的 `Self::GithubAssetDigest => "githubAssetDigest"` 一个变体）。将来真加第二个
+   * 来源时，所有按来源分流的调用点必须被编译器点名——用 `string` 就等于把那一刻本该编不过的
+   * 地方全放过去。
+   *
+   * **U3 已落地，但没有给这里添成员**（2026-08-17，订正本段原先的预期）：随包 `SHA256SUMS`
+   * 只落**发布侧**（产出 + 缺失/不符即红的 CI 门），消费侧经判断**不接** —— 依据（增量价值的
+   * 射程近乎空集、同源清单比跨源 asset digest 更弱、成本远不止「插一行」）登记在
+   * `src-tauri/src/commands/updater.rs` 的 `resolve_expected_digest` 文档末节。故本联合仍是单成员。
    *
    * **本字段的后端实现在 `fix(updater): stream the app package to disk instead of buffering it`
    * 那一批**：本文件必须合在它之后，否则这段 JSDoc 是一份假契约（字段声明成可选 ⇒ tsc 全绿，
