@@ -277,19 +277,49 @@ jobs:
         with:
           node-version: '26'
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
+      # pnpm：不再经 pnpm/action-setup@v4（2026-08-17）。被替掉的 action 做的就是「按 version
+      # 装一份 pnpm 并加进 PATH」，`npm install -g` 等价 —— 少一次 action tarball 拉取，
+      # 顺手把版本从浮动的 `9`（= 9.x 最新，当时解析到 9.15.9）钉成精确值，工具链才谈得上可复现。
+      # 放在 Setup Node **之后**：这样 npm 与全局 bin 目录都属于上一步装的 node 26，不跨版本。
+      # ⚠️ 这里是 9 而 `ui.yml` 是 10 —— 这个分歧是既存的，**本次刻意没动**：pnpm 10 默认不跑
+      #    依赖的生命周期脚本，改它会动到出包腿的安装语义，属于另一件事，要单独判。
+      - name: Setup pnpm (pinned)
+        shell: bash
+        env:
+          PNPM_VERSION: '9.15.9'
+        run: |
+          set -euo pipefail
+          npm install -g "pnpm@${PNPM_VERSION}"
+          got="$(pnpm --version)"
+          [ "$got" = "$PNPM_VERSION" ] || {
+            echo "::error::pnpm is '$got', expected '$PNPM_VERSION'"; exit 1; }
 
       - name: Install UI dependencies
         run: pnpm --dir ui install --frozen-lockfile
 
-      # ── Rust toolchain ──
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_targets_extra }}
+      # ── Rust toolchain（2026-08-17：不再经 dtolnay/rust-toolchain@stable，判据同 ci.yml 那段）──
+      # 三个 runner 镜像都自带 rustup 1.29。复刻被替掉那个 composite action 的全部副作用：
+      # `rustup toolchain install <tc> --profile minimal [--target …] --no-self-update`、
+      # `rustup default <tc>`、`CARGO_INCREMENTAL=0`、`CARGO_TERM_COLOR=always`、打印 `rustc -Vv`。
+      # ⚠️ 本腿**不传 components**（原样保留：打包腿不跑 fmt/clippy，那两条在 ci gate 上）。
+      # `--target` 的展开方式与被替掉的 action 逐字同构（逗号切成空格、空值就不出现这个 flag）；
+      # `$flags` 故意不加引号 —— 要的就是词分割，target triple 不含空格。用字符串而不是数组是
+      # 因为 macOS runner 的 /bin/bash 是 3.2，`set -u` 下空数组展开会直接报 unbound variable。
+      - name: Install Rust stable (preinstalled rustup)
+        shell: bash
+        env:
+          RUST_TARGETS_EXTRA: ${{ matrix.rust_targets_extra }}
+        run: |
+          set -euo pipefail
+          extra="${RUST_TARGETS_EXTRA:-}"
+          flags=''
+          for t in ${extra//,/ }; do flags="$flags --target $t"; done
+          # shellcheck disable=SC2086  # 词分割是本意：空值时这个 flag 整体消失，与被替掉的 action 同构
+          rustup toolchain install stable --profile minimal --no-self-update $flags
+          rustup default stable
+          [ -n "${CARGO_INCREMENTAL+set}" ] || echo 'CARGO_INCREMENTAL=0' >> "$GITHUB_ENV"
+          [ -n "${CARGO_TERM_COLOR+set}" ] || echo 'CARGO_TERM_COLOR=always' >> "$GITHUB_ENV"
+          rustc -Vv
 
       # rust-cache 默认键 = job_id + toolchain + 环境哈希，**不含 matrix**。两个 mac job 的 job_id
       # 同为 `package`、runner 与 toolchain 也相同 ⇒ 同键：互相 restore 对方的 target/ 并在 save 上
@@ -311,14 +341,77 @@ jobs:
             libdbus-1-dev pkg-config
 
       # ── 原生构建前置：protoc（singbox-grpc build.rs 三平台都要）+ Windows NASM（boring-sys2/BoringSSL 汇编）──
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      #
+      # 两处都在 2026-08-17 换成「固定版本 + 固定 URL + sha256」的自装，不再拉 action：
+      # 完整判据（为什么是这个版本、为什么升版本零行为差、sha256 从哪来、代价是什么）写在
+      # `ci.yml` 的同名两步上方，**改这里之前先读那段**。两个文件的常量必须同时改，改一处就漂移。
+      # 一句话摘要：`arduino/setup-protoc@v3` 同时踩了「拉 action tarball 被 codeload 429」和
+      # 「运行期查 releases 列表解析 `23.x` 失败」两个失效点；`ilammy/setup-nasm@v1` 则是全程零校验。
+      - name: Install protoc (pinned URL + sha256)
+        shell: bash
+        env:
+          PROTOC_VERSION: '35.1'
+        run: |
+          set -euo pipefail
+          case "${RUNNER_OS}-${RUNNER_ARCH}" in
+            Linux-X64)   asset='linux-x86_64'; sha256='6930ebf62bd4ea607b98fff052596c6ee564b9835b4ce172c75a3f53ae9d91b7' ;;
+            Windows-X64) asset='win64';        sha256='5d3ff218d7d91eea95f7569bcb5a98f3030f8996d44151279d9772edcff76082' ;;
+            macOS-ARM64) asset='osx-aarch_64'; sha256='193289af0470c6a1aada357d4fba0bbf8d78bfaac8b5e42ca30af2ef75583de2' ;;
+            macOS-X64)   asset='osx-x86_64';   sha256='537d73604a344ded6fc94e98e07e529d4fe3e4a0b09e59905353950fafc2a1f7' ;;
+            *) echo "::error::no pinned protoc for ${RUNNER_OS}-${RUNNER_ARCH}; add the asset name + sha256 above"; exit 1 ;;
+          esac
+          if [ "$RUNNER_OS" = 'Windows' ]; then tmp="$(cygpath -u "$RUNNER_TEMP")"; else tmp="$RUNNER_TEMP"; fi
+          zip="${tmp}/protoc-${PROTOC_VERSION}-${asset}.zip"
+          dest="${tmp}/protoc-${PROTOC_VERSION}"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 20 -o "$zip" \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${asset}.zip"
+          if command -v sha256sum >/dev/null 2>&1; then echo "${sha256}  ${zip}" | sha256sum -c -
+          else                                          echo "${sha256}  ${zip}" | shasum -a 256 -c -; fi
+          rm -rf "$dest"
+          if command -v unzip >/dev/null 2>&1; then unzip -q -o "$zip" -d "$dest"
+          elif command -v 7z >/dev/null 2>&1;   then 7z x -y -o"$dest" "$zip" >/dev/null
+          else echo "::error::neither unzip nor 7z available on ${RUNNER_OS}"; exit 1; fi
+          chmod +x "$dest"/bin/*
+          if [ "$RUNNER_OS" = 'Windows' ]; then cygpath -w "$dest/bin" >> "$GITHUB_PATH"
+          else                                  echo "$dest/bin" >> "$GITHUB_PATH"; fi
+          echo "PROTOC_EXPECT=libprotoc ${PROTOC_VERSION}" >> "$GITHUB_ENV"
 
-      - name: Install NASM (Windows — boring-sys2/BoringSSL asm)
+      - name: Install NASM (Windows — pinned URL + sha256)
         if: runner.os == 'Windows'
-        uses: ilammy/setup-nasm@v1
+        shell: bash
+        env:
+          NASM_VERSION: '2.16.01'
+        run: |
+          set -euo pipefail
+          sha256='029eed31faf0d2c5f95783294432cbea6c15bf633430f254bb3c1f195c67ca3a'
+          tmp="$(cygpath -u "$RUNNER_TEMP")"
+          zip="${tmp}/nasm-${NASM_VERSION}-win64.zip"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 20 -o "$zip" \
+            "https://www.nasm.us/pub/nasm/releasebuilds/${NASM_VERSION}/win64/nasm-${NASM_VERSION}-win64.zip"
+          echo "${sha256}  ${zip}" | sha256sum -c -
+          rm -rf "${tmp}/nasm-${NASM_VERSION}"
+          7z x -y -o"$tmp" "$zip" >/dev/null
+          cygpath -w "${tmp}/nasm-${NASM_VERSION}" >> "$GITHUB_PATH"
+          echo "NASM_EXPECT=${NASM_VERSION}" >> "$GITHUB_ENV"
+
+      # 断言的理由与写法同 ci.yml 那步：静默 no-op 的安装步骤比没有更坏，且期望值来自上面两步
+      # 写进 $GITHUB_ENV 的变量 —— 哪一步没执行，这里就因 `set -u` 直接红，「没执行」自曝。
+      - name: Assert pinned tools resolve on PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "protoc → $(command -v protoc)"
+          got="$(protoc --version)"
+          [ "$got" = "$PROTOC_EXPECT" ] || {
+            echo "::error::protoc on PATH is '$got', expected '$PROTOC_EXPECT'"; exit 1; }
+          if [ "$RUNNER_OS" = 'Windows' ]; then
+            echo "nasm → $(command -v nasm)"
+            got="$(nasm -v)"
+            case "$got" in
+              "NASM version ${NASM_EXPECT} "*) ;;
+              *) echo "::error::nasm on PATH is '$got', expected NASM version ${NASM_EXPECT}"; exit 1 ;;
+            esac
+          fi
 
       # ── 资产拉取（SHA256 钉扎，供应链防护核心）──
       # 三平台一律全拉（不按 runner 过滤）——支持 Linux 上交叉构建。
