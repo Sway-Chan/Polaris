@@ -94,4 +94,5 @@ objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSEvent", "NSRe
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSUserDefaults", "NSString", "NSArray", "NSObject"] }
 
 [dev-dependencies]
+tauri = { version = "2", features = ["test"] }
 tokio = { version = "1", features = ["test-util"] }
