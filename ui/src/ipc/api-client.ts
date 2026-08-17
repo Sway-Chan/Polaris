@@ -996,6 +996,33 @@ export interface UpdateInfo {
 }
 
 /**
+ * 进度帧随行的清单：`UpdateInfo` **减去**两个只在「已发现新版本」那一屏渲染、且体积无上限的
+ * 字段（单一真值在 Rust 的 `commands/updater.rs::PROGRESS_MANIFEST_OMITTED`，两侧由
+ * `contracts/update-progress-payload.test.ts` 对拍）。
+ *
+ * # 为什么不直接用 `UpdateInfo`
+ *
+ * 进度帧里那两个键**根本不存在**。写 `UpdateInfo` 就是让类型撒谎（声明成必有的 `string`），
+ * 下一个人拿 `updateInfo.releaseNotes.length` 就会在运行期炸。写成「其余照旧 + 这两个可选」
+ * 之后，类型说的就是运行期真有的东西；`available` 那一屏本就写着 `{updateInfo.releaseNotes && …}`，
+ * 可选化后逐字不变。
+ *
+ * # 为什么剥的是这两个
+ *
+ * `releaseNotes` = GitHub release body 原文，无截断（单 body 上限 125 KB）；一次下载最多 ~100 帧
+ * × 所有窗口 ⇒ 20 KB 的说明会变成约 2 MB 在 webview 主线程反序列化。**这是及时性问题**
+ * （进度条要「现在」到），不是省内存，故不受「不为省内存牺牲准确性」那条约束保护；而准确性
+ * 零损失 —— 这两个字段在 progress 可达的四个态里一处都不渲染，`available` 也不可能由进度帧进入。
+ * `title` 全仓零消费点。
+ */
+export interface UpdateProgressManifest extends Omit<UpdateInfo, 'releaseNotes' | 'title'> {
+  /** 只有 `updateApi.check()` 那条腿带；进度帧刻意不带（见上）。 */
+  releaseNotes?: string;
+  /** 同上。全仓零消费点，剥掉只是顺手。 */
+  title?: string;
+}
+
+/**
  * 安装前必须告知用户的事项（后端 `update_install::InstallAdvisory` 的 key）。
  *
  * 三者都是「OS 会拦一道，用户需要知道怎么点」——**应用内消不掉的必须提前讲清楚**：
@@ -1018,6 +1045,18 @@ export interface UpdateInstallResult {
   detail?: string;
 }
 
+/**
+ * `update:progress` 的一帧（= Rust `commands/updater.rs::progress_payload`，字段集由
+ * `contracts/update-progress-payload.test.ts` 双向对拍）。
+ *
+ * # 帧里为什么带着「随行事实」而不只是一个状态
+ *
+ * 本事件走 `events::broadcast` fan-out 给**所有**窗口 ⇒ 别的窗口发起的下载（启动自动下载腿
+ * `startup_tasks::spawn_auto_download`、弹窗「更新/重试」腿 `update_popup_action`）同样会把
+ * **设置页**推进 downloading/downloaded/error，而设置页**拿不到那次 invoke 的回包**。
+ * 帧里只有状态时，设置页只能拿本页上一次检查的结果去描述别人刚下的那个包 —— 版本号、体积、
+ * 安装路径全都不是这条路径上真实发生的那件事。故状态所依赖的数据必须与状态同帧同行。
+ */
 export interface UpdateProgress {
   status:
     | 'idle'
@@ -1030,6 +1069,23 @@ export interface UpdateProgress {
   percentage: number;
   message: string;
   error?: string;
+  /**
+   * 本帧描述的那份包的发布清单（**每一帧都有**：Rust 侧它是 `progress_payload` 的形参，
+   * 不是可选项）。设置页据此渲染版本号 / 体积 / 预发布档次，并在 error 态拿它重试。
+   *
+   * 是 [`UpdateProgressManifest`] 而不是 `UpdateInfo`：帧里剥掉了 `releaseNotes` / `title`，
+   * 成因与判据见该类型。
+   */
+  updateInfo?: UpdateProgressManifest;
+  /** 已落位的安装包路径；**仅 `downloaded` 帧有**（Rust `ProgressStage::Downloaded` 的必填字段）。 */
+  filePath?: string;
+  /**
+   * 已收字节；**仅 `downloading` 帧有**。是下载回调给的原值，不是从 `percentage` 反推的估算
+   * （百分比被夹在 `1..=99` 且按整数去重，反推出来的字节数每一帧都是错的）。
+   */
+  receivedBytes?: number;
+  /** 摘要是否逐字节校验过；**仅 `downloaded` 帧有**（与 `updateApi.download()` 回包的同名字段同源）。 */
+  verified?: boolean;
 }
 
 export const updateApi = {
@@ -1059,7 +1115,7 @@ export const updateApi = {
    * 那一批**：本文件必须合在它之后，否则这段 JSDoc 是一份假契约（字段声明成可选 ⇒ tsc 全绿，
    * 而运行期拿到的是 `undefined` 不是 `null`，任何 `=== null` 的分支恒不成立）。
    */
-  async download(updateInfo: UpdateInfo): Promise<{
+  async download(updateInfo: UpdateProgressManifest): Promise<{
     success: boolean;
     filePath?: string;
     verified?: boolean;

@@ -119,10 +119,149 @@ const CODE_CORE_DIR_UNAVAILABLE: &str = "CORE_DIR_UNAVAILABLE";
 /// 结构化错误码：检查更新**整体超时**（≠ 网络失败：重试大概率还是超时，UI 应引导配置加速）。
 const CODE_CHECK_TIMEOUT: &str = "UPDATE_CHECK_TIMEOUT";
 
-/// 广播 App 更新进度（`update:progress`；载荷与前端 `UpdateProgress` 契约逐字对齐）。
+/// 一帧 App 更新进度**及其随行事实**。
 ///
-/// 形状收在此一处：`{status, percentage, message, error?}`。前端 `SettingsUpdate.tsx` 的
-/// `onProgress` 据 `status` 分流 downloading/downloaded/error 三态。
+/// # 为什么是枚举，而不是 `(status, percentage, path, bytes, …)` 一串平行形参
+///
+/// `update:progress` 走 [`crate::events::broadcast`] fan-out 给**所有**窗口，于是「别的窗口发起的
+/// 下载」（启动腿 `startup_tasks::spawn_auto_download`、弹窗腿 `update_popup_action`）同样会把
+/// **设置页**推进 downloading/downloaded/error。而在本类型出现之前，事件只搬「状态」、不搬状态
+/// 所依赖的数据，设置页只能拿本页上一次检查的结果去描述别人刚下的那个包 —— 后果是三条已核实的
+/// 缺陷：「重启并安装」按钮首行 `if (!downloadedPath) return` 恒早退（哑键）、「重试」按钮首行
+/// `if (!updateInfo) return` 恒早退（哑键）、卡片上的版本号与体积写的是另一个版本。
+///
+/// 修法是让**态与其随行事实同行**，并且由**类型**保证同行：`Downloaded` 不给落位路径就构造不
+/// 出来，`Downloading` 不给已收字节就构造不出来。平行形参表达不了这条 —— `("downloaded", 100,
+/// None, None)` 照样编译通过，只能另加一道源码级门去数，而那种门是后加的、可被新写法绕开。
+///
+/// # ⚠️ 类型挡不住的三样（如实登记，2026-08-17 复审补）
+///
+/// 「必填」只保证**字段在**，不保证**值可用**。以下三条今天在生产上都不可达，方向也安全，
+/// 但别把本类型读成「构造得出来就一定对」：
+///
+///  1. `Downloaded { path: Path::new("") }` —— 空串照样是合法的 `&Path`，而前端
+///     `if (!downloadedPath) return` 对空串同样早退 ⇒ 哑键原样复发。生产的两个构造点传的都是
+///     `&dest`（`dir.join(&file_name)`，`file_name` 经 `unwrap_or_else` 兜底非空），够不着。
+///     要挡得住得上 newtype（`NonEmptyPath`），代价与收益不成比例。
+///  2. `Downloading { percentage: 200 }` —— [`stage_facts`] 原样透传。生产只有两个来源：字面量
+///     `0`，与 [`progress_percent`] 的 `clamp(1, 99)`。同上，挡它要 newtype。
+///  3. **给已有变体加字段**曾经会被 `..` 静默吃掉（三处解构都写 `{ .., }` ⇒ 加字段三处全不红、
+///     载荷里不出现、跨语言对拍也不红）。**这一条已修**：三处解构一律写成逐字段绑定
+///     （不需要的写 `_`），加字段现在是编译错误。「加变体被挡住了、加字段没有」这个不对称
+///     由此消掉 —— 留这段是为了让下一个想图省事改回 `..` 的人看见代价。
+#[derive(Clone, Copy)]
+enum ProgressStage<'a> {
+    /// 下载中：本帧的百分比 + **已收字节**（下载刚开始那一发是 `0 / 0`）。
+    Downloading { percentage: u8, received: u64 },
+    /// 已落位：包在盘上的路径 + 摘要是否逐字节校验过（与 `update_download` 回包的 `verified`
+    /// 同一真值）。**路径是必填的**：设置页的「重启并安装」拿的就是它。
+    Downloaded { path: &'a Path, verified: bool },
+    /// 失败：成因文案（今天仍是硬编码中文，见 `crate::i18n` 模块文档登记的既存出口 #1）。
+    Failed(&'a str),
+}
+
+/// 纯派生：一帧的 `(status, percentage, message)`。事件载荷与弹窗镜像共用同一份派生 ——
+/// 两处各写一遍必然漂出「设置页说 100%、弹窗说 99%」这种同源不同话。
+///
+/// `percentage` 在两个终态上是**由类型定死的**：`Downloaded` 恒 100、`Failed` 恒 0，
+/// 调用点没有把它写错的余地（此前是每个调用点自己传一个数）。
+///
+/// **不用 `..` 通配**（本函数与 [`progress_payload`] 及其行为门的解构一律逐字段写）：`..` 会把
+/// 「给已有变体新加一个字段」静默吃掉 —— 三处都不红、载荷里不出现、跨语言对拍也不红。写成
+/// `received: _` 之后，加字段是编译错误。
+const fn stage_facts<'a>(stage: ProgressStage<'a>) -> (&'static str, u8, &'a str) {
+    match stage {
+        ProgressStage::Downloading {
+            percentage,
+            received: _,
+        } => ("downloading", percentage, ""),
+        ProgressStage::Downloaded {
+            path: _,
+            verified: _,
+        } => ("downloaded", 100, ""),
+        ProgressStage::Failed(msg) => ("error", 0, msg),
+    }
+}
+
+/// 进度帧**不带**的清单字段（其余一律原样带过）。
+///
+/// # 为什么是「剥两个」而不是「留几个」
+///
+/// 剥除表的失效方向是**多带**（上游将来加一个大字段没被剥 ⇒ 帧胖了，性能退化，正确性零损失）；
+/// 白名单的失效方向是**漏带**（消费方要的字段没在表里 ⇒ 「重试」重新变哑键、卡片又开始显示别的
+/// 版本）—— 后者正是本批立项要修的那三条缺陷。判据面同样是枚举，但两者的**失效代价不对称**，
+/// 故取失效安全的那一侧。
+///
+/// 逐条依据（均已核实，非估算）：
+///  - `releaseNotes` = GitHub release body 原文，**无截断**（GitHub 单 body 上限 125 KB）。它只在
+///    「已发现新版本」那一屏渲染（`SettingsUpdate.tsx` 的 `available` 态，且本就写着
+///    `{updateInfo.releaseNotes && …}`），而 `available` **不可能**由进度帧进入 ——
+///    `PROGRESS_CARD_RULE` 的取值里没有它，两侧状态集合由跨语言门对拍。
+///  - `title` 全仓**零消费点**（前端 grep 已核：`title:` 的命中全是 i18n 对话框标题）。
+///
+/// 不剥的后果是具体的：一次下载最多 ~100 帧 × 所有窗口，20 KB 的 release notes ⇒ 约 2 MB 在
+/// webview 主线程反序列化。**这是及时性问题，不是省内存**：进度条本身就是要「现在」到。
+const PROGRESS_MANIFEST_OMITTED: [&str; 2] = ["releaseNotes", "title"];
+
+/// 取清单在进度帧里的投影：删掉 [`PROGRESS_MANIFEST_OMITTED`]，**其余一个字段都不动**。
+///
+/// 非对象（理论上不可达：三条调用腿传的都是 `update_check` 的 `updateInfo`）原样返回 ——
+/// 宁可把说不清的东西原样递过去，也不伪造一个空对象。
+fn progress_manifest(info: &Value) -> Value {
+    let Some(obj) = info.as_object() else {
+        return info.clone();
+    };
+    let mut out = obj.clone();
+    for key in PROGRESS_MANIFEST_OMITTED {
+        out.remove(key);
+    }
+    Value::Object(out)
+}
+
+/// 纯函数：把一帧 + 它描述的那份发布清单拼成 `update:progress` 的载荷。
+///
+/// 形状：`{status, percentage, message, updateInfo, error?, receivedBytes?, filePath?, verified?}`
+/// （与前端 `UpdateProgress` 契约逐字对齐；两侧的字段集由
+/// `ui/src/contracts/update-progress-payload.test.ts` 做**双向**对拍）。
+///
+/// `updateInfo` 恒在：它是形参而不是可选项，故不存在「发了个态却没说是哪份包」的帧。带的是
+/// [`progress_manifest`] 的投影（剥掉两个只在 `available` 那一屏渲染、且体积无上限的字段），
+/// 其余字段一律原样 —— 「不丢字段」在剩下的字段上仍逐字成立。
+///
+/// 抽成纯函数是为了**可测**：[`emit_progress`] 持 `AppHandle`，单测构造不出 Tauri 运行时，
+/// 判据留在里面就只剩源码级守卫，而那守得住「写没写那一行」，守不住「写出来的是什么」。
+fn progress_payload(info: &Value, stage: ProgressStage<'_>) -> Value {
+    let (status, percentage, message) = stage_facts(stage);
+    let mut payload = json!({
+        "status": status,
+        "percentage": percentage,
+        "message": message,
+        // 随行事实之一：这一帧描述的是**哪一份包**。设置页据此渲染版本号 / 体积 / 预发布档次，
+        // 并在 error 态拿它重试 —— 没有它，那些数字说的是本页上一次检查的另一个版本。
+        "updateInfo": progress_manifest(info),
+    });
+    if !message.is_empty() {
+        payload["error"] = Value::String(message.to_string());
+    }
+    // 逐字段解构（不用 `..`）：给变体加字段时这里必须显式表态，否则编译红。成因见
+    // [`ProgressStage`] 文档「类型挡不住的三样」第 3 条。
+    match stage {
+        ProgressStage::Downloading {
+            received,
+            percentage: _,
+        } => {
+            payload["receivedBytes"] = Value::from(received);
+        }
+        ProgressStage::Downloaded { path, verified } => {
+            payload["filePath"] = Value::String(path.to_string_lossy().into_owned());
+            payload["verified"] = Value::Bool(verified);
+        }
+        ProgressStage::Failed(_) => {}
+    }
+    payload
+}
+
+/// 广播 App 更新进度（`update:progress`）。
 ///
 /// # 同一份进度也镜像进 mini 弹窗
 ///
@@ -131,18 +270,15 @@ const CODE_CHECK_TIMEOUT: &str = "UPDATE_CHECK_TIMEOUT";
 /// `progress`/`done`/`error` 三态**唯一**的产地 —— 在此之前全仓只有 `remind`
 /// （`update_popup_show`）能产出，于是弹窗里点「更新」后窗内零反馈、`PopupAction::Cancel`
 /// （仅 Progress 合法）结构性不可达。
-fn emit_progress(app: &AppHandle, status: &str, percentage: u8, error: &str) {
-    let mut payload = json!({
-        "status": status,
-        "percentage": percentage,
-        "message": error,
-    });
-    if !error.is_empty() {
-        payload["error"] = Value::String(error.to_string());
-    }
-    crate::events::broadcast(app, crate::events::channel::EVENT_UPDATE_PROGRESS, payload);
+fn emit_progress(app: &AppHandle, info: &Value, stage: ProgressStage<'_>) {
+    let (status, percentage, message) = stage_facts(stage);
+    crate::events::broadcast(
+        app,
+        crate::events::channel::EVENT_UPDATE_PROGRESS,
+        progress_payload(info, stage),
+    );
 
-    if let Some(st) = popup_state_for(status, percentage, error) {
+    if let Some(st) = popup_state_for(status, percentage, message) {
         push_popup_state(app, st);
     }
 }
@@ -236,8 +372,13 @@ fn progress_percent(received: u64, expected: Option<u64>, last_pct: u8) -> Optio
 /// 构造下载进度回调：把 [`progress_percent`] 的判定接到 [`emit_progress`] 上。
 ///
 /// 回调在下载 task 线程跑，故用 `Arc` + 原子游标（不是 `&mut`）。
+///
+/// `info` 按值收下（下载 task 的生命周期与本次调用解耦，借不了栈上的那份）——**一次下载克隆一次**，
+/// 不是一帧一次。中间帧带的是回调给的 `received` 原值，**不是从百分比反推**的估算：百分比被
+/// [`progress_percent`] 夹在 `1..=99` 且按整数去重，反推出来的字节数在每一帧上都是错的。
 fn download_progress_emitter(
     app: &AppHandle,
+    info: Value,
 ) -> std::sync::Arc<crate::runtime::http::DownloadProgressFn> {
     use std::sync::atomic::{AtomicU8, Ordering};
     let app = app.clone();
@@ -246,7 +387,14 @@ fn download_progress_emitter(
         let prev = last.load(Ordering::Relaxed);
         if let Some(pct) = progress_percent(received, expected, prev) {
             last.store(pct, Ordering::Relaxed);
-            emit_progress(&app, "downloading", pct, "");
+            emit_progress(
+                &app,
+                &info,
+                ProgressStage::Downloading {
+                    percentage: pct,
+                    received,
+                },
+            );
         }
     })
 }
@@ -923,7 +1071,7 @@ enum LandingOutcome {
 /// # 为什么这一步必须是可注入的运行时判据，而不是一条文本守卫
 ///
 /// 「`downloaded` 只在 rename 成功之后发」此前由一条**文本下标比较**守着
-/// （`promote_staged(` 的位置 < `emit_progress("downloaded")` 的位置）。那条守卫表达不了
+/// （`promote_staged(` 的位置 < 发 `ProgressStage::Downloaded` 的位置）。那条守卫表达不了
 /// 「rename **成功**才执行」：把落位失败的早退降级成「只 log 不早退」，文本序**照样成立**，
 /// 而运行时会在 rename 失败时广播 `downloaded(100)` 外加一个**根本不存在**的 `filePath` ——
 /// 设置页据此给出一个点不开的安装入口。
@@ -1159,7 +1307,7 @@ fn cached_download_is_reusable(dest: &Path, expected_sha: Option<&str>) -> bool 
 /// **单飞**：按 `dest` 加闸（见 [`download_gate`]）。后台自动下载腿与用户在弹窗点「更新」的腿写同一个
 /// dest，是默认流程而非异常；后到者等待 + 按 sha256 复用，绝不出现两个进度游标互相顶。
 ///
-/// **失败即发 `error`**：本命令的**每一条**失败早退都先 [`emit_progress`] `error` 再返错误信封 ——
+/// **失败即发 `error`**：本命令的**每一条**失败早退都先发一发 [`ProgressStage::Failed`] 再返错误信封 ——
 /// 弹窗被推进 progress 后只有 `error`/`downloaded` 能把它推出去，静默 return 会让它永远转圈。
 /// 该不变式由单测 `every_failure_path_emits_an_error_progress_event` 按计数锁住
 /// （计数用**前缀** `ApiResponse::err`，故带 code 的早退同样在射程内）。
@@ -1169,6 +1317,11 @@ pub async fn update_download(
     state: State<'_, AppRuntime>,
     update_info: Value,
 ) -> Result<ApiResponse<Value>, ()> {
+    // 本次下载**唯一**的发事件入口：随行事实（这次要下的那份发布清单）由它一处附着，
+    // 下面十余个调用点因此没有「漏带」或「带成另一个版本的清单」的余地 —— 而设置页正是靠
+    // 这份清单渲染版本号/体积、并在失败时重试。射程与成因见 [`ProgressStage`]。
+    let emit = |stage: ProgressStage<'_>| emit_progress(&app, &update_info, stage);
+
     let Some(url) = update_info
         .get("downloadUrl")
         .and_then(Value::as_str)
@@ -1178,7 +1331,7 @@ pub async fn update_download(
         // 前置校验的早退**也必须发 error 进度**：弹窗被 `force progress(0)` 推进 Progress 后，
         // 只有 `error` / `downloaded` 能把它推出去 —— 静默 return 会让窗永远转圈（只剩 Cancel）。
         let msg = "update_download 需要 updateInfo.downloadUrl";
-        emit_progress(&app, "error", 0, msg);
+        emit(ProgressStage::Failed(msg));
         return Ok(ApiResponse::err(msg));
     };
     let file_name = update_info
@@ -1197,7 +1350,7 @@ pub async fn update_download(
     let expected_digest = match resolve_expected_digest(&update_info) {
         Ok(d) => d,
         Err(msg) => {
-            emit_progress(&app, "error", 0, &msg);
+            emit(ProgressStage::Failed(&msg));
             return Ok(ApiResponse::err(msg));
         }
     };
@@ -1209,13 +1362,13 @@ pub async fn update_download(
         Ok(d) => d.join("updates"),
         Err(e) => {
             let msg = format!("解析缓存目录失败: {e}");
-            emit_progress(&app, "error", 0, &msg);
+            emit(ProgressStage::Failed(&msg));
             return Ok(ApiResponse::err(msg));
         }
     };
     if let Err(e) = std::fs::create_dir_all(&dir) {
         let msg = format!("建更新缓存目录失败 {}: {e}", dir.display());
-        emit_progress(&app, "error", 0, &msg);
+        emit(ProgressStage::Failed(&msg));
         return Ok(ApiResponse::err(msg));
     }
     let dest = dir.join(&file_name);
@@ -1243,7 +1396,12 @@ pub async fn update_download(
             "更新包已在本地且 sha256 复核通过，复用不重复下载: {}",
             dest.display()
         );
-        emit_progress(&app, "downloaded", 100, "");
+        // 复用腿的 `verified` 恒 `true`：它之所以敢认盘上这份，判据**就是** sha256 比中
+        // （见 `cached_download_is_reusable`）—— 与下面回包里那个 `true` 同一条理由、同一个值。
+        emit(ProgressStage::Downloaded {
+            path: &dest,
+            verified: true,
+        });
         return Ok(ApiResponse::ok(json!({
             "success": true,
             "filePath": dest.to_string_lossy(),
@@ -1255,7 +1413,10 @@ pub async fn update_download(
         })));
     }
 
-    emit_progress(&app, "downloading", 0, "");
+    emit(ProgressStage::Downloading {
+        percentage: 0,
+        received: 0,
+    });
 
     // ── 落盘目标：**全程只碰 tmp**，dest 直到最后一次 rename 之前一个字节都不动。
     //    tmp 由 `verify::tmp_name` 生成 ⇒ 与 dest 同目录同卷（原子 rename 的前提），
@@ -1275,7 +1436,9 @@ pub async fn update_download(
     // `CoreDownloader::download*` 是**同步**桥（其 doc 明令须在 blocking 线程调用：
     // 在 async 上下文直调会阻塞 executor，Tauri 同步 command 更是跑在主线程上会冻 UI）。
     let url_for_task = url.clone();
-    let on_progress = download_progress_emitter(&app);
+    // 中间帧的发事件入口在下载 task 线程上，接不到上面那个借栈的 `emit` ⇒ 清单按值克隆一份
+    // （一次下载克隆一次，不是一帧一次）。带的仍是**同一个** `update_info`。
+    let on_progress = download_progress_emitter(&app, update_info.clone());
     let streamed = match tokio::task::spawn_blocking(move || {
         dl.download_to_sink_with_progress(&url_for_task, new_sink, on_progress)
     })
@@ -1284,7 +1447,7 @@ pub async fn update_download(
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
             let msg = format!("下载更新包失败: {e}");
-            emit_progress(&app, "error", 0, &msg);
+            emit(ProgressStage::Failed(&msg));
             // 「后端未接线」与「下载失败」**必须**可区分（trait 契约；生产注入的是 CoreDownloader，
             // 故这条实际不可达，但映射保留——折叠进泛化失败会让上层无限重试一个永不成功的调用）。
             return Ok(match e {
@@ -1296,7 +1459,7 @@ pub async fn update_download(
         }
         Err(e) => {
             let msg = format!("下载任务异常终止: {e}");
-            emit_progress(&app, "error", 0, &msg);
+            emit(ProgressStage::Failed(&msg));
             return Ok(ApiResponse::err(msg));
         }
     };
@@ -1305,7 +1468,7 @@ pub async fn update_download(
     //    这一级专治无摘要腿：Content-Length 是撒谎方自己给的数，对撒谎方零约束。
     if let Err(e) = check_declared_size(streamed.bytes, declared_size) {
         let msg = format!("更新包大小与发布清单声明不符（可能被截断或掉包）: {e}");
-        emit_progress(&app, "error", 0, &msg);
+        emit(ProgressStage::Failed(&msg));
         return Ok(ApiResponse::err(msg));
     }
 
@@ -1326,7 +1489,7 @@ pub async fn update_download(
                     d.hex, streamed.sha256_hex
                 ),
             };
-            emit_progress(&app, "error", 0, &msg);
+            emit(ProgressStage::Failed(&msg));
             return Ok(ApiResponse::err(msg));
         }
     }
@@ -1341,7 +1504,7 @@ pub async fn update_download(
     match landing {
         LandingOutcome::Failed(msg) => {
             // `promote_staged` 自己已尽力删过 tmp；`partial` 在此 return 时析构再兜一次。
-            emit_progress(&app, "error", 0, &msg);
+            emit(ProgressStage::Failed(&msg));
             return Ok(ApiResponse::err(msg));
         }
         LandingOutcome::Landed => {
@@ -1349,7 +1512,11 @@ pub async fn update_download(
             partial.disarm();
             // 「下载完成 / 校验完成 / 落位完成」三点分离后，`downloaded` **只在这一支**发：
             // 早一步发就是广播一个 dest 尚不存在的假成功态，设置页会给出一个点不开的安装入口。
-            emit_progress(&app, "downloaded", 100, "");
+            // 随行的 `path` 就是刚落位的那个 dest，`verified` 与下面回包里那个字段同源同值。
+            emit(ProgressStage::Downloaded {
+                path: &dest,
+                verified: expected_digest.is_some(),
+            });
         }
     }
     log::info!(
@@ -3966,7 +4133,7 @@ mod tests {
             .find("download_gate(&dest)")
             .expect("下载单飞闸被删了 —— 后台自动下载与弹窗「更新」会同时写同一个 dest");
         let emit_at = body
-            .find(r#"emit_progress(&app, "downloading", 0, "")"#)
+            .find("emit(ProgressStage::Downloading {")
             .expect("锚点消失：守卫已失去判据");
         // 锚点随 U1（整包入内存 → 流式落盘）从 `download_with_progress(` 换成
         // `download_to_sink_with_progress(`：守的东西**一个字没变**（闸必须早于发进度与真下载），
@@ -4046,7 +4213,7 @@ mod tests {
         // `update_install` 拿它去装。故反过来：**列出 dest 的全部合法用法**，
         // 出现次数钉死；新增任何一处对 dest 的引用都必须显式改这张表，并在改的时候回答
         // 「它会不会在落位之前碰 dest」。
-        const DEST_USES: [&str; 8] = [
+        const DEST_USES: [&str; 9] = [
             "let dest = dir.join(&file_name);",
             "let gate = download_gate(&dest);",
             "let dest = dest.clone();",
@@ -4055,9 +4222,14 @@ mod tests {
             "dest.to_string_lossy()",
             "verify::tmp_name(&dest)",
             "land_payload(&polaris_updater::traits::StdFs, partial.path(), &dest)",
+            // 两处 `ProgressStage::Downloaded { path: &dest, .. }`（复用腿 / 落位成功腿）。
+            // 逐条回答本白名单要求回答的那个问题：**都在落位之后**（复用腿的前提是
+            // `cached_download_is_reusable` 已认下盘上那份完整包，落位腿在 `Landed` 臂内），
+            // 且两处都只是**读**路径去拼事件载荷，一个字节都不写。
+            "path: &dest,",
         ];
         /// dest 在 `update_download` 里的**总出现次数**（含上表每一项各自的出现次数之和）。
-        const DEST_MENTIONS: usize = 11;
+        const DEST_MENTIONS: usize = 13;
         let total = body.matches("dest").count();
         let covered: usize = DEST_USES
             .iter()
@@ -4087,10 +4259,10 @@ mod tests {
             .find("LandingOutcome::Landed =>")
             .expect("落位成功分支消失：守卫已失去判据");
         let download_began_at = body
-            .find(r#"emit_progress(&app, "downloading", 0, "")"#)
+            .find("emit(ProgressStage::Downloading {")
             .expect("锚点消失：守卫已失去判据");
         let downloaded_after_start: Vec<usize> = body
-            .match_indices(r#"emit_progress(&app, "downloaded", 100, "")"#)
+            .match_indices("ProgressStage::Downloaded {")
             .map(|(i, _)| i)
             .filter(|i| *i > download_began_at)
             .collect();
@@ -4180,7 +4352,7 @@ mod tests {
         let body =
             crate::commands::guard_scan::top_level_fn_body(SRC, "pub async fn update_download(");
         let errors = body.matches("ApiResponse::err").count();
-        let emits = body.matches(r#"emit_progress(&app, "error""#).count();
+        let emits = body.matches("emit(ProgressStage::Failed(").count();
         assert!(errors > 0, "锚点消失：守卫已失去判据");
         assert_eq!(
             errors,
@@ -4192,6 +4364,252 @@ mod tests {
             body.matches("ApiResponse::err_with_code(").count(),
             SHARED_ERR_BRANCHES,
             "带 code 的失败早退数变了 → 请确认它也发了 error 进度事件，并更新 SHARED_ERR_BRANCHES"
+        );
+    }
+
+    // ── 随行事实：态与它依赖的数据同帧同行 ──────────────────────────────────
+
+    /// 🟡 **行为门：每一帧都带着它那个态所依赖的全部随行事实。**
+    ///
+    /// `update:progress` 走 `events::broadcast` fan-out 给**所有**窗口 ⇒ 把设置页推进
+    /// downloading / downloaded / error 的路径大多**不是设置页发起的**（启动自动下载腿
+    /// `startup_tasks::spawn_auto_download`、弹窗「更新·重试」腿 `update_popup_action`），
+    /// 那几条腿上设置页拿不到任何 invoke 回包 ⇒ 这一帧是它**唯一**的事实来源。少一样就静默
+    /// 少一样：已核实的三条后果是「重启并安装」哑键（无 `filePath`）、「重试」哑键
+    /// （无 `updateInfo`）、卡片上的版本号与体积写的是上一次检查的另一个版本。
+    ///
+    /// # 判据由**类型**穷尽，不由夹具点名
+    ///
+    /// 「哪个变体该带哪些键」写在 `required` 的穷尽 `match` 里 ⇒ [`ProgressStage`] 新增变体
+    /// **编译不过**，作者必须回到这里显式回答它带得起哪些事实。
+    ///
+    /// 「样本有没有覆盖到每个变体」则由**从源码派生的臂数**兜底，不是手写常数：前身写
+    /// `assert_eq!(samples.len(), VARIANTS)`（两个手写数字互比），2026-08-17 复审实测 ——
+    /// 加第 4 变体 + 补齐两处生产 match + **只**补一条 `required` 臂、不动样本 ⇒ 全量 4181 全绿，
+    /// 那个变体的载荷一次都没跑过。现改为数 [`stage_facts`] 那个**编译器强制穷尽**的 match
+    /// 有几条臂，臂数即变体数，两个数字都不再由人手维护。
+    /// 每格还反向断言「白名单之外不得夹带」——两个方向合起来是**逐变体的集合相等**，
+    /// 而不是「至少有这几个键」这种只挡得住删除的弱判据。
+    ///
+    /// 跨语言那一半（Rust 键集 ↔ TS `UpdateProgress` 字段集）由
+    /// `ui/src/contracts/update-progress-payload.test.ts` 双向对拍，与本门正交。
+    ///
+    /// **变异探针**：删掉 `payload["filePath"] = …` ⇒ Downloaded 那格转红；把
+    /// `"updateInfo": info` 换成 `Value::Null` ⇒ 三格同时转红；把 `Downloaded` 的百分比从
+    /// 100 改成别的 ⇒ 转红；多写一个键 ⇒ 「夹带」那条转红。
+    #[test]
+    fn progress_frame_carries_the_facts_its_state_depends_on() {
+        /// 每个变体的帧里**必须**存在、且不得多于此的键（穷尽 match ⇒ 新增变体即编译错误）。
+        ///
+        /// 逐字段解构（不写 `..`）：给已有变体加字段时这里也必须表态，否则「加变体被挡住了、
+        /// 加字段没有」那个不对称会从生产代码搬到门里来。
+        const fn required(stage: ProgressStage<'_>) -> &'static [&'static str] {
+            match stage {
+                ProgressStage::Downloading {
+                    percentage: _,
+                    received: _,
+                } => &[
+                    "status",
+                    "percentage",
+                    "message",
+                    "updateInfo",
+                    "receivedBytes",
+                ],
+                ProgressStage::Downloaded {
+                    path: _,
+                    verified: _,
+                } => &[
+                    "status",
+                    "percentage",
+                    "message",
+                    "updateInfo",
+                    "filePath",
+                    "verified",
+                ],
+                ProgressStage::Failed(_) => {
+                    &["status", "percentage", "message", "updateInfo", "error"]
+                }
+            }
+        }
+
+        /// [`ProgressStage`] 的变体数，**从源码派生**：[`stage_facts`] 的 match 由编译器强制
+        /// 穷尽 ⇒ 它有几条臂就有几个变体。数 `ProgressStage::` 而不数 `=>`：签名里的
+        /// `ProgressStage<'a>` 不含冒号，不会被误计。
+        ///
+        /// 射程边界（如实登记，两条）：
+        ///  1. 臂头若写成 or-pattern（`A::X { .. } | A::Y { .. } =>`），本计数会**高于**臂数
+        ///     ⇒ 断言转红（安全方向：宁可误红也不放过没样本的变体）。
+        ///  2. **给 `stage_facts` 与 `required` 同时补一条 `_ => …` 通配臂时，本门静默失效**：
+        ///     计数停在通配那一刻的臂数，而 `match` 也不再被编译器强制穷尽 ⇒ 新变体既不编译红、
+        ///     也不被本门抓到。今天两处都是穷举、无通配臂，故不可达；谁要加通配臂，请连同本门
+        ///     一起重新设计判据（通配臂本身就是「新变体不必表态」的宣言）。
+        fn variant_count() -> usize {
+            let body =
+                crate::commands::guard_scan::top_level_fn_body(SRC, "const fn stage_facts<'a>(");
+            let n = body.matches("ProgressStage::").count();
+            assert!(
+                n >= 3,
+                "锚点消失：`stage_facts` 的 match 一条臂都没解析到 —— 本门已失去变体数的真值源"
+            );
+            n
+        }
+
+        let path = std::path::Path::new("/tmp/updates/polaris.dmg");
+        let info = json!({
+            "version": "v1.2.0",
+            "fileSize": 52_000_000_u64,
+            "isPrerelease": true,
+            // 两个**必须被剥掉**的字段：样本里没有它们，下面那条「剥掉了」的断言就无信息量。
+            "releaseNotes": "## v1.2.0\n- 大段更新说明……",
+            "title": "Polaris v1.2.0",
+            // 契约将来加字段时，这一格证明其余字段是**原样**带过去的，不是被逐字段抄了一遍。
+            "futureField": "kept",
+        });
+        // 期望的投影：从样本清单里**逐个删掉**登记为剥除的键，其余一个不动。
+        // 表驱动 ⇒ 剥除表加一项时，本断言的两个方向（该没的没了、该在的逐字还在）自动跟着长。
+        let expected_manifest = {
+            let mut m = info.as_object().expect("样本清单必须是对象").clone();
+            for key in PROGRESS_MANIFEST_OMITTED {
+                assert!(
+                    m.remove(key).is_some(),
+                    "样本清单里没有 `{key}` ⇒ 「它被剥掉了」这条断言无信息量（假绿）"
+                );
+            }
+            Value::Object(m)
+        };
+
+        let samples = [
+            ProgressStage::Downloading {
+                percentage: 37,
+                received: 19_240_000,
+            },
+            ProgressStage::Downloaded {
+                path,
+                verified: true,
+            },
+            ProgressStage::Failed("下载更新包失败"),
+        ];
+        let variants = variant_count();
+        assert_eq!(
+            samples.len(),
+            variants,
+            "样本表没跟上变体数（`stage_facts` 有 {variants} 条臂）—— 新增的那个变体的载荷一次都没跑过"
+        );
+        let tags: std::collections::BTreeSet<&str> =
+            samples.iter().map(|s| stage_facts(*s).0).collect();
+        assert_eq!(
+            tags.len(),
+            samples.len(),
+            "样本里有重复变体 —— 有一格根本没被测到"
+        );
+
+        for stage in samples {
+            let (status, percentage, message) = stage_facts(stage);
+            let payload = progress_payload(&info, stage);
+            let obj = payload.as_object().expect("载荷必须是 JSON 对象");
+            for key in required(stage) {
+                assert!(obj.contains_key(*key), "{status} 帧缺随行事实 `{key}`");
+                assert!(!obj[*key].is_null(), "{status} 帧的 `{key}` 是 null");
+            }
+            let extra: Vec<&String> = obj
+                .keys()
+                .filter(|k| !required(stage).contains(&k.as_str()))
+                .collect();
+            assert!(extra.is_empty(), "{status} 帧夹带了未登记的键: {extra:?}");
+            assert_eq!(obj["status"], json!(status));
+            assert_eq!(obj["percentage"], json!(percentage));
+            assert_eq!(obj["message"], json!(message));
+            // 「剥掉的真没了」——先单独判，失败消息才指得出是哪个字段。
+            for key in PROGRESS_MANIFEST_OMITTED {
+                assert!(
+                    obj["updateInfo"].get(key).is_none(),
+                    "{status} 帧仍带着 `{key}` —— 它无上限且 progress 可达态一律不渲染，\
+                     每帧广播给所有窗口是纯粹的主线程开销"
+                );
+            }
+            // 「该在的逐字还在」——**整对象相等**，不是「有几个字段」：少带一个字段就是
+            // 「重试」重新变哑键 / 卡片又开始显示别的版本，正是本批立项要修的那三条。
+            assert_eq!(
+                obj["updateInfo"], expected_manifest,
+                "{status} 帧的清单投影与「原样减去剥除表」不符 —— 卡片会拿它渲染版本号/体积/档次，\
+                 「重试」也要拿它重下"
+            );
+        }
+
+        // 逐值对账（上面只管「在不在」，这里管「是不是那个数」）。
+        let landed = progress_payload(
+            &info,
+            ProgressStage::Downloaded {
+                path,
+                verified: false,
+            },
+        );
+        assert_eq!(landed["filePath"], json!(path.to_string_lossy()));
+        assert_eq!(landed["verified"], json!(false));
+        assert_eq!(landed["percentage"], json!(100), "落位帧的百分比由类型定死");
+        let mid = progress_payload(
+            &info,
+            ProgressStage::Downloading {
+                percentage: 37,
+                received: 19_240_000,
+            },
+        );
+        assert_eq!(
+            mid["receivedBytes"],
+            json!(19_240_000),
+            "已收字节必须是回调原值 —— 从百分比反推的数每一帧都是错的"
+        );
+        let failed = progress_payload(&info, ProgressStage::Failed("下载更新包失败"));
+        assert_eq!(failed["error"], json!("下载更新包失败"));
+        assert_eq!(failed["message"], failed["error"], "两个字段在此同源同值");
+        assert_eq!(failed["percentage"], json!(0), "失败帧的百分比由类型定死");
+    }
+
+    /// 🟡 **调用点守卫：本次下载的随行事实只由一处附着。**
+    ///
+    /// `update_download` 里有十余处发进度的地方（每条失败早退各一发 + 三处正常帧）。若每处
+    /// 各自调 `emit_progress(&app, <某个清单>, …)`，失守形态有二：漏传（编译红，无所谓）与
+    /// **传成另一个对象**（编译绿、gate 全绿，而设置页显示的版本号是别的包的）。故本函数体内
+    /// `emit_progress(` 只许出现一次 —— 就是那条把 `update_info` 绑死的闭包定义本身。
+    ///
+    /// 中间帧（下载回调）跑在另一个线程上、借不了栈，故它经 `download_progress_emitter` 按值
+    /// 收清单；本门连带钉住它收的是**同一份** `update_info`。
+    ///
+    /// **变异探针**：把任一处 `emit(ProgressStage::Failed(&msg))` 改回
+    /// `emit_progress(&app, &Value::Null, ProgressStage::Failed(&msg))` ⇒ 计数变 2 ⇒ 转红；
+    /// 把 `download_progress_emitter(&app, update_info.clone())` 的第二个实参换成
+    /// `Value::Null` ⇒ 转红。
+    #[test]
+    fn every_progress_frame_of_this_download_carries_this_downloads_manifest() {
+        let body =
+            crate::commands::guard_scan::top_level_fn_body(SRC, "pub async fn update_download(");
+        assert!(
+            body.contains(
+                "let emit = |stage: ProgressStage<'_>| emit_progress(&app, &update_info, stage);"
+            ),
+            "单一发事件入口没了 —— 十余个调用点各自带清单，迟早有一处带成另一个版本的"
+        );
+        let direct = body.matches("emit_progress(").count();
+        assert_eq!(
+            direct, 1,
+            "`emit_progress(` 在本函数里出现 {direct} 次（只该是那条闭包定义）—— \
+             绕过 `emit` 直发就等于给这一处附着的清单开了个后门"
+        );
+        // 正向对照：三种帧确实都还在发（否则上面那条在「一发都不发」时也绿）。
+        for anchor in [
+            "emit(ProgressStage::Downloading {",
+            "emit(ProgressStage::Downloaded {",
+            "emit(ProgressStage::Failed(",
+        ] {
+            assert!(
+                body.contains(anchor),
+                "锚点消失：守卫已失去判据（{anchor}）"
+            );
+        }
+        assert!(
+            body.contains("download_progress_emitter(&app, update_info.clone())"),
+            "中间帧的清单必须是**同一份** `update_info` —— 另造一个对象会让下载中卡片的\
+             版本号与首尾两帧不符"
         );
     }
 
@@ -4512,7 +4930,7 @@ mod tests {
             "「已是最新」仍须把弹窗推出 progress（否则永远转圈）"
         );
         assert!(
-            !body.contains(r#"emit_progress(&app, "downloaded""#),
+            !body.contains("ProgressStage::Downloaded"),
             "「已是最新」不得广播 downloaded —— 无文件、无 filePath，设置页会显示假的「已下载」"
         );
     }
@@ -4997,7 +5415,7 @@ mod tests {
     /// 同一个函数里两种取向。行为对**弹窗**逐字不变：`emit_progress` 的弹窗镜像就是
     /// `push_popup_state(UpdatePopupState::error(msg))` 这一发（见 `popup_state_for`）。
     ///
-    /// **变异探针**：任一条早退改回 `emit_progress(&app, "error", ...)` ⇒ 转红。
+    /// **变异探针**：任一条早退改回 `emit_progress(&app, &info, ProgressStage::Failed(..))` ⇒ 转红。
     #[test]
     fn recheck_failures_settle_the_popup_without_broadcasting() {
         let body = crate::commands::guard_scan::top_level_fn_body(

@@ -26,7 +26,7 @@ import {
   versionApi,
   type InstallAdvisory,
   type UpdateProgress,
-  type UpdateInfo,
+  type UpdateProgressManifest,
   type VersionInfo,
 } from '@/ipc/api-client';
 import { useDialogStore } from '../../dialogs/dialog-store';
@@ -63,6 +63,7 @@ import {
   ruleResourceAutoStatus,
   ruleResourceAutoUpdateChecked,
   subscriptionAutoUpdateStatus,
+  updateCardPatch,
   type AppDownloadIntegrity,
 } from './settings-logic';
 
@@ -141,9 +142,20 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
   // 用户刚选中「自定义…」但尚未输入内容时的本地态：此时 config.ghProxyPrefix 仍为空，
   // 不能仅凭 prefix 派生显示态，否则自定义输入框永远不可达（选中即弹回默认项）。
   const [ghCustomMode, setGhCustomMode] = useState(false);
-  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [updateInfo, setUpdateInfo] = useState<UpdateProgressManifest | null>(null);
   const [progress, setProgress] = useState(0);
+  /** 已收字节（下载中卡片的「x / y MB」左半边）。来自进度帧原值，不从百分比反推。 */
+  const [receivedBytes, setReceivedBytes] = useState<number | null>(null);
   const [errMsg, setErrMsg] = useState('');
+  /**
+   * 已落位的安装包路径 —— 「重启并安装」的**唯一**入参（`installUpdate` 首行就是
+   * `if (!downloadedPath) return`）。
+   *
+   * **唯一写点在进度监听器**（`updateCardPatch` 的 `path`）：把设置页推进 `downloaded` 的路径
+   * 大多不是本页发起的（启动自动下载腿 / 弹窗「更新·重试」腿），那些路径上本页拿不到 invoke
+   * 回包 —— 从回包里取路径只覆盖得到「本页自己下的那次」，其余全是哑键。事件既然已经把落位
+   * 路径带过来了，就不该再有第二个写点：两个写点必然在「哪条腿写了、哪条腿没写」上漂。
+   */
   const [downloadedPath, setDownloadedPath] = useState<string | null>(null);
   /**
    * 本次下载的摘要校验结果（`update_download` 回包的 `verified`）。
@@ -232,18 +244,26 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
     const off = updateApi.onProgress((p: UpdateProgress) => {
       // 第三个「新下载可能开始」的入口：事件可能来自别的窗口（弹窗腿 / 启动自动下载腿），
       // 本页拿不到那次回包 ⇒ 不复位就会把上一次的结论盖到这个新包头上。
-      // **唯一调用点**：该不该复位由 `progressResetsIntegrity` 的真值表单点回答，不在下面的
-      // status 分支里各补一次 —— 那是枚举型判据，联合里多一个取值就会静默漏掉一格。
+      // **唯一调用点**：该不该复位由 `progressResetsIntegrity` 的真值表单点回答，不在下面
+      // 按 status 各补一次 —— 那是枚举型判据，联合里多一个取值就会静默漏掉一格。
       if (progressResetsIntegrity(p.status)) setDownloadIntegrity('unknown');
-      if (p.status === 'downloading') {
-        setUs('downloading');
-        setProgress(p.percentage);
-      } else if (p.status === 'downloaded') {
-        setUs('downloaded');
-      } else if (p.status === 'error') {
-        setUs('error');
-        setErrMsg(p.error ?? p.message ?? t('settings.update.downloadInterrupted'));
-      }
+      // 态与它依赖的**全部随行事实**同帧落地。判据（哪个 status 推进哪个态、那个态取走哪几样
+      // 事实）全在 `updateCardPatch` 的那张表里，本处只有一个调用点、**不按 status 分支**各取
+      // 各的字段：此前正是「只搬状态、不搬事实」让「重启并安装」与「重试」双双成了哑键，
+      // 卡片上的版本号写的还是上一次检查的那个版本。
+      const patch = updateCardPatch(p);
+      // 本帧与更新卡无关 ⇒ 态与事实一起不动（绝不留下「改了态却没带事实」的中间形态）。
+      if (!patch) return;
+      setUs(patch.us);
+      setUpdateInfo(patch.info);
+      setDownloadedPath(patch.path);
+      setReceivedBytes(patch.received);
+      setProgress(patch.percentage);
+      // 后端没给成因时才回落到本地文案（`''` 是「失败但没说为什么」，不是「不表态」）。
+      if (patch.error !== null) setErrMsg(patch.error || t('settings.update.downloadInterrupted'));
+      // 落位帧带着真实的 `verified` ⇒ 别的窗口下的包也能给出准确的摘要结论，
+      // 不再一律退化成上面那一发 `unknown`（那是**漏报**：该出的警告静默缺席）。
+      if (patch.integrity !== null) setDownloadIntegrity(patch.integrity);
     });
     return off;
   }, []);
@@ -300,6 +320,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
     if (!updateInfo) return;
     setUs('downloading');
     setProgress(0);
+    setReceivedBytes(0);
     setDownloadIntegrity('unknown');
     try {
       const r = await updateApi.download(updateInfo);
@@ -307,9 +328,10 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
       // （`api-client.ts` 头注第 3 条，拆包点唯一），一律落进下面的 catch —— 那里
       // `downloadIntegrity` 保持函数开头那次复位的 `unknown`，不出提示。
       setDownloadIntegrity(appDownloadIntegrity(r));
-      if (r.success) {
-        setDownloadedPath(r.filePath ?? null);
-      } else {
+      // **落位路径不在这里取**：它由 `downloaded` 进度帧带来（唯一写点，见 `downloadedPath`
+      // 的声明处）。回包只覆盖得到本页自己发起的那次，从这里写等于给「本页下的」与「别的窗口
+      // 下的」两条腿配两套写法 —— 而后者恰恰是「重启并安装」变哑键的那条。
+      if (!r.success) {
         setUs('error');
         setErrMsg(r.error ?? t('settings.about.downloadFail'));
       }
@@ -320,17 +342,73 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
   }
 
   /**
+   * 一次安装动作的**主语**：它装的到底是哪一份包。
+   *
+   * 存在的理由是 `installUpdate` 跨了两个 await 窗口（见该函数），而页面态在那期间会被别的
+   * 窗口的下载广播整体换掉 —— 主语必须在动作开始的那一刻钉死，不能事后再去读页面。
+   */
+  interface InstallSubject {
+    path: string;
+    info: UpdateProgressManifest | null;
+    /**
+     * 摘要校验结论。**它和上面两个是同一份包的四个事实之一，没有理由例外**：
+     * 说明框停在用户面前是分钟级的，其间外部腿落位另一份包会把本页的
+     * `downloadIntegrity` 一起改写 —— 只拉回版本号/路径而留着别人的校验结论，manual 卡就会
+     * 一边写「请手动解压覆盖（路径 A）」一边把「这份包未经摘要校验」的明示整块吞掉（漏报），
+     * 反向则是凭空造一条警告（误报）。
+     */
+    integrity: AppDownloadIntegrity;
+  }
+
+  /**
+   * 把卡片拉回一个**由本次安装描述**的终态：态与它的随行事实同批落地。
+   *
+   * 与进度帧那条规矩同源，只是主语来自快照而不是事件帧。分出这个函数不是为了少写几行：
+   * `installUpdate` 有三处会把 `us` 拉回来（便携手动替换 / 形态错配 / 抛错），三处各写一遍
+   * 就会有一处忘了带事实 —— 而「只搬状态不搬事实」正是本批立项要修的那件事。
+   */
+  function settleInstall(next: 'manual' | 'error', message: string, subject: InstallSubject) {
+    setUs(next);
+    setUpdateInfo(subject.info);
+    setDownloadedPath(subject.path);
+    setDownloadIntegrity(subject.integrity);
+    setErrMsg(message);
+  }
+
+  /**
    * 安装已下载的更新包。**两段式**：后端返 `needConfirm` 时先弹说明框讲清 OS 会怎么拦、用户怎么放行，
    * 确认后才带 `confirmed:true` 重调（此时后端才停代理 + 起脚本）。
    *
    * 为什么必须讲：**本应用走 ad-hoc 签名**（无 Developer ID / Authenticode）。macOS 侧安装脚本会
    * 自动清 quarantine，但万一失败用户会遇到「装完打不开」；Windows 侧 SmartScreen 根本消不掉。
    * 装完打不开还不告诉人 = 制造一个静默故障。
+   *
+   * # ⚠️ 进函数就快照，之后**一次都不再读页面态**
+   *
+   * 本函数横跨两个窗口：① `updateApi.install()` 的后端往返；② 两段式确认框（`openDialog` →
+   * 用户点确认 → `installUpdate(true, subj)`），**人手时间、分钟级**。这两个窗口里进度监听器会把
+   * `updateInfo` 与 `downloadedPath` 一起换成外部腿（启动自动下载 / 弹窗「更新·重试」）刚落位的
+   * 另一份包 B，并把 `us` 推到 `downloaded`；而本函数在窗口结束后又把 `us` **拉回** manual/error。
+   * 不快照的后果是具体的：manual 卡的版本号与预发布徽标描述 **B**，而 `errMsg` 里给用户去手动
+   * 解压的路径、以及刚才真正交给系统的那个文件是 **A** —— A 正式、B 预发布时就是「对一份正式包
+   * 说它是预发布」，方向是**误报**，正是本批承诺挡住的那件事。
+   *
+   * 这个窗口是随行事实那一批**新开的**：在此之前 `downloadedPath` 只有一个写点、`updateInfo`
+   * 监听器根本不写，两个窗口里两者都不动。旧注释「本态只能由 installUpdate 从 downloaded 进入，
+   * 其间没有任何东西改写 `updateInfo`」漏的正是「其间」—— 改写它的两处确实会带走 `us`，但本函数
+   * 结束时会把 `us` 拉回来，`updateInfo` 不会跟着回来。
    */
-  async function installUpdate(confirmed = false) {
-    if (!downloadedPath) return;
+  async function installUpdate(confirmed = false, subject?: InstallSubject) {
+    // **本函数唯一一次读页面态**（`subject` 非空 = 从确认框回来，主语沿用第一段那次的快照）。
+    // 下面一律走 `subj.*`：任何一处再去读 `downloadedPath` / `updateInfo`，跨 await 的错位就回来了。
+    const subj: InstallSubject = subject ?? {
+      path: downloadedPath ?? '',
+      info: updateInfo,
+      integrity: downloadIntegrity,
+    };
+    if (!subj.path) return;
     try {
-      const r = await updateApi.install(downloadedPath, confirmed);
+      const r = await updateApi.install(subj.path, confirmed);
       if (r.needConfirm && r.advisory) {
         const adv = r.advisory as InstallAdvisory;
         openDialog({
@@ -341,7 +419,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
             confirmLabel: t('settings.update.advisory.continue'),
             onConfirm: async () => {
               closeDialog();
-              await installUpdate(true);
+              await installUpdate(true, subj);
             },
           },
         });
@@ -349,24 +427,19 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
       }
       if (r.handedToSystem || r.reason === 'form-mismatch') {
         // 便携版 zip：**不是失败**，是「已下载、待手动替换」（判据与理由见 isPortableZipUpdate）。
-        if (isPortableZipUpdate(downloadedPath)) {
-          setUs('manual');
-          setErrMsg(
-            t('settings.update.portableManualReplace', {
-              path: downloadedPath,
-            }),
+        if (isPortableZipUpdate(subj.path)) {
+          settleInstall(
+            'manual',
+            t('settings.update.portableManualReplace', { path: subj.path }),
+            subj,
           );
         } else {
-          setUs('error');
-          setErrMsg(
-            t('settings.update.formMismatch'),
-          );
+          settleInstall('error', t('settings.update.formMismatch'), subj);
         }
       }
       // 成功路径无需处理：后端已 app.exit(0)，进程随即退出。
     } catch (e) {
-      setUs('error');
-      setErrMsg(e instanceof Error ? e.message : String(e));
+      settleInstall('error', e instanceof Error ? e.message : String(e), subj);
     }
   }
 
@@ -739,8 +812,12 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
               <span className="mono">{progress}%</span>
             </div>
             <ProgressBar value={progress} style={{ marginTop: 10 }} />
+            {/* 左半边取帧里的 `receivedBytes` 原值，**不从 `progress` 反推**：百分比被后端
+                `progress_percent` 夹在 1..=99 且按整数去重，反推出来的字节数每一帧都是错的。
+                右半边取本帧随行清单的 `fileSize` —— 此前这里读的是本页上一次检查的 `updateInfo`，
+                别的窗口发起下载时两个数一起塌成「0.0 / 0.0 MB」。 */}
             <div className="card-sub mono" style={{ marginTop: 6 }}>
-              {((progress / 100) * ((updateInfo?.fileSize ?? 0) / 1024 / 1024)).toFixed(1)} /{' '}
+              {((receivedBytes ?? 0) / 1024 / 1024).toFixed(1)} /{' '}
               {((updateInfo?.fileSize ?? 0) / 1024 / 1024).toFixed(1)} MB
             </div>
           </div>
@@ -759,33 +836,17 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
                     （「将要取回未署摘要的包」vs「即将执行未经校验的字节」），而预发布的说明三处一字不差，
                     抄三遍只是噪声；档次这个事实由徽标持续持有，解释留在做决定的那一屏。
 
-                    ⚠️ **`downloadedPath` 不是装饰，是这枚徽标的资格判据**。`updateInfo` 描述的是
-                    本页**上一次检查**的结果，而 `us` 会被**别的窗口**的下载广播推到 `downloaded`
-                    （弹窗「更新/重试」、`spawn_auto_download`）—— 那时两者毫无因果关系：用户查到
-                    `v1.3.0-beta.1` 没下，外部腿下了 `v1.2.0` 正式包，卡片就会举着预发布徽标去描述
-                    一份正式包。`downloadedPath` 的**唯一**写点是 `downloadUpdate` 的成功分支
-                    （外部广播那条腿从不设它）⇒ 它为真说明本页下载过**某个**包。
+                    ✅ **判据就是 `updateInfo` 本身，不再需要 `downloadedPath` 做资格审查**。
+                    进入本态的**唯一**路径是 `downloaded` 进度帧，而那一帧带着它所描述的那份包的
+                    清单（`updateCardPatch` 的 `info`，与 `us` 同帧写入）⇒ 这里的 `updateInfo`
+                    描述的就是刚落位的那一份，档次、版本号、体积三者同源。
 
-                    ⚠️ 「那个包就是当前 `updateInfo` 描述的这个」还靠**第二条、非局部**的不变量，
-                    写成状态无关的蕴含式：**`us === 'idle'` ⟹ `downloadedPath === null`**
-                    （写 path 的唯一点之后 `us` 恒非 idle；进入 idle 的两个入口都来自 path 为 null
-                    的态）。而 `setUpdateInfo` 只在 `checkUpdate()` 里执行、「检查更新」按钮只挂在
-                    idle 那一格 ⇒ 每次写 `updateInfo` 时 `downloadedPath` 必为 null。
-
-                    **不按「哪些态回不到 idle」枚举**：那样警告面会短于射程 —— `error` 同样可能带着
-                    非空 path（外部腿广播 error 只置 `us`、不清 path），而「下载失败 → 给个重新检查」
-                    比「已下载 → 重新检查」更自然，恰好落在枚举之外。射程是**任何**新增的
-                    `setUs('idle')` 与**任何**新增的 `checkUpdate()` 入口，不限于本卡：破坏它 ⇒ 旧正式
-                    包路径 + 新查到的 beta 同时在手 ⇒ 徽标贴回外部腿下的正式包，而守这条的门拦不住。
-                    真要加，随入口一起清 `downloadedPath`，或直接走 W5 的正解。
-
-                    代价是外部腿下的包不显示徽标（**漏报，方向安全**）——正解是让那条腿把随行事实
-                    随事件带过来，属 W5 射程；本处只负责不说假话。**版本号那半仍未修**：本卡的
-                    `{updateInfo?.version}` 照旧可能是上一次检查的那个（无徽标、但数字是错的），
-                    同归 W5。
-                    **不走「清空 `updateInfo`」那条**：清空会让 `us==='error'` 那格的「重试」
-                    （唯一按钮，直通 `downloadUpdate` 的 `if (!updateInfo) return`）变成哑键。 */}
-                {downloadedPath && updateInfo?.isPrerelease && (
+                    此前这里挂着 `downloadedPath &&`（W4 的收窄断言）：那时 `updateInfo` 是本页
+                    **上一次检查**的结果，与外部腿刚下的包毫无因果关系，只能靠「path 非空 ⇒ 是本页
+                    下的」把徽标限死在本页那条腿上。代价是外部腿下的预发布包**不显示徽标**（漏报）。
+                    随行事实到位后那条收窄已无必要，且加回去会让漏报重新出现 —— 守这条的门在
+                    `settings-logic.test.ts`。 */}
+                {updateInfo?.isPrerelease && (
                   <>
                     {' '}
                     <Pill variant="warn">{t('settings.update.prereleaseTag')}</Pill>
@@ -817,10 +878,16 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
                 <b>{t('settings.update.downloadedManual')}</b> <span className="cv-tag">{updateInfo?.version}</span>
                 {/* 第三条腿：`manual` 与 `downloaded` 互斥，转 manual 后上面那枚徽标整块消失，
                     而这里恰是「你自己解压覆盖当前程序」的一刻 —— 与摘要腿完全同形的理由。
-                    资格判据同上（`downloadedPath`）：本态只能由 `installUpdate` 进入，而它首行就是
-                    `if (!downloadedPath) return` ⇒ 这里 `downloadedPath` 恒非空，判据在此不改变行为，
-                    写出来是为了两条腿的判据**逐字同形**，不让人以为只有 `downloaded` 那条需要把关。 */}
-                {downloadedPath && updateInfo?.isPrerelease && (
+
+                    ⚠️ **别再用「其间没有任何东西改写 `updateInfo`」那条推理**（本处旧注释写过，
+                    已撤回）：`installUpdate` 横跨两个 await 窗口，其中说明框是**人手时间**，
+                    其间进度帧确实会把清单换成外部腿刚落位的另一份包 —— 「改写它的那几处都会把
+                    `us` 带离本态」是真的，但本函数结束时又把 `us` **拉回来**，而清单不会自己回来。
+
+                    今天这里的清单描述的仍是本次安装那份包，靠的是 `settleInstall` 从
+                    `InstallSubject` 快照**回填**（版本号 / 路径 / 档次 / 摘要结论四样一起），
+                    不是靠上面那条推理。写点现在是三处：进度帧、`checkUpdate`、`settleInstall`。 */}
+                {updateInfo?.isPrerelease && (
                   <>
                     {' '}
                     <Pill variant="warn">{t('settings.update.prereleaseTag')}</Pill>
@@ -851,8 +918,21 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
                 <b style={{ color: 'hsl(var(--err))' }}>{t('settings.update.failed')}</b>
                 <CardSub>{errMsg}</CardSub>
               </div>
-              <Button variant="ghost" size="sm" onClick={downloadUpdate}>
-                <span>{t('common.retry')}</span>
+              {/* 「重试」= 拿本帧随行的那份清单再下一次（`downloadUpdate` 首行就是
+                  `if (!updateInfo) return`）。**没有清单时不渲染它**：进入本态的路径里有两条
+                  确实拿不到清单 —— `checkUpdate()` 自身失败（还没查出任何版本）、以及
+                  `installUpdate()` 抛错。那两条上按钮点了必然静默早退，画一个点不动的按钮
+                  比不画更坏。下载失败那条（进度帧）恒带清单，按钮正常出现。 */}
+              {updateInfo && (
+                <Button variant="ghost" size="sm" onClick={downloadUpdate}>
+                  <span>{t('common.retry')}</span>
+                </Button>
+              )}
+              {/* 出口：本态此前**只有**「重试」一个按钮，重试再失败就一直停在这张红卡上，
+                  用户只能切走再切回来把组件卸载重挂才回得到 idle。重新检查一次是这里唯一
+                  既能前进、又不依赖任何随行事实的动作，故它**无条件**渲染。 */}
+              <Button variant="ghost" size="sm" onClick={checkUpdate}>
+                <span>{t('settings.about.checkUpdate')}</span>
               </Button>
             </div>
           </div>

@@ -17,7 +17,7 @@
 
 // 仅类型（编译期擦除）：本文件必须能在 node 环境被 vitest 直接 import，
 // 而 `api-client` 的值侧会牵进 `@tauri-apps/api`。
-import type { UpdateProgress } from '@/ipc/api-client';
+import type { UpdateProgress, UpdateProgressManifest } from '@/ipc/api-client';
 
 /* ────────────────────────────────────────────────────────────────────────────
  * 通用：缺省为开的三态布尔
@@ -651,12 +651,18 @@ export function appDownloadIntegrity(
  *
  * # 逐格判据
  *
- *  - `downloading` / `downloaded` → **复位**。这两条是唯一由真实下载腿发出的进度
- *    （`commands/updater.rs::emit_progress`），而事件走 `events::broadcast`（`events.rs` 的
- *    `handle.emit`）fan-out 给**所有窗口** ⇒ 本页收到的可能是别的窗口发起的下载
- *    （`startup_tasks::spawn_auto_download` 的启动腿、`update_popup_action` 的「更新/重试」），
- *    那些下载的 invoke 回包不回本页 ⇒ 不复位就会把上一次的结论盖到这个新包头上。
- *    两条**都要**：复用本地已有包那条腿只发 `downloaded`，根本不发 `downloading`。
+ *  - `downloading` → **复位**。它是「一次新的下载开始了」的信号，而事件走
+ *    `events::broadcast`（`events.rs` 的 `handle.emit`）fan-out 给**所有窗口** ⇒ 本页收到的可能
+ *    是别的窗口发起的下载（`startup_tasks::spawn_auto_download` 的启动腿、`update_popup_action`
+ *    的「更新/重试」），那些下载的 invoke 回包不回本页 ⇒ 不复位就会把上一次的结论盖到新包头上。
+ *  - `downloaded` → **复位，但今天是空转**（2026-08-17 如实订正）。原理由是「复用本地已有包那条
+ *    腿只发 `downloaded`、不发 `downloading`，少了它就漏掉整条复用路径」——那条理由已被**随行
+ *    事实**取代：落位帧现在带着 `verified`，同一次监听器调用里 [`updateCardPatch`] 的 `integrity`
+ *    会紧接着用帧里的真值把这一发 `unknown` 覆盖掉，故这一格对结果**没有影响**。
+ *
+ *    保留而不是删掉，理由是射程闭合、不是惯性：万一将来某条 `downloaded` 帧不带 `verified`，
+ *    `appDownloadIntegrity` 判 `unknown`，与这一发**同值** ⇒ 行为不变；删掉则要求那条腿的作者
+ *    记得来补一行。代价只是一次会被立刻覆盖的 setState。**别把这一格读成「它在守什么」**。
  *  - `error` → **不复位**。下载失败不落位（临时文件由 RAII 清掉，`dest` 一个字节没动），
  *    盘上那份旧包与它的结论都还成立；且 `error` 态本就不渲染明示。
  *  - `idle` / `checking` / `no-update` / `update-available` → **不复位**。它们一个字节都不下载。
@@ -676,6 +682,107 @@ const PROGRESS_RESETS_INTEGRITY: Record<UpdateProgress['status'], boolean> = {
 /** 见 [`PROGRESS_RESETS_INTEGRITY`]。监听器的**唯一**调用点，不得在调用侧再抄一份分支判断。 */
 export function progressResetsIntegrity(status: UpdateProgress['status']): boolean {
   return PROGRESS_RESETS_INTEGRITY[status];
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * `update:progress` 一帧 → 更新卡的一次完整变更（态 + 该态依赖的全部随行事实）
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** 更新卡里由 `update:progress` 推动的三个态（`SettingsUpdate` 那个 7 态机的子集）。 */
+export type ProgressDrivenState = 'downloading' | 'downloaded' | 'error';
+
+/** 某个 status 该把卡片推进哪个态，以及**那个态要从帧里取走哪几样**随行事实。 */
+interface ProgressCardRule {
+  us: ProgressDrivenState;
+  /** 该态是否消费帧里的失败文案。非失败帧取走它就会盖掉 `manual` 态那条「请手动解压覆盖」。 */
+  takesError: boolean;
+  /** 该态是否消费帧里的 `verified`（下载**之后**才存在的事实，只有落位帧有）。 */
+  takesIntegrity: boolean;
+}
+
+/**
+ * 对整个 status 联合闭合的一张表：`null` = **本帧不描述一次下载**，态与事实一起不动。
+ *
+ * # 为什么「不改态」必须连事实一起不动
+ *
+ * 事实是跟着态走的：卡片显示的版本号/体积/安装路径，说的都是「当前这个态是关于哪份包的」。
+ * 若某个帧只更新事实却不改态，卡片就会用新包的数字去描述旧态 —— 那正是本批要消掉的形态，
+ * 只是方向反了过来。故本表把两者绑成一个不可分的结论：要么整帧落地，要么整帧丢弃。
+ *
+ * # 逐格判据
+ *
+ *  - `downloading` / `downloaded` / `error`：后端 [`emit_progress`] 今天发的**全部**三种帧
+ *    （分别对应 Rust 的 `ProgressStage::Downloading` / `Downloaded` / `Failed`）。
+ *  - `idle` / `checking` / `no-update` / `update-available`：联合里有、事件里没有的取值。
+ *    列出来是为了让这张表对**整个类型**闭合，而不是对「今天恰好发什么」闭合 —— 将来后端真
+ *    发了这几种帧，谁要让它改卡片状态，就得在这里显式回答「它带得起哪些事实」。
+ *
+ * 形态是 `Record<UpdateProgress['status'], …>` ⇒ 联合加成员即 tsc 红在这张表上，
+ * 而不是变成监听器里「第四个没人补的分支」这种运行期静默漏项。
+ */
+const PROGRESS_CARD_RULE: Record<UpdateProgress['status'], ProgressCardRule | null> = {
+  idle: null,
+  checking: null,
+  'no-update': null,
+  'update-available': null,
+  downloading: { us: 'downloading', takesError: false, takesIntegrity: false },
+  // `verified` 只在落位帧上存在（复用本地已有包那条腿也发这一帧，且它的 `verified` 恒真 ——
+  // 敢复用的判据就是 sha256 比中）。这一格让「别的窗口下的包」也能拿到真实校验结论，
+  // 而不是一律退化成 `unknown`。
+  downloaded: { us: 'downloaded', takesError: false, takesIntegrity: true },
+  error: { us: 'error', takesError: true, takesIntegrity: false },
+};
+
+/** 一帧 `update:progress` 落到更新卡上的**全部**改动。字段与卡片实际渲染的东西一一对应。 */
+export interface UpdateCardPatch {
+  us: ProgressDrivenState;
+  /**
+   * 本帧描述的那份包的发布清单（版本号 / 体积 / 预发布档次 / 重试时要用的下载地址都在里面）。
+   * 剥掉了 `releaseNotes` / `title`，成因见 [`UpdateProgressManifest`]。
+   */
+  info: UpdateProgressManifest | null;
+  /** 已落位的安装包路径（「重启并安装」拿的就是它）。 */
+  path: string | null;
+  /** 已收字节。 */
+  received: number | null;
+  percentage: number;
+  /** 失败文案；`null` = 本帧不表态（**不是**空串：空串是「失败但后端没给成因」）。 */
+  error: string | null;
+  /** 摘要校验结论；`null` = 本帧不表态。 */
+  integrity: AppDownloadIntegrity | null;
+}
+
+/**
+ * 把一帧 `update:progress` 翻译成更新卡的一次变更；`null` = 本帧与更新卡无关，一个字段都不动。
+ *
+ * # 这个函数存在的理由
+ *
+ * `update:progress` 走 `events::broadcast` fan-out 给所有窗口 ⇒ 把设置页推进 downloading /
+ * downloaded / error 的路径**大多不是设置页自己发起的**（启动自动下载腿、弹窗「更新/重试」腿），
+ * 那些路径上本页拿不到任何 invoke 回包。此前监听器只 `setUs(...)`，而这些态依赖的其余数据
+ * （清单 / 落位路径 / 字节数）全部来自本页自己上一次的操作，于是：
+ *  - 「重启并安装」首行 `if (!downloadedPath) return` 恒早退 —— 点了没反应；
+ *  - 「重试」首行 `if (!updateInfo) return` 恒早退 —— 同样是哑键；
+ *  - 卡片上的版本号 / 体积是**上一次检查**的结果，与刚落盘那份包毫无因果关系。
+ *
+ * 修法是让事实随帧同行（Rust 侧由 `ProgressStage` 的类型保证附着），本函数是消费侧的**单点**：
+ * 监听器不再按 status 分支各取各的字段 —— 那是枚举型判据，联合里多一个取值就会静默漏掉一格。
+ */
+export function updateCardPatch(p: UpdateProgress): UpdateCardPatch | null {
+  const rule = PROGRESS_CARD_RULE[p.status];
+  if (!rule) return null;
+  return {
+    us: rule.us,
+    info: p.updateInfo ?? null,
+    path: p.filePath ?? null,
+    received: typeof p.receivedBytes === 'number' ? p.receivedBytes : null,
+    percentage: p.percentage,
+    // `p.message` 是 `error` 的同源镜像（Rust 侧两者同一个串），留作后端只填其一时的兜底。
+    error: rule.takesError ? (p.error ?? p.message ?? '') : null,
+    // 判据复用 `appDownloadIntegrity`：帧里的 `verified` 与 `update_download` 回包里的
+    // `verified` 是同一个值，两处各写一套三态映射早晚会漂。
+    integrity: rule.takesIntegrity ? appDownloadIntegrity(p) : null,
+  };
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
