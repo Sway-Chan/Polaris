@@ -19,7 +19,7 @@
  * **本屏不再自订 onSpeedTestProgress**，也不再画屏内进度行——见 `runSpeedTest` 上方的判据。
  */
 
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useAppStore, useEffectiveConfig, useEffectiveServers } from '@/store/app-store';
 import { useNodeSortStore } from '@/store/use-node-sort-store';
 import { useLatencyStore } from '@/store/use-latency-store';
@@ -75,12 +75,122 @@ import {
   type SubMenuItem,
   nodeUseAction,
   type NodeUseVia,
+  latencySortSelector,
 } from './nodes-logic';
+import { useScrollBatch } from '@/lib/use-scroll-batch';
 
 type SortKey = 'default' | 'name' | 'lat' | 'proto';
 
 /** 批量删除按钮的原地二次确认 key（单节点删除用 `node-del:<id>`，见 requestDelete）。 */
 const BATCH_DEL_KEY = 'batch-del';
+
+/**
+ * SSR 安全的 layout effect。补批要在 paint **之前**收敛（见 topUpBatch 下方那条 effect 的判据），
+ * 但 `renderToStaticMarkup` 下 `useLayoutEffect` 会打 React 警告，而本屏的首帧真渲染门
+ * （`nodes-render-budget.test.tsx` 门 4）正跑在 node 里。
+ *
+ * 判据用 `window` 而**不是** `document`：本仓多个 node 环境测试会给 `globalThis.document` 垫桩
+ * （i18n 在模块加载期就要写 `<html lang>`），拿 document 判会在那些测试里错误地选到 layout 分支。
+ */
+const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+
+/**
+ * 分批监听挂不上时的**运行期自曝**（开发者可见日志，非用户文案）。
+ *
+ * `nodes-render-budget.test.tsx` 的锚点门只覆盖**一个**向量：`.main-scroll` 这个类名被改掉。
+ * 另一个向量它覆盖不到 —— 网格在运行期不是该容器的后代（AppShell 换层级、本屏被别处复用、
+ * 渲染进 portal）：两个类名都还在、门照绿，而 `closest` 返回 null。故那一路由代码本身 fail-open
+ * 兜底（见 topUpBatch），再由这条日志把「兜底真的被走到了」说出来。
+ * 一次会话报一次：fail-open 之后每次提交都会再走一遍这条路径，逐次打印只会淹没控制台。
+ */
+let missingScrollerWarned = false;
+function warnMissingScroller(): void {
+  if (missingScrollerWarned) return;
+  missingScrollerWarned = true;
+  console.warn(
+    '[NodesScreen] 找不到 .main-scroll 滚动祖先：节点网格的滚动分批已 fail-open（本次一次性渲染全部节点）。'
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 为什么补批**放弃枚举触发面、改成观测结果**（2026-08-16 复审结论，留档）
+ * ════════════════════════════════════════════════════════════════════════════
+ *
+ * 补批收敛于「距底 > `SCROLL_BATCH_AHEAD_PX`(240px)」。曾经的做法是：把「能改变网格高度」的向量
+ * 逐条枚举进 layout effect 的依赖数组，并论证其余向量的幅度都 < 240px 余量（滚动条还在 ⇒ 用户
+ * 一滚就续上 ⇒ 至多「多滚一次」，不是永久卡死）。**这条路是错的**，两处实证：
+ *
+ * ① **枚举读不到过渡中的几何**。`.side` 带 `transition:width .3s ease-out`（components.css:717）。
+ *    `sidebarCollapsed` 翻转那一次，layout effect 在 commit 后立刻量 —— 此刻过渡 progress=0，
+ *    `.side` 的 used value 还是**旧宽度**，`.main{flex:1}` ⇒ 主区宽还是旧的 ⇒ `auto-fill` 列数
+ *    还是旧的 ⇒ 量到的是折叠**前**那份更高的内容，判「仍溢出」⇒ 不补批。300ms 后列数 4→5、
+ *    行数 15→12、内容矮 3×141 + 3×12(gap) ≈ 459px ⇒ 不再溢出 ⇒ 卡死。把键换成折叠钮，缺陷与它
+ *    本要修的那条逐字同型。
+ *    （展开是安全侧；坏的是折叠这一侧。）
+ *
+ * ② **枚举漏得掉，而且漏的是最高频的那颗**。原表把「角标增减」判成「量级仍是一行文本」——
+ *    读反了 `grid-auto-rows:1fr`：它的效果是**所有行等于全局最高卡**（prototype.css:679 自己的
+ *    注释就写着「stretch+auto-rows:1fr=全卡跨行统一等高(全局最高卡)」），故总幅度 = **行数 × Δ**。
+ *    k=60、N=4 ⇒ 15 行，一排 chip ≈ 20~25px ⇒ 300~375px，**直接跨过 240px 余量**。
+ *    这行结论今天侥幸成立，靠的是 `.nd-card{min-height:141px}`（screens.css:62）这个地板把一排
+ *    chip 的自然高吃掉了 —— 而地板只在自然高 < 141px 时有效，原表从头到尾没提过它。
+ *    更要命的是漏项：`selectedServerId`（点卡设为出口，本屏最高频动作）会把 `.nd-cur` chip 从 A 卡
+ *    挪到 B 卡；A 卡若原本是唯一最高卡、且正因这颗 chip 排到 3 行，掉回 2 行 ⇒ 15 行各矮 ~23px
+ *    ⇒ 内容矮 345px。它不改 `renderCount`、不改 `visibleServers.length`、不发 resize。
+ *    同型的还有 `stagedOnly` / `invalidReason` / `shadowedCidrs`。
+ *    **一张列到 12 行的表仍漏了它** —— 每加一颗角标就多一条要枚举的边，而漏一条的后果是
+ *    「用户永远点不到剩下的节点且看不出少了」。这就是改用观测的理由。
+ *
+ * 现在是**三个采样器**，各自观测结果、不枚举原因。三条合起来才叫「不枚举」，缺任一条都有洞：
+ *
+ *  ① **每次 commit 一采**（layout effect 无依赖数组）—— 覆盖**瞬时**内容变化：增删节点、搜索/
+ *     筛选、切 tab、`selectedServerId` 换出口、`stagedOnly`/`invalidReason`/`shadowedCidrs` 角标
+ *     增减、语言切换。这些不带 CSS 过渡，commit 那一刻量到的就是真值，一次采样够。
+ *  ② **`ResizeObserver` on `.main-scroll`** —— 覆盖**容器盒子**变化：窗口 resize / 缩放 / 全屏、
+ *     侧栏折叠的整个 300ms 过渡（连续回报）、差集条与更新横幅进出、滚动条出现/消失。
+ *     它取代了原来的 `window.addEventListener('resize')`：今天所有改窗口几何的路径都落在这个盒子上，
+ *     旧监听是它的子集。（**不写「必然」**：Windows per-monitor DPI 迁移会给出等逻辑尺寸的新 rect，
+ *     CSS px 不变、RO 不发；那一档也不改 auto-fill 列数，无害，但断言不能过强。）
+ *  ③ **委派 `transitionend` on `.main-scroll`** —— 覆盖**带 CSS 过渡的内容高度**变化。
+ *     今天在用的只有一条：视图档切换。`.nd-card{transition:.14s}` 是简写、无 property 限定
+ *     ⇒ `transition-property:all`（screens.css:62），而列表档把 `min-height` 141→0、`padding`、
+ *     `border-width` 一并改掉（:301）⇒ 切档那一次，①量到的是**过渡前**的卡高，而②只看容器盒子、
+ *     内容变矮不改它。少了③，`view` 这一维就只有一次可能陈旧的采样 —— 与侧栏那条 High 同型。
+ *     （今天两个方向都恰好落在安全侧，我逐个核过：**card→list** 时 `display` 瞬切成 flex 列而
+ *     `min-height` 还停在 141px ⇒ 量到 60×141 ≈ 8460px，远超任何视口 ⇒ 判「不推进」，而终态
+ *     60×40 = 2400px 本来也不该推进，结论一致；**list→card** 时 `min-height` 还停在 0 ⇒ 量到的比
+ *     终态矮 ⇒ 只会多推进，是过渡渲染而非漏渲染。但这是两条**量级不等式**，不是机制。给 `.nd-card`
+ *     加任何影响高度的样式、或把列表行做厚，它立刻变成第三个同型缺陷 —— 故按机制补，不靠不等式。）
+ *
+ * **未解的上游问题（需产品决策，本批未动）**：`.nd-card` 的 `transition:.14s` 写成 `all`，本意只是
+ * `:hover` 的 `border-color`/`box-shadow`/`background`。收窄成那三个属性可以从根上消掉内容高度过渡
+ * （采样器③对 `view` 这一维随之变成冗余），还省掉 60+ 张卡的 `min-height` 动画。但那是**用户可见的
+ * 动效变化**（卡片↔列表从渐变morph 变成瞬切），且偏离原型 SoT，需陈先生拍板，不在本批自行决定。
+ *
+ * 下表是**留档**，不再是判据来源（像素取自各自 CSS 盒模型，量级判定非精确测绘）：
+ *
+ * | 向量 | 改的是 | 幅度 | 曾经的判定 | 现在由谁收 |
+ * |---|---|---|---|---|
+ * | 视图档 `view`（卡片↔列表） | 内容，**带 140ms 过渡**（`transition:all`） | 行高 141px ↔ ~40px；60 条差 2~3 倍 scrollHeight | 会卡死 → 进依赖 | ③ transitionend（①量到的是过渡前的值） |
+ * | 侧栏折叠 | 主区宽 ±92px / mac ±68px → 列数 ±1 | 窄窗 N=4、k=60 时 15→12 行 = 3×141 + 3×12(gap) ≈ 459px | 会卡死 → 进依赖（**读到的是旧几何，实际没收住**） | ② RO（过渡全程连续回报） |
+ * | 窗口 resize / 缩放 / 全屏 | 可视区 + 内容 | 无界 | `window resize` 监听 | ② RO（旧监听已撤；per-monitor DPI 迁移那一档 RO 不发，见上） |
+ * | **出口切换 `selectedServerId`** | 内容（`.nd-cur` chip 换卡 → 最高卡行数变 → **每行**跟着变） | 15 行 × ~23px = 345px | **整条漏列** | ① 每次 commit（无过渡，一采即真值） |
+ * | `stagedOnly` / `invalidReason` / `shadowedCidrs` 角标增减 | 同上 | 行数 × ~20~25px，今天靠 141px 地板吃掉 | 判成「一行文本」（读反 1fr） | ① 每次 commit |
+ * | 语言切换 / 字体换装 | 同上 | 同上 | 同上 | ① 每次 commit |
+ * | 搜索 / 协议筛选 / 切 tab | 内容 + 结果集身份 | — | resetKey 复位 + 长度变 | ① 每次 commit |
+ * | 增删节点 / 订阅刷新 / staged 变更 | 内容 | — | 长度变 | ① 每次 commit |
+ * | 批选条进出（`.batch-bar`） | 内容 ±~62px（padding 20 + border 2 + margin-bottom 14 + 行高） | < 240 | 余量兜底 | ① 每次 commit |
+ * | PendingChangesBar 出现/消失 | **可视区** ±36px（`.pending-bar.show`；在 `.main-scroll` 之外） | < 240 | 余量兜底 | ② RO |
+ * | AppUpdateBanner 出现/消失 | **可视区** ±~74px（同上，在 `.main-scroll` 之外） | < 240 | 余量兜底 | ② RO |
+ * | SubInfoBar 出现/消失 | 内容 ±~80px | < 240 | 余量兜底 | ① 每次 commit |
+ * | 延迟数值回填 | 内容：`.nd-lat` 是**条件渲染**（NodeCard:274），盒高 11px×1.5+4=20.5px > `.nd-name` 的 18.9px 行盒 ⇒ 首个结果到达时 `.nd-top` 涨 ~1.6px，再经 1fr 摊到每行 | ~1.6px × 行数 | 判成「0」（**当时写的是断言不是测量**） | ① 每次 commit |
+ *
+ * 两处「结论成立但理由写错了」的更正（Low-2，一并留档）：
+ *  · 批选条不改卡高。旧理由（「`.nd-check` 是 absolute」）**对卡片档成立**（screens.css:105），
+ *    但只覆盖卡片档 —— 列表档它是 `position:static; order:-1`（:312）在流内。列表档成立的理由是
+ *    行高由 `.nd-acts` 里 27px 的 `.nd-a` 撑住，18~21px 的勾选框够不着。
+ *  · 「延迟数值回填零高度变化」不成立，见上表该行。方向安全、量级也小，但那是断言不是测量值。
+ * ════════════════════════════════════════════════════════════════════════════ */
 
 export function NodesScreen() {
   const { t } = useTranslation();
@@ -324,11 +434,42 @@ export function NodesScreen() {
     () => new Map(servers.map((s) => [s.id, s.name])),
     [servers]
   );
+  /**
+   * 「被覆盖」角标的**成品**（byId 已解析成显示名），按节点 id 索引。
+   *
+   * 为什么要 memo 到这一步、而不是在 `.map()` 里就地 `?.map(...)`：那样每次父层渲染都会给
+   * 每个有冲突的节点造一个新数组 ⇒ `shadowedCidrs` 这个 prop 每次都判不等 ⇒ 这些卡的 `memo`
+   * 恒失效。冲突节点少，但「少数卡片永远不 bail-out」正是最难被发现的那种回归。
+   */
+  const shadowedNamed = useMemo(() => {
+    const named = new Map<string, { cidr: string; by: string }[]>();
+    for (const [id, list] of shadowedIndex) {
+      named.set(
+        id,
+        list.map((s) => ({ cidr: s.cidr, by: serverNameById.get(s.byId) ?? s.byId }))
+      );
+    }
+    return named;
+  }, [shadowedIndex, serverNameById]);
 
   // 测速态。结果读**全局 store**、进度走**全局 toast**（两者订阅都在 App.tsx 顶层，切屏不丢）。
   // 本屏只留 `testing` 这一位灰态（按钮禁用），它是本屏控件的属性、天然是组件私有。
-  // 勿把 latencies 改回 useState，也勿把进度订阅搬回来——那正是「切屏即丢」的来源。
-  const latencies = useLatencyStore((s) => s.latencyMap);
+  // 勿把延迟改回 useState，也勿把进度订阅搬回来——那正是「切屏即丢」的来源。
+  /**
+   * 父层**只在按延迟排序时**才订整张表 —— 那时排序结果必须随每次回包同步重排（不变量①），
+   * 重渲是必要的；其余三档排序（默认/名称/协议）下父层根本不读延迟，订了就是每轮测速几十上百次
+   * 白重渲整片网格。
+   *
+   * 非 `lat` 档由 `latencySortSelector` 返回**模块级常量哨兵**（`EMPTY_LATENCY_MAP`）。
+   * 这一点是本改动成立的全部前提：zustand 默认按 `Object.is` 比较选择器结果，选择器里若写
+   * `: {}` 字面量，每次提交都是新对象、判不等，父层照样每次提交重渲 —— 改了等于白改。
+   * 判据与真断言见 `nodes-logic.ts` 的 `EMPTY_LATENCY_MAP` 头注 + `nodes-render-budget.test.tsx`。
+   *
+   * 单卡的延迟不再从这里灌下去：每张 `NodeCard` 按自身 id 细粒度订阅（见该文件头注）。
+   * 需要「此刻最新的整张表」的是三条**动作腿**（删/批删/注销 WARP 的兜底出口），它们在点击当刻
+   * 用 `useLatencyStore.getState()` 现取，既拿到最新快照，又不制造一条订阅。
+   */
+  const latencies = useLatencyStore(latencySortSelector(sortKey === 'lat'));
   const applyLatencyResults = useLatencyStore((s) => s.applyLatencyResults);
   const [testing, setTesting] = useState(false);
 
@@ -356,6 +497,133 @@ export function NodesScreen() {
     }
     return list;
   }, [activeGroup, search, protoFilter, sortKey, latencies]);
+
+  /* ── 节点网格的**渲染尾**分批（复用 `lib/use-scroll-batch`，本仓第三个消费方，零新依赖）──
+   *
+   * 只切渲染尾，不切数据：`visibleServers` 已是 search / protoFilter 作用后的**完整结果**，
+   * 全选、工具栏「测速」（可见集）、批选条三处**必须继续读它**。把切片回灌那三处，就是日志页
+   * 「500 行以外搜不到」那类回归的同型复发 —— 用户以为自己在对「筛出来的全部」操作，实际只对
+   * 屏幕上恰好画出来的那一批。该不变量由 `nodes-render-budget.test.tsx` 钉住。
+   *
+   * `resetKey` = 结果集身份（tab + 搜索 + 协议筛选 + 排序键）：一变即回首批，否则从窄结果切回
+   * 宽结果时会残留一个大计数，分批等于白做。分隔符用 `\u0000` 免得 `a|b` 与 `a` + `|b` 撞。 */
+  const gridRef = useRef<HTMLDivElement>(null);
+  const {
+    count: renderCount,
+    onScroll: onGridScroll,
+    renderAll: renderAllServers,
+  } = useScrollBatch(
+    visibleServers.length,
+    `${activeTab}\u0000${search}\u0000${protoFilter}\u0000${sortKey}`
+  );
+  const renderedServers = useMemo(
+    () => visibleServers.slice(0, renderCount),
+    [visibleServers, renderCount]
+  );
+  /* hook 每次渲染都返回新的闭包（它们捕获着当轮的 total）。用 latest-ref 转发，
+     使下面那条监听只在挂载/卸载时装拆一次，而不是每渲染一次就重挂一次。
+     这条同步**必须**也是 layout 档、且声明在补批 effect 之前：layout effect 整体跑在 passive 之前，
+     写成 useEffect 会让补批读到上一轮的闭包（旧 total），节点变多时补批会停在旧上限。 */
+  const gridScrollRef = useRef(onGridScroll);
+  const renderAllRef = useRef(renderAllServers);
+  /** `closest('.main-scroll')` 落空过 —— 由 layout 档的 `topUpBatch` 置位、passive 档的 fail-open 消费。
+   *  走 ref 不走 state：置位发生在 layout effect 里，用 state 会多一次同步重渲才轮到兜底。 */
+  const scrollerMissingRef = useRef(false);
+  useIsomorphicLayoutEffect(() => {
+    gridScrollRef.current = onGridScroll;
+    renderAllRef.current = renderAllServers;
+  });
+  /**
+   * 追加下一批的触发器。**滚动容器是 `AppShell` 的 `.main-scroll`**：本屏是普通 `.screen`
+   * （`flex:1 0 auto; display:block`），自己不滚，整页滚在那个祖先上。scroll 事件不冒泡、
+   * React 的 `onScroll` 也不做委派，故这里必须找到那个祖先自己挂原生监听 —— 把 `onScroll`
+   * 挂在 `.node-grid` 上是一行不会报错、也永远不会触发的死代码。
+   *
+   * 找不到祖先时**不**在这里兜底，只置位 `scrollerMissingRef`：`topUpBatch` 跑在 layout 档，
+   * 而兜底动作是「一次取到底」，压在 paint 之前就是数秒白屏。真正的兜底在下方那条**独立的
+   * passive effect** 里（判据写在它自己的头注上）。
+   */
+  const topUpBatch = useCallback(() => {
+    const scroller = gridRef.current?.closest<HTMLElement>('.main-scroll');
+    if (scroller) gridScrollRef.current({ currentTarget: scroller });
+    else scrollerMissingRef.current = true;
+  }, []);
+  useEffect(() => {
+    const scroller = gridRef.current?.closest<HTMLElement>('.main-scroll');
+    if (!scroller) {
+      scrollerMissingRef.current = true;
+      return;
+    }
+    scroller.addEventListener('scroll', topUpBatch, { passive: true });
+    /* 采样器②：**容器盒子**。观测 `.main-scroll` 自身，覆盖窗口/侧栏过渡/缩放这一维。
+       同款用法本仓已有先例：`home/ConnectionTopology.tsx:154` 观测 `.sankey`。
+
+       **不带 `box` 参数**（默认 content-box，别改）：`.main-scroll` 是 `overflow-y:auto`，
+       Win/Linux 经典滚动条下内容从「不溢出」跨到「溢出」会让 content-box 宽缩约 15px ——
+       那一维**恰恰要**观测（网格变窄 ⇒ auto-fill 列数变 ⇒ 行数变）。改成 `border-box`
+       会把它整条丢掉，而全部门仍绿。
+
+       它**确实**构成一条回调 → 自身盒子变化 → 再回调的反馈边（就是上面那 15px）。不自激的理由
+       不是「盒子不变」，而是 `count` 单调不减 + `total` 封顶 + `advanceBatch` 按值 bail-out
+       （同值 ⇒ React 就地停），外加 `shouldAdvance` 的 `clientHeight <= 0` 短路。 */
+    const ro = new ResizeObserver(topUpBatch);
+    ro.observe(scroller);
+    /* 采样器③：**带 CSS 过渡的内容高度变化**。`transitionend` 冒泡，故一条委派监听即可。
+       非它不可的理由：`.nd-card` 写的是 `transition:.14s`（简写、无 property 限定 ⇒
+       `transition-property:all`，screens.css:62），而列表档把 `min-height` 141→0、`padding`、
+       `border-width` 一并改掉（:301）⇒ 切视图档那一次，commit 后立刻量到的是**过渡前**的卡高。
+       采样器①（每次 commit）只有那一次采样，采样器②又只看容器盒子（内容变高矮不改它）——
+       这一维在两者之间是个洞，与侧栏那条 High 同型。140ms 后过渡结束，这条把它补上。
+
+       成本如实记账：一次切档 60 张卡 × 若干属性 ≈ 一两百个事件，集中落在过渡结束那一帧。
+       但 `min-height` 过渡本身每帧就在让浏览器算布局，这里多出来的是同一帧内的 `scrollHeight`
+       读；第一次读强制一次 layout，其余读命中干净布局。不做 propertyName 过滤：过滤就是又一张
+       要维护的枚举表，正是本屏刚放弃的那条路。 */
+    scroller.addEventListener('transitionend', topUpBatch);
+    return () => {
+      scroller.removeEventListener('scroll', topUpBatch);
+      scroller.removeEventListener('transitionend', topUpBatch);
+      ro.disconnect();
+    };
+  }, [topUpBatch]);
+  /**
+   * `closest` 落空时的 **fail-open**：一次取到底，宁可多画，不许静默只剩首批（用户没有滚动条、
+   * 没有任何「还有更多」的暗示，看不出少了，而全选/测速读的仍是全集 ⇒ 界面与操作对象脱节）。
+   *
+   * 刻意留在 **passive** 档、且刻意不设上限：
+   *  · passive —— `renderAll()` 会把 count 顶到 total，几千张卡（本仓每卡 ≥22 个 DOM 元素、
+   *    含 10 处内联 SVG）的 VDOM+DOM 若压在 paint 之前，用户连「至少有 60 个」都看不到，
+   *    「少显示节点」被换成「窗口冻住数秒」。放 passive 档 = 先让首批画出来，再补齐剩下的。
+   *  · 不设上限 —— 上限（如 600）会把这条兜底重新变成一个静默截断，而它存在的全部理由正是
+   *    消灭静默截断。这条路径意味着 AppShell 的结构已经坏了，一次长帧是诚实的代价。
+   * 无依赖数组：结果集变大时要再顶一次；已到顶时 `renderAll` 返回同值 ⇒ React 就地 bail-out。
+   */
+  useEffect(() => {
+    if (!scrollerMissingRef.current) return;
+    warnMissingScroller();
+    renderAllRef.current();
+  });
+  /**
+   * **初批必须覆盖视口**，否则整个分批是个陷阱：内容没撑出滚动条 ⇒ 永远收不到 scroll 事件 ⇒
+   * 剩下的节点再也出不来（而用户看不出少了 —— 没有滚动条就没有「还有更多」的暗示）。
+   * 每次提交后按同一条判据（距底不足 `SCROLL_BATCH_AHEAD_PX` 就再来一批）补批，收敛于
+   * 「撑出滚动条」或「取完」两者之一：`advanceBatch` 在不该推进或 `c >= total` 时返回同一个
+   * count，React 就地 bail-out，不会自激。
+   *
+   * 走 **layout** 档而不是 `useEffect`：4K / 超宽下首屏容量远大于每批 60，收敛要连跑三四轮，
+   * 而 passive effect 每轮之间都夹着一次真实绘制 ⇒ 用户看见网格分段自下而上长出来（2026-08-16
+   * 复审报的量级：约 50~65ms 可见抖动）。layout 档把收敛循环整个压在 paint 之前跑完。
+   *
+   * **没有依赖数组**（= 文件顶部的**采样器①**）—— 每次提交都重量一次，覆盖**瞬时**内容变化。
+   * 它单独并不够：带 CSS 过渡的高度变化在这一刻量到的还是过渡前的值（那一维归采样器③
+   * `transitionend`），容器盒子变化根本不经过本屏 commit（归采样器② RO）。三条的分工见文件顶部。
+   * 代价如实记账：
+   *  · 每次本屏 commit 多一次强制 layout 读（`scrollHeight`/`clientHeight`）。按延迟排序的一轮
+   *    测速里父层每个回包都重渲 ⇒ 约 200 次；但那些 layout 本来在 paint 时也要做，这里只是提前，
+   *    不是凭空多出一遍（真正被消掉的重渲在别处：非 `lat` 档的条件订阅 + 单卡 memo）。
+   *  · 收敛循环本身：每轮一次 `slice` + 一批卡片的 VDOM，换的是「首帧即定稿」。
+   */
+  useIsomorphicLayoutEffect(topUpBatch);
 
   const protoOptions = useMemo(() => {
     if (!activeGroup) return [];
@@ -693,6 +961,14 @@ export function NodesScreen() {
     [openDialog, enterSettings, requestSubDelete, t],
   );
 
+  /* 卡上「编辑」。此前是调用点的内联箭头 —— 那一个箭头就足以让**每张**卡的 `memo` 恒失效
+     （props 浅比较里恒有一个新函数引用），memo 反而只剩比较开销。卡片的其余回调
+     （测速/复制/克隆/设为出口/删除/勾选）本来就都是 useCallback，只差这一个。 */
+  const editNode = useCallback(
+    (server: ServerConfig) => openDialog(editDialogFor(server)),
+    [openDialog]
+  );
+
   const toggleSelect = useCallback((server: ServerConfig) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -738,7 +1014,14 @@ export function NodesScreen() {
             server.id,
             // D4：兜底出口须是**剩余**节点里最快的。原先传 selectedServerId（=被删节点自身）→ 后端 viable
             // 校验恒假 → 恒落直连哨兵，删当前节点即静默裸奔。
-            fallbackExitAfterDelete(servers, selectedServerId, new Set([server.id]), latencies)
+            // 延迟表在**点击当刻**现取（`getState()`）：本屏已不再无条件订整张表，闭包里捕获的会是
+            // 上一次父层渲染时的陈旧快照 —— 用户刚测完速就删节点，兜底会选到过期的「最快」。
+            fallbackExitAfterDelete(
+              servers,
+              selectedServerId,
+              new Set([server.id]),
+              useLatencyStore.getState().latencyMap
+            )
           )
           // 原型 :4140 node-del 成功即 notify('节点已删除')（中性 kind，非 ok）——删除是用户已预期的结果，
           // 报的是「确实删掉了」而非「恭喜」。
@@ -749,7 +1032,7 @@ export function NodesScreen() {
           });
       });
     },
-    [confirmTwice, servers, selectedServerId, latencies, stagedOnly, stagedEntries, revertStaged, t]
+    [confirmTwice, servers, selectedServerId, stagedOnly, stagedEntries, revertStaged, t]
   );
 
   /**
@@ -795,7 +1078,13 @@ export function NodesScreen() {
             void api.server
               .delete(
                 node.id,
-                fallbackExitAfterDelete(servers, selectedServerId, new Set([node.id]), latencies),
+                // 同 requestDelete：延迟表点击当刻现取，不吃闭包里的陈旧快照。
+                fallbackExitAfterDelete(
+                  servers,
+                  selectedServerId,
+                  new Set([node.id]),
+                  useLatencyStore.getState().latencyMap,
+                ),
               )
               .then(() => {
                 toast.info(opts.okToast);
@@ -809,7 +1098,7 @@ export function NodesScreen() {
         },
       });
     },
-    [openDialog, closeDialog, servers, selectedServerId, latencies, stagedOnly, stagedEntries, revertStaged, t],
+    [openDialog, closeDialog, servers, selectedServerId, stagedOnly, stagedEntries, revertStaged, t],
   );
 
   /**
@@ -860,9 +1149,15 @@ export function NodesScreen() {
         try {
           // 同 D4：兜底出口从**删除集之外**的剩余节点里取最快（后端本批新增 fallback_selected_id 形参，
           // 此前该 key 被 Tauri 静默丢弃、批删掉当前出口恒落直连）。
+          // 同 requestDelete：延迟表点击当刻现取，不吃闭包里的陈旧快照。
           await api.server.deleteBatch(
             [...split.backend],
-            fallbackExitAfterDelete(servers, selectedServerId, ids, latencies)
+            fallbackExitAfterDelete(
+              servers,
+              selectedServerId,
+              ids,
+              useLatencyStore.getState().latencyMap
+            )
           );
           exitBatch();
           // 原型 :4137 batch-del 成功即 notify('已删除')（中性）。这里带上条数：批删同时退出批选模式、
@@ -874,7 +1169,7 @@ export function NodesScreen() {
         }
       })();
     });
-  }, [selectedIds, confirmTwice, servers, selectedServerId, latencies, exitBatch, stagedOnly, stagedEntries, revertStaged, t]);
+  }, [selectedIds, confirmTwice, servers, selectedServerId, exitBatch, stagedOnly, stagedEntries, revertStaged, t]);
 
   // allSettled 而非 all：批选里混进一个无分享链接形态的协议（WG/TS/SSH/Custom），all 会整体 reject
   // → 本可成功的链接一条都进不了剪贴板。改为能复制的照常复制，跳过的如实报数。
@@ -1242,8 +1537,9 @@ export function NodesScreen() {
           </button>
         </div>
       )}
-      {/* 节点网格 */}
-      <div className="node-grid">
+      {/* 节点网格。`ref` 是分批的接线：滚动监听要靠它 `closest('.main-scroll')` 找到真正的
+          滚动容器（本屏自己不滚，见 topUpBatch 头注）。 */}
+      <div className="node-grid" ref={gridRef}>
         {visibleServers.length === 0 ? (
           <div className="stub" style={{ gridColumn: '1 / -1' }}>
             {/* 空态文案按**组的语义**分流：订阅组的节点由订阅拉取而来，用户在这里点右上「添加」
@@ -1260,7 +1556,8 @@ export function NodesScreen() {
             </p>
           </div>
         ) : (
-          visibleServers.map((server) => {
+          /* 只画渲染尾切片；全选 / 测可见 / 批选条读的仍是完整的 `visibleServers`（见上方判据）。 */
+          renderedServers.map((server) => {
             const isMesh = activeGroup?.isMesh || isMeshNode(server);
             // 「仅局域网」角标走 domain 谓词 `meshAllowsInternet`，不再自造
             // `wireguardSettings.allowInternet === false` 弱判定 —— 后者漏掉 Tailscale 这一族
@@ -1269,14 +1566,15 @@ export function NodesScreen() {
             // ⚡ 与延迟位的可测性：与页头/工具栏/批选**同一条**过滤线（`isSpeedTestable`）。
             const blockReason = speedTestBlockReason(server, speedTestCaps, stagedOnly.has(server.id));
             // byId → 显示名（节点可能已被删/不在本 tab；取不到就退回 id，别让 tooltip 变成空引号）。
-            const shadowed = shadowedIndex
-              .get(server.id)
-              ?.map((s) => ({ cidr: s.cidr, by: serverNameById.get(s.byId) ?? s.byId }));
+            // 成品在 `shadowedNamed` 里一次算好：在这里就地 map 会每渲染一次造一个新数组，
+            // 使这些卡的 memo 恒失效。
+            const shadowed = shadowedNamed.get(server.id);
             return (
               <NodeCard
                 key={server.id}
                 server={server}
-                latencyMs={latencies[server.id]}
+                /* 延迟**不再从这里灌**：每张卡按自身 id 细粒度订阅（NodeCard 头注）。
+                   灌 prop 意味着每次逐节点回包都要经父层重渲整片网格才能到达那一张卡。 */
                 isCurrent={server.id === selectedServerId}
                 isExit={isMesh}
                 lanOnly={lanOnly}
@@ -1290,7 +1588,7 @@ export function NodesScreen() {
                 onSpeedTest={testOne}
                 onCopy={copyLink}
                 onClone={cloneServer}
-                onEdit={(s) => openDialog(editDialogFor(s))}
+                onEdit={editNode}
                 onUse={useNode}
                 useConfirming={confirmArmed === `node-use:${server.id}`}
                 useWillRestart={willRestartOnSelect(pendingChanges, server.id)}

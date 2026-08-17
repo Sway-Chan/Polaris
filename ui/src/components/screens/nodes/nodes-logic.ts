@@ -4,9 +4,18 @@
  * 同 `settings/settings-logic.ts` 的既有约定：这些判定全是「UI 显示态 ↔ 后端实际行为」的对齐点，
  * 写错的后果不是样式歪，而是**界面说的和后端做的不一致**（最恶劣：pill 显示"自动刷新中"而调度器
  * 根本没在跑，或反过来）。组件**直接消费**这里的导出，不并行复刻，否则测试是假绿。
+ *
+ * # 分层记账：本模块有一条 logic → store 的反向边
+ *
+ * `latencySortSelector` 委托 `store/use-latency-store` 的 `latencyMapWhen`（连带把 zustand 与
+ * `@/ipc` 拉进本模块的传递依赖）。方向上是 logic 依赖 store，与「纯逻辑」这个定位相反。
+ * 之所以接受：那个哨兵的**引用恒等**是首页与节点页共用的一条前提，放两份就有两处可以各自漂，
+ * 而它天然属于延迟 store 的词汇表。代价是本模块不再是零依赖模块 —— 若哪天要把它搬去 worker
+ * 或跨端复用，这条边是第一个要断的。node 环境直测不受影响（store 模块加载期无副作用）。
  */
 
 import type { ServerConfig, SubscriptionConfig, InvalidNodeInfo } from '@/contracts/types';
+import { latencyMapWhen } from '@/store/use-latency-store';
 import {
   isMeshNode,
   isSpeedTestable,
@@ -85,6 +94,33 @@ export function subEffectiveIntervalHours(config: SubAutoUpdateConfigLike | null
  * （公网黑洞必假超时）照样显 ⚡ 可点；页头「全部测速」还不传 id 集（后端全量），
  * 同一句「全部测速」在首页与节点页**不同义**。
  * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * 空表哨兵。本体与判据（为什么必须是模块级冻结常量、为什么 `{}` 字面量和 `useMemo` 都不行）
+ * 在 `store/use-latency-store.ts` —— 首页与节点页共用同一个引用，两份哨兵等于两条判据。
+ * 这里只做转出口，保住既有调用点与门的 import 路径。
+ */
+export { EMPTY_LATENCY_MAP } from '@/store/use-latency-store';
+
+/**
+ * 「**本屏**这一刻要不要订整张延迟表」—— 排序键不是 `lat` 时恒返回同一个空表哨兵。
+ *
+ * 实现委托给 store 层中性的 [`latencyMapWhen`]（首页按选单开合走同一条），本函数只保留
+ * 节点页那句「需不需要」的语义命名。**不要**在这里再写一遍三元：第二份哨兵/第二份形态一出现，
+ * 「非延迟档返回稳定引用」这条前提就有两处可以各自漂。
+ *
+ * 为什么不能反过来「恒不订、动作腿现取」：`sortKey === 'lat'` 时排序结果**必须**随每次回包同步
+ * 重排（不变量①），那时父层就该重渲。条件订阅要收掉的是另外三档排序（默认/名称/协议）下那份
+ * 「订了也没人读」的重渲，不是排序本身。
+ *
+ * 每次调用返回**新函数**（调用点写在渲染里 `latencySortSelector(sortKey === 'lat')`）—— 稳定性
+ * 全部来自哨兵引用，不来自选择器本身，这一点由 `nodes-render-budget.test.tsx` 正反两向钉住。
+ */
+export function latencySortSelector(
+  needsLatency: boolean
+): (s: { latencyMap: Record<string, number | null> }) => Readonly<Record<string, number | null>> {
+  return latencyMapWhen(needsLatency);
+}
 
 /**
  * 批选测速的目标 id 集 = **当前可见列表里被选中、且结构上可测**的那些（按可见顺序）。

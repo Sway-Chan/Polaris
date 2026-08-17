@@ -259,7 +259,13 @@ export function NodeMenu({
               <span>{groupLabel(g)}</span>
               <span className="ns-c">{items.length}</span>
             </button>
-            {items.map((s) => {
+            {/* 折叠的分组**整棵子树不挂载**。此前是无条件 map + 每行 `hidden`：`hidden` 由
+                `.nm-item[hidden]{display:none}` 生效 ⇒ 确实无 layout/paint，但 DOM 节点与 React fiber
+                照建不误（实测约 0.3–0.5 MB/100 节点的峰值），而默认展开的只有含当前出口的那一组，
+                其余全是用户看不见也点不到的节点行。
+                检索真值不受影响：`isOpen` 上面那条 `searching ||` 强制搜索态全组展开，
+                「全部测速」读的是 `filteredGroups` 数据而不是 DOM（见 `.nm-foot`）。 */}
+            {isOpen && items.map((s) => {
               const lat = latencies[s.id];
               const on = !directOn && s.id === selectedServerId;
               const dead = lat === null;
@@ -270,7 +276,6 @@ export function NodeMenu({
                   className={cn('nm-item', on && 'on', dead && 'dead')}
                   role="option"
                   aria-selected={on}
-                  hidden={!isOpen}
                   onClick={() => onPick(s.id)}
                 >
                   <span className={cn('nm-latdot', latDotClass(lat))} />

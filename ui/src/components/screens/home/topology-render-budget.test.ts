@@ -1,5 +1,7 @@
 /**
- * 拓扑渲染预算门 —— 守住「首页拓扑每帧只做必要的那点活」。
+ * 首页渲染预算门 —— 守住「首页每帧 / 每次 store 提交只做必要的那点活」。
+ * 起于拓扑（门 1–3），随后并入同类判据：aggregate 只持令牌不挂帧监听（门 4）、
+ * 延迟表按出口选单开合条件订阅（门 5）。判据同源，故不另开文件。
  *
  * # 为什么需要一道门
  *
@@ -33,6 +35,8 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { createTopicSubscription } from '@/lib/topic-subscription';
+import { EMPTY_LATENCY_MAP, latencyMapWhen } from '@/store/use-latency-store';
 
 /** `@/i18n` 在模块加载期就写 `<html dir/lang>`（i18n/index.ts:81），node 下无 document ⇒ 先垫桩。
  *  与 `harness-screens.test.tsx` 同款，别为它引 jsdom。 */
@@ -108,6 +112,128 @@ describe('门 3 · 窄屏兜底列表不许无条件渲染', () => {
     // 「省 80 个隐藏节点」若要拿一个新 observer + 重排监听去换，未必是净收益；
     // 判据成立的前提正是「零新增观测」，故把 observer 数量一并钉死。
     expect(CODE.match(/new ResizeObserver/g)?.length).toBe(1);
+  });
+});
+
+/**
+ * 门 4 · 首页的 aggregate topic 只持**订阅令牌**，不挂帧监听。
+ *
+ * Tauri 只在「该 webview 对该事件有 JS 监听」时才向本窗口发一段 eval 脚本。首页原先给
+ * aggregate 挂了一条**回调体为空**的监听 —— 于是整条 eval 链每帧真实发生一遍：一份 UTF-16
+ * 源码字符串 + 一次 JSC parse/bytecode 分配（源码逐帧不同 ⇒ code cache 恒不命中）+ 一份 JS
+ * 对象图，随即全成垃圾。250ms 轮询下就是每秒 4 次白付，而首页没有任何读点消费这些帧。
+ *
+ * 但 `subscribe`/`unsubscribe` **必须留着**：三条 topic 共用一条 gRPC 连接流，后端按
+ * `should_stream_connections()`（aggregate ∪ detail ∪ closed）判需求，三者全零才停流；
+ * 撤掉令牌会在首页可见时误停整条流。令牌与数据帧是两件事，本门把两件事分别钉住。
+ */
+describe('门 4 · 首页 aggregate 只持订阅令牌，不挂帧监听', () => {
+  const CODE = HOME_SRC.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, '');
+
+  it('首页**不得**注册 aggregate 帧监听（空回调 = 每帧白付一条 eval 链）', () => {
+    // 变异对照：把 `onFrame: () => () => {}` 改回 `onFrame: (cb) => api.stats.onConnectionsAggregate(cb)`
+    // ⇒ 本条转红。注释里逐字写着旧形态，故必须扫去注释后的源码。
+    expect(CODE, '首页又挂回 aggregate 帧监听了').not.toContain('onConnectionsAggregate');
+    expect(CODE).toMatch(/onFrame:\s*\(\)\s*=>\s*\(\)\s*=>\s*\{\}/);
+  });
+
+  it('订阅令牌仍在（撤掉会误停三条 topic 共用的那条连接流）', () => {
+    expect(CODE).toContain("subscribe: () => api.stats.subscribe('aggregate')");
+    expect(CODE).toContain("unsubscribe: () => api.stats.unsubscribe('aggregate')");
+  });
+
+  /**
+   * 「撤掉首页帧监听」这件事**安全**的两个前提，本条只证第一个：
+   *  (a) `createTopicSubscription` 不吞帧、`dispose()` 只摘自己那条监听 —— **本条**（端口契约直测）；
+   *  (b) 连接页**确实**还挂着 aggregate 真监听 —— 不在本文件，由
+   *      `lib/topic-subscription-wiring.test.ts` 的「真帧监听的分布」正向对照钉住
+   *      （把连接页端口改成 `onFrame: () => () => {}` ⇒ 那条转红）。
+   *
+   * 分工的理由：这里原先跨文件逐字断言 `ConnectionsScreen.tsx` 的 `onFrame:` 那一行，连接页任何
+   * 等价重构都会让**首页**这道门转红、红点落在无关文件上。(b) 属于「谁挂着监听」这类全局接线事实，
+   * 归 wiring 那份统一记账；本文件只留可直测的 (a)，与既有分层一致（真断言优先于源码文本）。
+   */
+  it('端口契约：帧只发给挂了监听的那条，dispose 只摘自己（首页空壳监听不吞别人的帧）', () => {
+    const listeners = new Set<(d: number) => void>();
+    const tokens: string[] = [];
+    const emit = (d: number) => listeners.forEach((cb) => cb(d));
+    /** 同一条后端流的两个订阅端口；`attachFrames=false` 就是首页那条（回调体为空的监听）。 */
+    const port = (attachFrames: boolean) => ({
+      onFrame: (cb: (d: number) => void) => {
+        if (!attachFrames) return () => {};
+        listeners.add(cb);
+        return () => {
+          listeners.delete(cb);
+        };
+      },
+      subscribe: async () => {
+        tokens.push('sub');
+      },
+      unsubscribe: async () => {
+        tokens.push('unsub');
+      },
+    });
+
+    const got: number[] = [];
+    const home = createTopicSubscription<number>(port(false), () => {
+      throw new Error('首页那条不挂监听，不该收到任何帧');
+    });
+    const ranking = createTopicSubscription<number>(port(true), (d) => got.push(d));
+    home.setWanted(true);
+    ranking.setWanted(true);
+    emit(1);
+    emit(2);
+    // 两条订阅令牌都发了：后端按 aggregate ∪ detail ∪ closed 判需求，首页撤监听不撤令牌。
+    expect(tokens).toEqual(['sub', 'sub']);
+    expect(got).toEqual([1, 2]);
+    // 首页退订/卸载后，排名页照收 —— 这就是「撤首页那条不连累它」的直接证据。
+    home.dispose();
+    emit(3);
+    expect(got).toEqual([1, 2, 3]);
+    ranking.dispose();
+    emit(4);
+    expect(got).toEqual([1, 2, 3]);
+  });
+});
+
+/**
+ * 门 5 · 首页的延迟表按出口选单开合**条件订阅**。
+ *
+ * 被守的缺陷与门 4 同型（每帧/每次提交白付），只是发生在延迟流上：`latencies` 全文唯一去处是
+ * `<NodeMenu latencies={latencies}>`，而 `NodeMenu` 在 `open` 为假时第一行就
+ * `return <div hidden />`。无条件订整表 ⇒ 停在首页点「全部测速」测 200 个节点 = 200 次 store 提交
+ * = 首页整棵子树重渲 200 次，而屏幕上没有任何一处在显示延迟。
+ *
+ * 放本文件而不是 `store/latency-wiring-invariants.test.ts`：那份守的是**状态归属**（真值在 store
+ * 还是组件私有 useState、订阅挂哪一层），它的两组 `it.each(CONSUMERS)` 对「订不订」一视同仁；
+ * 本条守的是**订阅时机**（条件 vs 无条件），判据来源是渲染预算，与节点页的对应门
+ * （`nodes/nodes-render-budget.test.tsx` 门 2）对称。混进那边会让 CONSUMERS 那两组的语义漂掉。
+ */
+describe('门 5 · 首页延迟表按选单开合条件订阅', () => {
+  const CODE = HOME_SRC.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, '');
+
+  it('订阅是**条件式**的，不得退回无条件订整表', () => {
+    // 变异对照：改回 `useLatencyStore((s) => s.latencyMap)` ⇒ 本条转红。
+    // 注释里逐字写着旧形态与「勿改回」，故必须扫去注释后的源码。
+    expect(CODE, '首页又无条件订整张延迟表了 ⇒ 每次逐节点回包都重渲整棵子树').not.toMatch(
+      /useLatencyStore\(\s*\(s\)\s*=>\s*s\.latencyMap\s*\)/
+    );
+    expect(CODE).toContain('useLatencyStore(latencyMapWhen(nodeMenuOpen))');
+  });
+
+  it('关闭档返回**模块级冻结哨兵**（写成 `{}` 字面量 ⇒ 每次提交仍判不等 ⇒ 改了等于白改）', () => {
+    const sel = latencyMapWhen(false);
+    expect(sel({ latencyMap: { a: 1 } })).toBe(sel({ latencyMap: { b: 2 } }));
+    expect(sel({ latencyMap: { a: 1 } })).toBe(EMPTY_LATENCY_MAP);
+    expect(Object.isFrozen(EMPTY_LATENCY_MAP)).toBe(true);
+    expect(Object.keys(EMPTY_LATENCY_MAP)).toEqual([]);
+  });
+
+  it('打开档拿的是 store 那张表**本体** —— 选单打开那一次就读到当下真值，不是旧快照', () => {
+    const state = { latencyMap: { a: 1 } };
+    expect(latencyMapWhen(true)(state)).toBe(state.latencyMap);
+    // 选择器每次渲染都会被重建（调用点写在渲染里），稳定性只能来自哨兵引用，不能来自闭包缓存。
+    expect(latencyMapWhen(false)).not.toBe(latencyMapWhen(false));
   });
 });
 

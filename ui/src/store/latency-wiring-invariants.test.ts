@@ -23,12 +23,19 @@ const read = (rel: string): string => readFileSync(resolve(SRC, rel), 'utf8');
 
 const HOME = 'components/screens/home/HomeScreen.tsx';
 const NODES = 'components/screens/nodes/NodesScreen.tsx';
+/**
+ * 节点页延迟的**真实消费点**。2026-08-16 那批把延迟消费从 `NodesScreen` 搬进单卡（每张卡按自身
+ * id 细粒度订阅），`NodesScreen` 只剩 `sortKey === 'lat'` 那条**条件**订阅 —— 下面两组 `it.each`
+ * 若不跟着搬，2026-07-21 真机那条「结果存组件私有 state、切屏即丢」的缺陷可以在新位置原样复活，
+ * 而两道门都不响：门守的是文件，而真值落地的文件换了。
+ */
+const NODE_CARD = 'components/screens/nodes/NodeCard.tsx';
 const STATUSBAR = 'components/layout/StatusBar.tsx';
 const TRAY = 'tray/TrayMenu.tsx';
 const APP = 'App.tsx';
 
-/** 四个消费方 + App（订阅所在地）。 */
-const CONSUMERS = [HOME, NODES, STATUSBAR, TRAY];
+/** 五个消费方 + App（订阅所在地）。 */
+const CONSUMERS = [HOME, NODES, NODE_CARD, STATUSBAR, TRAY];
 
 /**
  * T1（**2026-07-31 语义反转**，陈先生裁定）：主页有**两颗**测速入口，射程刻意不同 ——
@@ -84,7 +91,7 @@ describe('T2：订阅挂窗口级持久位置，不得退回业务组件', () =>
     expect(read(TRAY)).toContain('subscribeLatencyEvents()');
   });
 
-  it.each([HOME, NODES, STATUSBAR])(
+  it.each([HOME, NODES, NODE_CARD, STATUSBAR])(
     '%s **不得**自建 onSpeedTestResult 订阅（挂组件里 = 卸载即断 = 切屏丢结果）',
     (f) => {
       // 匹配**调用**形态而非任意提及：注释里写「勿改回 onSpeedTestResult 私有订阅」不该误伤。

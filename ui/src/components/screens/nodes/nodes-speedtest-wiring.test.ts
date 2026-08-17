@@ -55,7 +55,10 @@ describe('守卫自检：扫到的确实是源码（防读空文件恒绿）', (
     expect(NODES_RAW.length).toBeGreaterThan(1000);
     expect(CARD_RAW.length).toBeGreaterThan(1000);
     expect(NODES).toContain('export function NodesScreen');
-    expect(CARD).toContain('export function NodeCard');
+    // NodeCard 的出口是 `memo(NodeCardView)`（渲染预算门要求，见 nodes-render-budget.test.tsx），
+    // 故这里认实现函数名 + memo 出口两段，不再认已不存在的 `export function NodeCard`。
+    expect(CARD).toContain('function NodeCardView');
+    expect(CARD).toContain('export const NodeCard = memo(NodeCardView)');
   });
 
   it('去注释后仍是可断言的代码（防 code() 把源码整段吃掉 → 负向断言恒绿）', () => {

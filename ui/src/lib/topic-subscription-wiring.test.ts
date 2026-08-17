@@ -86,6 +86,36 @@ describe('守卫自检：扫到的确实是源码（防扫空目录 / 过滤过�
       expect(src, `${rel(p)} 的注释没被剥掉`).not.toContain('监听挂在');
     }
   });
+
+  /**
+   * **正向对照（二）：帧监听的分布**。上一条只钉「哪些文件有订阅点」，钉不住「某条腿的 `onFrame`
+   * 被改成了空壳」——T1/T2 都是 `for (const m of src.matchAll(/onFrame:…api\.stats\.on/))`，
+   * 端口写成 `onFrame: () => () => {}` 时匹配数归零、循环空跑，**全绿**。
+   *
+   * 这个缺口有过真实落点：首页 aggregate 腿刻意只持订阅令牌、不挂帧监听（判据见
+   * `screens/home/topology-render-budget.test.ts` 门 4），形态与「把连接页那条也改成空壳」逐字
+   * 相同。若连接页 aggregate 变成空壳，排名页实时数据静默死掉而本文件与首页那道门都不响。
+   * 故把「哪个文件挂着哪些 topic 的**真**监听、各几条」整张表钉死：空壳化 ⇒ 该项消失 ⇒ 转红。
+   */
+  it('正向对照：真帧监听的分布（首页刻意为 0；连接页三条、状态栏一条）', () => {
+    const found: Record<string, string[]> = {};
+    for (const [p, src] of SUBSCRIBERS) {
+      const topics = [...src.matchAll(/onFrame:\s*\((?:cb|\w+)\)\s*=>\s*api\.stats\.(on[A-Za-z]+)\(/g)]
+        .map((m) => m[1])
+        .sort();
+      found[rel(p)] = topics;
+    }
+    expect(found).toEqual({
+      // 首页只持 aggregate 的订阅令牌（撤掉令牌会误停三条 topic 共用的那条流），**不挂帧监听**。
+      'components/screens/home/HomeScreen.tsx': [],
+      'components/screens/connections/ConnectionsScreen.tsx': [
+        'onConnectionsAggregate',
+        'onConnectionsClosed',
+        'onConnectionsDetail',
+      ],
+      'components/layout/StatusBar.tsx': ['onStatsUpdated'],
+    });
+  });
 });
 
 describe('T1：订阅点一律走 createTopicSubscription（监听先挂 + 订过必退，两条不变式随之带上）', () => {

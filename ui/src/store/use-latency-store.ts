@@ -113,6 +113,37 @@ export const useLatencyStore = create<LatencyState>((set) => ({
 }));
 
 /**
+ * 「这一刻不读延迟」时选择器返回的**模块级冻结哨兵**。
+ *
+ * # 为什么必须是模块级常量，而不是 `{}` 字面量或 `useMemo`
+ *
+ * zustand 默认用 `Object.is` 比较选择器的返回值来决定「要不要让这个组件重渲」。选择器里写
+ * `: {}` 每次求值都是新对象 ⇒ 每一次 store 提交（测速逐节点回包，一轮几十上百次）都判不等 ⇒
+ * 订阅方照样每次提交重渲、派生 memo 照样整表重算 —— 与不做条件订阅**逐字等价**，但多骗了一次
+ * code review。`useMemo` 也不行：hook 只在组件里能调，而这里要的是「跨组件实例、跨渲染恒等」
+ * 的一个引用，只有模块级常量给得了。
+ *
+ * 冻结是为了让「被误写一格」当场炸：一张假表喂进排序比较器，症状是排序悄悄用了空数据。
+ */
+export const EMPTY_LATENCY_MAP: Readonly<Record<string, number | null>> = Object.freeze({});
+
+/**
+ * 条件订阅整张延迟表的选择器：`needed` 为假时恒返回 [`EMPTY_LATENCY_MAP`]。
+ *
+ * 两个消费方，同一条判据（各自的「这一刻有没有人读延迟」不同，但形态必须只有一份）：
+ *  - 节点页：`sortKey === 'lat'` 才读（按延迟排序时顺序必须随每次回包同步重排）；
+ *  - 首页：出口选单展开才读（`NodeMenu` 关着时第一行就 `return <div hidden />`，一个字都没人读）。
+ *
+ * 反过来「恒不订、要用时 `getState()` 现取」不成立于上面两档：那时**必须**随回包重渲，否则
+ * 顺序/数值停在旧帧。条件订阅要收掉的是「订了也没人读」的那部分重渲，不是重渲本身。
+ */
+export function latencyMapWhen(
+  needed: boolean
+): (s: { latencyMap: Record<string, number | null> }) => Readonly<Record<string, number | null>> {
+  return (s) => (needed ? s.latencyMap : EMPTY_LATENCY_MAP);
+}
+
+/**
  * 把 `onSpeedTestResult` 事件流接到本 store —— **窗口级持久订阅**，返回退订函数。
  *
  * 调用点必须是该窗口生命周期内**只挂载一次**的根（主窗 `App.tsx` / 托盘窗 `TrayMenu`）。
