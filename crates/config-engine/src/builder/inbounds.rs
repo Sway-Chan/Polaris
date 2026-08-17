@@ -678,10 +678,12 @@ mod tests {
                 protocol: crate::user_config::server_config::Protocol::Wireguard,
                 address: "1.2.3.4".into(),
                 port: 443,
-                wireguard_settings: Some(crate::user_config::server_config::WireGuardSettings {
-                    allowed_ips: vec!["10.0.0.0/24".into()],
-                    ..Default::default()
-                }),
+                wireguard_settings: Some(Box::new(
+                    crate::user_config::server_config::WireGuardSettings {
+                        allowed_ips: vec!["10.0.0.0/24".into()],
+                        ..Default::default()
+                    },
+                )),
                 ..Default::default()
             });
         let mut deps = deps_linux();

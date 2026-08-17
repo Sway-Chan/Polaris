@@ -68,10 +68,10 @@ mod tests {
             protocol: Protocol::Wireguard,
             address: address.into(),
             port: 2408,
-            wireguard_settings: Some(WireGuardSettings {
+            wireguard_settings: Some(Box::new(WireGuardSettings {
                 warp_device,
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         }
     }
