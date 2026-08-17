@@ -908,7 +908,6 @@ describe('progressResetsIntegrity —— 对整个 status 联合闭合的真值�
   });
 });
 
-
 /**
  * 剥注释内核：用 TS 自己的 parser 逐 token 取注释区间并抹成空格（保留换行与偏移，行号不漂）。
  *
@@ -1235,10 +1234,17 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
         `${state} 态的预发布徽标没有由 downloadedPath 把关 —— 会贴到别的窗口下的正式包上`,
       ).toBe(true);
     }
-    // `available` 是本页自己刚查出来的结果，数据源就是对的，不该也被这条判据挡住。
+    // `available` 是本页自己刚查出来的结果，数据源就是对的，不该也被这条判据挡住
+    // （那一屏 `downloadedPath` 恒为 null ⇒ 加了资格判据 = 徽标在**决策那一屏**彻底消失，
+    // 而那正是整批的立项理由）。
+    //
+    // ⚠️ 正则必须一路咬到 `prereleaseTag`：该 block 里 `updateInfo.isPrerelease` 出现**两次**
+    // （徽标 + 下面的 `prereleaseNote` 说明），只判「有没有这个开头」会被**说明那条**喂饱 ——
+    // 给徽标也加上 `downloadedPath &&` 时本条照样绿。这与 Rust 侧「别的臂替本臂作证」同形，
+    // 换到了 JSX 上。
     expect(
-      /\{updateInfo\.isPrerelease && \(/.test(stateBlock(src, 'available')),
-      'available 态的徽标被多加了资格判据 —— 那一屏的 updateInfo 本来就是本页查的',
+      /\{updateInfo\.isPrerelease && \([\s\S]{0,240}?prereleaseTag/.test(stateBlock(src, 'available')),
+      'available 态的徽标被多加了资格判据 —— 那一屏的 updateInfo 本来就是本页查的，加了等于徽标消失',
     ).toBe(true);
     // 反向：绝不能回到「清空 updateInfo」那条路（会让 error 态的「重试」变哑键）。
     expect(
@@ -1332,6 +1338,9 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
     expect(murky, '有调用点的预发布口径既不是字面量、也不在具名白名单里，无法静态判定').toEqual(
       [],
     );
+    // ⚠️ **前瞻守卫，本增量零执行覆盖**（口径同本文件 `.verified` 那条）：`ALLOWED_SCOPE_IDENTS`
+    // 今天是空数组 ⇒ 下面这条 `filter` 恒得空集、断言恒真，**不算进本批的变异收据**。它挡的是
+    // 将来第一次往白名单加名字的那一刻。
     // 白名单只认**名字**是不够的：某条推腿写 `check(SCOPE)` 而 `SCOPE = true` 会全绿放行，
     // 横幅零标注地举着一条 beta —— 正是这道门存在的理由。故名字进白名单还不算完，它的**值**
     // 必须能在 `ui/src` 里静态解析到 `= false`。加名字仍是显式扩张，口径依旧被读出来。

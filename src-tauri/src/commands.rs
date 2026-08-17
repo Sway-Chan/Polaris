@@ -77,9 +77,23 @@ pub(crate) mod guard_scan {
     /// 命中 ⇒ 封顶那行代码**本身是哑的**。故改为逐行 `trim_start()` 后判「以 `<enum>::` 起手且
     /// 含 `=>`」，与缩进无关。
     ///
+    /// **输出自检不可省**（P1-2：抽本 helper 时它一度被合成单测顶替掉，那是换了型不是搬了家）。
+    /// 单测检的是「**列举到的**几种输入形状」，自检检的是**输出**（切出来的片段里不得再有臂头），
+    /// 形状无关 —— 二者不可互相替代。实证：rustfmt 把长 or-pattern 臂头折行后（`|` 起手续行），
+    /// 逐行前缀判据认不出下一条臂 ⇒ 静默吞掉它；那是合成单测没列举到、而本自检必红的形态。
+    ///
+    /// 不对称也是理由本身：**臂头找不到 ⇒ panic（响）；封顶失效 ⇒ 静默多切（哑）**。哑的那一半
+    /// 必须自己长嘴。
+    ///
     /// `arm_head` 传臂头的**前缀**（如 `"PopupAction::Update | PopupAction::Retry =>"`），
     /// `variant_prefix` 传该 match 所有臂头的公共前缀（如 `"PopupAction::"`）用于识别下一条臂。
     /// 找不到臂头一律 panic —— 守卫失去判据必须转红。
+    ///
+    /// # 射程：单行臂头
+    ///
+    /// 识别「下一条臂」靠**逐行**前缀匹配 ⇒ 只认**写在一行里**的臂头（含单行 or-pattern
+    /// `A::Y | A::Z =>`）。臂头被折成多行时前缀判据失效，此时兜住它的是上面那条输出自检
+    /// （泄漏进来的下一条臂必然含 `variant_prefix`）—— 封顶会红，不会哑。
     pub(crate) fn match_arm_body(body: &str, arm_head: &str, variant_prefix: &str) -> String {
         let at = body
             .find(arm_head)
@@ -94,6 +108,11 @@ pub(crate) mod guard_scan {
             out.push_str(line);
             out.push('\n');
         }
+        assert!(
+            !out.contains(variant_prefix),
+            "臂切片里还有下一个臂头（{variant_prefix}）—— 封顶失效，调用点守卫已退化成\
+             「函数体里有没有这句话」，别的臂会替被守的那条作证"
+        );
         out
     }
 
@@ -301,6 +320,11 @@ pub(crate) mod guard_scan {
     ///
     /// 变异锁：把 `t.starts_with(variant_prefix) && t.contains("=>")` 换回按缩进宽度匹配
     /// （或整个删掉 `break`）⇒ 「臂在中间」那格转红。
+    ///
+    /// ⚠️ **本单测只覆盖列举到的输入形状，不担保封顶的正确性** —— 那由 [`match_arm_body`] 自身的
+    /// 输出自检担保（形状无关）。实证：把封顶判据打死时，若只有本单测，三道真门全绿、只有这里红；
+    /// 而折行 or-pattern 臂头这一格本单测根本列举不到。两者同时在，才既说得出「哪种输入」也拦得住
+    /// 「没列举到的输入」。
     #[test]
     fn match_arm_body_stops_at_the_next_arm() {
         let body = "\
@@ -331,7 +355,8 @@ pub(crate) mod guard_scan {
         assert!(last.contains("last_call()"));
         assert!(!last.contains("middle_call()"));
 
-        // ③ 臂头换写法（多分支 or-pattern、缩进不同）照样识别为「下一条臂」。
+        // ③ **单行** or-pattern 臂头（且缩进不同）照样识别为「下一条臂」。折行 or-pattern 不在
+        //    本格射程内 —— 那一形由 `match_arm_body` 的输出自检兜住（见其 doc 的「射程」段）。
         let or_body = "\
     A::X => {
         x_call();

@@ -764,10 +764,19 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
                     （弹窗「更新/重试」、`spawn_auto_download`）—— 那时两者毫无因果关系：用户查到
                     `v1.3.0-beta.1` 没下，外部腿下了 `v1.2.0` 正式包，卡片就会举着预发布徽标去描述
                     一份正式包。`downloadedPath` 的**唯一**写点是 `downloadUpdate` 的成功分支
-                    （外部广播那条腿从不设它）⇒ 它恰好等价于「盘上这份是本页下的」，也就是
-                    「`updateInfo` 与它有因果关系」。
+                    （外部广播那条腿从不设它）⇒ 它为真说明本页下载过**某个**包。
+
+                    ⚠️ 「那个包就是当前 `updateInfo` 描述的这个」还靠**第二条、非局部**的不变量：
+                    `setUpdateInfo` 只在 `checkUpdate()` 里执行，而「检查更新」按钮只挂在
+                    `us === 'idle'` 那一格、且从 `downloaded`/`manual` 回不到 `idle` ⇒ 每次写
+                    `updateInfo` 时 `downloadedPath` 必为 null。**给本卡加任何「重新检查」入口都会
+                    破坏它**（旧正式包路径 + 新查到的 beta 同时在手 ⇒ 徽标贴回外部腿下的正式包，
+                    而守这条的门拦不住）。真要加，同时清 `downloadedPath`，或直接走 W5 的正解。
+
                     代价是外部腿下的包不显示徽标（**漏报，方向安全**）——正解是让那条腿把随行事实
-                    随事件带过来，属 W5 射程；本处只负责不说假话。
+                    随事件带过来，属 W5 射程；本处只负责不说假话。**版本号那半仍未修**：本卡的
+                    `{updateInfo?.version}` 照旧可能是上一次检查的那个（无徽标、但数字是错的），
+                    同归 W5。
                     **不走「清空 `updateInfo`」那条**：清空会让 `us==='error'` 那格的「重试」
                     （唯一按钮，直通 `downloadUpdate` 的 `if (!updateInfo) return`）变成哑键。 */}
                 {downloadedPath && updateInfo?.isPrerelease && (

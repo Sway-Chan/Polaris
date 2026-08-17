@@ -678,7 +678,6 @@ export function progressResetsIntegrity(status: UpdateProgress['status']): boole
   return PROGRESS_RESETS_INTEGRITY[status];
 }
 
-
 /* ────────────────────────────────────────────────────────────────────────────
  * 暂存条目的**段级**译名（原型 `settingLabel:4257`）
  * ──────────────────────────────────────────────────────────────────────────── */
