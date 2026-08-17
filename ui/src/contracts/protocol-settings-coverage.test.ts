@@ -742,12 +742,16 @@ const OWNER_PAIRS: ReadonlyArray<readonly [string, NodeProto]> = Object.entries(
  *  - **锚点自身被改写会红**（`Protocol::Naive => {` 若并成 `Protocol::Naive | Protocol::X => {`）。
  *    这是新增的假红面；但修它要写出「那段代码搬到哪儿去了」，是有信息量的一次编辑，
  *    与「把数字 +12」不是一类。**锚点被注释原样引用不算**——锚点在 [`maskRust`] 的掩码上找。
+ *    反过来：**锚点串自己不能含字符串或注释**（掩码里那部分已被抹白 ⇒ 找不到 ⇒ 报「锚点找不到」，
+ *    而代码其实好好的）。锚点要挑纯代码的一行。
  *  - **依据串在块内出现两次也会红**（旧门会被「邻居」喂饱，取最近的一处判绿）。这是收紧不是放宽：
  *    一条指得到两处的依据，指着哪一处全凭读者猜。
  *  - 🔴 **没写 `scope` 的那 15 条，判定被收紧成「全文恰好一次」** —— 旧门是「全文至少一次 + 落在
- *    ±12 行内」。这是本次改动**唯一一处比旧门严**的地方，写在这里是因为它**不写就是隐式的**：
+ *    ±12 行内」。这是本次改动**唯一一处隐式的收紧**（其余各条都写在它自己的触发点上，比如空依据串
+ *    那条在 [`verifyCite`] 里），所以必须在这里点名：
  *    触发场景是「文件里长出一个逐字同形的姊妹」（如 `tls_spoof.rs` 再加一个判据一模一样的函数），
- *    此时 4 条豁免会红，而它们**一条都没失效**。
+ *    此时**4 条依据 / 8 条豁免条目**会红（那 2 条 tls_spoof 依据被 hysteria2 / hysteria / tuic
+ *    三行共用，再加 naive 的 2 条），而它们**一条都没失效**。
  *    **正确修法是补 `scope` 把它钉到该去的那个块，不是把依据串写长** —— 姊妹逐字同形，写多长仍是两处。
  */
 interface Cite {
@@ -784,18 +788,21 @@ function offsetsOf(hay: string, needle: string): number[] {
  * Rust 源码的**等长掩码**：注释与字面量的**内容**抹成空格（换行原位保留），偏移量逐字符对齐原文。
  * 同 [`maskTs`] 的用途与纪律 —— 只用来**定位**（花括号配对），从不参与判据。
  *
- * 为什么不复用 [`maskTs`]（四处 Rust 特有语法，任一漏掉都会让配对被骗）：
+ * 为什么不复用 [`maskTs`]（三处 Rust 特有语法，任一漏掉都会让配对被骗；下面每条都有对应的回归探针）：
  *  1. **块注释可嵌套**（一个块注释里能再开一个块注释），TS 不能 —— 按 TS 那样「找第一个块注释结束符」
  *     会提前收尾，剩下半截注释里的花括号照单全收；
- *  2. **raw string** `r"…"` / `r#"…"#` / `br##"…"##`：里面的 `\` 与 `"` 都不是转义/终止符，
- *     本仓 Rust 测试里成片的 `r#"{"id":"s1",…}"#` 全是这一类；
+ *  2. **raw string** `r"…"` / `r#"…"#` / `br##"…"##`：里面的 `\` 与 `"` 都不是转义/终止符。
+ *     本仓 Rust 测试里成片的 `r#"{"id":"s1",…}"#` 全是这一类，**要害在那些内嵌的 `"`**：
+ *     按普通字符串处理会在第一个内嵌引号处提前收尾，把后面的花括号一段段暴露出来；
  *  3. **`'` 是重载的**：`'{'` 是字符字面量，而 `'a` / `'static` / `'outer:` 是生命周期与标签。
  *     [`maskTs`] 见 `'` 就当字符串起点，遇上 `&'a str` 会从这里一路抹到下一个 `'`，把中间的
- *     花括号连同代码一起吞掉 —— 这正是不能直接拿它来用的原因；
- *  4. 没有模板字符串（反引号）。
+ *     花括号连同代码一起吞掉 —— 这正是不能直接拿它来用的原因。
  *
  * 判定 `'` 的规则：后面跟 `\` ⇒ 转义字符字面量（`'\n'` / `'\''` / `'\u{1F600}'`，注意末者含花括号）；
  * 第三个字符是 `'` ⇒ 单字符字面量（`'{'`）；其余一律当生命周期/标签，只跳过这一个引号。
+ *
+ * **不为 `b"…"` 单开分支**：它与 `"…"` 对配对完全等价（只差抹不抹前缀那个 `b`，而 `b` 不是花括号），
+ * 早先那个特判是死分支 —— 删掉全仓零影响，也写不出能红的回归。`br#"…"#` 不同，走上面第 2 条。
  */
 function maskRust(src: string): string {
   const out = src.split('');
@@ -837,9 +844,9 @@ function maskRust(src: string): string {
       blank(st, i);
       continue;
     }
-    if (c === '"' || (c === 'b' && d === '"' && !/[\w]/.test(src[i - 1] ?? ''))) {
+    if (c === '"') {
       const st = i;
-      i += c === '"' ? 1 : 2;
+      i += 1;
       while (i < src.length && src[i] !== '"') i += src[i] === '\\' ? 2 : 1;
       i = Math.min(i + 1, src.length);
       blank(st, i);
@@ -886,6 +893,10 @@ const maskedOf = (path: string, src: string): string => {
  * **那是错的，漏了晚收**：naive 臂里加一行 `// 字段清单见 OutboundTls {`（`cargo check` 通过、
  * rustfmt 也认）就让块从 314–342 涨到 314–455，吞掉 Socks 与 Http 两个臂，门 81/81 全绿 ——
  * 本门要消灭的失效模式原样搬了回来，触发门槛还更低。下面的自检钉着这一格。
+ *
+ * ⚠️ **只认 Rust**：`maskRust` 用在 `.ts/.tsx` 上会把 `'…'` 当生命周期不抹（实测前端 377 份里
+ * 61 份括号失衡）⇒ 块会**配得上却配错**，不抛错、静默指到别处。今天 8 条带 `scope` 的依据全指 `.rs`，
+ * 但这张表是给人往里加条目的，所以这条限制在下面**当场断言**，不靠「大家都知道」。
  */
 function braceSpan(
   src: string,
@@ -893,11 +904,17 @@ function braceSpan(
   label: string,
   path: string
 ): { from: number; to: number } {
+  expect(
+    path.endsWith('.rs'),
+    `${label} 的 \`scope\` 指向非 Rust 文件 ${path} —— 块定位只有 Rust 掩码（[maskRust]），` +
+      `拿它去切 .ts/.tsx 会静默切错块。要给别的语言加 \`scope\`，先给那门语言配掩码器`
+  ).toBe(true);
   const masked = maskedOf(path, src);
   const at = masked.indexOf(anchor);
   expect(
     at,
-    `${label} 的定位锚点 \`${anchor}\` 在 ${path} 里找不到 —— 依据指的那段代码已经不在了（或被改写）`
+    `${label} 的定位锚点 \`${anchor}\` 在 ${path} 里找不到 —— 依据指的那段代码已经不在了（或被改写）；` +
+      `另一种可能是**锚点串自己含了字符串或注释**，那部分在掩码里已被抹白，锚点因此永远匹配不上`
   ).toBeGreaterThanOrEqual(0);
   expect(
     masked.indexOf(anchor, at + 1),
@@ -930,6 +947,7 @@ function braceSpan(
  */
 function verifyCite(label: string, c: Cite): void {
   // 空串必须先红：`indexOf('')` 恒返回起点 ⇒ 下面的扫描会**空转不前进**，那是挂死不是红。
+  // 这也是相对旧门的一处收紧（旧门下 `needle: ''` 命中每一行，任意行号都落在窗口内 ⇒ 判绿）。
   expect(c.needle.length, `${label} 的依据串是空的 —— 空串等于没有依据`).toBeGreaterThan(0);
   let src = '';
   try {
@@ -1282,11 +1300,15 @@ describe('解析器自检（没解析到必须自曝）', () => {
     expect(masked, '行注释的内容没抹掉').not.toContain('naive TLS 由 Cronet 自管');
     expect(masked, '原始字符串的内容没抹掉').not.toContain('"protocol":"naive"');
 
+    // 每一行**只**为一条理由服务，且花括号都摆在「退化实现必然漏掉」的位置上 —— 探针放错位置
+    // 就成了检出力为 0 的装饰：早先第 3 行写成 `/* 外 /* 内 { … } */ */`（花括号全在内层结束符
+    // 之前），非嵌套实现照样抹得掉；第 4 行写成 `r#"}}{{"#`（不含内嵌引号），按普通字符串处理
+    // 区间也一模一样。两条各自的回归当时都判绿。
     const probe = [
       "fn f<'a>(x: &'a str) -> &'a str {",
       "    let _c = '{';",
-      '    /* 外 /* 内 { 仍在注释里 } */ */',
-      '    let _r = r#"}}{{"#;',
+      '    /* 外 /* 内 */ 尾 { 仍在注释里 */',
+      '    let _r = r#"a"b{"#;',
       '    x',
       '}',
     ].join('\n');
@@ -1308,57 +1330,93 @@ describe('解析器自检（没解析到必须自曝）', () => {
    * 「块内出现过」，豁免表就会在无人察觉的情况下退回装饰品。⑤ 那格尤其要钉：**它正是行号 ±12 窗口
    * 守不住的那一格**（旧判据取离记录行最近的一处判绿，同块里的邻居会把依据喂饱）。
    *
-   * **label 逐个取自真表，不用 `'probe'` 这类自检专用值**：用专用值时，一刀
-   * `if (label !== 'probe') return;` 能让自检全绿而 23 条真依据一条没校验（实测坐实）。
-   * 换成「真表里的**每一个** label 都跑一遍全套探针」之后，这条向量就关死了 ——
-   * 任何按 label 放行的刀，放过某条真依据就必然放过挂同一 label 的探针（该转红的探针转绿 → 红）；
-   * 拦下探针就必然也拦下那条真依据。做不出「只偏袒自检」的切法。
+   * # 射程：**按 label 的刀关死了；按调用序数 / 输入内容的刀关不死**
    *
-   * 前四条是**正向对照**（真依据必须不抛，块的两条边都要钉住）。没有它们，下面五条可以被
-   * 「`verifyCite` 恒抛」蒙对，块边界塌成一行也照样「全都抛」。
+   * label 逐个取自真表，不用 `'probe'` 这类专用值 —— 用专用值时一刀 `if (label !== 'probe') return;`
+   * 就能让自检全绿而 23 条真依据一条没校验（实测 82/82）。换成真 label 后这条向量关死了：
+   * 按 label 放行的刀，放过某条真依据必然放过挂同一 label 的探针（该转红的探针转绿 → 红），
+   * 拦下探针必然也拦下那条真依据。
+   *
+   * **但别把这句写成「关死了所有切法」** —— 自检与真表核对同进程、且自检在前，于是判别器不止 label：
+   *  · 按**调用序数**：外层记数 + `if (++n > 225) return;`（225 = 本 it 的探针次数）⇒ **82/82 全绿**，
+   *    同时把一条真依据的 needle 改坏也照绿（正向对照：无刀时该改动必红）；
+   *  · 按**输入内容**：`if (c.needle.startsWith('insecure: ')) return;` + 改坏那条 ⇒ 同样 **82/82**。
+   *
+   * 后者与调用顺序无关，所以**把探针交错进锁 6 也堵不住**（只是把可用的刀从按序数换成按内容）。
+   * 同进程自检对「刻意仿造」是结构性不可达的：判别器可以取 label、调用序、输入内容里的任意一维。
+   * 这道自检守的是**无心之失**（早返回、放宽谓词、探针失效），不是守蓄意绕行 —— 如实写在这里，
+   * 免得下一个人以为它挡得住后者。
+   *
+   * 前四条是**正向对照**（真依据必须不抛，块内 / 块外各钉一个点）。没有它们，下面五条可以被
+   * 「`verifyCite` 恒抛」蒙对，块塌成一行也照样「全都抛」。
    */
-  it('依据核对器自身有牙（块边界两侧 + 五类失效，且真依据不抛）', () => {
+  it('依据核对器自身有牙（块内 / 块外各钉一点 + 五类失效，且真依据不抛）', () => {
     const OB = 'crates/config-engine/src/builder/outbound.rs';
+    // label 必须与真表逐字相同（换掉就重新打开「按 label 放行」那条向量），于是报错抬头一定长得
+    // 像一条真豁免。人读的提示只能挂在这里：**这些是哨兵，不是任何豁免的依据**，红了要改的是本
+    // 自检 / 被引的生产代码，别顺着抬头去动豁免表。
+    const S = '自检哨兵，不是任何豁免的依据';
     const labels = Object.entries(NODE_EXEMPT).flatMap(([row, t]) =>
       Object.keys(t).map((k) => `NODE_EXEMPT["${row}"].${k}`)
     );
     expect(labels.length, '真表一条豁免都没有 —— 自检失去载体，等于没跑').toBeGreaterThan(0);
     for (const L of labels) {
-      expect(() => verifyCite(L, { at: OB, scope: NAIVE_ARM, needle: 'alpn: None,' })).not.toThrow();
-      // 远边：块不许**早收**（`ob.quic` 在 naive 臂的最后几行；收早了这条就找不到）。
-      expect(() =>
-        verifyCite(L, { at: OB, scope: NAIVE_ARM, needle: 'ob.quic = Some(true);' })
+      expect(
+        () => verifyCite(L, { at: OB, scope: NAIVE_ARM, needle: 'alpn: None,' }),
+        `${S}：naive 臂的 \`alpn: None,\` 变了形就改这里`
       ).not.toThrow();
-      // 🔴 近邻：块不许**晚收**。`OutboundVersion::Str("5".to_string())` 是紧邻的 `Protocol::Socks`
-      //    臂独有的一句，naive 的块**绝不能**含它。在原文上配对时，naive 臂里只要多一行
-      //    `// … OutboundTls {`，块就从 314–342 涨到 314–455 吞掉 Socks 与 Http 两个臂，而门全绿 ——
-      //    这一条就是钉那一格的（配对已改在 [`maskRust`] 的掩码上做）。
-      expect(() =>
-        verifyCite(L, { at: OB, scope: NAIVE_ARM, needle: 'OutboundVersion::Str("5".to_string())' })
+      // 远点：`ob.quic` 在 naive 臂的最后几行，块收早到它之前就找不到。
+      // ⚠️ 这两条钉的是**两个点**（`ob.quic` 必须在块内、Socks 那句必须在块外），**不是边界本身**：
+      //    块尾落在这两点之间的任何位置都不会红。今天那段窗口里没有任何依据串，所以不可利用，
+      //    但别把它读成「边界被钉住了」。真要钉边界得比较行号，那又把行号搬回判定里了。
+      expect(
+        () => verifyCite(L, { at: OB, scope: NAIVE_ARM, needle: 'ob.quic = Some(true);' }),
+        `${S}：naive 臂的 use_http3 那段被重构时改这里`
+      ).not.toThrow();
+      // 🔴 近点：`OutboundVersion::Str("5".to_string())` 是紧邻的 `Protocol::Socks` 臂独有的一句，
+      //    naive 的块**绝不能**含它。在原文上配对时，naive 臂里只要多一行 `// … OutboundTls {`，
+      //    块就从 314–342 涨到 314–455 吞掉 Socks 与 Http 两个臂，而门全绿 —— 这一条钉的就是那一格。
+      expect(
+        () =>
+          verifyCite(L, {
+            at: OB,
+            scope: NAIVE_ARM,
+            needle: 'OutboundVersion::Str("5".to_string())',
+          }),
+        `${S}：Socks 臂被重构（比如版本号提成常量）时改这里`
       ).toThrow(/一次都没出现/);
       // 上一条的正向对照：那句本身还在文件里（否则它是因为被删了才「不在块内」，钉不住任何东西）。
-      expect(() =>
-        verifyCite(L, { at: OB, needle: 'OutboundVersion::Str("5".to_string())' })
+      expect(
+        () => verifyCite(L, { at: OB, needle: 'OutboundVersion::Str("5".to_string())' }),
+        `${S}：同上，Socks 臂被重构时改这里`
       ).not.toThrow();
       // ① 锚点找不到（代码搬走 / 被改写）。
-      expect(() =>
-        verifyCite(L, { at: OB, scope: 'Protocol::NoSuchArm => {', needle: 'alpn: None,' })
+      expect(
+        () => verifyCite(L, { at: OB, scope: 'Protocol::NoSuchArm => {', needle: 'alpn: None,' }),
+        `${S}：${'Protocol::NoSuchArm'} 是故意不存在的锚点`
       ).toThrow(/定位锚点/);
       // ② 锚点不唯一：`ob.tls = Some(OutboundTls {` 在 naive 臂 / 通用 TLS 段 / Reality 段三处同形，
       //    这种锚点会静默绑到第一处 —— 必须红，不许「反正第一处就是我要的」。
-      expect(() =>
-        verifyCite(L, { at: OB, scope: 'ob.tls = Some(OutboundTls {', needle: 'alpn: None,' })
+      expect(
+        () =>
+          verifyCite(L, { at: OB, scope: 'ob.tls = Some(OutboundTls {', needle: 'alpn: None,' }),
+        `${S}：这三处 OutboundTls 字面量合并成一处时改这里`
       ).toThrow(/出现不止一次/);
       // ③ 依据串在块内一次都没出现（naive 臂恰恰不写 `alpn: Some(`）。
-      expect(() => verifyCite(L, { at: OB, scope: NAIVE_ARM, needle: 'alpn: Some(' })).toThrow(
-        /一次都没出现/
-      );
+      expect(
+        () => verifyCite(L, { at: OB, scope: NAIVE_ARM, needle: 'alpn: Some(' }),
+        `${S}：naive 臂真开始下发 alpn 时改这里（那时该动的是豁免表）`
+      ).toThrow(/一次都没出现/);
       // ④ 文件读不到。
-      expect(() => verifyCite(L, { at: 'crates/no/such/file.rs', needle: 'x' })).toThrow(/读不到/);
+      expect(
+        () => verifyCite(L, { at: 'crates/no/such/file.rs', needle: 'x' }),
+        `${S}：故意不存在的路径`
+      ).toThrow(/读不到/);
       // ⑤ 依据串在块内命中多次 ⇒ 指着哪一处全凭猜（naive 臂里 `: None,` 有一大把）。
-      expect(() => verifyCite(L, { at: OB, scope: NAIVE_ARM, needle: ': None,' })).toThrow(
-        /命中 \d+ 次/
-      );
+      expect(
+        () => verifyCite(L, { at: OB, scope: NAIVE_ARM, needle: ': None,' }),
+        `${S}：naive 臂的 None 字段被削到只剩一个时改这里`
+      ).toThrow(/命中 \d+ 次/);
     }
   });
 });
