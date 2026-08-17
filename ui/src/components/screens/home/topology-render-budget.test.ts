@@ -116,18 +116,22 @@ describe('门 3 · 窄屏兜底列表不许无条件渲染', () => {
 });
 
 /**
- * 门 4 · 首页的 aggregate topic 只持**订阅令牌**，不挂帧监听。
+ * 门 4 · 首页只持 **topology 令牌**，不挂帧监听、也不订 aggregate。
  *
  * Tauri 只在「该 webview 对该事件有 JS 监听」时才向本窗口发一段 eval 脚本。首页原先给
  * aggregate 挂了一条**回调体为空**的监听 —— 于是整条 eval 链每帧真实发生一遍：一份 UTF-16
  * 源码字符串 + 一次 JSC parse/bytecode 分配（源码逐帧不同 ⇒ code cache 恒不命中）+ 一份 JS
- * 对象图，随即全成垃圾。250ms 轮询下就是每秒 4 次白付，而首页没有任何读点消费这些帧。
+ * 对象图，随即全成垃圾。250ms 闸门下就是每秒最多 4 次白付，而首页没有任何读点消费这些帧。
  *
- * 但 `subscribe`/`unsubscribe` **必须留着**：三条 topic 共用一条 gRPC 连接流，后端按
- * `should_stream_connections()`（aggregate ∪ detail ∪ closed）判需求，三者全零才停流；
- * 撤掉令牌会在首页可见时误停整条流。令牌与数据帧是两件事，本门把两件事分别钉住。
+ * topic 也必须是 `topology` 而不是 `aggregate`：后者是排名页要的 Top-N 聚合载荷，后端每次 emit 要
+ * 在完整活动表上做一次 O(n log n) 聚合 + 载荷序列化 + 跨进程搬运。首页订它 = 首页在场时这份功永远
+ * 白做（首页拿到信号后自己拉有界投影，从不读那份载荷）。
+ *
+ * 但 `subscribe`/`unsubscribe` **必须留着**：四条 topic 共用一条 gRPC 连接流，后端按
+ * `should_stream_connections()`（aggregate ∪ topology ∪ detail ∪ closed）判需求，全零才停流；
+ * 撤掉令牌会在首页可见时误停整条流、拓扑冻结。令牌与数据帧是两件事，本门把两件事分别钉住。
  */
-describe('门 4 · 首页 aggregate 只持订阅令牌，不挂帧监听', () => {
+describe('门 4 · 首页只持 topology 令牌，不挂帧监听', () => {
   const CODE = HOME_SRC.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, '');
 
   it('首页**不得**注册 aggregate 帧监听（空回调 = 每帧白付一条 eval 链）', () => {
@@ -137,9 +141,11 @@ describe('门 4 · 首页 aggregate 只持订阅令牌，不挂帧监听', () =>
     expect(CODE).toMatch(/onFrame:\s*\(\)\s*=>\s*\(\)\s*=>\s*\{\}/);
   });
 
-  it('订阅令牌仍在（撤掉会误停三条 topic 共用的那条连接流）', () => {
-    expect(CODE).toContain("subscribe: () => api.stats.subscribe('aggregate')");
-    expect(CODE).toContain("unsubscribe: () => api.stats.unsubscribe('aggregate')");
+  it('令牌是 topology（订成 aggregate = 首页在场时白付整表聚合）', () => {
+    expect(CODE).toContain("subscribe: () => api.stats.subscribe('topology')");
+    expect(CODE).toContain("unsubscribe: () => api.stats.unsubscribe('topology')");
+    // 反向对照：首页**一处**都不得再出现 aggregate 令牌（订上就把后端那条门重新顶开）。
+    expect(CODE, '首页又订回 aggregate 了').not.toContain("subscribe('aggregate')");
   });
 
   /**

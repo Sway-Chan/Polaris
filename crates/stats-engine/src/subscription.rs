@@ -4,7 +4,7 @@
 //! 且 connections 流的开关经 `setConnectionsStreamEnabled`（窗口隐藏/无消费者 → cancel 上游 SubscribeConnections）。
 //! 本 crate 把它拆成可单测的注册表：
 //!
-//! - [`Topic`]：stats / connections / detail / closed 四条投影的订阅分轨。
+//! - [`Topic`]：stats / connections / topology / detail / closed 五条需求的订阅分轨。
 //! - [`SubscriptionRegistry`]：记录每个 [`Topic`] 的活跃订阅者集合 + 窗口可见性；判定「是否应保持该 topic 的上游流」。
 //!
 //! 降流语义（维度7 #实测：无订阅者 / 无可见窗口时断流省资源）：
@@ -23,8 +23,19 @@ use std::collections::HashMap;
 pub enum Topic {
     /// Status 流（流量速率/累计，首页流量条 + StatusBar）。
     Stats,
-    /// Connections 流（首页拓扑聚合）。
+    /// 连接导航**排名**投影：Top-N 聚合载荷（`EVENT_CONNECTIONS_AGGREGATE`）。
+    ///
+    /// ⚠️ 与 [`Topic::Topology`] 是**两条需求**，不是一条的两半。二者共用同一条连接流、同一张连接表，
+    /// 但代价差一个数量级：本条每次 emit 要在完整活动表上做一次 O(n log n) 聚合 + 载荷序列化 + 跨
+    /// 进程搬运；那条只是一个 `u64` 时间戳。把首页也算进本条，等于让排名页关着时白做那次聚合。
     Connections,
+    /// 首页连接流向：**只要「完整活动表变了」这一声招呼**（`EVENT_CONNECTIONS_TOPOLOGY_CHANGED`）。
+    ///
+    /// 首页拿到信号后按自己的画布槽位去拉**有界**投影（`stats_project_topology`），从不消费
+    /// [`Topic::Connections`] 的 Top-N 载荷。它同样是连接流的一个需求方 —— 见
+    /// [`should_stream_connections`](SubscriptionRegistry::should_stream_connections)，
+    /// 少算它会在「只开着首页」时把整条流误停，首页拓扑随即冻结。
+    Topology,
     /// 连接明细（连接信息页 detail topic）。
     Detail,
     /// 已结束连接历史（连接信息页 closed topic）。
@@ -161,10 +172,11 @@ impl SubscriptionRegistry {
 
     /// 判定**连接流**（`SubscribeConnections` 长驻流）是否应保持。
     ///
-    /// [`Topic::Connections`]（首页拓扑）、[`Topic::Detail`]（活动明细）与 [`Topic::Closed`]
-    /// （已结束历史）来自同一条连接事件流，共用**一条**上游流 ⇒ 任一有需求即保持，全部没需求才降流。
+    /// [`Topic::Connections`]（排名聚合）、[`Topic::Topology`]（首页流向信号）、[`Topic::Detail`]
+    /// （活动明细）与 [`Topic::Closed`]（已结束历史）来自同一条连接事件流，共用**一条**上游流 ⇒
+    /// 任一有需求即保持，全部没需求才降流。
     ///
-    /// 为什么不让三个 topic 各开一条流：那是轮询时代的形状，在长驻流下会变成
+    /// 为什么不让这几条需求各开一条流：那是轮询时代的形状，在长驻流下会变成
     /// 两份完全相同的事件流 + 两张各自维护的连接表 —— 上游成本翻倍，且两张表还可能因为
     /// 建流时刻不同而给出**互相矛盾**的两帧（拓扑说 12 条、明细列 13 条）。
     ///
@@ -172,6 +184,7 @@ impl SubscriptionRegistry {
     /// 仍各自按 `should_stream(topic)` 门控（只订了拓扑就别把活动明细增量推过去）。
     pub fn should_stream_connections(&self) -> bool {
         self.should_stream(Topic::Connections)
+            || self.should_stream(Topic::Topology)
             || self.should_stream(Topic::Detail)
             || self.should_stream(Topic::Closed)
     }
@@ -195,18 +208,25 @@ impl SubscriptionRegistry {
 mod tests {
     use super::*;
 
-    /// 🔴 **连接流的 demand = 三个投影的并集**（aggregate / detail / closed 任一有需求即保持）。
+    /// 🔴 **连接流的 demand = 四个需求的并集**（aggregate / topology / detail / closed 任一有需求即保持）。
     ///
-    /// **变异探针**：`should_stream_connections` 改成只看 `Topic::Connections` ⇒ 「只开着连接页、
-    /// 首页拓扑没订阅」时流不开，连接明细页永远空白 ⇒ 转红；改成 `&&` ⇒ 两条都得订阅才开流 ⇒ 转红。
+    /// **变异探针**：`should_stream_connections` 改成只看 `Topic::Connections` ⇒ 「只开着首页、排名页
+    /// 没订阅」时流不开，首页拓扑永远冻结 ⇒ 转红；改成 `&&` ⇒ 全订上才开流 ⇒ 转红。
     #[test]
-    fn 连接流demand是三个投影的并集() {
+    fn 连接流demand是四个需求的并集() {
         let mut r = SubscriptionRegistry::new();
         assert!(!r.should_stream_connections(), "都没订阅 → 不开流");
 
         let t_agg = r.subscribe(Topic::Connections, "main");
-        assert!(r.should_stream_connections(), "只订拓扑 → 也得开流");
+        assert!(r.should_stream_connections(), "只订排名聚合 → 也得开流");
         r.unsubscribe(Topic::Connections, t_agg);
+
+        let t_topo = r.subscribe(Topic::Topology, "main");
+        assert!(
+            r.should_stream_connections(),
+            "只订首页流向信号 → 也得开流（漏算它 = 只开首页时整条流被误停，拓扑冻结）"
+        );
+        r.unsubscribe(Topic::Topology, t_topo);
 
         let t_detail = r.subscribe(Topic::Detail, "main");
         assert!(r.should_stream_connections(), "只订明细 → 也得开流");
@@ -221,6 +241,27 @@ mod tests {
         assert!(
             !r.should_stream_connections(),
             "stats 订阅不得拉起连接流 —— 它不消费连接表"
+        );
+    }
+
+    /// 🔴 **流的需求 ≠ 载荷的需求**：只订 [`Topic::Topology`] 时连接流必须开着，但排名聚合那条
+    /// emit 门必须仍是关的（否则本次拆分白做 —— 首页在场就等于排名载荷永远在算）。
+    ///
+    /// **变异探针**：把 `Topology` 并进 `should_stream(Topic::Connections)` 的判据（或让 `parse_topic`
+    /// 把 `"topology"` 映回 `Topic::Connections`）⇒ 第二段转红。
+    #[test]
+    fn 首页流向令牌开流但不开排名聚合门() {
+        let mut r = SubscriptionRegistry::new();
+        r.subscribe(Topic::Topology, "main");
+        assert!(r.should_stream_connections(), "首页在场 → 连接流必须开着");
+        assert!(
+            !r.should_stream(Topic::Connections),
+            "首页不消费 Top-N 聚合载荷 → 那条 emit 门必须仍关着"
+        );
+        r.subscribe(Topic::Connections, "main");
+        assert!(
+            r.should_stream(Topic::Connections),
+            "排名页进场 → 聚合门才开"
         );
     }
 
@@ -350,6 +391,7 @@ mod tests {
         for t in [
             Topic::Stats,
             Topic::Connections,
+            Topic::Topology,
             Topic::Detail,
             Topic::Closed,
         ] {
@@ -364,6 +406,7 @@ mod tests {
         for t in [
             Topic::Stats,
             Topic::Connections,
+            Topic::Topology,
             Topic::Detail,
             Topic::Closed,
         ] {
@@ -376,6 +419,7 @@ mod tests {
         for t in [
             Topic::Stats,
             Topic::Connections,
+            Topic::Topology,
             Topic::Detail,
             Topic::Closed,
         ] {

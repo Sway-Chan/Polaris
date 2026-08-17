@@ -316,9 +316,14 @@ export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];
 
 /**
  * stats 订阅 topic（batch3 §3.7 订阅驱动数据面）：renderer 按 topic 精确声明订阅，main 据订阅集派生 worker
- * demand（aggregate|detail → 上游 Connections 流；detail → 跨进程明细）并只 relay 给对应 topic 的订阅者。
+ * demand（aggregate|topology|detail|closed → 同一条上游 Connections 流）并只 relay 给对应 topic 的订阅者。
+ *
+ * `aggregate` 与 `topology` **是两条需求不是一条**：前者是连接导航排名页要的 Top-N 聚合载荷（后端每次
+ * emit 付一次 O(n log n) 全表聚合 + 载荷序列化 + 跨进程搬运），后者只是首页流向图要的一声「完整活动表
+ * 变了」（一个时间戳），拿到后首页自己按画布槽位去拉**有界**投影。首页只订 `topology`：订成 `aggregate`
+ * 会让首页在场时那次聚合永远白做。两者都算连接流的需求方，全部归零后端才停流。
  */
-export type StatsTopic = 'stats' | 'aggregate' | 'detail' | 'closed';
+export type StatsTopic = 'stats' | 'aggregate' | 'topology' | 'detail' | 'closed';
 
 /**
  * topic → 事件推送通道（订阅即回的初始帧 + 后续增量 push 共用同一通道）。主/渲两侧订阅与 relay 的单一真值，
@@ -327,6 +332,7 @@ export type StatsTopic = 'stats' | 'aggregate' | 'detail' | 'closed';
 export const STATS_TOPIC_EVENT: Record<StatsTopic, IpcChannel> = {
   stats: IPC_CHANNELS.EVENT_STATS_UPDATED,
   aggregate: IPC_CHANNELS.EVENT_CONNECTIONS_AGGREGATE,
+  topology: IPC_CHANNELS.EVENT_CONNECTIONS_TOPOLOGY_CHANGED,
   detail: IPC_CHANNELS.EVENT_CONNECTIONS_DETAIL,
   closed: IPC_CHANNELS.EVENT_CONNECTIONS_CLOSED,
 };
