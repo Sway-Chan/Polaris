@@ -920,12 +920,12 @@ describe('progressResetsIntegrity —— 对整个 status 联合闭合的真值�
  * 预发布档次那道门要断言的也是这张更新卡的分状态结构。两份取材器 + 两份「什么算一个 `us`
  * 态分支」的定义早晚会对不上，而它们对不上时**两边都还是绿的** —— 那正是本文件反复在防的形态。
  */
-async function readTsx() {
+async function readTsx(rel = 'SettingsUpdate.tsx') {
   const fs = await import('node:fs');
   const path = await import('node:path');
   const { fileURLToPath: toPath } = await import('node:url');
   const dir = path.dirname(toPath(import.meta.url));
-  const file = path.join(dir, 'SettingsUpdate.tsx');
+  const file = path.join(dir, rel);
   const raw = fs.readFileSync(file, 'utf8');
   // 取材自检：路径漂走会让下面全部断言在空串上「恰好」通过 = 假绿。
   expect(raw.length, `取材文件太短或不对：${file}`).toBeGreaterThan(2000);
@@ -950,7 +950,12 @@ async function readTsx() {
   expect(src, '剥注释后与原文逐字相同 ⇒ 什么都没剥掉').not.toBe(raw);
   expect(raw.includes('/**'), '取材文件本应含块注释（否则本自检无信息量）').toBe(true);
   expect(src.includes('/**'), '注释未被剥掉').toBe(false);
-  expect(src.includes('export default function SettingsUpdate'), '剥过头，代码骨架没了').toBe(true);
+  // 骨架自检按**取材的那个文件**走（`rel` 换了组件名也得跟着换），否则参数化之后这条会恒假/恒真。
+  const component = rel.replace(/^.*\//, '').replace(/\.tsx$/, '');
+  expect(
+    src.includes(`export default function ${component}`),
+    `剥过头，${component} 的代码骨架没了`,
+  ).toBe(true);
   return src;
 }
 
@@ -1140,9 +1145,32 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
     const src = await readTsx();
     for (const state of ['available', 'downloaded', 'manual'] as const) {
       const block = stateBlock(src, state);
-      expect(block.includes('isPrerelease'), `${state} 态缺档次判据`).toBe(true);
-      expect(block.includes('prereleaseTag'), `${state} 态缺预发布徽标`).toBe(true);
+      // 两个字符串各自出现还不够 —— 徽标必须**由档次判据本身**驱动。只查「都出现过」时，
+      // 写成 `{true && <Pill>prereleaseTag</Pill>}` 再在别处提一句 isPrerelease 也能过。
+      expect(
+        /\{updateInfo\??\.isPrerelease\s*&&\s*\([\s\S]{0,240}?prereleaseTag/.test(block),
+        `${state} 态的预发布徽标没有挂在 updateInfo.isPrerelease 这个条件上`,
+      ).toBe(true);
     }
+  });
+
+  /**
+   * 两枚徽标同为 `Pill variant="warn"`、会同框出现（一个版本完全可能既是预发布又没带摘要），
+   * 靠**位置**分工：预发布贴在版本号后（限定版本），无摘要留在行尾（限定制品）。都堆到行尾就是
+   * 一坨警告色，读者无从判断谁在说谁。
+   *
+   * 这条论证此前一个字的判据都没有 —— 把预发布 Pill 挪到行尾 digest Pill 旁边，整段论证被推翻
+   * 而门全绿。源码顺序即渲染顺序，故「预发布出现在无摘要之前」同时蕴含了「两者不在同一个槽位」。
+   *
+   * **变异探针**：把预发布 Pill 挪到 `</div>` 之后（行尾槽位，digest Pill 旁）⇒ 转红。
+   */
+  it('两枚徽标按「版本先、制品后」排布，不挤在同一个槽位', async () => {
+    const block = stateBlock(await readTsx(), 'available');
+    const pre = block.indexOf('prereleaseTag');
+    const digest = block.indexOf('digestMissingTag');
+    expect(pre, 'available 态缺预发布徽标').toBeGreaterThan(-1);
+    expect(digest, 'available 态缺无摘要徽标（本门的对照方没了）').toBeGreaterThan(-1);
+    expect(pre, '预发布徽标必须排在无摘要徽标之前（版本先、制品后）').toBeLessThan(digest);
   });
 
   /**
@@ -1156,6 +1184,27 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
     const src = await readTsx();
     expect(stateBlock(src, 'available').includes('prereleaseNote'), 'available 态缺档次说明').toBe(
       true,
+    );
+  });
+
+  /**
+   * 第 4 条「推」腿：顶部常驻横幅（`AppUpdateBanner`）。
+   *
+   * 它在 TS 侧写死 `.check(false)`，而 `updater.rs` 的常量文档、`SettingsUpdate` 的 `checkUpdate`
+   * 头注、本 describe 的头注**三处都声称它「同口径」** —— 声称有，判据无。它同样是产出邀请的腿
+   * （`bannerTitle` 把版本号直接举给用户看），且横幅上**没有**预发布徽标。有人把它改成
+   * `check(true)`，横幅就会零标注地举着一条 beta，全仓照样全绿。
+   *
+   * 判据先去掉全部空白：源码里是 `updateApi\n  .check(false)` 的折行写法，单行字面匹配抓不到。
+   *
+   * **变异探针**：改成 `.check(true)` ⇒ 转红。
+   */
+  it('顶部常驻横幅这条推腿确实只看正式版（三处注释声称的那件事真有判据）', async () => {
+    const src = await readTsx('../../layout/AppUpdateBanner.tsx');
+    const flat = src.replace(/\s+/g, '');
+    expect(flat.includes('updateApi.check(false)'), '横幅腿不再是正式版口径').toBe(true);
+    expect(flat.includes('updateApi.check(true)'), '横幅腿改成了含预发布，且横幅上没有任何标注').toBe(
+      false,
     );
   });
 

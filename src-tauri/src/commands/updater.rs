@@ -413,6 +413,15 @@ pub(crate) fn is_portable_layout(exe_path: &std::path::Path) -> bool {
 /// [`polaris_updater::github::check_app_update`] 内部按 `published_at` 取最新 ⇒ 用户看着
 /// 「发现新版本 v1.2.0」按下「更新」，下回来的是 `v1.3.0-beta.1` —— 那个版本号从未被写给他看过。
 ///
+/// # ⚠️ 本常量只守住不变量的**一半**（射程自曝，别读成「TOCTOU 也守住了」）
+///
+/// 它统一的是候选集**规则**。**内容**不归它管：邀请与兑现是两次独立的 check，中间隔着用户的
+/// 思考时间，上游随时可能再发一版 —— 两端都是正式版、口径完全相同，「按 A 邀请、下到 B」照样
+/// 发生。那一半由 [`update_popup_action`] 里对 `popup.version` 的**逐字对账**守（不一致就退回
+/// `remind(新版本)`）。两道门缺一，不变量就只成立一半：
+///  - 只有常量：口径对了，目标仍会在你思考的那几分钟里被换掉；
+///  - 只有对账：对账本身会拦住换目标，但拦下来那一刻推给用户的可能是条预发布线。
+///
 /// # 为什么值是 `false`，而不是读一个「App 更新通道」设置
 ///
 /// 本仓的「更新通道」只有内核那一条（`config.coreUpdateChannel`，见
@@ -434,6 +443,13 @@ pub(crate) fn is_portable_layout(exe_path: &std::path::Path) -> bool {
 /// 兑现之间用户还可能把通道改掉，共享常量再也表达不了「这次邀请当时用的是哪种口径」。届时正确的
 /// 做法是走**记录口径**那条路 —— 而**不是**把本常量改成一个读配置的函数（那只是把 TOCTOU 从
 /// 「两处字面量不一致」换成「同一处前后两次读到不同值」，弹窗仍会按 A 邀请、下到 B）。
+///
+/// **同一次改动还会引爆一处今天豁免的消费点**：`SettingsUpdate.tsx` 的 `downloaded` / `manual`
+/// 两条腿用 `updateInfo?.isPrerelease` 渲染预发布徽标，而**别的窗口**发起的下载（本文件
+/// [`update_popup_action`] 的「更新/重试」、`startup_tasks::spawn_auto_download`）会把设置页推进
+/// `downloaded`，此时本页的 `updateInfo` 是 `null` ⇒ 徽标静默缺席。今天不构成缺陷 —— 能推本页的
+/// 那两条腿恰恰都由本常量钉死只下正式版，**豁免依赖的就是这里的 `false`**。通道一开，那两条腿
+/// 能下预发布，安装屏就会对一份预发布只字不提。届时那两条腿要么自带档次、要么改由事件带过来。
 pub(crate) const PUSH_UPDATE_INCLUDE_PRERELEASE: bool = false;
 
 /// 上游 `UPDATE_CHECK`：检查应用更新。
@@ -1484,6 +1500,36 @@ pub fn update_popup_state(state: State<'_, AppRuntime>) -> ApiResponse<Option<Up
     ApiResponse::ok(state.updater().popup_state())
 }
 
+/// 复查回来之后的三档处置（[`reconcile_recheck`] 的结论）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecheckVerdict {
+    /// 复查得到的版本与弹窗上写着的**逐字相同** ⇒ 照下。
+    Proceed,
+    /// 变了 ⇒ 退回 `remind(新版本)`，请用户对当前这串字重新决定。
+    Renegotiate,
+    /// 复查回包根本没有版本号（契约破损）⇒ 既无法对账，也不能弹个空版本号 ⇒ 按检查失败收场。
+    Unusable,
+}
+
+/// **纯判定**：拿弹窗上写着的版本（`advertised`）与复查回来的版本（`rechecked`）对账。
+///
+/// 抽成纯函数是为了它**可被真值表钉死**：[`update_popup_action`] 持 `AppHandle` / `State`，
+/// 单测构造不出 Tauri 运行时，判定留在里面就只剩源码级守卫能守 —— 那守得住「有没有调用」，
+/// 守不住「判对没判对」。
+///
+/// `advertised` 为 `None`（remind 必带版本，理论不可达）判 [`RecheckVerdict::Renegotiate`]：
+/// 不知道当初承诺过什么，就不能声称「对上了」——失败安全的方向是让用户再确认一次，不是闷头下。
+fn reconcile_recheck(advertised: Option<&str>, rechecked: &str) -> RecheckVerdict {
+    if rechecked.is_empty() {
+        return RecheckVerdict::Unusable;
+    }
+    if advertised == Some(rechecked) {
+        RecheckVerdict::Proceed
+    } else {
+        RecheckVerdict::Renegotiate
+    }
+}
+
 /// 上游 `UPDATE_POPUP_ACTION`：弹窗 → 主进程按钮/关闭动作。
 ///
 /// ✅ **已接线**（动作路由）：按 phase 白名单校验 → 合法动作执行副作用。
@@ -1495,8 +1541,10 @@ pub fn update_popup_state(state: State<'_, AppRuntime>) -> ApiResponse<Option<Up
 ///  - `update` / `retry` **真下载**：弹窗自身只持有版本号、不持有下载地址，故先复查一次拿
 ///    `updateInfo`，再走 [`update_download`]；进度经 `update:progress` 广播，并由
 ///    [`emit_progress`] 镜像成弹窗 `progress` / `done` / `error` 三态。
-///    复查的候选集口径**必须与产出这次邀请的那条腿相同** —— 共用
-///    [`PUSH_UPDATE_INCLUDE_PRERELEASE`]，理由见该常量文档。
+///    「弹窗写的版本 == 真正下载的版本」这句不变量在这条分支上由**两道**东西合起来守：
+///    ① 候选集**规则**——复查与产出邀请的腿共用 [`PUSH_UPDATE_INCLUDE_PRERELEASE`]；
+///    ② 候选集**内容**——复查回来的 `version` 与 `popup.version` 逐字对账，不一致就退回
+///    `remind(新版本)` 请用户重新确认，绝不换个目标接着下。缺一道都只守住一半。
 ///
 /// # 窗内反馈的两个边角（`emit_progress` 覆盖不到的）
 ///
@@ -1589,6 +1637,54 @@ pub async fn update_popup_action(
                     json!({ "handled": true, "hasUpdate": false }),
                 ));
             };
+            // ── 对账：复查回来的版本必须就是弹窗上写着的那串字 ────────────────────────
+            //
+            // [`PUSH_UPDATE_INCLUDE_PRERELEASE`] 只让两次 check 的**候选集规则**相同，管不了
+            // **候选集内容** —— 邀请与兑现之间隔着用户的思考时间，上游随时可能再发一版。那时
+            // 两端都是正式版（无预发布风险），但「按 A 邀请、下到 B」原样成立：弹窗上仍写着
+            // v1.2.0，下回来的是 v1.3.0。而弹窗真写着的那串字就在同一作用域里 —— `popup.version`，
+            // Skip 与 ManualDownload 两条分支一直在读它，唯独这条从不比对。
+            //
+            // **不一致时退回 remind(新版本)，不是「改个标签接着下」**：`progress` 态根本不渲染
+            // 版本号（`ui/src/update-popup/main.ts` 的 `case 'progress'` 只有标题 + 进度条 + 字节数），
+            // 把新版本号写进去用户一个字都看不见 —— 那是名义上的告知。退回 remind 让用户对
+            // **当前这串字**再按一次「更新」，守的与本批同一句不变量：用户点的是哪个版本，就下哪个。
+            // 代价只是罕见竞态下多一次点击；不会打转（下一次复查即命中同一版本）。
+            //
+            // `popup.version` 为 `None`（remind 必带版本，理论不可达）同样判不一致：不知道当初
+            // 承诺过什么，就不能声称「对上了」。
+            let rechecked = info
+                .get("version")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            match reconcile_recheck(popup.version.as_deref(), rechecked) {
+                RecheckVerdict::Unusable => {
+                    // hasUpdate 为真却没有版本号 = 后端契约破损。既无法对账，也**不弹空版本号**
+                    // （与 `startup_tasks` / `tray` 两条产出腿同一处置）⇒ 按检查失败收场，
+                    // 弹窗停在 error 仍可重试。文案复用上面那条同源失败，不新增用户可见串。
+                    log::warn!("弹窗复查：hasUpdate 为真但 updateInfo 缺 version，放弃本次下载");
+                    let msg = "检查更新失败".to_string();
+                    emit_progress(&app, "error", 0, &msg);
+                    return Ok(ApiResponse::err(msg));
+                }
+                RecheckVerdict::Renegotiate => {
+                    log::info!(
+                        "弹窗复查：邀请的是 {:?}，复查得到 {rechecked} —— 退回提醒态让用户重新确认",
+                        popup.version
+                    );
+                    let current = app.package_info().version.to_string();
+                    // 走带闸的 push（当前 phase 恒为上面 force 进去的 Progress，闸放行）：
+                    // 弹窗若已被用户关掉，这里就该是 no-op，而不是替他重新弹一个窗。
+                    push_popup_state(&app, UpdatePopupState::remind(rechecked, current));
+                    return Ok(ApiResponse::ok(json!({
+                        "handled": true,
+                        "reason": "version-changed",
+                        "version": rechecked,
+                    })));
+                }
+                RecheckVerdict::Proceed => {}
+            }
+
             // 下载腿内部经 emit_progress 推 downloading(n%) / downloaded(100%) / error。
             let resp = update_download(app.clone(), state, info).await?;
             if resp.success {
@@ -4337,14 +4433,15 @@ mod tests {
 
     // ── 弹窗邀请 ↔ 真正下载：同一个版本 ────────────────────────────────────
 
-    /// 🟡 **不变量：弹窗上写的那个版本，就是点「更新」真正下下来的那个版本。**
+    /// 🟡 **共享口径选出来的是最新正式版，不是发布时间更晚的那条预发布线。**
     ///
-    /// 这条不变量拆成两半，两半各有一道门：
-    ///  - **两条腿口径相同** —— 由共享常量 [`PUSH_UPDATE_INCLUDE_PRERELEASE`] 在编译期保证，
-    ///    守它的是下面那条源码级 [`every_pushed_update_check_uses_the_shared_prerelease_scope`]
-    ///    （防有人把某一处退回字面量）；
-    ///  - **这个口径选出来的到底是什么** —— 本测试。常量共享得再好，值本身错了照样把用户
-    ///    推到预发布上去。
+    /// ⚠️ **本测试只守「弹窗写的版本 == 真正下载的版本」的一半 —— 候选集*规则*那一半。**
+    /// 别把它读成「TOCTOU 也守住了」：内容那一半（两次 check 之间上游又发了一版）由
+    /// [`popup_recheck_reconciles_the_version_against_what_the_popup_showed`] 守着的**逐字对账**
+    /// 负责，与本测试正交。整条不变量由三道门合起来才成立：
+    ///  1. 口径**规则**共享 —— [`every_update_check_call_site_uses_the_shared_prerelease_scope`]；
+    ///  2. 这个规则选出来的**是什么** —— 本测试（常量共享得再好，值错了照样把用户推到预发布上）；
+    ///  3. 规则相同但**内容**变了怎么办 —— 那条对账门。
     ///
     /// 样本刻意造成「最新正式版之后又发过一条预发布」：这正是 2026-08-17 之前复查腿写死
     /// `Some(true)` 时会翻车的形状 —— `select_update_release` 按 `published_at` 取最新，
@@ -4352,7 +4449,7 @@ mod tests {
     ///
     /// **变异探针**：把 [`PUSH_UPDATE_INCLUDE_PRERELEASE`] 改成 `true` ⇒ 三条正向断言同时转红。
     #[test]
-    fn the_version_the_popup_advertises_is_the_version_that_gets_downloaded() {
+    fn the_shared_scope_picks_the_stable_line_not_a_later_prerelease() {
         const RELEASES: &str = r#"[
           {"tag_name":"v0.3.0-beta.1","prerelease":true,"published_at":"2024-06-01T00:00:00Z",
            "assets":[{"name":"Polaris-0.3.0-mac-arm64.dmg","browser_download_url":"https://x/beta","size":1}]},
@@ -4398,51 +4495,284 @@ mod tests {
         );
     }
 
-    /// 🟡 **调用点守卫：三条「推」腿的预发布口径必须共用同一个常量，不得各写字面量。**
+    /// 递归收集 `src-tauri/src` 下的全部 `.rs`（路径 + 源码）。
     ///
-    /// 「弹窗邀请的版本 == 点下去下载的版本」在本仓不是靠一处判断实现的，而是靠**两条产出腿 +
-    /// 一条兑现腿读同一个值**。三处各写一个 `Some(false)` 在今天等价，但正是 2026-08-17 那次缺陷的
-    /// 温床：兑现腿被单独改成 `Some(true)`，另两处纹丝不动，没有任何门会红。
-    ///
-    /// **变异探针**：任一腿改回 `Some(true)` / `Some(false)` ⇒ 该腿转红；删掉某腿的 `update_check`
-    /// 调用 ⇒ 锚点 panic（守卫失去判据必须转红，不许静默退化成扫了个空字符串）。
-    #[test]
-    fn every_pushed_update_check_uses_the_shared_prerelease_scope() {
-        const TRAY_SRC: &str = include_str!("../tray.rs");
-        const STARTUP_SRC: &str = include_str!("../runtime/startup_tasks.rs");
-        for (src, sig, leg) in [
-            (
-                SRC,
-                "pub async fn update_popup_action(",
-                "弹窗「更新/重试」复查腿",
-            ),
-            (
-                TRAY_SRC,
-                "pub async fn tray_check_update(",
-                "托盘检查更新腿",
-            ),
-            (STARTUP_SRC, "fn spawn_auto_check_update(", "启动自动检查腿"),
-        ] {
-            let body = crate::commands::guard_scan::top_level_fn_body(src, sig);
-            let at = body.find("update_check(").unwrap_or_else(|| {
-                panic!("{leg} 锚点消失：守卫已失去判据（这条腿不再调 update_check？）")
-            });
-            let tail = &body[at..];
-            let end = tail
-                .find(".await")
-                .unwrap_or_else(|| panic!("{leg} 锚点消失：update_check 调用之后找不到 .await"));
-            // 去掉全部空白 ⇒ 断言不随 rustfmt 的换行位置漂移。
-            let args: String = tail[..end].split_whitespace().collect();
-            assert!(
-                args.contains("PUSH_UPDATE_INCLUDE_PRERELEASE"),
-                "{leg} 没有共用预发布口径常量（实参：{args}）—— \
-                 邀请与兑现各写各的字面量，用户就会按 A 的版本号下到 B"
-            );
-            assert!(
-                !args.contains("Some(true)") && !args.contains("Some(false)"),
-                "{leg} 把口径写回了字面量（实参：{args}）"
-            );
+    /// 读不到目录/文件一律 panic —— 判据面读空时必须转红，而不是「扫到 0 个文件于是 0 个断言全绿」。
+    fn rust_sources_under(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, String)>) {
+        let entries =
+            std::fs::read_dir(dir).unwrap_or_else(|e| panic!("读不到目录 {}: {e}", dir.display()));
+        for entry in entries {
+            let p = entry.expect("目录项读取失败").path();
+            if p.is_dir() {
+                rust_sources_under(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                let s = std::fs::read_to_string(&p)
+                    .unwrap_or_else(|e| panic!("读不到 {}: {e}", p.display()));
+                out.push((p, s));
+            }
         }
+    }
+
+    /// 从 `update_check` 的左括号处取**实参列表**：括号配平定边界，行内 `//` 注释到行尾整段丢弃，
+    /// 顶层逗号切分，每个实参去掉全部空白（⇒ 断言不随 rustfmt 的换行位置漂移）。
+    ///
+    /// # 射程自曝
+    ///
+    /// 这是词法上的简化，不是 Rust parser：实参里若出现含 `//` 的字符串字面量、或含逗号的泛型
+    /// （`Foo<A, B>`）会被切错。`update_check` 的三个实参恒为 `AppHandle` / `State` / `Option<bool>`，
+    /// 两者都不出现；真出现了，调用点那边「必须恰好 3 个实参」那条断言会**转红**（fail-loud），
+    /// 不会静默放行。
+    fn call_args(src: &str, open: usize) -> Vec<String> {
+        let mut depth = 0usize;
+        let mut args: Vec<String> = Vec::new();
+        let mut cur = String::new();
+        let mut in_comment = false;
+        let mut it = src[open..].chars().peekable();
+        while let Some(c) = it.next() {
+            if in_comment {
+                if c == '\n' {
+                    in_comment = false;
+                }
+                continue;
+            }
+            if c == '/' && it.peek() == Some(&'/') {
+                in_comment = true;
+                it.next();
+                continue;
+            }
+            match c {
+                '(' | '[' | '{' => {
+                    depth += 1;
+                    if depth > 1 {
+                        cur.push(c);
+                    }
+                }
+                ')' | ']' | '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        if !cur.trim().is_empty() {
+                            args.push(cur.split_whitespace().collect());
+                        }
+                        return args;
+                    }
+                    cur.push(c);
+                }
+                ',' if depth == 1 => {
+                    args.push(cur.split_whitespace().collect());
+                    cur.clear();
+                }
+                _ => {
+                    if depth >= 1 {
+                        cur.push(c);
+                    }
+                }
+            }
+        }
+        panic!("`update_check(` 的括号没配平 —— 取材器判据已过期");
+    }
+
+    /// 🟡 **调用点守卫：`update_check` 的**每一处**调用都必须把预发布口径写成那个共享常量本身。**
+    ///
+    /// 「弹窗邀请的版本 == 点下去下载的版本」不是靠一处判断实现的，而是靠两条产出腿 + 一条兑现腿
+    /// 读同一个值。三处各写一个 `Some(false)` 在今天等价，但正是 2026-08-17 那次缺陷的温床：
+    /// 兑现腿被单独改成 `Some(true)`，另两处纹丝不动，没有任何门会红。
+    ///
+    /// # 覆盖面由**判据**定，不由夹具定
+    ///
+    /// 本门**遍历 `src-tauri/src` 全部 `.rs`**（`CARGO_MANIFEST_DIR`），不列 `include_str!` 清单，
+    /// 也不按函数名点腿：新加一条腿、甚至新加一个文件，都自动进判据面。上一版照着三个函数名硬编码
+    /// ⇒ 明天加第四条腿写 `Some(true)`，三条断言全绿；且它只看函数体内**第一处** `update_check(`，
+    /// 同一腿里再加一个坏调用同样全绿。两个洞都由「遍历 + 全部出现处」堵掉。
+    ///
+    /// # 判据是**精确等于**，不是「包含常量名」
+    ///
+    /// 只接受 `Some(PUSH_UPDATE_INCLUDE_PRERELEASE)`（或带完整路径那一形）。`contains` 式判据
+    /// 实测放行 `Some(!PUSH_UPDATE_INCLUDE_PRERELEASE)` 与 `Some(PUSH_UPDATE_INCLUDE_PRERELEASE || true)`
+    /// ——**口径被反转而门不红**；反过来，行尾同行注释里出现 `Some(false)` 字样会顶红
+    /// （`guard_scan::strip_line_comments` 只剥整行）。改成解析实参 + 精确比对后，取反/或运算不再
+    /// 通过，注释也不再误伤（[`call_args`] 在括号内自行剥行尾注释）。
+    ///
+    /// # 一条**有意为之**的拒收（别当成误报来「修」）
+    ///
+    /// 先绑局部变量再传（`let scope = Some(PUSH_UPDATE_INCLUDE_PRERELEASE); update_check(a, b, scope)`）
+    /// 同样会被拒。本门是词法的，追不了数据流：放行 `scope` 就等于放行任何名字，那时门只剩
+    /// 「第三个实参是个标识符」这点信息。代价是调用点必须把常量写在明面上 —— 这正是本门要的
+    /// 「口径肉眼可查」。要重构成绑变量，请连同本门的判据一起改，别把判据改宽了事。
+    ///
+    /// **变异探针**：任一调用点改成 `Some(true)` / `Some(false)` / `Some(!C)` / `Some(C || true)`
+    /// ⇒ 该点转红；实参行加个含 `Some(false)` 字样的**行尾注释** ⇒ 仍然全绿（不误红）；
+    /// 在任意文件（哪怕全新、未挂进模块树的文件）里新增一个坏调用 ⇒ 转红；
+    /// 把调用整个删光 ⇒ 「至少 3 个调用点」自检转红。
+    #[test]
+    fn every_update_check_call_site_uses_the_shared_prerelease_scope() {
+        /// 唯一放行的两种写法（裸名 + 完整路径）。
+        const EXPECTED: [&str; 2] = [
+            "Some(PUSH_UPDATE_INCLUDE_PRERELEASE)",
+            "Some(crate::commands::updater::PUSH_UPDATE_INCLUDE_PRERELEASE)",
+        ];
+        const NEEDLE: &str = "update_check(";
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rust_sources_under(&root, &mut files);
+        assert!(
+            files.len() >= 20,
+            "取材自检：{} 下只扫到 {} 个 .rs —— 判据面塌了",
+            root.display(),
+            files.len()
+        );
+
+        let mut sites = 0usize;
+        for (path, raw) in &files {
+            // 整行注释（含 `///` 文档）先抹平，保留行数与行序 ⇒ 下面的行号仍然对得上。
+            let src = crate::commands::guard_scan::strip_line_comments(raw);
+            let mut from = 0usize;
+            while let Some(rel) = src[from..].find(NEEDLE) {
+                let at = from + rel;
+                from = at + NEEDLE.len();
+                let before = &src[..at];
+                // `core_update_check(` 这类同尾名：前一个字符仍是标识符字符 ⇒ 不是本函数。
+                if before
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                {
+                    continue;
+                }
+                // 字符串字面量里的提及 —— **本门自己的判据串与 panic 文案就是这一类**
+                // （第一版只查「前一个字符是不是 `"`」，结果被自己那句
+                // ``panic!("`update_check(` 的括号没配平…")`` 顶红：那里前一个字符是反引号）。
+                // 判据换成「本行到此处为止的引号个数是奇数 ⇒ 正处在字面量内部」，对本仓这些**单行**
+                // 字面量足够；跨行字面量里若再出现它，下面「必须恰好 3 个实参」会转红而非静默放行。
+                let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+                let mut escaped = false;
+                let mut quotes = 0usize;
+                for ch in before[line_start..].chars() {
+                    if escaped {
+                        escaped = false;
+                    } else if ch == '\\' {
+                        escaped = true;
+                    } else if ch == '"' {
+                        quotes += 1;
+                    }
+                }
+                if quotes % 2 == 1 {
+                    continue;
+                }
+                // 定义本身（`pub async fn update_check(`）。
+                if before.trim_end().ends_with("fn") {
+                    continue;
+                }
+                let where_ = format!("{}:{}", path.display(), before.matches('\n').count() + 1);
+                let args = call_args(&src, at + "update_check".len());
+                assert_eq!(
+                    args.len(),
+                    3,
+                    "{where_} 的 update_check 实参不是 3 个（实得 {args:?}）—— 签名变了或取材器判据过期"
+                );
+                assert!(
+                    EXPECTED.contains(&args[2].as_str()),
+                    "{where_} 的预发布口径不是共享常量**本身**（实得 `{}`）。只接受 {EXPECTED:?} —— \
+                     字面量、取反 `Some(!C)`、或运算 `Some(C || true)` 一律拒收，否则\
+                     「弹窗按 A 邀请、点下去下到 B」会重新长出来",
+                    args[2]
+                );
+                sites += 1;
+            }
+        }
+        assert!(
+            sites >= 3,
+            "只扫到 {sites} 个 update_check 调用点 —— 至少应有 3（启动自动检查 / 托盘检查 / 弹窗复查）"
+        );
+    }
+
+    /// 🟡 **真值表：对账判定本身（`reconcile_recheck`）。**
+    ///
+    /// 与它配套的接线由 [`popup_recheck_reconciles_the_version_against_what_the_popup_showed`] 守：
+    /// 那条守「有没有调用、结论有没有被执行」，本条守「判对没判对」。缺任一条都只有一半。
+    ///
+    /// **变异探针**：把 `advertised == Some(rechecked)` 改成 `!=`、或把空串那条早退删掉
+    /// ⇒ 逐条转红。
+    #[test]
+    fn reconcile_recheck_only_proceeds_on_a_verbatim_match() {
+        // 逐字相同 ⇒ 照下（唯一放行档）。
+        assert_eq!(
+            reconcile_recheck(Some("v1.2.0"), "v1.2.0"),
+            RecheckVerdict::Proceed
+        );
+        // 复查期间上游又发了一版（两端都是正式版，口径常量对此无能为力）⇒ 重新征求同意。
+        assert_eq!(
+            reconcile_recheck(Some("v1.2.0"), "v1.3.0"),
+            RecheckVerdict::Renegotiate
+        );
+        // 大小写 / 前缀 / 空白差异一律不算「相同」——版本号是标识符，不是自然语言。
+        assert_eq!(
+            reconcile_recheck(Some("v1.2.0"), "V1.2.0"),
+            RecheckVerdict::Renegotiate
+        );
+        assert_eq!(
+            reconcile_recheck(Some("v1.2.0"), "1.2.0"),
+            RecheckVerdict::Renegotiate
+        );
+        assert_eq!(
+            reconcile_recheck(Some("v1.2.0"), " v1.2.0"),
+            RecheckVerdict::Renegotiate
+        );
+        // 不知道当初承诺了什么 ⇒ 不能声称对上了（失败安全，不是 Proceed）。
+        assert_eq!(
+            reconcile_recheck(None, "v1.3.0"),
+            RecheckVerdict::Renegotiate
+        );
+        // 复查回包没有版本号 = 契约破损：既不下也不弹空版本号。
+        assert_eq!(
+            reconcile_recheck(Some("v1.2.0"), ""),
+            RecheckVerdict::Unusable
+        );
+        assert_eq!(reconcile_recheck(None, ""), RecheckVerdict::Unusable);
+    }
+
+    /// 🟡 **调用点守卫：兑现腿必须拿复查回来的版本与弹窗上写着的那串字逐字对账。**
+    ///
+    /// 上面那道门统一的是候选集**规则**；这道守的是**内容**。两次 check 之间隔着用户的思考时间，
+    /// 上游随时可能再发一版 —— 那时两端都是正式版、口径完全相同，「按 A 邀请、下到 B」照样发生。
+    /// 而弹窗上真写着的那串字就在同一作用域里（`popup.version`，Skip / ManualDownload 一直在读它）。
+    ///
+    /// 顺序判据不是形式主义：对账必须夹在**复查之后、下载之前**，且不一致时必须**提前返回** ——
+    /// 只推个 `remind` 却继续往下走 = 弹窗回到提醒态、包照下，比不改还糟。
+    ///
+    /// **变异探针**：删掉比较 / 删掉 `remind` / 把 `return` 去掉让它继续往下走 / 把对账挪到
+    /// `update_download` 之后 ⇒ 逐条转红。
+    #[test]
+    fn popup_recheck_reconciles_the_version_against_what_the_popup_showed() {
+        let body = crate::commands::guard_scan::top_level_fn_body(
+            SRC,
+            "pub async fn update_popup_action(",
+        );
+        let check_at = body
+            .find("update_check(")
+            .expect("锚点消失：守卫已失去判据");
+        let cmp_at = body
+            .find("reconcile_recheck(popup.version.as_deref(), rechecked)")
+            .expect("版本对账被删了 —— 复查换了目标也会照下，而弹窗上仍写着旧版本号");
+        let remind_at = body.find("UpdatePopupState::remind(rechecked").expect(
+            "不一致时没有退回 remind —— 换个目标接着下只是「告知」，不是「征求同意」\
+             （何况 progress 态根本不渲染版本号，连告知都不成立）",
+        );
+        let download_at = body
+            .find("update_download(")
+            .expect("锚点消失：守卫已失去判据");
+        assert!(
+            check_at < cmp_at && cmp_at < download_at,
+            "对账必须夹在复查与下载之间（实得 check={check_at} / cmp={cmp_at} / download={download_at}）"
+        );
+        assert!(
+            cmp_at < remind_at && remind_at < download_at,
+            "退回 remind 必须在下载之前（实得 cmp={cmp_at} / remind={remind_at} / download={download_at}）"
+        );
+        assert!(
+            body[remind_at..download_at].contains("return Ok("),
+            "退回 remind 之后没有 return —— 弹窗回到提醒态，下载却照跑"
+        );
     }
 
     // ── 解归档工作目录（M7）─────────────────────────────────────────────────
