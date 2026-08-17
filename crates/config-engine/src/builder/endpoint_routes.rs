@@ -450,11 +450,11 @@ mod tests {
             protocol: Protocol::Wireguard,
             address: "1.2.3.4".into(),
             port: 443,
-            wireguard_settings: Some(WireGuardSettings {
+            wireguard_settings: Some(Box::new(WireGuardSettings {
                 allowed_ips: allowed.iter().map(|s| s.to_string()).collect(),
                 allow_internet,
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         }
     }
@@ -464,11 +464,11 @@ mod tests {
             id: id.into(),
             name: id.into(),
             protocol: Protocol::Tailscale,
-            tailscale_settings: Some(TailscaleSettings {
+            tailscale_settings: Some(Box::new(TailscaleSettings {
                 exit_node: exit_node.map(String::from),
                 routes: routes.iter().map(|s| s.to_string()).collect(),
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         }
     }
@@ -970,7 +970,7 @@ mod tests {
                 protocol: Protocol::Wireguard,
                 address: address.into(),
                 port: 2408,
-                wireguard_settings: Some(WireGuardSettings {
+                wireguard_settings: Some(Box::new(WireGuardSettings {
                     reverse_mesh: Some(true),
                     warp_device: warp_device.then(|| {
                         crate::user_config::protocol_settings::WarpDevice {
@@ -979,7 +979,7 @@ mod tests {
                         }
                     }),
                     ..Default::default()
-                }),
+                })),
                 ..Default::default()
             }
         }

@@ -372,10 +372,10 @@ fn mesh_protocols_actually_have_a_cidr_source() {
     let wg = ServerConfig {
         id: "wg".into(),
         protocol: Protocol::Wireguard,
-        wireguard_settings: Some(WireGuardSettings {
+        wireguard_settings: Some(Box::new(WireGuardSettings {
             allowed_ips: vec!["10.0.0.0/24".into()],
             ..Default::default()
-        }),
+        })),
         ..Default::default()
     };
     assert!(

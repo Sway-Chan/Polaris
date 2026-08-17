@@ -1202,7 +1202,7 @@ fn map_wireguard_endpoint(
         protocol: Protocol::Wireguard,
         address: server_addr,
         port,
-        wireguard_settings: Some(wg),
+        wireguard_settings: Some(Box::new(wg)),
         subscription_id: Some(sub_id.to_string()),
         created_at: Some(now.to_string()),
         updated_at: Some(now.to_string()),

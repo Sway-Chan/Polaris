@@ -1379,7 +1379,7 @@ mod exit_route_wiring_tests {
             id: "ts1".into(),
             name: "ts".into(),
             protocol: Protocol::Tailscale,
-            tailscale_settings: Some(ts),
+            tailscale_settings: Some(Box::new(ts)),
             ..Default::default()
         };
         UserConfig {

@@ -304,10 +304,10 @@ mod exit_warning_tests {
             id: "ts1".into(),
             name: "ts".into(),
             protocol: Protocol::Tailscale,
-            tailscale_settings: Some(TailscaleSettings {
+            tailscale_settings: Some(Box::new(TailscaleSettings {
                 exit_node: exit_node.map(str::to_string),
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         }
     }

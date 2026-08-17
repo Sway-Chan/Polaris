@@ -269,13 +269,13 @@ mod tests {
             port: 51820,
             ..Default::default()
         };
-        s.wireguard_settings = Some(WireGuardSettings {
+        s.wireguard_settings = Some(Box::new(WireGuardSettings {
             private_key: Some("priv".into()),
             peer_public_key: Some("pub".into()),
             local_address: vec!["10.0.0.2/32".into()],
             allow_internet: Some(true),
             ..Default::default()
-        });
+        }));
         let dial = crate::builder::helpers::get_node_dial_domain_resolver("dns-bootstrap", false);
         let ep = build_wireguard_endpoint(&s, "tag-w1", Some(&dial), "linux", None).unwrap();
         assert_eq!(ep.type_field, "wireguard");
@@ -297,14 +297,14 @@ mod tests {
             port: 51820,
             ..Default::default()
         };
-        s.wireguard_settings = Some(WireGuardSettings {
+        s.wireguard_settings = Some(Box::new(WireGuardSettings {
             private_key: Some("priv".into()),
             peer_public_key: Some("pub".into()),
             local_address: vec!["10.0.0.2/32".into()],
             allow_internet: Some(false), // 关外网
             allowed_ips: vec![],         // 无具体段
             ..Default::default()
-        });
+        }));
         assert!(build_wireguard_endpoint(&s, "tag", None, "linux", None).is_err());
     }
 
@@ -316,10 +316,12 @@ mod tests {
             protocol: Protocol::Tailscale,
             ..Default::default()
         };
-        s.tailscale_settings = Some(crate::user_config::server_config::TailscaleSettings {
-            exit_node: Some("exit-peer".into()),
-            ..Default::default()
-        });
+        s.tailscale_settings = Some(Box::new(
+            crate::user_config::server_config::TailscaleSettings {
+                exit_node: Some("exit-peer".into()),
+                ..Default::default()
+            },
+        ));
         let ep = build_tailscale_endpoint(&s, "tag-t1", "/fake/ts/t1", "linux", None);
         // exit_node 设 → mesh_allows_internet=true → exit_node 下发。
         assert_eq!(ep.exit_node.as_deref(), Some("exit-peer"));
@@ -370,10 +372,12 @@ mod tests {
                 protocol: Protocol::Tailscale,
                 ..Default::default()
             };
-            s.tailscale_settings = Some(crate::user_config::server_config::TailscaleSettings {
-                listen_port: port,
-                ..Default::default()
-            });
+            s.tailscale_settings = Some(Box::new(
+                crate::user_config::server_config::TailscaleSettings {
+                    listen_port: port,
+                    ..Default::default()
+                },
+            ));
             build_tailscale_endpoint(&s, "tag-t1", "/fake/ts/t1", "linux", None)
         }
         assert_eq!(ep_with(Some(41641)).listen_port, Some(41641));
@@ -391,12 +395,12 @@ mod tests {
             protocol: Protocol::Wireguard,
             address: "1.2.3.4".into(),
             port: 51820,
-            wireguard_settings: Some(WireGuardSettings {
+            wireguard_settings: Some(Box::new(WireGuardSettings {
                 private_key: Some("priv".into()),
                 peer_public_key: Some("pub".into()),
                 local_address: vec!["10.0.0.2/32".into()],
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         };
         let ep = build_wireguard_endpoint(&s, "tag-w1", None, "linux", None).unwrap();
@@ -417,13 +421,13 @@ mod tests {
                 protocol: Protocol::Wireguard,
                 address: address.into(),
                 port: 2408,
-                wireguard_settings: Some(WireGuardSettings {
+                wireguard_settings: Some(Box::new(WireGuardSettings {
                     private_key: Some("priv".into()),
                     peer_public_key: Some("pub".into()),
                     local_address: vec!["172.16.0.2/32".into()],
                     reverse_mesh: Some(true),
                     ..Default::default()
-                }),
+                })),
                 ..Default::default()
             }
         }
