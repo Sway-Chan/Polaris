@@ -79,8 +79,9 @@ pub(crate) mod guard_scan {
     /// 跟 [`strip_line_comments`] 同一约定）。
     ///
     /// 只用于 TS/TSX 源码取材（`config.rs` 的 `every_consumer_discards_the_payload`）——**不**扩展
-    /// [`strip_line_comments`] 本身来做这件事：那是 [`top_level_fn_body`] 的共用地基（68 处调用点
-    /// 跨 14 个文件，全部喂 **Rust** 源码），块注释在 Rust 里的分布/语义与 TS 的 JSDoc/JSX 注释不
+    /// [`strip_line_comments`] 本身来做这件事：那是 [`top_level_fn_body`] 的共用地基（调用点跨十余
+    /// 个文件，全部喂 **Rust** 源码——具体数字不锁在这里，锁数字上一次改动就把它改错过一回），块
+    /// 注释在 Rust 里的分布/语义与 TS 的 JSDoc/JSX 注释不
     /// 同源，扩它风险面过宽；故新开一个明确命名的 helper。[`strip_line_comments`] 自己的**直接**
     /// 调用点其实只有 3 处：`top_level_fn_body` 内部一处（喂 Rust），本文件 `config.rs` 两处（喂 TS，
     /// 且都在本函数刚新增的调用点上）——都不构成扩它的理由，反而是「该独立就独立」的证据。

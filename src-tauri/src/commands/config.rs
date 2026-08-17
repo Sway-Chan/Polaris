@@ -474,21 +474,28 @@ fn privacy_lock_path(config: &ConfigManager) -> PathBuf {
     polaris_store::privacy_lock::lock_path(config.dir())
 }
 
+/// legacy 隐私键的**单一真值源**：[`strip_privacy_secrets`]（全量出口剥除）与 [`is_privacy_key`]
+/// （单键出口 [`config_get_value`] 短路）共用同一份列表，而不是「一边 `remove` 两句、一边 `||`
+/// 两句」各写各的——那种写法只是没抄常量的**名字**，抄了常量的**用法**，后人往 `strip_privacy_secrets`
+/// 加第三个键、忘了同步 `is_privacy_key`，两边都还是「合法 Rust」，编译期与既有测试（各自只覆盖
+/// 已知两个键）都发现不了分叉。列表是唯一的，分叉在这个共用点上写不出来。
+const PRIVACY_KEYS: [&str; 2] = [PRIVACY_PASSWORD_KEY, PRIVACY_PASSWORD_HASH_KEY];
+
 /// 剥除绝不下发前端的隐私密钥键：legacy 明文 `privacyPassword` + legacy salted-SHA256 `privacyPasswordHash`。
 /// `config_get`（读出口）与 `broadcast_config_changed`（写广播出口）共用同一份 —— 防任一处漏剥。
 /// （scrypt 新真值源在独立文件，本就不在 config 里，无需在此剥除。）
 fn strip_privacy_secrets(cfg: &mut Value) {
     if let Some(obj) = cfg.as_object_mut() {
-        obj.remove(PRIVACY_PASSWORD_KEY);
-        obj.remove(PRIVACY_PASSWORD_HASH_KEY);
+        for key in PRIVACY_KEYS {
+            obj.remove(key);
+        }
     }
 }
 
-/// `key` 是否命中 legacy 隐私键——与 [`strip_privacy_secrets`] 剥的是**同一份真值**
-/// （[`PRIVACY_PASSWORD_KEY`] / [`PRIVACY_PASSWORD_HASH_KEY`]），供单键出口 [`config_get_value`]
-/// 复用，不手抄第二份常量列表。
+/// `key` 是否命中 legacy 隐私键——与 [`strip_privacy_secrets`] 剥的是同一份 [`PRIVACY_KEYS`]，
+/// 供单键出口 [`config_get_value`] 复用。
 fn is_privacy_key(key: &str) -> bool {
-    key == PRIVACY_PASSWORD_KEY || key == PRIVACY_PASSWORD_HASH_KEY
+    PRIVACY_KEYS.contains(&key)
 }
 
 /// 回填「服务端独占」的隐私密钥，供**前端来的全量保存**用。
@@ -1205,14 +1212,22 @@ mod config_changed_payload_tests {
     /// `new_value`）或直接把载荷内容写成字面量，两条禁词一条都不命中，守卫全绿而配置树已在路上。
     /// 判据按配对括号取实参，不要求 emit 与其实参写在同一行（rustfmt 拆行不影响本判据）。
     ///
-    /// 扫**全部** `app.emit(` 调用点，只对事件名匹配 `EVENT_CONFIG_CHANGED` 的逐一断言载荷——
-    /// 而不是只看函数体里第一个 `app.emit(`：只看第一个会两头出错：本函数如果先发别的事件（如
-    /// 隐私模式跃迁）再发 configChanged，事件名断言会误红；反过来，如果 configChanged 之后又插入
-    /// 第二个带载荷的 `app.emit(EVENT_CONFIG_CHANGED, …)`，第一个合规、第二个违规，只看第一个会
-    /// 让第二个静默漏检。
+    /// 扫**全部** `app.emit(` 调用点，只对事件名匹配 `EVENT_CONFIG_CHANGED` 的逐一断言载荷、且
+    /// 数量必须恰为 1——而不是只看函数体里第一个 `app.emit(`：只看第一个会两头出错：本函数如果
+    /// 先发别的事件（如隐私模式跃迁）再发 configChanged，事件名断言会误红；反过来，如果
+    /// configChanged 之后又插入第二个带载荷的 `app.emit(EVENT_CONFIG_CHANGED, …)`，第一个合规、
+    /// 第二个违规，只看第一个会让第二个静默漏检。数量断言与消费方那侧（`sites == 1`）同规：多插
+    /// 一个**合规**的重复 emit 同样要停下来裁定——重复广播 = 三个前端消费方各多跑一次全量
+    /// `config_get`，正是本批要防的白付出。
+    ///
+    /// 事件名不匹配时不再直接跳过不留痕迹：扫到的全部事件名收进 `seen_events`，0 命中时打进失败
+    /// 消息——有人把 `EVENT_CONFIG_CHANGED` 改写成全路径或换了个本地别名，emit 明明还在原地，
+    /// 消息也不会说成「发射点没了」这种指错方向的话。
     ///
     /// 牙：把载荷改回 `json!({ "config": new_value })`（或任何非空内容，哪怕换个变量名）→ 转红；
-    /// 在合规 emit 之后再插一个带载荷的 `app.emit(EVENT_CONFIG_CHANGED, …)` → 同样转红。
+    /// 在合规 emit 之后再插一个**同样合规**的 `app.emit(EVENT_CONFIG_CHANGED, json!({}))` → 数量
+    /// 断言转红；把 `EVENT_CONFIG_CHANGED` 换成一个不存在的名字 → 转红且消息里能看到扫到的事件名
+    /// 不含它。
     #[test]
     fn emit_site_carries_no_config_content() {
         let body = top_level_fn_body(
@@ -1232,6 +1247,9 @@ mod config_changed_payload_tests {
         );
 
         let mut config_changed_emits = 0usize;
+        // 扫到的每个 emit 的事件名，仅用于失败诊断——事件名对不上时把它打进消息，不能只说
+        // 「发射点没了」（那会把排查方向指反：emit 明明在原地，只是名字变了）。
+        let mut seen_events: Vec<&str> = Vec::new();
         for (call_at, _) in body.match_indices("app.emit(") {
             let args_at = call_at + "app.emit(".len();
             // 按配对括号取到本次调用的实参列表（而非要求「事件名 + 逗号」紧跟在 `app.emit(`
@@ -1253,27 +1271,29 @@ mod config_changed_payload_tests {
             }
             let close = close.expect("app.emit(...) 括号未配对 —— 发射调用格式已变，需要更新守卫");
             let args = body[args_at..args_at + close].trim();
-            let is_config_changed = match args.split_once(',') {
-                Some((event, payload)) if event.trim() == "EVENT_CONFIG_CHANGED" => {
-                    let payload = payload.trim().trim_end_matches(',').trim();
-                    assert_eq!(
-                        payload, "json!({})",
-                        "configChanged 的发射载荷不是空对象字面量（实参：`{payload}`）——\
-                         要发载荷必须用剥过隐私的那一份（`strip_privacy_secrets` 之后），且必须\
-                         同步改本断言"
-                    );
-                    true
-                }
-                Some(_) => false,                       // 别的事件，不归本守卫管。
-                None => args == "EVENT_CONFIG_CHANGED", // 单参数 emit，天然无载荷可言，直接过。
-            };
-            if is_config_changed {
-                config_changed_emits += 1;
+            let event = args.split_once(',').map_or(args, |(event, _)| event.trim());
+            seen_events.push(event);
+            if event != "EVENT_CONFIG_CHANGED" {
+                continue; // 别的事件，不归本守卫管。
             }
+            config_changed_emits += 1;
+            if let Some((_, payload)) = args.split_once(',') {
+                let payload = payload.trim().trim_end_matches(',').trim();
+                assert_eq!(
+                    payload, "json!({})",
+                    "configChanged 的发射载荷不是空对象字面量（实参：`{payload}`）——\
+                     要发载荷必须用剥过隐私的那一份（`strip_privacy_secrets` 之后），且必须\
+                     同步改本断言"
+                );
+            } // 单参数 emit（无逗号）：天然无载荷可言，直接过。
         }
-        assert!(
-            config_changed_emits >= 1,
-            "变异锁：configChanged 的发射点没了"
+        // 与消费方那侧（`sites == 1`）同规：增减都要停下来人工裁定，不止拦删除。多插一个**合规**
+        // 的 `app.emit(EVENT_CONFIG_CHANGED, json!({}))` 一样是重复广播——三个前端消费方各多跑一次
+        // 全量 `config_get`、托盘多一次 reconcile，正是本批要防的那类白付出。
+        assert_eq!(
+            config_changed_emits, 1,
+            "configChanged 的发射点数不是 1（实为 {config_changed_emits}）。本函数体内扫到的全部 \
+             emit 事件名：{seen_events:?}"
         );
     }
 
@@ -1281,19 +1301,25 @@ mod config_changed_payload_tests {
     ///
     /// 判据是「形参表为空」，不是字面 `() =>` 前缀匹配。TS 可赋值性规则是「source **必需**形参数
     /// ≤ target 形参数」，rest 形参在这条规则下视作「零个必需形参」——`(...a: unknown[]) => void`、
-    /// `async (...a: unknown[]) => void`、`function (...a: unknown[]) {}`，以及先具名再传入的
+    /// `async (...a: unknown[]) => void`，以及先具名再传入的
     /// `const h = (...a: unknown[]) => {…}; onChanged(h)`，**全部**能合法赋给
     /// `onChanged(listener: () => void)`（签名见 `ui/src/ipc/api-client.ts`）——类型层完全挡不住
     /// rest 参数，这正是本结构守卫存在的理由；「非箭头字面量就退回类型层」这个论证只在「箭头函数
-    /// 只有裸 `(...) =>` 一种写法」时成立，`async`/`function` 前缀与具名传参都会绕开它。
+    /// 只有裸 `(...) =>` 一种写法」时成立，`async` 前缀与具名传参都会绕开它。
     ///
-    /// 故判定前先剥可选的 `async ` 前缀、再剥可选的 `function`(+可选具名) 前缀，落到真正的形参
-    /// 括号上再比较是否为 `()`；剥完仍不是 `(` 开头（裸标识符、或其它未识别形态，如无括号的单参
-    /// 箭头 `x => …`——这种反而已被类型层挡住，形参数量 1 > 0）**不静默放过**——源码扫描判不出
-    /// 那类实参的形参表，直接 panic 要求人工裁定，而不是默默当「已被类型层挡住」处理。
+    /// 故判定前先剥可选的 `async ` 前缀，落到真正的形参括号上再比较是否为 `()`；剥完仍不是 `(`
+    /// 开头（裸标识符、`function` 表达式、或其它未识别形态，如无括号的单参箭头 `x => …`）
+    /// **不静默放过**——源码扫描判不出那类实参的形参表，直接 panic 要求人工裁定。
     ///
-    /// 牙：`onChanged(() => …)` 改成 `onChanged((...args: unknown[]) => …)`（或加 `async`/裹进
-    /// `function` 表达式）→ 转红；改成 `onChanged(onCfg)`（具名回调）→ panic 要求人工裁定。
+    /// `function` 表达式**故意**没有像 `async` 那样被剥前缀特殊处理，即便它形参表可以是空
+    /// `()`——因为 `function () { … }` 会绑定 `arguments`，`arguments[0]` 照样能读到完整 payload；
+    /// 箭头函数不绑定 `arguments`，才是「形参表空 ⇒ 读不到 payload」这条判据成立的前提。把
+    /// `function` 也纳入「形参表为空即放行」会在这条新腿上开一个箭头函数没有的洞，故与裸标识符
+    /// 归同一类：源码扫描判不全，一律 panic 要求人工裁定，不假定它已被类型层挡住。
+    ///
+    /// 牙：`onChanged(() => …)` 改成 `onChanged((...args: unknown[]) => …)`（或加 `async`）→
+    /// 转红；改成 `onChanged(onCfg)`（具名回调）或 `onChanged(function () { … })` → panic 要求
+    /// 人工裁定。
     #[test]
     fn every_consumer_discards_the_payload() {
         const CALL: &str = ".onChanged(";
@@ -1301,24 +1327,28 @@ mod config_changed_payload_tests {
             // 先剥块注释（含 JSDoc）再剥整行注释：注释里出现调用形态（如 `useConfig.ts` 头部 JSDoc
             // 提到的 `` `configApi.onChanged` ``）会喂饱/顶红判据（与 Rust 侧剥行注释同一理由）。
             let src = strip_line_comments(&strip_block_comments(src));
+            // **自曝**：`strip_block_comments` 找不到闭合就不清空、原样保留——那份「不作为」必须
+            // 自己被看见，不能只在剩余文本恰好含 `.onChanged(` 时才被数量断言间接带出来（那是零
+            // 信号的巧合绿）。扫一遍剥完的文本，任何一行 trim 后仍以 `/*`/`{/*` 开头，说明这正是
+            // 一次未闭合起笔被原样吐了回来。
+            for (n, line) in src.lines().enumerate() {
+                let t = line.trim_start();
+                assert!(
+                    !t.starts_with("/*") && !t.starts_with("{/*"),
+                    "{path}:{} 有一个块注释起笔从未找到闭合 `*/`，strip_block_comments 按 doc 原样\
+                     保留了它——这段残留文本没有被清空扫描过，可能藏着一次伪造/丢失的 `.onChanged(` \
+                     订阅，需要人工核实",
+                    n + 1
+                );
+            }
             let mut sites = 0usize;
             for (i, _) in src.match_indices(CALL) {
                 sites += 1;
                 let rest = &src[i + CALL.len()..];
                 let rest = rest.trim_start();
-                // 剥 `async `：`async (...) => …` 与 `(...) => …` 的形参表位置相同。
-                let rest = rest.strip_prefix("async").map_or(rest, str::trim_start);
-                // 剥 `function`(+可选具名)：形参表在关键字（与可选函数名）之后的括号里。
-                let param_scan_at = match rest.strip_prefix("function") {
-                    Some(after_fn) => {
-                        let after_fn = after_fn.trim_start();
-                        let name_len = after_fn
-                            .find(|c: char| c == '(' || c.is_whitespace())
-                            .unwrap_or(after_fn.len());
-                        after_fn[name_len..].trim_start()
-                    }
-                    None => rest,
-                };
+                // 剥 `async `：`async (...) => …` 与 `(...) => …` 的形参表位置相同。`function`
+                // 前缀不剥——理由见上面 doc 的 `arguments` 那段。
+                let param_scan_at = rest.strip_prefix("async").map_or(rest, str::trim_start);
                 match param_scan_at.strip_prefix('(') {
                     Some(after_open) => {
                         // 形参表 = 首个 `(` 到与之配对的 `)`（含首尾括号）。
@@ -1340,7 +1370,7 @@ mod config_changed_payload_tests {
                         let close = close.unwrap_or_else(|| {
                             panic!(
                                 "{path} 的 `.onChanged(` 实参括号未配对（实处：`{}`）",
-                                &rest[..rest.len().min(60)]
+                                rest.chars().take(60).collect::<String>()
                             )
                         });
                         let params = &param_scan_at[..close + 2];
@@ -1351,10 +1381,11 @@ mod config_changed_payload_tests {
                         );
                     }
                     None => panic!(
-                        "{path} 的 `.onChanged(` 实参不是箭头函数/`function` 表达式字面量（实处：\
-                         `{}`）—— 源码扫描判不出形参表是否为空，需要人工核实该回调是否读了 \
-                         payload，再决定是否扩展本判据",
-                        &rest[..rest.len().min(60)]
+                        "{path} 的 `.onChanged(` 实参不是箭头函数字面量（实处：`{}`）——具名回调 / \
+                         `function` 表达式源码扫描判不出（`function` 还会绑定 `arguments`，形参表\
+                         为空也可能读到 payload），需要人工核实该回调是否读了 payload，再决定是否\
+                         扩展本判据",
+                        rest.chars().take(60).collect::<String>()
                     ),
                 }
             }
