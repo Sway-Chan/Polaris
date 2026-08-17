@@ -61,6 +61,42 @@ pub(crate) mod guard_scan {
         strip_line_comments(&rest[..end])
     }
 
+    /// 取 `match` 里**某一条臂**的臂体：从臂头之后起、到**下一条臂头**为止。
+    ///
+    /// # 为什么必须封顶（同一形态本仓已踩过两次）
+    ///
+    /// 切到函数体尾的臂切片，射程由**臂的书写顺序**决定，而不是由判据决定：只要别的臂里有一句
+    /// 形状相同的代码，它就会替被守的那条臂作证。实测过两次 —— `update_open_releases(app,
+    /// popup.version.clone())` 在 `ViewLog` 与 `ManualDownload` 两臂里逐字相同（把后者搬到前者
+    /// 之前、实参换成 `None`，编译通过、全仓测试全绿）；`force_popup_state(...progress(0))` 挪进
+    /// `ViewLog` 臂后，守它的门同样全绿。
+    ///
+    /// # 判据是**臂头形状**，不是缩进宽度
+    ///
+    /// 第一版按 `"\n            PopupAction::"`（写死 12 空格）封顶，而实际臂缩进是 8 ⇒ needle 恒不
+    /// 命中 ⇒ 封顶那行代码**本身是哑的**。故改为逐行 `trim_start()` 后判「以 `<enum>::` 起手且
+    /// 含 `=>`」，与缩进无关。
+    ///
+    /// `arm_head` 传臂头的**前缀**（如 `"PopupAction::Update | PopupAction::Retry =>"`），
+    /// `variant_prefix` 传该 match 所有臂头的公共前缀（如 `"PopupAction::"`）用于识别下一条臂。
+    /// 找不到臂头一律 panic —— 守卫失去判据必须转红。
+    pub(crate) fn match_arm_body(body: &str, arm_head: &str, variant_prefix: &str) -> String {
+        let at = body
+            .find(arm_head)
+            .unwrap_or_else(|| panic!("锚点消失，守卫已失去判据（臂头不见了）: {arm_head}"));
+        let rest = &body[at + arm_head.len()..];
+        let mut out = String::new();
+        for line in rest.lines() {
+            let t = line.trim_start();
+            if t.starts_with(variant_prefix) && t.contains("=>") {
+                break;
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        out
+    }
+
     /// 把整行注释换成空行（保留行数与行序）。[`top_level_fn_body`] 与各文件的二次封顶取材器共用。
     pub(crate) fn strip_line_comments(body: &str) -> String {
         body.lines()
@@ -255,6 +291,61 @@ pub(crate) mod guard_scan {
             "缩进的右花括号不是函数结束，不得据此提前截断"
         );
         assert!(!body.contains("outside()"));
+    }
+
+    /// **守卫的守卫**：[`match_arm_body`] 三种形态各来一格。
+    ///
+    /// 合成 body 而不是拿真源码：真源码里被守的那条臂**恰好是末臂**（`ManualDownload`），封顶循环
+    /// 永不 `break` ⇒ 封顶与它的自检**零执行覆盖**，靠「它恰好排在最后」兜住。本轮复审实测把封顶
+    /// 判据打死后那道门仍 ok，正是这个盲区。这里用合成样本把三格都跑到。
+    ///
+    /// 变异锁：把 `t.starts_with(variant_prefix) && t.contains("=>")` 换回按缩进宽度匹配
+    /// （或整个删掉 `break`）⇒ 「臂在中间」那格转红。
+    #[test]
+    fn match_arm_body_stops_at_the_next_arm() {
+        let body = "\
+        A::First => {
+            first_call();
+        }
+        A::Middle => {
+            middle_call();
+        }
+        A::Last => {
+            last_call();
+        }
+";
+        // ① 臂在中间：必须封到下一条臂头，不得把后面的臂吞进来。
+        let mid = match_arm_body(body, "A::Middle =>", "A::");
+        assert!(mid.contains("middle_call()"), "臂体自己的内容没了");
+        assert!(
+            !mid.contains("last_call()"),
+            "**封顶失效**：吞掉了下一条臂 → 别的臂会替被守的那条作证"
+        );
+        assert!(
+            !mid.contains("first_call()"),
+            "切片起点错了：不该包含臂头之前的内容"
+        );
+
+        // ② 臂在末尾：没有下一条臂头，切到结尾即可（不得 panic、不得吐空）。
+        let last = match_arm_body(body, "A::Last =>", "A::");
+        assert!(last.contains("last_call()"));
+        assert!(!last.contains("middle_call()"));
+
+        // ③ 臂头换写法（多分支 or-pattern、缩进不同）照样识别为「下一条臂」。
+        let or_body = "\
+    A::X => {
+        x_call();
+    }
+        A::Y | A::Z => {
+            yz_call();
+        }
+";
+        let x = match_arm_body(or_body, "A::X =>", "A::");
+        assert!(x.contains("x_call()"));
+        assert!(
+            !x.contains("yz_call()"),
+            "or-pattern 臂头（且缩进不同）没被认出来 —— 判据别再回到缩进宽度"
+        );
     }
 
     /// 锚点消失必须 panic（转红），而不是返回空切片让断言恒真。

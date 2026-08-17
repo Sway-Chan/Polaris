@@ -14,7 +14,7 @@
  *  6. 订阅更新：启动时自动更新 + 跟随间隔 + 更新通道
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { UserConfig } from '@/contracts/types';
 // 单一真值：预设清单由 domain 层持有（同文件的 `ghMirrorUrl()` 自己也消费 `GH_PROXY_PRESETS[0]` 作
@@ -58,7 +58,6 @@ import {
   appDownloadIntegrity,
   backgroundIntervalSelectValue,
   isPortableZipUpdate,
-  progressInvalidatesUpdateInfo,
   progressResetsIntegrity,
   releaseShipsDigest,
   ruleResourceAutoStatus,
@@ -143,8 +142,6 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
   // 不能仅凭 prefix 派生显示态，否则自定义输入框永远不可达（选中即弹回默认项）。
   const [ghCustomMode, setGhCustomMode] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
-  /** 本页是否正持有一次自己发起的下载（见 `downloadUpdate` / 进度监听器）。 */
-  const startedHereRef = useRef(false);
   const [progress, setProgress] = useState(0);
   const [errMsg, setErrMsg] = useState('');
   const [downloadedPath, setDownloadedPath] = useState<string | null>(null);
@@ -238,12 +235,6 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
       // **唯一调用点**：该不该复位由 `progressResetsIntegrity` 的真值表单点回答，不在下面的
       // status 分支里各补一次 —— 那是枚举型判据，联合里多一个取值就会静默漏掉一格。
       if (progressResetsIntegrity(p.status)) setDownloadIntegrity('unknown');
-      // 同一根因的第二半：本页持有的 `updateInfo` 描述的是**上一次检查查到的那个版本**，
-      // 对别的窗口下的那个包不成立。不清 ⇒ 卡片会举着 beta 的版本号与预发布徽标，去描述一份
-      // 正式包。判据多一个「不是本页发起」的限定词，因为 `updateInfo` 在 `downloading` 态就要
-      // 渲染（清早了会打断本页自己的下载）—— 详见 `progressInvalidatesUpdateInfo` 的头注，
-      // 那里也写明了这只是止血、正解（把随行事实带过来）属 W5。
-      if (progressInvalidatesUpdateInfo(p.status, startedHereRef.current)) setUpdateInfo(null);
       if (p.status === 'downloading') {
         setUs('downloading');
         setProgress(p.percentage);
@@ -310,10 +301,6 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
     setUs('downloading');
     setProgress(0);
     setDownloadIntegrity('unknown');
-    // 认领这次下载：进度事件 fan-out 给所有窗口，监听器只能靠这面旗分辨「这是我点的」
-    // 还是「别的窗口在下」。用 ref 而非 state：监听器在 `useEffect(..., [])` 的闭包里，
-    // 读 state 只会读到挂载那一刻的快照。
-    startedHereRef.current = true;
     try {
       const r = await updateApi.download(updateInfo);
       // 走到这里必是成功回包：业务失败在 `ipc-client.invoke` 拆信封时 throw IpcError
@@ -329,10 +316,6 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
     } catch (e) {
       setUs('error');
       setErrMsg(e instanceof Error ? e.message : String(e));
-    } finally {
-      // 交还认领：这次下载已经落地（成或败），之后再收到的下载事件就都不是本页的了。
-      // 放 `finally` 而非成功分支 —— 失败也必须交还，否则本页会永久把别人的下载当成自己的。
-      startedHereRef.current = false;
     }
   }
 
@@ -774,8 +757,20 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
                     只挂在 `available` 就等于：用户下完包、切个屏回来，界面上再没有任何字说这是预发布。
                     **说明文案不跟着重复三遍**：摘要腿的 before/after 说的是两件不同的事
                     （「将要取回未署摘要的包」vs「即将执行未经校验的字节」），而预发布的说明三处一字不差，
-                    抄三遍只是噪声；档次这个事实由徽标持续持有，解释留在做决定的那一屏。 */}
-                {updateInfo?.isPrerelease && (
+                    抄三遍只是噪声；档次这个事实由徽标持续持有，解释留在做决定的那一屏。
+
+                    ⚠️ **`downloadedPath` 不是装饰，是这枚徽标的资格判据**。`updateInfo` 描述的是
+                    本页**上一次检查**的结果，而 `us` 会被**别的窗口**的下载广播推到 `downloaded`
+                    （弹窗「更新/重试」、`spawn_auto_download`）—— 那时两者毫无因果关系：用户查到
+                    `v1.3.0-beta.1` 没下，外部腿下了 `v1.2.0` 正式包，卡片就会举着预发布徽标去描述
+                    一份正式包。`downloadedPath` 的**唯一**写点是 `downloadUpdate` 的成功分支
+                    （外部广播那条腿从不设它）⇒ 它恰好等价于「盘上这份是本页下的」，也就是
+                    「`updateInfo` 与它有因果关系」。
+                    代价是外部腿下的包不显示徽标（**漏报，方向安全**）——正解是让那条腿把随行事实
+                    随事件带过来，属 W5 射程；本处只负责不说假话。
+                    **不走「清空 `updateInfo`」那条**：清空会让 `us==='error'` 那格的「重试」
+                    （唯一按钮，直通 `downloadUpdate` 的 `if (!updateInfo) return`）变成哑键。 */}
+                {downloadedPath && updateInfo?.isPrerelease && (
                   <>
                     {' '}
                     <Pill variant="warn">{t('settings.update.prereleaseTag')}</Pill>
@@ -806,8 +801,11 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
               <div style={{ flex: 1 }}>
                 <b>{t('settings.update.downloadedManual')}</b> <span className="cv-tag">{updateInfo?.version}</span>
                 {/* 第三条腿：`manual` 与 `downloaded` 互斥，转 manual 后上面那枚徽标整块消失，
-                    而这里恰是「你自己解压覆盖当前程序」的一刻 —— 与摘要腿完全同形的理由。 */}
-                {updateInfo?.isPrerelease && (
+                    而这里恰是「你自己解压覆盖当前程序」的一刻 —— 与摘要腿完全同形的理由。
+                    资格判据同上（`downloadedPath`）：本态只能由 `installUpdate` 进入，而它首行就是
+                    `if (!downloadedPath) return` ⇒ 这里 `downloadedPath` 恒非空，判据在此不改变行为，
+                    写出来是为了两条腿的判据**逐字同形**，不让人以为只有 `downloaded` 那条需要把关。 */}
+                {downloadedPath && updateInfo?.isPrerelease && (
                   <>
                     {' '}
                     <Pill variant="warn">{t('settings.update.prereleaseTag')}</Pill>

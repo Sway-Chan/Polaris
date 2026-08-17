@@ -37,7 +37,6 @@ import {
   MAX_LISTEN_PORT,
   releaseShipsDigest,
   appDownloadIntegrity,
-  progressInvalidatesUpdateInfo,
   progressResetsIntegrity,
 } from './settings-logic';
 import type { UpdateProgress } from '@/ipc/api-client';
@@ -909,52 +908,6 @@ describe('progressResetsIntegrity —— 对整个 status 联合闭合的真值�
   });
 });
 
-/**
- * `progressInvalidatesUpdateInfo` —— 同一张 status 表，多一个「是不是本页发起」的限定词。
- *
- * 防的是一句**用户可见的假话**：设置页查到 `v1.3.0-beta.1`（全仓唯一含预发布的入口）却不下载，
- * 随后别的窗口下了 `v1.2.0` 正式包 ⇒ 广播把本页翻到 `downloaded`，而 `updateInfo` 还是那份 beta
- * ⇒ 卡片举着 beta 的版本号 + **预发布徽标**，去描述一份正式包。
- *
- * 限定词不能省：`updateInfo` 在 `downloading` 态就要渲染（版本号 + 总字节），无条件清会把本页
- * 自己点的下载清成空白 —— 把别人的 bug 换成自己的。
- */
-describe('progressInvalidatesUpdateInfo —— status 表 × 是否本页发起', () => {
-  const STATUSES: UpdateProgress['status'][] = [
-    'idle',
-    'checking',
-    'no-update',
-    'update-available',
-    'downloading',
-    'downloaded',
-    'error',
-  ];
-
-  it('本页发起的下载：任何 status 都不作废自己的检查结果', () => {
-    expect(STATUSES.length, '联合是 7 个成员').toBe(7);
-    for (const s of STATUSES) {
-      expect(
-        progressInvalidatesUpdateInfo(s, true),
-        `${s}：本页自己下的包，清掉 updateInfo 会把进度卡上的版本号与体积一并清空`,
-      ).toBe(false);
-    }
-  });
-
-  it('别的窗口发起的下载：恰好在「真有字节在动」的两条 status 上作废', () => {
-    const invalidating = STATUSES.filter((s) => progressInvalidatesUpdateInfo(s, false));
-    expect(invalidating.sort()).toEqual(['downloaded', 'downloading']);
-  });
-
-  it('「哪些 status 算有字节在动」与 progressResetsIntegrity 单点同源，不另立一份枚举', () => {
-    // 两个判据只差那个限定词。各写一份枚举 ⇒ 联合加成员时只有一边被补，而两边都不会红。
-    for (const s of STATUSES) {
-      expect(
-        progressInvalidatesUpdateInfo(s, false),
-        `${s}：非本页发起时，两个判据必须逐格相同`,
-      ).toBe(progressResetsIntegrity(s));
-    }
-  });
-});
 
 /**
  * 剥注释内核：用 TS 自己的 parser 逐 token 取注释区间并抹成空格（保留换行与偏移，行号不漂）。
@@ -1211,8 +1164,13 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
       const block = stateBlock(src, state);
       // 两个字符串各自出现还不够 —— 徽标必须**由档次判据本身**驱动。只查「都出现过」时，
       // 写成 `{true && <Pill>prereleaseTag</Pill>}` 再在别处提一句 isPrerelease 也能过。
+      // 允许前置一个资格判据（安装屏那两条腿有 `downloadedPath &&`，见下一条门），但
+      // `isPrerelease` 必须仍在**同一个表达式**里 —— 否则 `{true && <Pill>}` 加一句无关的
+      // `isPrerelease` 也能过。
       expect(
-        /\{updateInfo\??\.isPrerelease\s*&&\s*\([\s\S]{0,240}?prereleaseTag/.test(block),
+        /\{(?:downloadedPath && )?updateInfo\??\.isPrerelease\s*&&\s*\([\s\S]{0,240}?prereleaseTag/.test(
+          block,
+        ),
         `${state} 态的预发布徽标没有挂在 updateInfo.isPrerelease 这个条件上`,
       ).toBe(true);
     }
@@ -1252,32 +1210,44 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
    * 不差 —— 抄三遍只是噪声。档次这个**事实**由徽标在三条腿上持续持有，**解释**留在做决定的那屏。
    */
   /**
-   * 徽标的**数据源**必须与它描述的那份包同源，否则徽标本身再对也是在说假话。
+   * 徽标的**资格判据**：安装屏那两条腿只在「盘上这份是本页下的」时才敢说档次。
    *
-   * `onProgress` 收到别的窗口发起的下载完成时，本页的 `updateInfo` 描述的是上一次检查的结果，
-   * 与刚落盘那份包毫无因果关系 ⇒ 必须作废。判据走 `progressInvalidatesUpdateInfo`（真值表另有门），
-   * 调用点只此一处，不在下面的 status 分支里各补一次。
+   * `updateInfo` 描述的是本页**上一次检查**的结果，而 `us` 会被**别的窗口**的下载广播推到
+   * `downloaded`（弹窗「更新/重试」、`spawn_auto_download`）—— 那时两者毫无因果关系：用户查到
+   * `v1.3.0-beta.1` 没下、外部腿下了 `v1.2.0` 正式包 ⇒ 卡片举着预发布徽标去描述一份正式包。
    *
-   * 认领旗（`startedHereRef`）两端都要钉：只置位不交还 ⇒ 本页会把之后**所有**外部下载都当成
-   * 自己的，作废逻辑等于没写。
+   * 判据取 `downloadedPath`：它的**唯一**写点是 `downloadUpdate` 的成功分支（外部广播那条腿从不
+   * 设它）⇒ 恰好等价于「这次下载是本页完成的」。漏报（外部腿下的预发布不显示徽标）方向安全，
+   * 正解归 W5。
    *
-   * **变异探针**：删掉作废调用 / 删掉 `finally` 里的交还 ⇒ 逐条转红。
+   * **为什么不是「清空 `updateInfo`」**：那条会让 `us==='error'` 的「重试」（该分支唯一按钮，
+   * 直通 `downloadUpdate` 首行 `if (!updateInfo) return`）变成哑键 —— 用真缺陷换假话，不划算。
+   * 本门连带把这条也钉住：`downloadUpdate` 的入口守卫仍在，且监听器**不得**清空 `updateInfo`。
+   *
+   * **变异探针**：任一腿去掉 `downloadedPath &&` ⇒ 转红；监听器里加回 `setUpdateInfo(null)` ⇒ 转红。
    */
-  it('外部窗口下完包时，本页作废自己那份陈旧的检查结果（徽标不贴到别人的包上）', async () => {
+  it('安装屏的徽标只描述本页下的那份包（不清数据，只收窄断言）', async () => {
     const src = await readTsx();
+    for (const state of ['downloaded', 'manual'] as const) {
+      const block = stateBlock(src, state);
+      expect(
+        /\{downloadedPath && updateInfo\?\.isPrerelease &&/.test(block),
+        `${state} 态的预发布徽标没有由 downloadedPath 把关 —— 会贴到别的窗口下的正式包上`,
+      ).toBe(true);
+    }
+    // `available` 是本页自己刚查出来的结果，数据源就是对的，不该也被这条判据挡住。
     expect(
-      src.includes('progressInvalidatesUpdateInfo(p.status, startedHereRef.current)'),
-      '进度监听器没有作废陈旧的 updateInfo —— 预发布徽标会贴到一份正式包上',
+      /\{updateInfo\.isPrerelease && \(/.test(stateBlock(src, 'available')),
+      'available 态的徽标被多加了资格判据 —— 那一屏的 updateInfo 本来就是本页查的',
     ).toBe(true);
+    // 反向：绝不能回到「清空 updateInfo」那条路（会让 error 态的「重试」变哑键）。
     expect(
-      /progressInvalidatesUpdateInfo\([^)]*\)\)\s*setUpdateInfo\(null\)/.test(src),
-      '判定结果没有真的落到 setUpdateInfo(null) 上',
-    ).toBe(true);
-    // 认领旗：置位在 invoke 之前，交还在 finally（成败都要还）。
-    expect(src.includes('startedHereRef.current = true'), '本页下载没有认领').toBe(true);
+      src.includes('setUpdateInfo(null)'),
+      '监听器又开始清空 updateInfo —— error 态的「重试」会变成哑键',
+    ).toBe(false);
     expect(
-      /finally\s*\{[\s\S]{0,400}?startedHereRef\.current = false/.test(src),
-      '认领旗没有在 finally 里交还 —— 一次失败就会让本页永久把别人的下载当成自己的',
+      src.includes('if (!updateInfo) return'),
+      'downloadUpdate 的入口守卫没了 —— 上面那条反向断言就失去了意义',
     ).toBe(true);
   });
 
@@ -1362,6 +1332,19 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
     expect(murky, '有调用点的预发布口径既不是字面量、也不在具名白名单里，无法静态判定').toEqual(
       [],
     );
+    // 白名单只认**名字**是不够的：某条推腿写 `check(SCOPE)` 而 `SCOPE = true` 会全绿放行，
+    // 横幅零标注地举着一条 beta —— 正是这道门存在的理由。故名字进白名单还不算完，它的**值**
+    // 必须能在 `ui/src` 里静态解析到 `= false`。加名字仍是显式扩张，口径依旧被读出来。
+    const unresolved = ALLOWED_SCOPE_IDENTS.filter(
+      (ident) =>
+        !files.some(({ src }) =>
+          new RegExp(`\\b(?:const|let|var)\\s+${ident}\\s*(?::[^=]+)?=\\s*false\\b`).test(src),
+        ),
+    );
+    expect(
+      unresolved,
+      '白名单里的常量在 ui/src 里解析不到 `= false` 的初始化式 —— 名字进了白名单，口径却没人读',
+    ).toEqual([]);
   });
 
   it('两个键在五个语种里都非空，且说明都点名 alpha/beta/rc（档次不可从 tag 反推）', async () => {

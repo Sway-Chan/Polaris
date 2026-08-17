@@ -453,9 +453,18 @@ pub(crate) fn is_portable_layout(exe_path: &std::path::Path) -> bool {
 ///  - **误报**（方向相反，用户可见的假话）：`updateInfo` 是**上一次检查**留下的陈旧值 ⇒ 卡片会举着
 ///    那次查到的版本号与预发布徽标，去描述盘上这份**别人下的**包。
 ///
-/// 误报那一格已由 `settings-logic.ts::progressInvalidatesUpdateInfo` **止血**（非本页发起的下载
-/// 一律作废本页的检查结果，宁可少说不说错），但那只是不说假话，不是把话说全 —— 正解是让那两条腿
-/// 把随行事实随事件带过来（W5 射程）。
+/// 误报那一格已**止血**：`SettingsUpdate.tsx` 的 `downloaded` / `manual` 两条腿把徽标的资格判据
+/// 收窄成 `downloadedPath && updateInfo?.isPrerelease` —— `downloadedPath` 的唯一写点是本页
+/// `downloadUpdate` 的成功分支（外部广播那条腿从不设它），故它恰好等价于「盘上这份是本页下的」，
+/// 也就是「`updateInfo` 与它有因果关系」。
+///
+/// **止血刻意选「收窄断言」而不是「清空 `updateInfo`」**：后者看着更彻底，实则会让 `us === 'error'`
+/// 那格的「重试」（该分支唯一按钮，直通 `downloadUpdate` 首行 `if (!updateInfo) return`）变成哑键，
+/// 且要靠一面认领旗去分辨事件归属 —— 而事件与 invoke 回包**走的是两条通道**（`eval_script` vs
+/// 自定义协议），本仓自己在 `SettingsUpdate.tsx` 里就登记过这条乱序。用真缺陷换假话不划算。
+///
+/// 于是误报没了，代价是**漏报扩大**：外部腿下的包一律不显示徽标（即使它真是预发布）。方向安全，
+/// 且与下面这条合流 —— 正解都是让那两条腿把随行事实随事件带过来（W5 射程）。
 ///
 /// 漏报那一格今天不构成缺陷：能推本页的那两条腿恰恰都由本常量钉死只下正式版，**豁免依赖的就是
 /// 这里的 `false`**。通道一开，那两条腿能下预发布，安装屏就会对一份预发布只字不提。
@@ -4825,17 +4834,22 @@ mod tests {
             SRC,
             "pub async fn update_popup_action(",
         );
-        let check_at = body
-            .find("update_check(")
-            .expect("锚点消失：守卫已失去判据");
-        let cmp_at = body
+        // 锚点限定在 `Update | Retry` 臂内：在整个函数体上 find 时，别的臂里出现同形代码就会
+        // 替本臂作证（同文件两道门都栽在这个形态上，见 `guard_scan::match_arm_body` 头注）。
+        let arm = crate::commands::guard_scan::match_arm_body(
+            &body,
+            "PopupAction::Update | PopupAction::Retry =>",
+            "PopupAction::",
+        );
+        let check_at = arm.find("update_check(").expect("锚点消失：守卫已失去判据");
+        let cmp_at = arm
             .find("reconcile_recheck(popup.version.as_deref(), rechecked)")
             .expect("版本对账被删了 —— 复查换了目标也会照下，而弹窗上仍写着旧版本号");
-        let remind_at = body.find("UpdatePopupState::remind(rechecked").expect(
+        let remind_at = arm.find("UpdatePopupState::remind(rechecked").expect(
             "不一致时没有退回 remind —— 换个目标接着下只是「告知」，不是「征求同意」\
              （何况 progress 态根本不渲染版本号，连告知都不成立）",
         );
-        let download_at = body
+        let download_at = arm
             .find("update_download(")
             .expect("锚点消失：守卫已失去判据");
         assert!(
@@ -4847,7 +4861,7 @@ mod tests {
             "退回 remind 必须在下载之前（实得 cmp={cmp_at} / remind={remind_at} / download={download_at}）"
         );
         assert!(
-            body[remind_at..download_at].contains("return Ok("),
+            arm[remind_at..download_at].contains("return Ok("),
             "退回 remind 之后没有 return —— 弹窗回到提醒态，下载却照跑"
         );
     }
@@ -4872,30 +4886,11 @@ mod tests {
         );
         const NEEDLE: &str = "update_open_releases(app, popup.version.clone())";
         const HEAD: &str = "PopupAction::ManualDownload =>";
-        let arm_at = body.find(HEAD).expect("锚点消失：ManualDownload 分支没了");
-        // **切片必须封到下一个 match 臂**：切到函数体尾时，`ViewLog` 臂里有一句**逐字相同**的
-        // 调用会替本条作证 —— 实测把 ManualDownload 臂整体移到 ViewLog 之前、实参保持 `None`，
-        // 编译通过、全仓测试全绿，而用户行为退回 #311 原形。射程由臂顺序决定 = 判据不在自己手里。
-        //
-        // 按**臂头形状**切，不按缩进宽度切：写死 `"\n            PopupAction::"`（12 空格）时，
-        // 实际臂缩进是 8 ⇒ needle 恒不命中 ⇒ 切片恒到函数体尾，封顶那行代码**本身是哑的**
-        // （本门第一版正是这样，靠下面的计数断言才没漏过去）。
-        let rest = &body[arm_at + HEAD.len()..];
-        let mut arm = String::new();
-        for line in rest.lines() {
-            let t = line.trim_start();
-            if t.starts_with("PopupAction::") && t.contains("=>") {
-                break;
-            }
-            arm.push_str(line);
-            arm.push('\n');
-        }
-        // 切片自检：封顶若失效（needle 变了 / 臂头写法变了），下面那条 `contains` 会被**别的臂**
-        // 喂饱。切出来的片段里不该再有任何臂头 —— 这条一红就说明封顶哑了，而不是判据没过。
-        assert!(
-            !arm.contains("PopupAction::"),
-            "臂切片里还有下一个臂头 —— 封顶失效，本门已退化成「函数体里有没有这句话」"
-        );
+        // 切片封到下一条臂头（[`guard_scan::match_arm_body`]，那里有它自己的合成样本单测）：
+        // 切到函数体尾时，`ViewLog` 臂里有一句**逐字相同**的调用会替本条作证 —— 实测把
+        // ManualDownload 臂整体移到 ViewLog 之前、实参保持 `None`，编译通过、全仓测试全绿，
+        // 而用户行为退回 #311 原形。
+        let arm = crate::commands::guard_scan::match_arm_body(&body, HEAD, "PopupAction::");
         assert!(
             arm.contains(NEEDLE),
             "ManualDownload 没有把会话记住的版本喂给 release 页 —— 用户会掉回泛列表页（#311 的原形）"
@@ -4934,14 +4929,21 @@ mod tests {
             SRC,
             "pub async fn update_popup_action(",
         );
-        let force_at = body
+        // **两个锚点都必须限定在 `Update | Retry` 臂内**。在整个函数体上 `find()` 时，把这发
+        // `force_popup_state` 挪进 `ViewLog` 臂（位置更靠前）再从本臂删掉 ⇒ 两个 `find` 依旧命中、
+        // 顺序依旧成立、本门全绿，而上面列的后果一条不少地发生。实测：全仓 4178 全绿。
+        // 这与同文件 `manual_download_...` 那道门踩的是同一形态（别的臂替本臂作证）。
+        let arm = crate::commands::guard_scan::match_arm_body(
+            &body,
+            "PopupAction::Update | PopupAction::Retry =>",
+            "PopupAction::",
+        );
+        let force_at = arm
             .find("force_popup_state(&app, UpdatePopupState::progress(0))")
             .expect(
                 "复查前那发强制 progress(0) 没了 —— 窗内 15s 零反馈，且之后每一发状态推送都会被闸拦掉",
             );
-        let check_at = body
-            .find("update_check(")
-            .expect("锚点消失：守卫已失去判据");
+        let check_at = arm.find("update_check(").expect("锚点消失：守卫已失去判据");
         assert!(
             force_at < check_at,
             "强制 progress(0) 必须在复查**之前**（实得 force={force_at} / check={check_at}）：\
@@ -4969,8 +4971,15 @@ mod tests {
             "复查腿又开始广播 update:progress —— 设置页会显示一条它从未发起过的下载错误"
         );
         // 正向对照：两条早退确实各自把弹窗推进了 error（不广播 ≠ 什么都不做）。
+        // 负向断言（上面那条）**故意保持全函数**：任何一条臂都不许广播，那是更强的形态。
+        // 正向计数则限定到本臂 —— 否则把某条早退搬去别的臂，计数照样是 2。
+        let arm = crate::commands::guard_scan::match_arm_body(
+            &body,
+            "PopupAction::Update | PopupAction::Retry =>",
+            "PopupAction::",
+        );
         assert_eq!(
-            body.matches("push_popup_state(&app, UpdatePopupState::error(")
+            arm.matches("push_popup_state(&app, UpdatePopupState::error(")
                 .count(),
             2,
             "复查失败的两条早退（请求失败 / 回包缺版本号）必须各自把弹窗推进 error，否则窗内永远转圈"

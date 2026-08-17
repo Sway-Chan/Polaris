@@ -678,43 +678,6 @@ export function progressResetsIntegrity(status: UpdateProgress['status']): boole
   return PROGRESS_RESETS_INTEGRITY[status];
 }
 
-/**
- * 这一发进度事件，该不该把本页持有的「检查到的版本」（`updateInfo`）丢掉。
- *
- * # 为什么需要它，而不是照抄 [`progressResetsIntegrity`]
- *
- * 同一个根因（事件 fan-out 给所有窗口，别的窗口发起的下载本页拿不到回包），但两份状态的**渲染
- * 时机**不同，故判据多一个限定词：
- *
- *  - `downloadIntegrity` 只在 `downloaded` / `manual` / `available` 三态渲染，且本页自己的下载会在
- *    invoke 回包处**重新确立**它（`setDownloadIntegrity(appDownloadIntegrity(r))`）⇒ 无条件清安全。
- *  - `updateInfo` **在 `downloading` 态就要渲染**（版本号 + 总字节数）。无条件清 ⇒ 本页自己点的
- *    下载会立刻把进度卡上的版本号和体积清空 —— 把一个别人的 bug 换成自己的。
- *
- * 故加 `startedHere`：只有**不是本页发起**的那次下载才作废本页的检查结果。「哪些 status 意味着
- * 真有字节在动」仍单点取自 [`PROGRESS_RESETS_INTEGRITY`]，不另立第二份枚举 —— 那张表一旦加成员，
- * 这里跟着变，不会漏格。
- *
- * # 不清会怎样（本判据要防的那句假话）
- *
- * 用户在设置页点「检查更新」（全仓唯一含预发布的入口）拿到 `v1.3.0-beta.1` 却不下载，随后弹窗腿或
- * 启动自动下载腿下了 `v1.2.0` **正式版** ⇒ 广播把本页翻到 `downloaded`，而 `updateInfo` 还是那份
- * beta ⇒ 卡片渲染「下载完成 v1.3.0-beta.1【预发布版】」，盘上那份却是正式包。**预发布徽标被贴到
- * 一份正式包上**，版本号也是错的。
- *
- * # ⚠️ 这是止血，不是正解
- *
- * 正解是让那两条外部腿把**随行事实**（`updateInfo` / `downloadedPath` / `progress`）随事件带过来，
- * 本页据此重建，而不是清空 —— 清空之后「重启并安装」仍是哑键（`installUpdate` 首行
- * `if (!downloadedPath) return`）。那是独立一批（W5）的射程，本处只负责**不说假话**：
- * 宁可少说（版本号留空，与「本页从没查过就收到外部完成事件」这条既有路径同形），不说错。
- */
-export function progressInvalidatesUpdateInfo(
-  status: UpdateProgress['status'],
-  startedHere: boolean,
-): boolean {
-  return !startedHere && PROGRESS_RESETS_INTEGRITY[status];
-}
 
 /* ────────────────────────────────────────────────────────────────────────────
  * 暂存条目的**段级**译名（原型 `settingLabel:4257`）
