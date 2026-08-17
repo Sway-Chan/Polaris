@@ -589,11 +589,23 @@ struct ExpectedDigest {
 ///     `SHA256SUMS`」这一个交集里有用。而 `SHA256SUMS` 从本轮才开始产出 ⇒ 有它的 release 都是
 ///     此后新发的 ⇒ 那些 release 的 asset `digest` 由 GitHub 在资产上传时算好、随
 ///     `update_check` 的同一次响应返回。老 release 两样都没有，接了也救不了。
-///  2. **把它排在 asset digest 之前是拿弱的换强的**。asset `digest` 来自 `api.github.com` 的
-///     JSON，与安装包**不同源**（包走下载域重定向），且由 GitHub 侧对已存字节算出，镜像改不动；
-///     `SHA256SUMS` 是与安装包**同源、同一个 release** 的另一个资产，能替换包的人同样能替换它。
-///     两者防的都只是传输损坏与截断（都不防账号或 TLS 被攻破 —— 那需要签名，公钥内置于应用，
-///     属独立决策，本轮不做，也不假装 SHA 等价于它），而在同一档防护里，同源的那份更容易被一起换掉。
+///  2. **把它排在 asset digest 之前是拿弱的换强的**。两者防的都只是传输损坏与截断（都不防账号或
+///     TLS 被攻破 —— 那需要签名，公钥内置于应用，属独立决策，本轮不做，也不假装 SHA 等价于它），
+///     差别在**取它的那条腿会不会跟安装包一起被同一个中间人经手**：
+///
+///     - asset `digest` 随 `update_check` 从 `api.github.com` 的 JSON 到手，**不与安装包走同一个
+///       host**，且由 GitHub 侧对已存字节算出；
+///     - `SHA256SUMS` 是同一个 release 里的另一个**资产**，URL 与安装包同 host。
+///
+///     这不是权衡，是**结构性**的：镜像回落的判定面 `GITHUB_ASSET_HOSTS`
+///     （`runtime/http.rs`）与前端的 `GH_HOSTS`（`ui/src/domain/gh-proxy.ts`）两侧独立实现、
+///     **都显式排除 `api.github.com`** ⇒ API 腿结构性走不到 gh-proxy；而 `SHA256SUMS` 命中
+///     `is_github_asset` ⇒ 真启用镜像时它会**跟安装包一起经同一个代理**。即恰恰在「启用代理、
+///     信任面最大」的那个场景里，asset `digest` 的价值最高而 `SHA256SUMS` 的价值归零。
+///
+///     （措辞注：`github.rs` 的 `digest` 字段文档说「摘要与资产**同源**故不必自建密钥」，那句里的
+///     「同源」指**信任根**都是 GitHub；本条说的「同 host」指**取回路径**。两个词各指一件事，
+///     不要混读。）
 ///  3. **成本不是「插一行」**：要多一次网络往返（多一条会超时/被截断/被限流的失败腿）、要把本函数
 ///     从纯函数变成带 IO 的异步函数（现有这套纯函数单测随之作废）、要把清单 URL 从
 ///     `check_app_update` 一路穿到这里、还要动前端 `digestSource` 的字面量联合。付这些去覆盖第 1 条
@@ -602,8 +614,11 @@ struct ExpectedDigest {
 /// **若将来要接**：正确形状不是「第 1 级」，而是 asset `digest` **缺失时的惰性回落** ——
 /// 只在真正没摘要那条腿上多花一次往返，好路径一行不动。
 ///
-/// **重开这个决定的触发条件**（可观测，不必提前押注）：我们自己发的 release 上出现
-/// `verified:false`（即 GitHub 没给 `digest`，而 `SHA256SUMS` 明明在）。那一刻第 1 条的前提才不成立。
+/// **重开这个决定的触发条件**（有探测器，不靠人肉撞见）：GitHub 不再给 asset `digest`
+/// —— 那一刻第 1 条的前提不成立，且客户端会静默降级成无摘要弱校验。发布流程里
+/// `Verify published asset digests against SHA256SUMS` 那一步会在**发布当场**把它判红
+/// （`.assets[].digest` 为空即红，release 停在草稿态），故这条触发条件是被机器盯着的，
+/// 不必等用户在 UI 上看到 `verified:false`。
 ///
 /// # Errors
 ///
@@ -3418,7 +3433,11 @@ mod tests {
     ///
     /// D5 拍板的形态是「维护两份 + 一条一致性测试钉死」。两份不是冗余：Rust 侧这一份让本文件能
     /// 提出一条 JS 侧**提不出**的断言 —— 打包阈值必须待在 [`APP_UPDATE_MAX_BYTES`] 之下。
-    /// 打包侧看不见客户端的写入闸，客户端也读不到打包脚本，只有这里两边都在射程内。
+    ///
+    /// 为什么不反过来「让 JS 去读 Rust 那份、只留一份」：本文件对 [`APP_UPDATE_MAX_BYTES`] 是
+    /// **按符号引用**的（改名 / 改类型 / 删掉都在编译期红），而 JS 侧只能拿正则去扒 Rust 源码，
+    /// 那种引用会**静默漂移**（正则扒不着就退化成「没变」）。把跨语言那一跳放在有编译器的这一侧，
+    /// 漂移面才最小 —— 也正因为如此，下面这个解析函数必须把「扒不准」一律判成失败。
     const PACKAGING_MAX_UPDATE_ASSET_MIB: u64 = 96;
 
     /// 从打包门源码里读出 `MAX_UPDATE_ASSET_BYTES = N * 1024 * 1024` 的 `N`。
@@ -3426,17 +3445,68 @@ mod tests {
     /// 取不到就返回 `None` ⇒ 调用方**转红**。这是刻意的失败方向：判据取不到时若默认「没变」，
     /// 一次 JS 侧改写形态（比如换成裸字面量）就会让这条一致性测试**静默失效**，
     /// 而它看起来还是绿的 —— 那正是本测试要防的那类事。
+    ///
+    /// # 「出现多次」同样是不可判定，必须一并判成失败（2026-08-17 复审修）
+    ///
+    /// 原实现取**首个**匹配（`split_once`），于是「解析失败会红」防不住「解析到错的那一行」：
+    /// 本仓的注释风格就是大段引用代码 —— 调门时在常量文档里补一行
+    /// `const MAX_UPDATE_ASSET_BYTES = 96 * 1024 * 1024;  // 旧值` 作沿革记录、同时把真值升到 256，
+    /// 首个匹配读到注释里那个 96、与镜像相等 ⇒ **绿**，而两份常量已经漂开 160 MiB。
+    /// 故先数出现次数，`!= 1` 直接 `None`：与 `checkSha256Sums` 对同名资产的处置同一条纪律
+    /// ——**不可判定就必须红，不能挑一个继续**。
     fn packaging_gate_mib_from_js(src: &str) -> Option<u64> {
-        let expr = src
-            .split_once("const MAX_UPDATE_ASSET_BYTES = ")?
+        const MARKER: &str = "const MAX_UPDATE_ASSET_BYTES = ";
+        if src.matches(MARKER).count() != 1 {
+            return None;
+        }
+        src.split_once(MARKER)?
             .1
             .split_once(';')?
             .0
             .trim()
             .strip_suffix(" * 1024 * 1024")?
             .trim()
-            .to_string();
-        expr.parse().ok()
+            .parse()
+            .ok()
+    }
+
+    /// 🟡 **解析函数对「扒不准」的两类输入都必须交白卷，而不是猜一个数出来。**
+    ///
+    /// 上一条测试的全部效力都建立在「`js` 这个数确实是 CI 上拦包的那个数」之上。本条把这个前提
+    /// 本身钉住，覆盖两类：
+    ///  - **形态变了**（裸字面量 / 换算符 / 改名）⇒ `None`，调用方 `expect` 转红；
+    ///  - **出现多次**（注释里留了一份旧值）⇒ `None`。这一类原实现是**静默读首个**，
+    ///    即两份常量漂开而 D5 那颗钉子一声不吭 —— 复审实测出来的洞，也正是本批要防的那类事。
+    ///
+    /// **变异探针**：删掉 `matches(MARKER).count() != 1` 那道闸 ⇒ 第 3 条转红（它会读到注释里的 96，
+    /// 返回 `Some(96)`）。
+    #[test]
+    fn packaging_gate_parser_refuses_ambiguous_or_reshaped_sources() {
+        // 正向对照：唯一一处、形态如约 ⇒ 读得出（否则下面三条「读不出」毫无信息量）。
+        assert_eq!(
+            packaging_gate_mib_from_js("const MAX_UPDATE_ASSET_BYTES = 96 * 1024 * 1024;\n"),
+            Some(96)
+        );
+        // 形态变了 ⇒ 交白卷。
+        assert_eq!(
+            packaging_gate_mib_from_js("const MAX_UPDATE_ASSET_BYTES = 100663296;\n"),
+            None,
+            "裸字面量读不出，必须让调用方红"
+        );
+        assert_eq!(
+            packaging_gate_mib_from_js("const MAX_UPDATE_ASSET_LIMIT = 96 * 1024 * 1024;\n"),
+            None,
+            "常量改名 = 判据消失"
+        );
+        // 出现两次（注释里留了一份旧值，真值在下面）⇒ 交白卷，**绝不返回首个**。
+        assert_eq!(
+            packaging_gate_mib_from_js(concat!(
+                "// 沿革：const MAX_UPDATE_ASSET_BYTES = 96 * 1024 * 1024;（2026-08 的旧值）\n",
+                "const MAX_UPDATE_ASSET_BYTES = 256 * 1024 * 1024;\n"
+            )),
+            None,
+            "同形文本出现多次 ⇒ 读哪一处不确定；挑首个会把「已漂开 160 MiB」判成绿"
+        );
     }
 
     /// 🟡 **打包体积门的两份常量不得漂开，且它必须待在客户端绝对写入闸之下。**

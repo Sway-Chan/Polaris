@@ -754,7 +754,10 @@ jobs:
             "Deleting it makes Polaris think it was installed, and it will then offer an"
             "installer that creates a SECOND, separate copy of the app."
           )
-          Compress-Archive -Path "$staging/*" -DestinationPath "polaris-portable-${{ env.BUILD_LABEL }}.zip" -Force
+          # 打进 dist-win/ 而不是仓库根：便携 zip 是 updater 的 loose 形态**唯一候选**，
+          # 放进本 job 的资产目录后，它的命名与体积在**本 job**就被 assets 门量到；留在仓库根的话
+          # 那两条断言只有 tag 时的聚合口径量得到 —— 超限要等四条腿的构建成本全付完才发现。
+          Compress-Archive -Path "$staging/*" -DestinationPath "dist-win/polaris-portable-${{ env.BUILD_LABEL }}.zip" -Force
 
       # 便携标记必须真的在 zip 里 —— 开包核验**产物本身**，不是核验上一步的脚本文本。
       # 缺它 ⇒ 便携用户恒被推安装器（#72 形态错配本体复发），故这里 throw 让整条腿硬失败，
@@ -764,7 +767,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $zip = "polaris-portable-${{ env.BUILD_LABEL }}.zip"
+          $zip = "dist-win/polaris-portable-${{ env.BUILD_LABEL }}.zip"
           $probe = "portable-probe"
           if (Test-Path $probe) { Remove-Item $probe -Recurse -Force }
           Expand-Archive -Path $zip -DestinationPath $probe -Force
@@ -780,9 +783,11 @@ jobs:
       # 产物命名 ↔ updater 选包规则的机器断言（与 github.rs::find_suitable_update_asset 同口径）：
       # dist-win/ 下「`.exe` 且名含 `win`」必须**恰好一个**且含 `setup`。
       # 0 个 = 用户永远收不到更新且静默；>1 个 = 选哪个取决于 release 资产顺序，不确定。
-      # 同一步还跑**体积门**（U2），射程只有 bootstrapper：`*-offline-setup.exe`（约 240 MiB）
-      # 名字里没有 `win`，updater 结构性选不到它，把它一并卡掉只会让门第一次跑就假红。
-      # 便携 zip 打在仓库根、不在 dist-win 里，它的体积由聚合口径（--label release）覆盖。
+      # 同一步还跑**体积门**（U2），射程 = bootstrapper + 便携 zip（zip 现打进 dist-win/，见上）。
+      # `*-offline-setup.exe`（约 240 MiB）**不在**射程：名字里没有 `win`，updater 结构性选不到它，
+      # 把它一并卡掉只会让门第一次跑就假红。
+      # 本步还断言便携 zip 在 dist-win/ 下恰有一个 —— 射程里有它，就得有人保证它在场，
+      # 否则体积门是一条恒为空的断言。
       - name: Verify Windows update-asset naming and size contract
         if: runner.os == 'Windows'
         shell: bash
@@ -791,8 +796,12 @@ jobs:
       # ── 上传产物 ── 每平台一个 artifact；mac 分架构后 label 为 macos-arm64 / macos-x64，故不撞名。
       # 路径以**仓库根 target/** 为准（cargo workspace 根在仓库根，见 Build installers 注释）。
       # 传了 --target 的 mac job 多一层 triple 目录，故 dmg 用 `target/*/release/...` 覆盖。
-      # Windows 两个安装器一律从 dist-win/ 取（已带 win / offline 标记且互不覆盖）；
+      # Windows 三件交付物一律从 dist-win/ 取（两个安装器已带 win / offline 标记且互不覆盖，
+      # 便携 zip 自 2026-08-17 起也打进该目录，好让本 job 的 assets 门量得到它的体积）；
       # **不再上传 nsis/ 下的裸 `*-setup.exe`** —— 它是第二次 build 的残留，与 offline 版字节相同。
+      # 副作用（无害，如实记）：windows 腿命中的文件从此全在 dist-win/ 下，upload-artifact v4 按
+      # **实际命中文件的最近公共祖先**建树 ⇒ 该 artifact 由「保留 dist-win/ 一层」变成平铺。
+      # 下游只用 `find -type f` + basename，不假设层级（见 release job 的 Download 注释）。
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -802,7 +811,7 @@ jobs:
             target/release/bundle/**/*.AppImage
             target/*/release/bundle/**/*.dmg
             dist-win/*.exe
-            polaris-portable-*.zip
+            dist-win/polaris-portable-*.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -879,9 +888,14 @@ jobs:
       # 覆盖面 = dist-release 下**除本文件外的全部文件**，不止 updater 目标：手动下载离线版 / 便携版的
       # 用户同样要校验，且门那侧是**双向**覆盖判据（少一条、多一条都红），两边口径必须逐字一致。
       #
-      # 🔴 诚实边界（不夸大）：`SHA256SUMS` 与安装包走**同一 HTTPS 通道、同一 release、同一发布账号**，
-      #    能替换安装包的人同样能替换它。它防的是**传输损坏与截断**，**不防**「GitHub 账号或 TLS 被攻破」。
-      #    真正的端到端完整性需要签名（公钥内置于应用），那是独立决策，本轮不做，也不假装 SHA 等价于它。
+      # 🔴 诚实边界（不夸大，两条）：
+      #    ① `SHA256SUMS` 与安装包走**同一 HTTPS 通道、同一 release、同一发布账号**，能替换安装包的人
+      #       同样能替换它。它防的是**传输损坏与截断**，**不防**「GitHub 账号或 TLS 被攻破」。真正的
+      #       端到端完整性需要签名（公钥内置于应用），那是独立决策，本轮不做，也不假装 SHA 等价于它。
+      #    ② 它的起点是 **dist-release**，不是构建产出：清单在 `download-artifact` 之后才算，故
+      #       **build job → actions artifact → dist-release 这一跳没有摘要判据**（那一跳坏了字节，
+      #       清单会忠实地记下坏字节的摘要，两道门全绿）。补它要每条腿各产局部清单再聚合合并，
+      #       收益不抵复杂度，故如实登记不做。
       #
       # 客户端**当前不消费**本文件（期望摘要仍只取 GitHub asset `digest`，理由见
       # `src-tauri/src/commands/updater.rs` 的 `resolve_expected_digest` 文档「第 1 级已产出、消费侧未接」段）。
@@ -971,9 +985,7 @@ jobs:
       #    故体积门与 SHA256SUMS 的**内容**比对在这里结构性不可判定，显式跳过并在输出里如实标注。
       #    仍然判得了、也确实在判的是「`SHA256SUMS` 有没有真的进 release」——上传掉了它就是红。
       #    不加这个开关的话，本步会拿 0 字节的假文件去比摘要，得到一片与真实状态无关的恒红。
-      #    **未被本步覆盖**（如实登记）：资产在上传途中被截断 / 被换成别的字节。上传前那道门验的是
-      #    本地文件，本步验的是名字，两者之间那段没有判据；补它需要拿 GitHub 侧的 asset digest 或
-      #    size 回比，属独立一项，本轮不做。
+      #    「上传途中被截断 / 被换字节」这一段由**下一步**（拿 GitHub 侧 asset digest 回比）覆盖。
       #
       # 本步是**转公开前的最后一道闸门**：release 此时仍是草稿，验不过就停在草稿态，不会公开半套。
       - name: Verify published release assets
@@ -1004,6 +1016,58 @@ jobs:
             : > "$outdir/$name"
           done < published-names.txt
           node "$GITHUB_WORKSPACE/scripts/verify-packaging.mjs" assets --label release --dir "$outdir" --names-only
+
+      # ── 上传那一跳的判据：GitHub 侧 asset digest ↔ 本地 SHA256SUMS 逐条回比 ──
+      #
+      # 上一步只验名字，上传前那道门只验本地文件 —— 两者之间「资产在上传途中被截断 / 被换字节」
+      # 此前没有任何判据。**最坏的子情形不是安装包坏掉，而是 `SHA256SUMS` 自己坏掉**：同 tag 重跑时
+      # `--clobber` 若对它未生效（或被 GitHub 侧静默去重），release 里留着上一轮的陈旧清单，
+      # 而只看名字的检查照样绿 ⇒ 转公开 ⇒ **所有**照清单手工校验的用户全部失败，CI 一路绿。
+      # 故本步把清单**自己**也纳入比对（它的期望值是本地那份的 sha256，现算）。
+      #
+      # 不回下任何产物：`digest` 是 GitHub 对已存字节算出的，一次 REST 调用即可，成本 ≈ 上一步那次。
+      # 该字段本仓已在消费（`crates/updater/src/github.rs` 的 `AppReleaseAsset::digest`）。
+      #
+      # 🔴 `digest` 为空 ⇒ **红，且不得放行**。它不是可有可无的元数据：客户端**唯一**的期望摘要来源
+      #    就是它（见 `src-tauri/src/commands/updater.rs` 的 `resolve_expected_digest`）。它一旦缺失，
+      #    全体用户的自更新静默降级成「无摘要弱校验」，而在此之前**没有任何探测器**，只能靠人肉在 UI 上
+      #    撞见 `verified:false`。这恰好就是那份文档里写的「重开消费侧决定」的触发条件 ——
+      #    本步就是它的探测器。红在草稿态，release 不会被公开，处置由人判断（接 SHA256SUMS 消费侧，
+      #    或确认属 GitHub 侧临时回归后手工放行）。
+      - name: Verify published asset digests against SHA256SUMS
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          sums="$GITHUB_WORKSPACE/dist-release/SHA256SUMS"
+          [ -s "$sums" ] || { echo "::error::$sums 不存在或为空 —— 生成步骤与本步之间有人动过它"; exit 1; }
+
+          # 期望侧 = 本地清单 + 清单自己那一条（清单里不可能有自己的摘要，自引用）。
+          expected="$(mktemp)"
+          {
+            cat "$sums"
+            printf '%s  %s\n' "$(sha256sum "$sums" | cut -d' ' -f1)" 'SHA256SUMS'
+          } | LC_ALL=C sort -k2 > "$expected"
+
+          # 实际侧 = GitHub 对**已存字节**算出的 digest（形如 `sha256:ab12…`，缺失一律落成 MISSING
+          # 让它对不上，绝不静默跳过那一条）。
+          actual="$(mktemp)"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" \
+            --jq '.assets[] | "\(.digest // "MISSING")  \(.name)"' \
+            | sed 's/^sha256://' | LC_ALL=C sort -k2 > "$actual"
+
+          if grep -q '^MISSING ' "$actual"; then
+            echo "::error::release $tag 有资产的 GitHub digest 为空 —— 客户端唯一的期望摘要来源没了，自更新会静默降级成无摘要弱校验"
+            grep '^MISSING ' "$actual"
+            exit 1
+          fi
+          if ! diff -u "$expected" "$actual"; then
+            echo "::error::已发布资产的 digest 与本地 SHA256SUMS 对不上 —— 上传那一跳出了问题（截断 / 被换 / --clobber 未生效留下陈旧清单）"
+            exit 1
+          fi
+          echo "已发布资产的 digest 与本地 SHA256SUMS 逐条相符（含清单自身，共 $(wc -l < "$expected") 条）"
 
       # 验过才转公开。
       #
