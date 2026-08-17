@@ -502,7 +502,7 @@ fn parse_hysteria2(
         hy2.network = Some(net);
     }
     if hy2 != Hysteria2Settings::default() {
-        c.hysteria2_settings = Some(hy2);
+        c.hysteria2_settings = Some(Box::new(hy2));
     }
 
     let mut tls = parse_tls_settings(&b.params);

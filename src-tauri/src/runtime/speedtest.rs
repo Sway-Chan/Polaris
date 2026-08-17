@@ -1352,22 +1352,22 @@ mod tests {
                 id: "oc111111".into(),
                 name: "OC".into(),
                 protocol: Protocol::Openconnect,
-                openconnect_settings: Some(OpenconnectSettings {
+                openconnect_settings: Some(Box::new(OpenconnectSettings {
                     server: Some("vpn.example.com:443".into()),
                     ..Default::default()
-                }),
+                })),
                 ..Default::default()
             },
             ServerConfig {
                 id: "ov111111".into(),
                 name: "OV".into(),
                 protocol: Protocol::OpenvpnClient,
-                openvpn_client_settings: Some(OpenvpnClientSettings {
+                openvpn_client_settings: Some(Box::new(OpenvpnClientSettings {
                     server: Some("vpn.example.com".into()),
                     server_port: Some(1194),
                     tls: Some(OpenvpnTlsSettings::default()),
                     ..Default::default()
-                }),
+                })),
                 ..Default::default()
             },
         ];

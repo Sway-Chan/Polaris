@@ -1224,10 +1224,10 @@ mod tests {
             id: "oc1".into(),
             name: "OC".into(),
             protocol: Protocol::Openconnect,
-            openconnect_settings: Some(OpenconnectSettings {
+            openconnect_settings: Some(Box::new(OpenconnectSettings {
                 server: Some("vpn.example.com:443".into()),
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         });
         cfg.servers.push(ServerConfig {
@@ -1272,10 +1272,10 @@ mod tests {
                 name: "OC".into(),
                 protocol: Protocol::Openconnect,
                 mesh_routes: routes,
-                openconnect_settings: Some(OpenconnectSettings {
+                openconnect_settings: Some(Box::new(OpenconnectSettings {
                     server: Some("vpn.example.com:443".into()),
                     ..Default::default()
-                }),
+                })),
                 ..Default::default()
             });
             let r = generate_sing_box_config(&cfg, &BTreeMap::new(), &deps_default()).unwrap();

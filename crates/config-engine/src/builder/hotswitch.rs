@@ -1399,10 +1399,10 @@ mod tests {
                 id: "vpn".into(),
                 name: "VPN".into(),
                 protocol: proto,
-                openconnect_settings: Some(OpenconnectSettings {
+                openconnect_settings: Some(Box::new(OpenconnectSettings {
                     server: Some("vpn.example.com:443".into()),
                     ..Default::default()
-                }),
+                })),
                 ..Default::default()
             });
             let snap = snap_of(&a.servers);
