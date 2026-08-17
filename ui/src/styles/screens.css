@@ -65,29 +65,39 @@
    纯绘制层特效，border-color/background 只换色，均不影响 scrollHeight/clientHeight）。
 
    全仓核过的每一条选中 `.nd-card` 的规则（漏一条都可能让某个属性悄悄从「动画」变「瞬切」或反过来）：
-   · `.nd-card:hover`(:108)、`.nd-card.cur`(:110) —— border-color/box-shadow。
-   · `#s-nodes.nodes-list-view .nd-card`(:354-355，**根因**：min-height/padding/border-width/gap/
+   · `.nd-card:hover`(:118)、`.nd-card.cur`(:120) —— border-color/box-shadow。
+   · `#s-nodes.nodes-list-view .nd-card`(:364-365，**根因**：min-height/padding/border-width/gap/
      flex-direction/border-radius/background 全部在这条切换，是几何变化的唯一来源）、
-     `:last-child`(:356，同根因，触发面是「批量分批推进/搜索」时哪张卡是最后一张，比切档本身更高频)、
-     `:hover`(:357)、`.cur`(:358) —— box-shadow/background。
+     `:last-child`(:366，同根因，触发面是「批量分批推进/搜索」时哪张卡是最后一张，比切档本身更高频)、
+     `:hover`(:367)、`.cur`(:368) —— box-shadow/background。
    · `.nd-card.confirming`(index.css:782，武装二次确认的描边提示) —— outline/outline-offset。
-   · `prototype.css:1450` 的 `.nd-card{position:relative;}`（与 :104 的声明值相同，静态重复，无状态
+   · `prototype.css:1450` 的 `.nd-card{position:relative;}`（与 :114 的声明值相同，静态重复，无状态
      切换、非本次射程）、`prototype.css:1456` 的 `.nodes-batch-mode .nd-card{cursor:pointer;}`
      （cursor 不是可插值属性，永远瞬切，与 transition-property 无关）——两条均无害，登记以证明穷举。
 
-   **`gap`（9px↔10px，:354）刻意不收进来**：它虽是 :354-355 众多切换属性里量最小的一个，但本质是
+   切档时还有两个**离散**属性跟着变，穷举须提它们但不必收进 transition-property：`align-items`
+   （:364 的 `center` vs 基础态的初始值 `normal`≈stretch）与 `border-style`（:365 的 `border:0`
+   把 top/right/left 变 `none`，基础态 :114 的 `border:1px solid` 是 `solid`）。两者在 CSS 规范
+   里都是「离散动画」类型——不能连续插值，旧 `transition:.14s`(=all) 下也只是在过渡进行到 50%
+   （70ms）那一刻整体翻转，不是渐变；收窄后这一跳提前到 0ms。视觉上收窄前后都是「某一刻突变」，
+   只是时间点从 70ms 提到 0ms——不影响 scrollHeight/clientHeight，故不改变本文件判据，只是穷举
+   清单里不能漏。
+
+   **`gap`（9px↔10px，:364）刻意不收进来**：它虽是 :364-365 众多切换属性里量最小的一个，但本质是
    布局属性（`.nd-card` 卡片档是 `flex-direction:column`，gap 直接贡献列方向内容高度）——今天恰好
    安全是因为 `flex-direction` 本身瞬切成 `row`，安全靠的是「两个属性同时切」这个巧合，不是机制。
    本屏刚放弃过「靠量级不等式判安全」这条路（见 NodesScreen.tsx 头注），这里不重蹈：gap 留在瞬切一侧，
    哪天 `flex-direction` 不再随 view 联动切换，它也不会变成第二个 F1。
 
-   **收窄后 view 切档不是纯瞬切、是混合过渡**：上面六个绘制层属性仍按 140ms 淡入淡出，只有几何属性
-   （min-height/padding/border-width/gap/flex-direction）瞬切——采样器①之所以单次采样即真值，是因为
-   `scrollHeight` 只吃后者，前者继续渐变不影响采样正确性，不代表「这条规则不再有过渡」。
+   **收窄后 view 切档不是纯瞬切、是混合过渡**：上面六个绘制层属性仍按 140ms 淡入淡出；几何属性
+   （min-height/padding/border-width/gap/flex-direction）从平滑动画变瞬切；`align-items`/
+   `border-style` 这两个离散属性则从「70ms 处突变」提前到「0ms 突变」（上面已单列，两者都不影响
+   scrollHeight）。采样器①之所以单次采样即真值，是因为 `scrollHeight` 只吃几何属性那一组，其余
+   两组（渐变中 / 提前突变）都不影响采样正确性，不代表「这条规则不再有过渡」。
 
    ⚠️ 本行改了不会立刻生效：prototype.css:682 有逐字同选择器的 `.nd-card{ transition:.14s }`（同特异性
    (0,1,0)），且是 index.css 的最后一个 @import ⇒ 同特异性后者胜，会把这里的收窄压回 `all`。真正生效的
-   收窄写在 index.css `.nd-card.confirming` 规则旁的覆盖层（该处有完整说明，含 :354-356 那圈 currentcolor
+   收窄写在 index.css `.nd-card.confirming` 规则旁的覆盖层（该处有完整说明，含 :364-366 那圈 currentcolor
    补丁）。
 
    `screens.css` 与 `prototype.css` 这两处的字面量分叉（`transition` 一份已收窄、一份仍是 `.14s`）是

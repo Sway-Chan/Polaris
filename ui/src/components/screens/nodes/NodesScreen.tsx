@@ -132,7 +132,7 @@ function warnMissingScroller(): void {
  *    读反了 `grid-auto-rows:1fr`：它的效果是**所有行等于全局最高卡**（prototype.css:679 自己的
  *    注释就写着「stretch+auto-rows:1fr=全卡跨行统一等高(全局最高卡)」），故总幅度 = **行数 × Δ**。
  *    k=60、N=4 ⇒ 15 行，一排 chip ≈ 20~25px ⇒ 300~375px，**直接跨过 240px 余量**。
- *    这行结论今天侥幸成立，靠的是 `.nd-card{min-height:141px}`（screens.css:96）这个地板把一排
+ *    这行结论今天侥幸成立，靠的是 `.nd-card{min-height:141px}`（screens.css:117）这个地板把一排
  *    chip 的自然高吃掉了 —— 而地板只在自然高 < 141px 时有效，原表从头到尾没提过它。
  *    更要命的是漏项：`selectedServerId`（点卡设为出口，本屏最高频动作）会把 `.nd-cur` chip 从 A 卡
  *    挪到 B 卡；A 卡若原本是唯一最高卡、且正因这颗 chip 排到 3 行，掉回 2 行 ⇒ 15 行各矮 ~23px
@@ -154,7 +154,7 @@ function warnMissingScroller(): void {
  *  ③ **委派 `transitionend` on `.main-scroll`** —— 覆盖**带 CSS 过渡的内容高度**变化，纯防御性保留。
  *     **2026-08-17 更新**：曾经在用的那一条（视图档切换的几何变化）已被收窄掉。`.nd-card` 的
  *     transition 原是无 property 限定的简写 `.14s`（⇒ `transition-property:all`），列表档把
- *     `min-height`/`padding`/`border-width`（screens.css:354-355）一并改掉 ⇒ 切档那一次，①量到的
+ *     `min-height`/`padding`/`border-width`（screens.css:364-365）一并改掉 ⇒ 切档那一次，①量到的
  *     是**过渡前**的卡高，而②只看容器盒子、内容变矮不改它 —— 那一维在两者之间是个洞，与侧栏那条
  *     High 同型。现在 `.nd-card` 的 transition 已收窄到六个「不参与盒模型」的绘制层属性（完整清单
  *     见 screens.css:61 注释），几何属性随切档瞬切 ⇒ scrollHeight 单次采样即是终值，`view` 这一维
@@ -177,13 +177,13 @@ function warnMissingScroller(): void {
  * 才收进来」，不是「只列 hover 用到的那几个」——首版漏了 `border-radius`（符合判据却被漏收）、
  * 且被 `outline` 简写不含的 `outline-offset` 摆了一道，复审后按判据重扫，收窄到六个属性：
  * `border-color`/`box-shadow`/`background`/`border-radius`/`outline`/`outline-offset`
- * （screens.css:104-107 + index.css 的收窄覆盖层——完整的选择器核对清单、`gap` 为何刻意不收进来，
+ * （screens.css:114-117 + index.css 的收窄覆盖层——完整的选择器核对清单、`gap` 为何刻意不收进来，
  * 都写在 screens.css:61 的姊妹注释里，此处不复述）。`screens.css` 那份声明单独存在不生效：
  * `prototype.css:682` 有逐字同选择器、同特异性的未收窄声明，且是 `index.css` 的最后一个 `@import`
  * ⇒ 同特异性后者胜，真正生效的是 index.css 覆盖层；两处 transition 取值必须逐字相等，
  * `style-invariants.test.ts` 有专门的门钉住。
  *
- * **F1（真实缺陷，已随本次收窄一并修）**：列表档 `border:0`/`border-bottom:0`（screens.css:355/356）
+ * **F1（真实缺陷，已随本次收窄一并修）**：列表档 `border:0`/`border-bottom:0`（screens.css:365/366）
  * 是简写，未提到的 border-*-color 会复位成 `currentcolor`（`.nd-card` 继承 body 的 `--fg`）。收窄让
  * `border-width` 瞬切、`border-color` 仍按 140ms 渐变 ⇒ 若不管，会在「切档」以及**更高频的**「滚动
  * 分批推进/搜索击键导致哪张卡是 `:last-child` 改变」两条路径上闪一道近黑/近白边框再淡到
@@ -219,8 +219,8 @@ function warnMissingScroller(): void {
  * | 延迟数值回填 | 内容：`.nd-lat` 是**条件渲染**（NodeCard:274），盒高 11px×1.5+4=20.5px > `.nd-name` 的 18.9px 行盒 ⇒ 首个结果到达时 `.nd-top` 涨 ~1.6px，再经 1fr 摊到每行 | ~1.6px × 行数 | 判成「0」（**当时写的是断言不是测量**） | ① 每次 commit |
  *
  * 两处「结论成立但理由写错了」的更正（Low-2，一并留档）：
- *  · 批选条不改卡高。旧理由（「`.nd-check` 是 absolute」）**对卡片档成立**（screens.css:139），
- *    但只覆盖卡片档 —— 列表档它是 `position:static; order:-1`（:365）在流内。列表档成立的理由是
+ *  · 批选条不改卡高。旧理由（「`.nd-check` 是 absolute」）**对卡片档成立**（screens.css:160），
+ *    但只覆盖卡片档 —— 列表档它是 `position:static; order:-1`（:375）在流内。列表档成立的理由是
  *    行高由 `.nd-acts` 里 27px 的 `.nd-a` 撑住，18~21px 的勾选框够不着。
  *  · 「延迟数值回填零高度变化」不成立，见上表该行。方向安全、量级也小，但那是断言不是测量值。
  * ════════════════════════════════════════════════════════════════════════════ */
@@ -606,7 +606,7 @@ export function NodesScreen() {
 
        曾经非它不可的那个案例已被消掉：`.nd-card` 原写的是 `transition:.14s`（简写、无 property
        限定 ⇒ `transition-property:all`），列表档把 `min-height`/`padding`/`border-width`
-       （screens.css:354-355）一并改掉 ⇒ 切视图档那一次，commit 后立刻量到的是**过渡前**的卡高。
+       （screens.css:364-365）一并改掉 ⇒ 切视图档那一次，commit 后立刻量到的是**过渡前**的卡高。
        现在 `.nd-card` 的 transition 已收窄到六个不参与盒模型的绘制层属性（border-color/box-shadow/
        background/border-radius/outline/outline-offset，完整清单见 screens.css:61）⇒ 几何属性随
        切档瞬切，采样器①单次采样即是终值——**但这六个属性本身仍按 140ms 渐变**，不是整条规则变
