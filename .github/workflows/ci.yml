@@ -178,14 +178,31 @@ jobs:
           dest="${tmp}/protoc-${PROTOC_VERSION}"
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 20 -o "$zip" \
             "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${asset}.zip"
-          # macOS runner 没有 GNU coreutils（无 sha256sum），退 shasum；两者 `-c` 的输入格式一致。
-          if command -v sha256sum >/dev/null 2>&1; then echo "${sha256}  ${zip}" | sha256sum -c -
-          else                                          echo "${sha256}  ${zip}" | shasum -a 256 -c -; fi
-          rm -rf "$dest"
-          # Git Bash 不带 unzip，Windows 镜像带 7-Zip；Linux/macOS 反之。两个都没有就红，不静默跳过。
-          if command -v unzip >/dev/null 2>&1; then unzip -q -o "$zip" -d "$dest"
-          elif command -v 7z >/dev/null 2>&1;   then 7z x -y -o"$dest" "$zip" >/dev/null
-          else echo "::error::neither unzip nor 7z available on ${RUNNER_OS}"; exit 1; fi
+          # 🔴 校验器与解压器**按平台写死，不做 `command -v` 探测**，并把实际用的工具打进日志 ——
+          # 判据与 `scripts/lib/extract-zip.mjs` 头注那条同名 🔴 一致：静默 fallback 会让
+          # 「unzip / sha256sum 其实不在」这个事实永远不被观测到，换 runner 镜像时原样复发，
+          # 且届时报错点已经漂到别处。写死之后缺了就当场 command not found 而红。
+          #
+          # ⚠️ Git Bash 是否自带 `sha256sum` **未经证实**（`extract-zip.mjs` 对 Git Bash 的
+          # `usr/bin` 用词同样是「未经证实」）。若 Windows 腿在此红，兜底是 `certutil -hashfile`。
+          if [ "$RUNNER_OS" = 'macOS' ]; then
+            echo 'hasher: shasum -a 256 (macOS 无 GNU coreutils)'
+            echo "${sha256}  ${zip}" | shasum -a 256 -c -
+          else
+            echo 'hasher: sha256sum'
+            echo "${sha256}  ${zip}" | sha256sum -c -
+          fi
+          rm -rf "$dest"; mkdir -p "$dest"
+          # Windows 走 System32 的 bsdtar 并写**绝对路径**：本步是 `shell: bash`，裸 `tar` 会解析成
+          # Git Bash 的 GNU tar（不认 zip）。仓内那三个 fetch step 没写 `shell:`、跑在 pwsh 下，
+          # 裸 `tar` 恰好是 System32 那份 —— 那个「恰好」不该被继承成隐性依赖。
+          if [ "$RUNNER_OS" = 'Windows' ]; then
+            echo 'extractor: /c/Windows/System32/tar.exe (bsdtar)'
+            /c/Windows/System32/tar.exe -xf "$(cygpath -w "$zip")" -C "$(cygpath -w "$dest")"
+          else
+            echo 'extractor: unzip'
+            unzip -q -o "$zip" -d "$dest"
+          fi
           chmod +x "$dest"/bin/*
           if [ "$RUNNER_OS" = 'Windows' ]; then cygpath -w "$dest/bin" >> "$GITHUB_PATH"
           else                                  echo "$dest/bin" >> "$GITHUB_PATH"; fi
@@ -200,6 +217,15 @@ jobs:
       # 代价说清楚：镜像那条腿去掉了，现在只有 www.nasm.us 一个源（本机实测那个 GitHub 镜像
       # 当时正好也在 429，拿不到字节 ⇒ 无法核对它的 sha256，不写未验证的常量进来）。
       # curl 带重试兜瞬时抖动；真下不来会红，不会静默跳过。
+      #
+      # 本步 **Windows-only**（`if: runner.os == 'Windows'`），所以校验器不写平台分支 ——
+      # 写了另一条也是死代码。别看着上面 protoc 步有 macOS 分支就以为这里漏了。
+      # 「Git Bash 是否自带 `sha256sum`」这条未证实的前提两步**共用**，不是各自独立的假设。
+      # 解压器与 protoc 步统一成同一个（System32 的 bsdtar，绝对路径），不用 `7z`：
+      # 两者都合乎「按平台写死」那条 🔴，但 `7z` 多押一个「它在 Git Bash 的 PATH 上」——
+      # runner 镜像清单只说装了 7zip、没说在不在 PATH（它对 Miniconda / MSYS2 才显式标注了
+      # 「不在 PATH」，对 7-Zip 的沉默是推断不是证据）。绝对路径把 PATH 这一维整个去掉，
+      # 于是 windows 腿（2x 计费）在「解压」这件事上只需要验证一个机制而不是两个。
       - name: Install NASM (Windows — pinned URL + sha256)
         if: runner.os == 'Windows'
         shell: bash
@@ -215,7 +241,9 @@ jobs:
           echo "${sha256}  ${zip}" | sha256sum -c -
           rm -rf "${tmp}/nasm-${NASM_VERSION}"
           # zip 内已带 `nasm-<ver>/` 顶层目录，解到 tmp 即得 `<tmp>/nasm-<ver>/nasm.exe`。
-          7z x -y -o"$tmp" "$zip" >/dev/null
+          # 落点是 `$tmp`（= RUNNER_TEMP，runner 保证存在），故不需要 protoc 步那句 `mkdir -p`。
+          echo 'extractor: /c/Windows/System32/tar.exe (bsdtar)'
+          /c/Windows/System32/tar.exe -xf "$(cygpath -w "$zip")" -C "$(cygpath -w "$tmp")"
           cygpath -w "${tmp}/nasm-${NASM_VERSION}" >> "$GITHUB_PATH"
           echo "NASM_EXPECT=${NASM_VERSION}" >> "$GITHUB_ENV"
 

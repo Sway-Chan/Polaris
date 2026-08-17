@@ -365,12 +365,28 @@ jobs:
           dest="${tmp}/protoc-${PROTOC_VERSION}"
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 20 -o "$zip" \
             "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${asset}.zip"
-          if command -v sha256sum >/dev/null 2>&1; then echo "${sha256}  ${zip}" | sha256sum -c -
-          else                                          echo "${sha256}  ${zip}" | shasum -a 256 -c -; fi
-          rm -rf "$dest"
-          if command -v unzip >/dev/null 2>&1; then unzip -q -o "$zip" -d "$dest"
-          elif command -v 7z >/dev/null 2>&1;   then 7z x -y -o"$dest" "$zip" >/dev/null
-          else echo "::error::neither unzip nor 7z available on ${RUNNER_OS}"; exit 1; fi
+          # 🔴 校验器与解压器**按平台写死，不做 `command -v` 探测**，并把实际用的工具打进日志 ——
+          # 判据与 `scripts/lib/extract-zip.mjs` 头注那条同名 🔴 一致：静默 fallback 会让
+          # 「unzip / sha256sum 其实不在」这个事实永远不被观测到，换 runner 镜像时原样复发。
+          # ⚠️ Git Bash 是否自带 `sha256sum` 未经证实；若 Windows 腿在此红，兜底 `certutil -hashfile`。
+          if [ "$RUNNER_OS" = 'macOS' ]; then
+            echo 'hasher: shasum -a 256 (macOS 无 GNU coreutils)'
+            echo "${sha256}  ${zip}" | shasum -a 256 -c -
+          else
+            echo 'hasher: sha256sum'
+            echo "${sha256}  ${zip}" | sha256sum -c -
+          fi
+          rm -rf "$dest"; mkdir -p "$dest"
+          # Windows 走 System32 的 bsdtar 并写**绝对路径**：本步是 `shell: bash`，裸 `tar` 会解析成
+          # Git Bash 的 GNU tar（不认 zip）。仓内那三个 fetch step 跑在 pwsh 下，裸 `tar` 恰好是
+          # System32 那份 —— 那个「恰好」不该被继承成隐性依赖。
+          if [ "$RUNNER_OS" = 'Windows' ]; then
+            echo 'extractor: /c/Windows/System32/tar.exe (bsdtar)'
+            /c/Windows/System32/tar.exe -xf "$(cygpath -w "$zip")" -C "$(cygpath -w "$dest")"
+          else
+            echo 'extractor: unzip'
+            unzip -q -o "$zip" -d "$dest"
+          fi
           chmod +x "$dest"/bin/*
           if [ "$RUNNER_OS" = 'Windows' ]; then cygpath -w "$dest/bin" >> "$GITHUB_PATH"
           else                                  echo "$dest/bin" >> "$GITHUB_PATH"; fi
@@ -390,7 +406,11 @@ jobs:
             "https://www.nasm.us/pub/nasm/releasebuilds/${NASM_VERSION}/win64/nasm-${NASM_VERSION}-win64.zip"
           echo "${sha256}  ${zip}" | sha256sum -c -
           rm -rf "${tmp}/nasm-${NASM_VERSION}"
-          7z x -y -o"$tmp" "$zip" >/dev/null
+          # 本步 Windows-only，故校验器不写平台分支（写了另一条也是死代码）；解压器与 protoc 步
+          # 统一成 System32 的 bsdtar、绝对路径，不用 `7z`——理由（少押一个「7z 在 Git Bash 的
+          # PATH 上」）写在 `ci.yml` 同名步骤上方。落点是 RUNNER_TEMP，故无需 `mkdir -p`。
+          echo 'extractor: /c/Windows/System32/tar.exe (bsdtar)'
+          /c/Windows/System32/tar.exe -xf "$(cygpath -w "$zip")" -C "$(cygpath -w "$tmp")"
           cygpath -w "${tmp}/nasm-${NASM_VERSION}" >> "$GITHUB_PATH"
           echo "NASM_EXPECT=${NASM_VERSION}" >> "$GITHUB_ENV"
 

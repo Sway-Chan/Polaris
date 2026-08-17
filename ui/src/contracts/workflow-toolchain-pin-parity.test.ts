@@ -114,6 +114,22 @@ describe('CI 工具链钉扎常量跨 workflow 对拍', () => {
     ).toBe(true);
   });
 
+  // `scripts/lib/extract-zip.mjs` 头注那条 🔴：解压器/校验器**按平台写死，不写「先试 A 失败退 B」**
+  // —— 静默 fallback 会让「A 其实不在」永远不被观测到，换 runner 镜像时原样复发且报错点已漂走。
+  // 这两步第一版正是写成了 `command -v` 探测（2026-08-17 复审时改掉），本条守它不回潮。
+  // 只钉这三个**探测**形态：断言步里的 `command -v protoc` / `command -v nasm` 是**报告**用哪个
+  // 二进制、不做分支，属于要保留的东西，故不在射程内。
+  it.each(WORKFLOWS)('%s 的装配步不靠 `command -v` 探测选工具', (workflow) => {
+    const src = sources[workflow];
+    for (const probe of ['command -v unzip', 'command -v 7z', 'command -v sha256sum']) {
+      expect(
+        src.includes(probe),
+        `${workflow} 出现了 \`${probe}\` —— 工具选择又变成了静默 fallback，` +
+          `见 scripts/lib/extract-zip.mjs 头注那条 🔴：判据要按平台写死并把实际用的工具打进日志`,
+      ).toBe(false);
+    }
+  });
+
   it.each(WORKFLOWS)('%s 装完仍断言 PATH 上解析到的就是钉扎的那份', (workflow) => {
     const src = sources[workflow];
     // 匹配断言里**真正的比较**，不是步骤名：只 grep 步骤名的话，把 run 块掏空、名字留着照样绿。
