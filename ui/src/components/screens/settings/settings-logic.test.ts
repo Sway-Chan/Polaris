@@ -1092,6 +1092,82 @@ function stripTsComments(file: string, raw: string): string {
 }
 
 /**
+ * 把字符串字面量 / 模板串 / JSX 文本抹成空格（保留换行与偏移，与 [`stripTsComments`] 同一手法）。
+ *
+ * # 为什么标识符扫描前必须先剥它
+ *
+ * 「屏上读了哪些 state」是靠扫标识符判的，而 CSS 类名 / `data-*` 值 / i18n key 段里出现同名词
+ * 是**高概率**事件 —— 本组件里 `progress` / `staged` / `us` / `cus` 都是碰撞词。实测：
+ * `className="us-state progress-note"` 会让对偶门报「manual 屏渲染了 `progress`」。方向虽安全
+ * （误红不是漏），但**诊断是假的**，而它暗示的修法（去 `settleInstall` 里把 `progress` 也钉上）
+ * 是一次真回归。假诊断比漏报更贵：它会把人骗去改对的代码。
+ */
+function stripTsStrings(file: string, raw: string): string {
+  const sf = ts.createSourceFile(file, raw, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const out = [...raw];
+  const blank = (pos: number, end: number) => {
+    for (let i = pos; i < end; i++) if (out[i] !== '\n') out[i] = ' ';
+  };
+  const walk = (n: ts.Node) => {
+    if (
+      ts.isStringLiteral(n) ||
+      ts.isNoSubstitutionTemplateLiteral(n) ||
+      ts.isTemplateHead(n) ||
+      ts.isTemplateMiddle(n) ||
+      ts.isTemplateTail(n) ||
+      ts.isJsxText(n)
+    ) {
+      blank(n.getStart(sf), n.getEnd());
+      return;
+    }
+    for (const c of n.getChildren(sf)) walk(c);
+  };
+  walk(sf);
+  return out.join('');
+}
+
+/**
+ * 组件里每个 `const <名> = <初始化式>` 的**标识符依赖**（经 TS parser 取 `VariableDeclaration`
+ * 的 initializer，不是按 `;` 切行）。数组解构（`const [x, setX] = useState(...)`）不入表。
+ *
+ * # 为什么不能用 `^ {2}const (\w+) = ([^;]*);$` 那种正则
+ *
+ * 前身就是那么写的，两个方向都漏（2026-08-17 实测，均为**静默全绿**）：
+ *  - 初始化式里含行内 `;`（`useMemo(() => { …; … })` / block-body 箭头）⇒ 整条不匹配，
+ *    该派生量**根本没进表** —— 连「一层」都没覆盖全；
+ *  - 多行初始化式同理不匹配。
+ * 换 parser 之后这两类都进表。
+ *
+ * 属性名不算依赖（`a.progress` 里的 `progress` 是字段名不是 state），故遇 `PropertyAccessExpression`
+ * 只收 `.expression` 那一侧。
+ */
+function constDeps(file: string, raw: string): Map<string, Set<string>> {
+  const sf = ts.createSourceFile(file, raw, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const deps = new Map<string, Set<string>>();
+  const collect = (node: ts.Node, into: Set<string>) => {
+    if (ts.isPropertyAccessExpression(node)) {
+      collect(node.expression, into);
+      return;
+    }
+    if (ts.isIdentifier(node)) {
+      into.add(node.text);
+      return;
+    }
+    node.forEachChild((c) => collect(c, into));
+  };
+  const walk = (n: ts.Node) => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer) {
+      const ids = new Set<string>();
+      collect(n.initializer, ids);
+      deps.set(n.name.text, ids);
+    }
+    n.forEachChild(walk);
+  };
+  walk(sf);
+  return deps;
+}
+
+/**
  * 单个组件文件的取材器（缺省 `SettingsUpdate.tsx`）：读盘 → [`stripTsComments`] → 三条自检。
  *
  * 自检存在的理由与判据本身同等重要：路径漂走 / 剥过头都会让下游断言在**空串**上「恰好」通过 =
@@ -1140,16 +1216,34 @@ async function readTsx(rel = 'SettingsUpdate.tsx') {
  * 刚在同一形态上栽过一次（剥除表扫描面的切点漂移），这里是它的姊妹实现。
  *
  * `\n        )}`（8 空格）是这几个态屏统一的收尾形状，嵌套的 `)}` 缩进更深、不会误命中。
+ *
+ * # 收尾封顶是**必需**的，不是「两个里取先到的那个」
+ *
+ * 前身写成 `bounds = [nextUs, close].filter(i => i > -1)` + `bounds.length > 0`：needle 一旦漂
+ * （缩进变了、收尾形状变了），只有**最后一屏**会 fail-loud，其余四屏**静默回退**到 `nextUs`
+ * 旧边界照常绿 —— 也就是说这条守卫今天有效只因为 `error` 恰好排在最后。在它之后再加一屏，
+ * needle 漂移就变成全静默，刚修好的过切在「新的最后一屏」上原样复活。故对**每一屏**都要求
+ * 收尾锚点存在。（本仓无 prettier / eslint、CI 也不跑格式化 ⇒ 缩进只会被人为改动，概率低，
+ * 但判据该怎么写与触发概率无关。）
  */
-function stateBlock(src: string, state: string): string {
+function stateBlockSpan(src: string, state: string): [number, number] {
   const start = src.indexOf(`{us === '${state}'`);
   expect(start, `SettingsUpdate 里找不到 ${state} 态分支`).toBeGreaterThan(-1);
   const rest = src.slice(start + 1);
-  const bounds = [rest.indexOf('{us === '), rest.indexOf('\n        )}')].filter((i) => i > -1);
-  expect(bounds.length, `${state} 态分支切不出封顶 —— 取材器已失效`).toBeGreaterThan(0);
-  const block = rest.slice(0, Math.min(...bounds));
-  expect(block.length, `${state} 态分支取材为空`).toBeGreaterThan(200);
-  return block;
+  const closeAt = rest.indexOf('\n        )}');
+  expect(
+    closeAt,
+    `${state} 态分支切不出**自己的**收尾 \`)}\` —— 取材器已失效（收尾形状 / 缩进变了？）`,
+  ).toBeGreaterThan(-1);
+  const nextUs = rest.indexOf('{us === ');
+  const end = nextUs === -1 ? closeAt : Math.min(nextUs, closeAt);
+  expect(end, `${state} 态分支取材为空`).toBeGreaterThan(200);
+  return [start + 1, start + 1 + end];
+}
+
+function stateBlock(src: string, state: string): string {
+  const [a, b] = stateBlockSpan(src, state);
+  return src.slice(a, b);
 }
 
 describe('无摘要明示：接线面 + 五语文案', () => {
@@ -1562,19 +1656,28 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
    *
    * # 判据的射程（**如实登记，别读成「拦得住任何人」**）
    *
-   * 下面②读点计数的射程分两半，强弱不同：
+   * 三样随行事实，强弱不同，判据也不同形：
    *
-   *  - **落位路径这一半守得住**：`downloadedPath` 在**整个组件**里只许被读一处（取快照那一行）。
-   *    复审给的那个绕法 —— 在组件作用域另开一个 `liveSubject()` 工厂读页面态、三条终态腿都传它
-   *    —— 会让这个计数变 2，当场红。
-   *  - **清单这一半守不住**：`updateInfo` 在组件里有一堆正当读点（`available` 那一屏、
-   *    `skipVersion`、`downloadUpdate`、`releaseShipsDigest` 的入参……），无从按计数封顶。
+   *  - **落位路径**：②b 是**位置**判据 —— `downloadedPath` 的**每一次**出现都必须落在
+   *    「`useState` 声明那一行」或「取快照那条语句」的字节区间内。把那个读点**搬进**组件作用域的
+   *    helper（`const livePath = () => downloadedPath ?? '';`）再在 `catch` 腿调它，位置当场出界
+   *    ⇒ 红。
+   *
+   *    ⚠️ **计数在这里是假判据，别退回去**：2026-08-17 实测，把内联读点**搬进** helper（不是
+   *    另加）后 `downloadedPath` 的文本出现次数一动不动（仍是 2），而调用点从 1 变成任意多、且
+   *    可落在任意 await 之后 —— 缺陷完整复现，全量 2675 全绿。文本计数数的是「名字出现几次」，
+   *    不是「什么时候读」。
+   *
+   *  - **清单与摘要结论**：**守不住，今天没有门**。`updateInfo` / `downloadIntegrity` 在组件里
+   *    有一堆正当读点（`available` 那一屏、`skipVersion`、`downloadUpdate`、`releaseShipsDigest`
+   *    的入参、`downloadUnverified` 的派生……），既封不了计数、也划不出「只许在这两个区间」。
    *    于是「把 await 之后那段抽成 `finishInstall(r)` 再在里面读 `updateInfo`」这类**一层间接**
-   *    仍能出界，而 `tsc` 与全量都绿。
+   *    仍能出界，而 `tsc` 与全量都绿。下游只有④⑤与对偶门兜底，而它们守的是「终态一律经
+   *    `settleInstall`」与「主语的字段都被回填」，**守不住「主语里装的是谁」**。
    *
-   * 真要关上清单那一半，得让「主语从哪来」变成**类型问题** —— 把 `installUpdate` 整体挪出组件、
-   * 主语作必填入参，同模块内任何函数都能读组件 state，brand 字段之类的伪加固挡不住。那是独立
-   * 一批的改动量。**本门今天守的是：字面函数体内不再读页面态 + 路径读点全组件唯一**，别多读。
+   * 真要关上那两半，得让「主语从哪来」变成**类型问题** —— 把 `installUpdate` 整体挪出组件、主语
+   * 作必填入参；同模块内任何函数都能读组件 state，brand 字段之类的伪加固挡不住。那是独立一批的
+   * 改动量。**本门今天守的是：字面函数体内不再读页面态 + 路径读点的位置受限**，别多读。
    *
    * # ①为什么不判「快照那一行长什么样」
    *
@@ -1602,19 +1705,29 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
     const body = cut('async function installUpdate(', 'async function runCoreOp(');
     expect(body.length, 'installUpdate 取材为空').toBeGreaterThan(400);
 
-    // ① **结构性**判据：快照必须落在第一个 await 之前。形状怎么写随意（见头注）。
+    // ① **结构性**判据：整条快照语句必须**结束**在第一个 await 之前。形状怎么写随意（见头注）。
+    //
+    //    与语句**开头**比是不够的：把 await 内联进快照对象里
+    //    （`path: (await Promise.resolve(downloadedPath)) ?? ''`）时 `firstAwait` 落在快照
+    //    **内部**，开头比法仍成立，而 `info` / `integrity` 是在那个真实挂起点**之后**才读的 ——
+    //    错位窗口原样打开。path 将来要异步规范化时，内联进那个字面量正是最自然的写法。
     const snapAt = body.search(/const subj: InstallSubject =/);
     const firstAwait = body.search(/\bawait\b/);
     expect(snapAt, 'installUpdate 里找不到主语快照 —— 跨 await 的错位会回来').toBeGreaterThan(-1);
     expect(firstAwait, 'installUpdate 里一个 await 都没有？取材器失效').toBeGreaterThan(-1);
+    // 切不出收尾时**报真原因**：前身直接 `slice(snapAt, -1)`，`indexOf` 返回 -1 会让 snapExpr
+    // 变成整个函数体尾巴，而下游只被 `snapshotted.length > 1` 偶然接住、诊断还说「取材器失效」。
+    const snapEnd = body.indexOf('};', snapAt);
+    expect(snapEnd, '快照语句切不出收尾 `};` —— 取材器失效（快照写法变了？）').toBeGreaterThan(snapAt);
     expect(
-      snapAt,
-      '主语快照排在第一个 await 之后 —— 那时页面态可能已经被外部腿换成另一份包了',
-    ).toBeLessThan(firstAwait);
+      firstAwait,
+      '第一个 await 落在主语快照语句之内或之前 —— 快照里那几样事实不是在同一时刻读到的，' +
+        '错位窗口照样开着',
+    ).toBeGreaterThan(snapEnd);
 
-    // ② 之后**不得再读**页面态：快照那一行读了哪几个 state，就逐个断言它们在函数体里只出现一次。
+    // ② 之后**不得再读**页面态：快照那条语句读了哪几个 state，就逐个断言它们在函数体里只出现一次。
     //    被查的名单**从快照表达式里反推**，不是手抄：主语将来多快照一个 state，本条自动跟着长。
-    const snapExpr = body.slice(snapAt, body.indexOf('};', snapAt));
+    const snapExpr = body.slice(snapAt, snapEnd);
     const stateNames = new Set(
       [...src.matchAll(/const \[(\w+), set\w+\] = useState/g)].map((m) => m[1]),
     );
@@ -1631,15 +1744,28 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
           '再读一次就会拿到 await 期间被外部腿换掉的另一份包',
       ).toBe(1);
     }
-    // ②b 落位路径这一半再收一道**全组件**的封顶：它今天只有取快照那一个读点，故按计数封得住。
-    //     这一条正是「在组件作用域另开一个工厂读页面态」那种一层间接绕法的拦截点。
-    //     清单那一半封不住（正当读点一堆），射程见头注，别把本条读成两半都守住了。
-    const pathReads = (src.match(/\bdownloadedPath\b/g) ?? []).length;
-    expect(
-      pathReads,
-      `downloadedPath 在组件里出现 ${pathReads} 次 —— 只许有「useState 声明 + 取快照」两处；` +
-        '多出来的那处（哪怕包在另一个函数里）就是在 await 窗口外重新读页面态',
-    ).toBe(2);
+    // ②b 落位路径这一半：**位置**判据（不是计数 —— 计数被实测证伪，成因见头注）。
+    //     `downloadedPath` 的每一次出现都必须落在「useState 声明那一行」或「取快照那条语句」
+    //     的字节区间内；包进任何别的函数（哪怕是同组件作用域的 helper）都当场出界。
+    //     清单与摘要结论那两半没有对应的门，射程见头注，别把本条读成三半都守住了。
+    const declAt = src.search(/const \[downloadedPath, setDownloadedPath\] = useState/);
+    expect(declAt, '找不到 downloadedPath 的 useState 声明 —— 取材器失效').toBeGreaterThan(-1);
+    const installAt = src.indexOf('async function installUpdate(');
+    const allowed: ReadonlyArray<readonly [number, number]> = [
+      [declAt, src.indexOf('\n', declAt)], // useState 声明那一行
+      [installAt + snapAt, installAt + snapEnd], // 取快照那条语句
+    ];
+    const pathReads = [...src.matchAll(/\bdownloadedPath\b/g)];
+    // 取材自检：一处都扫不到时下面的循环 0 次断言而「恰好」全绿。
+    expect(pathReads.length, 'downloadedPath 一处都没扫到 —— 取材器失效').toBeGreaterThan(1);
+    for (const m of pathReads) {
+      const at = m.index ?? -1;
+      expect(
+        allowed.some(([a, b]) => at >= a && at <= b),
+        `downloadedPath 在偏移 ${at} 处被读，而那里既不是 useState 声明也不是取快照那条语句 —— ` +
+          '搬进组件作用域的 helper 再在 await 之后调它，文本计数一动不动，错位窗口却原样打开',
+      ).toBe(true);
+    }
 
     // ③ 确认框回来时沿用**同一个**快照，不是重新读页面（那正是第二个、分钟级的窗口）。
     expect(
@@ -1695,9 +1821,17 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
    * 这么漏的：manual 卡把「这份包未经摘要校验」的明示整块吞掉（漏报），反向则凭空造一条警告。
    *
    * 判据两侧都不点名：**落地哪些态**从 `settleInstall(<态>, …)` 的实参反推，**屏上读了哪些事实**
-   * 从那些态的 JSX 块里扫标识符、再经组件作用域的一层派生（`const downloadUnverified =
-   * downloadIntegrity === …`）解析回 state。新增一个态、或在这些屏上新渲染一个 state，
-   * 都会自己长进射程。
+   * 从那些态的 JSX 块里扫标识符、再经组件作用域的 const 依赖图做**不动点展开**解析回 state
+   * （`downloadUnverified` → `downloadIntegrity`；多层同理）。新增一个态、或在这些屏上新渲染一个
+   * state / 派生量，都会自己长进射程。
+   *
+   * # 射程边界（如实登记）
+   *
+   *  - **只覆盖 `const` 派生量，不覆盖 `function` 声明**：`downloadUpdate` / `checkUpdate` 这类
+   *    事件处理器内部读的 state **不算**「屏上渲染的事实」——它们在点击时才执行，那时读到最新值
+   *    正是对的。把它们算进来会把 `onClick={downloadUpdate}` 变成一堆误红。
+   *  - 依赖图按**标识符**建，不做作用域分析：同名的局部变量与组件 state 会被混为一谈。今天组件
+   *    内无重名，故不可达；真出现重名时方向是**误红**（多算一条依赖），不是漏。
    *
    * **变异探针**：从 `settleInstall` 里删掉 `setDownloadIntegrity(subject.integrity)` ⇒ 转红
    * （`downloadUnverified` 解析回 `downloadIntegrity`，不在被钉住的集合里）。
@@ -1720,34 +1854,53 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
     );
     expect(pinned.size, 'settleInstall 一个 state 都没写 —— 取材器失效').toBeGreaterThan(3);
 
-    // 组件作用域的一层派生：`const X = <含某些 state 的表达式>;`
-    const derived = new Map(
-      [...src.matchAll(/^ {2}const (\w+) = ([^;]*);$/gm)].map(([, name, expr]) => [
-        name,
-        [...new Set([...expr.matchAll(/\b(\w+)\b/g)].map((m) => m[1]))].filter((n) =>
-          [...stateOfSetter.values()].includes(n),
-        ),
-      ]),
-    );
+    const stateNames = new Set(stateOfSetter.values());
+    // const 依赖图（经 parser，不是按 `;` 切行 —— 成因见 `constDeps` 头注）+ 不动点展开：
+    // `const b = a; const a = <state>` 这种多层派生也解析得回去。
+    const deps = constDeps('SettingsUpdate.tsx', src);
+    expect(deps.size, '一个 const 都没解析到 —— 取材器失效').toBeGreaterThan(10);
+    const stateDepsOf = (name: string): Set<string> => {
+      const out = new Set<string>();
+      const seen = new Set<string>();
+      const visit = (n: string) => {
+        if (seen.has(n)) return;
+        seen.add(n);
+        for (const d of deps.get(n) ?? []) {
+          if (stateNames.has(d)) out.add(d);
+          else visit(d);
+        }
+      };
+      visit(name);
+      return out;
+    };
 
     // 落地哪些态 —— 从 settleInstall 的调用实参反推，不点名。
     const landed = [...new Set([...src.matchAll(/settleInstall\(\s*'(\w+)'/g)].map((m) => m[1]))];
     expect(landed.sort(), 'settleInstall 落地的态解析不到 —— 取材器失效').toEqual(['error', 'manual']);
 
+    // 扫标识符前先抹掉字符串字面量：CSS 类名 / `data-*` / i18n key 段里撞 state 名会造出**假诊断**
+    // （成因与实测见 `stripTsStrings` 头注）。块边界仍按未抹的 `src` 算，抹字符串保偏移故可同址切。
+    const srcNoStr = stripTsStrings('SettingsUpdate.tsx', src);
     for (const state of landed) {
-      const block = stateBlock(src, state);
+      const [a, b] = stateBlockSpan(src, state);
+      const block = srcNoStr.slice(a, b);
       const idents = new Set([...block.matchAll(/\b(\w+)\b/g)].map((m) => m[1]));
+      // 取材自检：抹字符串抹过头会让这里空掉，下面 0 次断言而「恰好」全绿。
+      expect(idents.has('updateInfo'), `${state} 屏扫不到 updateInfo —— 取材器失效`).toBe(true);
       for (const id of idents) {
-        // 屏上直接读的 state：必须被钉住。
-        if (stateOfSetter.has(`set${id[0].toUpperCase()}${id.slice(1)}`)) {
+        // 屏上直接读的 state：必须被钉住。判据用 `stateNames.has(id)`，**不是**从 id 反推 setter
+        // 名 —— 声明写成 `[downloadIntegrity, setIntegrity]`（setter 名与 state 名不同源）时，
+        // 反推法会让那个 state 对本支完全隐形，却仍留在 `pinned` 里 ⇒ 静默绿。
+        if (stateNames.has(id)) {
           expect(
             pinned.has(id),
             `${state} 屏渲染了 \`${id}\`，而 settleInstall 不钉它 —— 拉回态时它还留着` +
               '别人（外部腿刚落位那份包）的值',
           ).toBe(true);
+          continue;
         }
-        // 屏上读的派生量：它依赖的 state 必须被钉住。
-        for (const dep of derived.get(id) ?? []) {
+        // 屏上读的派生量：它（经不动点展开后）依赖的 state 必须被钉住。
+        for (const dep of stateDepsOf(id)) {
           expect(
             pinned.has(dep),
             `${state} 屏渲染了 \`${id}\`（派生自 \`${dep}\`），而 settleInstall 不钉 \`${dep}\``,
