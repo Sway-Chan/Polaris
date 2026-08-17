@@ -89,6 +89,31 @@
 //! 3. `en-US` 也缺 → 返回**键名本身**（`native.allFiles` 这样的裸串），显式坏相、不静默显示
 //!    别的语言。这一档不该发生：本文件的键覆盖门（`every_declared_key_resolves_in_all_five_locales`）
 //!    与 `locale-parity.test.ts` 会先转红。口径与 `ui/src/i18n/auxiliary.ts` 逐条相同。
+//!
+//! ══ ⚠️ 本门射程之外的用户可见出口（**显式待办**，2026-08-17 登记）══
+//!
+//! **门绿 ≠ 全仓没有硬编码文案。** 下方 `tests::SINKS` 只枚举了 10 个**原生**出口
+//! （对话框 / 菜单 / tooltip / 通知）。用户可见的文案还有第二条路：Rust 侧构造中文串 → 经 IPC
+//! 递给前端 → 前端**原样显示**。这条路一个字都不在 `no_hardcoded_cjk_in_user_facing_native_sinks`
+//! 的射程里，故那条门恒绿也说明不了这两个出口的情况。
+//!
+//! 两个已知出口（**刻意不加进 `SINKS`**：全仓命中量级在数百条，加进去会让门当场大面积转红，
+//! 属独立批次的工作量。此处如实登记，不假装不存在）：
+//!
+//! | 出口 | 载荷 | 显示点 |
+//! |---|---|---|
+//! | `commands/updater.rs::emit_progress(app, "error", _, msg)` | `update:progress` 事件的 `error` 字段 | `SettingsUpdate.tsx` 的 `setErrMsg(p.error ?? …)`；同一份真值经 `popup_state_for` 镜像进 mini 更新弹窗的 error 态 |
+//! | `response::ApiResponse::err(msg)` / `err_with_code(msg, _)` | 响应信封的 `msg` | 前端 `ipc-client.ts` 抛 `IpcError(msg)`，各调用点多以 `e.message` 直接落进 toast / 错误行 |
+//!
+//! 后果是具体的：俄语/波斯语用户在更新失败时看到的是**俄语按钮 + 整段中文正文**
+//! （如「更新包校验失败（可能被截断或篡改）: expected …」）。
+//!
+//! 为什么不在本批一起改：改造要动 `update:progress` 的**载荷契约**（`error: string` →
+//! 结构化 `{code, params}`，否则前端无从翻译）、两个显示点、以及五份 locale。那是一次跨
+//! Rust/TS 契约的改动，与「把一条文案搬进 JSON」不是同一量级。规模估算见交接单
+//! （U3 批次），不在本模块内展开。
+//!
+//! 本节的存在本身就是判据：谁要把这两个 sink 加进 `SINKS`，先读这一节再决定批次边界。
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
