@@ -766,12 +766,18 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
                     一份正式包。`downloadedPath` 的**唯一**写点是 `downloadUpdate` 的成功分支
                     （外部广播那条腿从不设它）⇒ 它为真说明本页下载过**某个**包。
 
-                    ⚠️ 「那个包就是当前 `updateInfo` 描述的这个」还靠**第二条、非局部**的不变量：
-                    `setUpdateInfo` 只在 `checkUpdate()` 里执行，而「检查更新」按钮只挂在
-                    `us === 'idle'` 那一格、且从 `downloaded`/`manual` 回不到 `idle` ⇒ 每次写
-                    `updateInfo` 时 `downloadedPath` 必为 null。**给本卡加任何「重新检查」入口都会
-                    破坏它**（旧正式包路径 + 新查到的 beta 同时在手 ⇒ 徽标贴回外部腿下的正式包，
-                    而守这条的门拦不住）。真要加，同时清 `downloadedPath`，或直接走 W5 的正解。
+                    ⚠️ 「那个包就是当前 `updateInfo` 描述的这个」还靠**第二条、非局部**的不变量，
+                    写成状态无关的蕴含式：**`us === 'idle'` ⟹ `downloadedPath === null`**
+                    （写 path 的唯一点之后 `us` 恒非 idle；进入 idle 的两个入口都来自 path 为 null
+                    的态）。而 `setUpdateInfo` 只在 `checkUpdate()` 里执行、「检查更新」按钮只挂在
+                    idle 那一格 ⇒ 每次写 `updateInfo` 时 `downloadedPath` 必为 null。
+
+                    **不按「哪些态回不到 idle」枚举**：那样警告面会短于射程 —— `error` 同样可能带着
+                    非空 path（外部腿广播 error 只置 `us`、不清 path），而「下载失败 → 给个重新检查」
+                    比「已下载 → 重新检查」更自然，恰好落在枚举之外。射程是**任何**新增的
+                    `setUs('idle')` 与**任何**新增的 `checkUpdate()` 入口，不限于本卡：破坏它 ⇒ 旧正式
+                    包路径 + 新查到的 beta 同时在手 ⇒ 徽标贴回外部腿下的正式包，而守这条的门拦不住。
+                    真要加，随入口一起清 `downloadedPath`，或直接走 W5 的正解。
 
                     代价是外部腿下的包不显示徽标（**漏报，方向安全**）——正解是让那条腿把随行事实
                     随事件带过来，属 W5 射程；本处只负责不说假话。**版本号那半仍未修**：本卡的

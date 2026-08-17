@@ -1242,8 +1242,14 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
     // （徽标 + 下面的 `prereleaseNote` 说明），只判「有没有这个开头」会被**说明那条**喂饱 ——
     // 给徽标也加上 `downloadedPath &&` 时本条照样绿。这与 Rust 侧「别的臂替本臂作证」同形，
     // 换到了 JSX 上。
+    //
+    // `\??` 与 `\s*` 两轴与 sibling（上一条门）对齐：把这里规范成 `updateInfo?.isPrerelease`
+    // 纯属风格统一，不该让本门红而 sibling 绿、消息还说「被多加了资格判据」—— 那是在与意图无关的
+    // 轴上更严。放宽零削弱：`\{` 紧接 `updateInfo` 已经排除任何前置资格判据。
     expect(
-      /\{updateInfo\.isPrerelease && \([\s\S]{0,240}?prereleaseTag/.test(stateBlock(src, 'available')),
+      /\{updateInfo\??\.isPrerelease\s*&&\s*\([\s\S]{0,240}?prereleaseTag/.test(
+        stateBlock(src, 'available'),
+      ),
       'available 态的徽标被多加了资格判据 —— 那一屏的 updateInfo 本来就是本页查的，加了等于徽标消失',
     ).toBe(true);
     // 反向：绝不能回到「清空 updateInfo」那条路（会让 error 态的「重试」变哑键）。

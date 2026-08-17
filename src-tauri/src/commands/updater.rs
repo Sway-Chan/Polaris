@@ -459,15 +459,29 @@ pub(crate) fn is_portable_layout(exe_path: &std::path::Path) -> bool {
 /// `downloadedPath` 之所以等价于「盘上这份是本页下的」，靠**两条**不变量，缺一不可：
 ///  1. 唯一写点是本页 `downloadUpdate` 的成功分支（外部广播那条腿从不设它）⇒ 它为真说明本页
 ///     下载过**某个**包；
-///  2. **它与当前 `updateInfo` 描述的是同一个包** —— 这条是**非局部**的：`setUpdateInfo` 只在
-///     `checkUpdate()` 里执行，而「检查更新」按钮只挂在 `us === 'idle'` 那一格，且从
-///     `downloaded` / `manual` 回不到 `idle` ⇒ 每次写 `updateInfo` 时 `downloadedPath` 必为 `null`。
+///  2. **它与当前 `updateInfo` 描述的是同一个包** —— 这条是**非局部**的，写成状态无关的蕴含式：
 ///
-/// ⚠️ **第 2 条一旦被破坏，误报立刻复活，而守它的那道门拦不住**：典型是给 `downloaded` 卡加一个
-/// 「重新检查」按钮（很自然的 UX 增补）—— 旧的正式包路径 + 新查到的 beta 同时在手，徽标又会贴回
-/// 外部腿下的那份正式包。加这类入口时，要么同时清 `downloadedPath`，要么改走 W5 的正解。
-/// **本批刻意不在 `checkUpdate()` 首行清 `downloadedPath`**：那会让「下完 v1.2.0 → 再点检查更新」
-/// 丢掉已下载包的安装入口 —— 拿一个真实的用户可见退化去换一个假想中的未来缺陷。
+///     > **`us === 'idle'` ⟹ `downloadedPath === null`**
+///
+///     （写 `downloadedPath` 的唯一点在 `downloadUpdate` 成功分支，其后 `us` 恒非 idle；而进入
+///     idle 的两个入口都来自 `downloadedPath` 为 null 的态。）而 `setUpdateInfo` 只在
+///     `checkUpdate()` 里执行、「检查更新」按钮只挂在 idle 那一格 ⇒ 每次写 `updateInfo` 时
+///     `downloadedPath` 必为 `null`。
+///
+///     **刻意不按「哪些态回不到 idle」来枚举**：那样写的警告面会短于它要守的范围 —— 除
+///     `downloaded` / `manual` 外，`error` 同样可能带着非空 `downloadedPath`（外部腿广播
+///     `error` 只置 `us`、不清 path），而「下载失败 → 给个重新检查」比「已下载 → 重新检查」是
+///     **更自然**的增补，恰好落在枚举式警告面之外。
+///
+/// ⚠️ **第 2 条一旦被破坏，误报立刻复活，而守它的那道门拦不住**：旧的正式包路径 + 新查到的 beta
+/// 同时在手，徽标又会贴回外部腿下的那份正式包。射程是**任何**新增的 `setUs('idle')` 与**任何**
+/// 新增的 `checkUpdate()` 入口（不限于某张卡），加的时候要么随入口一起清 `downloadedPath`，
+/// 要么改走 W5 的正解。
+///
+/// **今天在 `checkUpdate()` 首行清 `downloadedPath` 是恒等 no-op**（由上面那条蕴含式直接得出：
+/// 能点到「检查更新」时 path 必已为 null），故本批不清它**纯粹是不做无用功**，不是权衡取舍。
+/// 只有真加了「重新检查」入口之后，清 path 才开始有代价（丢掉已下载包的安装入口）—— 届时正确
+/// 做法仍是随入口一起清、或走 W5，而**不是**以「清了有代价」为由不清。
 ///
 /// **止血刻意选「收窄断言」而不是「清空 `updateInfo`」**：后者看着更彻底，实则会让 `us === 'error'`
 /// 那格的「重试」（该分支唯一按钮，直通 `downloadUpdate` 首行 `if (!updateInfo) return`）变成哑键，
@@ -4916,6 +4930,12 @@ mod tests {
         // 位置判据 + 计数判据合起来才闭合：位置判据挡「臂被搬走」，计数判据挡「某一臂的调用被删」
         // （ViewLog 与 ManualDownload 各一处，两者都得在）。单用计数挡不住「两处都在同一臂里」，
         // 单用位置挡不住「另一臂悄悄丢了」。
+        //
+        // ⚠️ **登记一处今天等价、将来不等价的形态**：`ManualDownload` 是末臂，切片因而一路延伸到
+        // 函数的右花括号。今天无害（`match act { … }` 是尾表达式，其后没有代码）；一旦改成
+        // `let resp = match act { … };` 再加后续处理，match **之后**的代码就落进本切片 ⇒ 上面那条
+        // `contains(NEEDLE)` 可被它喂饱。封顶挡不住（那里没有臂头）、`match_arm_body` 的输出自检
+        // 也挡不住（没有 `PopupAction::`），届时只剩下面的 `count == 2` 部分设防。
         assert_eq!(
             body.matches(NEEDLE).count(),
             2,
