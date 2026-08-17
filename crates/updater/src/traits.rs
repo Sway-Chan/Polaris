@@ -189,6 +189,25 @@ pub trait UpdateFs {
     /// 透传底层 IO 错误（父目录不存在 / 无权限 / 磁盘满）。
     fn open_write(&self, path: &Path) -> Result<Box<dyn std::io::Write + Send>, std::io::Error>;
 
+    /// 把 `path` 已写出的内容**刷到存储介质**（`fsync`），返回后内容才算真的落了盘。
+    ///
+    /// # 为什么落位路径需要它
+    ///
+    /// 「写完 → rename」中间没有 `sync` 时，断电 / 内核崩溃后完全可能出现「dest 这个名字在、
+    /// 内容却是零或半截」：rename 只保证目录项的原子替换，不保证被替换的那个 inode 的**数据**
+    /// 已经离开 page cache。而 dest 一旦存在就会被复用判定与安装腿当成完整包
+    /// （`commands/updater.rs` 的 `cached_download_is_reusable` / `update_install`）。
+    ///
+    /// # 实现须持**写句柄**
+    ///
+    /// Windows 的 `FlushFileBuffers` 要求句柄带写权限，只读句柄会直接失败；
+    /// 故 [`StdFs`] 用 `OpenOptions::new().write(true)` 而不是 `File::open`。
+    ///
+    /// # Errors
+    ///
+    /// 透传底层 IO 错误（文件不存在 / 无写权限 / 介质错误）。
+    fn sync_file(&self, path: &Path) -> Result<(), std::io::Error>;
+
     /// 读取 `path` 全部字节。= 上游 `fs.readFileSync`。
     fn read(&self, path: &Path) -> Result<Vec<u8>, std::io::Error>;
 
@@ -236,6 +255,15 @@ impl UpdateFs for StdFs {
     fn open_write(&self, path: &Path) -> Result<Box<dyn std::io::Write + Send>, std::io::Error> {
         // `File::create` = 建新 / 截断已存在，与 `write` 的覆盖语义一致。
         Ok(Box::new(std::fs::File::create(path)?))
+    }
+
+    fn sync_file(&self, path: &Path) -> Result<(), std::io::Error> {
+        // **必须带写权限**：Windows 的 `FlushFileBuffers` 对只读句柄直接失败（见 trait 文档）。
+        // 不用 `File::create`（会截断）也不用 `append`（无谓地改变文件偏移语义）。
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)?
+            .sync_all()
     }
 
     fn read(&self, path: &Path) -> Result<Vec<u8>, std::io::Error> {
@@ -306,6 +334,11 @@ pub enum MockFailOp {
     Remove,
     Read,
     List,
+    /// 落位前的 `fsync` 失败（介质错误 / 磁盘满在 flush 时才暴露）。
+    ///
+    /// **不与 [`Self::Write`] 合流**：`write` 成功而 `sync` 失败正是本注入要覆盖的那一格
+    /// —— 合流的话「写都写不进去」会盖掉「写进了 page cache 但没落到介质」这条腿。
+    SyncFile,
 }
 
 impl<'a> MockFs<'a> {
@@ -357,6 +390,18 @@ impl<'a> UpdateFs for MockFs<'a> {
             return Err(std::io::Error::other("mock injected failure: Write"));
         }
         Ok(Box::new(std::fs::File::create(self.resolve(path))?))
+    }
+
+    fn sync_file(&self, path: &Path) -> Result<(), std::io::Error> {
+        if matches!(self.next_fail, Some(MockFailOp::SyncFile)) {
+            return Err(std::io::Error::other("mock injected failure: SyncFile"));
+        }
+        // 未注入失败时**真的做一次 fsync**（不是无脑 Ok）：这样「文件根本不存在就调 sync」
+        // 在 mock 上同样会报错，与 StdFs 的行为一致。
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(self.resolve(path))?
+            .sync_all()
     }
 
     fn read(&self, path: &Path) -> Result<Vec<u8>, std::io::Error> {
