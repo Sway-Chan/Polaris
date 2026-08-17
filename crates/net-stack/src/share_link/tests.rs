@@ -865,13 +865,13 @@ fn roundtrip_vless_ws_tls() {
         security: Some(SecurityMode::Tls),
         ..Default::default()
     };
-    c.ws_settings = Some(WebSocketSettings {
+    c.ws_settings = Some(Box::new(WebSocketSettings {
         path: Some("/vpath".into()),
         headers: Some(
             std::iter::once(("Host".to_string(), "cdn.example.com".to_string())).collect(),
         ),
         ..Default::default()
-    });
+    }));
     c.tls_settings = Some(TlsSettings {
         server_name: Some("sni.example.com".into()),
         ..Default::default()
@@ -934,13 +934,13 @@ fn roundtrip_vmess_ws() {
         alter_id: Some(0),
         vmess_security: Some("auto".into()),
         network: Some("ws".into()),
-        ws_settings: Some(WebSocketSettings {
+        ws_settings: Some(Box::new(WebSocketSettings {
             path: Some("/ray".into()),
             headers: Some(
                 std::iter::once(("Host".to_string(), "h.example.com".to_string())).collect(),
             ),
             ..Default::default()
-        }),
+        })),
         ..Default::default()
     };
     let r = roundtrip(&c);
@@ -1015,11 +1015,11 @@ fn roundtrip_shadowsocks() {
         protocol: Protocol::Shadowsocks,
         address: "ss.example.com".into(),
         port: 8388,
-        shadowsocks_settings: Some(ShadowsocksSettings {
+        shadowsocks_settings: Some(Box::new(ShadowsocksSettings {
             method: "aes-256-gcm".into(),
             password: "sspass:with:colons".into(),
             ..Default::default()
-        }),
+        })),
         ..Default::default()
     };
     let r = roundtrip(&c);
@@ -1132,12 +1132,12 @@ fn roundtrip_snell() {
         address: "sn.example.com".into(),
         port: 6160,
         password: Some("psk123".into()),
-        snell_settings: Some(SnellSettings {
+        snell_settings: Some(Box::new(SnellSettings {
             version: 4,
             obfs_mode: Some("http".into()),
             obfs_host: Some("bing.com".into()),
             ..Default::default()
-        }),
+        })),
         ..Default::default()
     };
     let r = roundtrip(&c);

@@ -267,9 +267,11 @@ pub struct TailscaleSettings {
 /// 装箱的判据是 **体积大 × 极少出现**（2026-08-17 实测 `size_of` 逐个量过，牙在本文件的
 /// `server_config_stays_narrow`）：openvpnClient 280 B / ssh 264 B / openconnect 232 B /
 /// [`WireGuardSettings`] 216 B / [`TailscaleSettings`] 192 B / hysteria2 184 B / hysteria 160 B /
-/// tor 120 B —— 合计 1648 B，占装箱前 3096 B 的 53%，而它们对应的协议在真实配置里近乎不出现。
+/// snell 128 B / tor 120 B / http 104 B / shadowsocks 96 B / ws 88 B —— 合计 2064 B，
+/// 占装箱前 3096 B 的 67%，而它们对应的协议/传输在真实配置里近乎不出现。
 /// 装箱后各占 8 B，只有真正带该协议设置的节点才付一次堆分配。
-/// 实测口径：3096 B → 1904 B（前六项）→ 1512 B（补 wireguard / tailscale 两项）。
+/// 实测口径：3096 B → 1904 B（前六项）→ 1512 B（补 wireguard / tailscale）→
+/// 1128 B（补 snell / http / shadowsocks / ws）。
 ///
 /// **两者的出现率证据不同强度，分开记**（真机 60 节点配置实测均 0/60，但那只是一台机器一份配置）：
 ///
@@ -297,50 +299,68 @@ pub struct TailscaleSettings {
 /// 在场亏 24 B、缺席省 184 B，`p* = 184/208 ≈ 88.5%`。判据的「罕见」在这两项上不是必要条件，
 /// 只是把收益放大 —— 这与 `tlsSettings` 那种 `p*` 只有 87.5–95.5% 却实测 60/60 的情形是两回事。
 ///
+/// **第三批（snell / http / shadowsocks / ws）的账同法逐项算**（glibc chunk = `align16(size + 8)`，
+/// 在场亏 `8 + chunk − size`、缺席省 `size − 8`、`p* = (size − 8) / chunk`；四项真机实测均 **0/60**）：
+///
+/// | 字段 | 内联 | chunk | 在场亏 | 缺席省 | `p*` |
+/// |---|---|---|---|---|---|
+/// | `snellSettings` | 128 B | 144 B | 24 B | 120 B | 83.3% |
+/// | `httpSettings` | 104 B | 112 B | 16 B | 96 B | 85.7% |
+/// | `shadowsocksSettings` | 96 B | 112 B | 24 B | 88 B | 78.6% |
+/// | `wsSettings` | 88 B | 96 B | 16 B | 80 B | 83.3% |
+///
+/// 四项的 `p*` 都在 78–86%，而实测出现率 0% —— 离盈亏平衡点远得不构成取舍。
+/// 其中 `wsSettings` 的出现率最不牢靠（`ws` 是最常见的传输之一，换一份订阅源就可能不是 0），
+/// 但即便**全库 100% 走 ws**，代价也只有 16 B/节点加一次 malloc。
+///
 /// **`tlsSettings` 刻意不装箱**（176 B）：它是**最常出现**的那个 —— 绝大多数 vless/trojan/vmess
 /// 节点都带它（真机实测 60/60）。装箱后每个 TLS 节点省下 168 B 内联却多付 176 B 堆加一次 malloc，
 /// 字节上近乎打平甚至更差，且它的调用面是全部协议设置里最大的一个（2026-08-17 `\btls_settings\b`
 /// 全仓实测 80 处，次大的 wireguard 42 / tailscale 32）。判据是「大 × 罕见」，不是「大」。
 /// 它在**本文件 + `protocol_settings.rs` 全部 21 个子结构**里排第 7，只在 `protocol_settings.rs`
-/// 单独排序时才是第 5 —— 别引用后一个排名做取舍。装箱面补齐 WG/TS 后它仍是**最大的未装箱项**，
-/// 也就是「为压数字而装箱」最诱人的那个目标，故门里那条内联保持断言钉的就是它。
+/// 单独排序时才是第 5 —— 别引用后一个排名做取舍。装箱面补到 12 项后它仍是**最大的未装箱项**，
+/// 也就是「为压数字而装箱」最诱人的那个目标，故门里那条豁免登记钉的就是它。
 ///
-/// ⚠️ **取样面教训**：wireguard / tailscale 是上一批**漏掉**的，不是权衡后不做 —— 那次按**定义所在
-/// 模块**枚举候选，只扫了 `protocol_settings.rs` 里的子结构，而这两个定义在本文件，整个不在取样面内。
-/// 后果是「判据没错、清单不全」：漏掉的两项比当时装的任何一个都大，也比刻意不装的 `tlsSettings` 大。
-/// 下次增删协议设置时，候选面按**本结构体的字段**枚举，别按定义所在的模块。
+/// ⚠️ **取样面教训（同一根因复发过三次，第三次的处方不是文档而是门）**：
+/// wireguard / tailscale 是第一批漏掉的 —— 那次按**定义所在模块**枚举候选，只扫了
+/// `protocol_settings.rs` 里的子结构，而这两个定义在本文件，整个不在取样面内；
+/// snell / http / shadowsocks / ws 是第二批漏掉的 —— 那次改按字段枚举，但清单仍是**人写的**。
+/// 后果都是「判据没错、清单不全」，且漏掉的项都比当时装的某些项更该装
+/// （`snellSettings` 128 B > 已装的 `torSettings` 120 B，出现率同为 0/60）。
+/// **前两次的处方都是「在文档里留一份清单」，而那正是失败过两次的方案。**
+/// 第三次改成自曝式：`server_config_stays_narrow` 里的登记表，判据面由 serde 交出全部字段名，
+/// 表不会自己长而探针会 ⇒ 下一个漏网的大字段当场转红。要增删协议设置，先读那道门的文档注释。
 ///
-/// 🔴 **按字段枚举一遍后，桌上还剩 384 B —— 本批没做，是独立立项，不是已补齐**
-/// （2026-08-17 `size_of_val` 逐个实测，按宽度降序）：
+/// 🔴 **桌上还剩什么（按字段枚举，2026-08-17 `size_of_val` 逐个实测，按宽度降序）**：
 ///
 /// | 未装箱字段 | 宽度 | 备注 |
 /// |---|---|---|
-/// | `tlsSettings` | 176 B | **刻意内联**，账见上文；不是候选 |
-/// | `snellSettings` | **128 B** | 比本批之前就已装箱的 `torSettings`（120 B）**还大**，同样 0/60 |
-/// | `httpSettings` | 104 B | |
-/// | `shadowsocksSettings` | 96 B | |
-/// | `wsSettings` | 88 B | |
-/// | `tuicSettings` / `shadowTlsSettings` | 80 B | |
-/// | 其余（custom 64 / anyTls 56 / multiplex 48 / reality 48 / grpc 32 / naive 1） | ≤64 B | 收益递减 |
+/// | `tlsSettings` | 176 B | **刻意内联**，账见上文；不是候选（门里登记为 `Exempt`） |
+/// | ~~`snellSettings` 128 / `httpSettings` 104 / `shadowsocksSettings` 96 / `wsSettings` 88~~ | — | ✅ 已装箱（第三批，省 384 B） |
+/// | `tuicSettings` / `shadowTlsSettings` | 各 80 B | **仍在桌上，共 144 B**：`p* = 75%`、实测 0/60，账是正的 |
+/// | 其余（custom 64 / anyTls 56 / multiplex 48 / reality 48 / grpc 32 / naive 1） | ≤64 B | 收益递减；`reality` 边缘可做（`p* = 62.5%` vs 实测 50%） |
 ///
-/// 后四项里 `snell + http + shadowsocks + ws` 合计 416 B，装箱后 32 B ⇒ 可再省 **384 B/节点**，
-/// 与本批省下的 392 B 同量级。**按同一条判据，`snellSettings` 严格优于本批之前已装的 `tor`**。
-/// 之所以本批不顺手做：那是独立工作量（各自的调用面 + 各自的门），夹带会让这份 diff 失去可审性。
-/// ⚠️ 这段前瞻清单**不许在补装后删掉改写成回顾**——上一批就是把它写成回顾性教训、前瞻内容随之消失，
-/// 下一个人读到的是「清单已补齐」而不是「还有 384 B 在桌上」，于是同一根因连着复发了三次。
-/// 补装某项时**只划掉那一行**，别动整段。
+/// 之所以第三批不顺手连 tuic/shadowTls 一起做：每项都要各自过一遍调用面 + 各自进三态透明门，
+/// 夹带会让 diff 失去可审性。**这是排期，不是否决。**
+/// ⚠️ 这段清单**不许在补装后删掉改写成回顾** —— 第二批就是把它写成回顾性教训、前瞻内容随之消失，
+/// 下一个人读到的是「清单已补齐」而不是「还有 X B 在桌上」，于是同一根因连着复发了三次。
+/// 补装某项时**只划掉那一行**（像上面第二行那样），别动整段。
+/// 三个仍在桌上的候选各自的账已经登记在 `server_config_stays_narrow` 的 `Considered` 行里，
+/// 那里是**有牙的**一份：门槛一旦降到它们以下就会转红。本段与那张表任一处改动都要对着改另一处。
 ///
 /// 装箱**不改变任何序列化产物**：`Box<T>` 的 `Serialize`/`Deserialize` 逐字转发给 `T`，
 /// `skip_serializing_if = "Option::is_none"` 语义不变，`Debug`/`PartialEq` 同样转发。
 ///
 /// ⚠️ **钉住这件事的只有本文件那条 `boxed_protocol_settings_serialize_transparently`**，
-/// 别以为「反正还有几道既有门兜着」就可以删它 —— 2026-08-17 逐条实测过那三道对**八个**装箱键的射程：
-/// `tests/serde_roundtrip.rs` 全文件只碰 `singbox::*`，`UserConfig`/`ServerConfig` **零出现**；
-/// `tests/user_config_key_contract.rs` 的夹具是 `"servers": []`，八个键 **0 命中**；
-/// `tests/golden_config_snapshot.rs` 的 `fixtures/config-snapshot.json`（37 case）只有
-/// `hysteria2Settings` × 1 / `sshSettings` × 1 / `wireguardSettings` × 1，
-/// 另外五个键（含 `tailscaleSettings`）**0 命中**。
-/// 即：两道射程为零、一道覆盖 8 个里的 3 个，且那一道只走**生成侧**（UserConfig → sing-box 配置），
+/// 别以为「反正还有几道既有门兜着」就可以删它 —— 2026-08-17 逐条实测过那三道对**十二个**装箱键的射程：
+/// `tests/serde_roundtrip.rs` 全文件只碰 `singbox::*`，`UserConfig`/`ServerConfig` **零出现**
+/// （唯一一处是 `servers: vec![]`）；
+/// `tests/user_config_key_contract.rs` 的夹具同样是 `"servers": []`，十二个键 **0 命中**；
+/// `tests/golden_config_snapshot.rs` 的 `fixtures/config-snapshot.json`（37 case）命中六个：
+/// `hysteria2Settings` × 1 / `sshSettings` × 1 / `wireguardSettings` × 1 /
+/// `snellSettings` × 2 / `shadowsocksSettings` × 2 / `wsSettings` × 2，
+/// 另外六个（含 `tailscaleSettings` / `httpSettings`）**0 命中**。
+/// 即：两道射程为零、一道覆盖 12 个里的 6 个，且那一道只走**生成侧**（UserConfig → sing-box 配置），
 /// 磁盘往返与订阅导入导出这两条腿一条都不碰。删掉本文件那条 = 保护归零。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ServerConfig {
@@ -466,9 +486,10 @@ pub struct ServerConfig {
         rename = "shadowsocksSettings",
         skip_serializing_if = "Option::is_none"
     )]
-    pub shadowsocks_settings: Option<crate::user_config::protocol_settings::ShadowsocksSettings>,
+    pub shadowsocks_settings:
+        Option<Box<crate::user_config::protocol_settings::ShadowsocksSettings>>,
     #[serde(rename = "snellSettings", skip_serializing_if = "Option::is_none")]
-    pub snell_settings: Option<crate::user_config::protocol_settings::SnellSettings>,
+    pub snell_settings: Option<Box<crate::user_config::protocol_settings::SnellSettings>>,
     #[serde(rename = "sshSettings", skip_serializing_if = "Option::is_none")]
     pub ssh_settings: Option<Box<crate::user_config::protocol_settings::SshSettings>>,
     #[serde(rename = "shadowTlsSettings", skip_serializing_if = "Option::is_none")]
@@ -490,11 +511,11 @@ pub struct ServerConfig {
     #[serde(rename = "realitySettings", skip_serializing_if = "Option::is_none")]
     pub reality_settings: Option<crate::user_config::protocol_settings::RealitySettings>,
     #[serde(rename = "wsSettings", skip_serializing_if = "Option::is_none")]
-    pub ws_settings: Option<crate::user_config::protocol_settings::WebSocketSettings>,
+    pub ws_settings: Option<Box<crate::user_config::protocol_settings::WebSocketSettings>>,
     #[serde(rename = "grpcSettings", skip_serializing_if = "Option::is_none")]
     pub grpc_settings: Option<crate::user_config::protocol_settings::GrpcSettings>,
     #[serde(rename = "httpSettings", skip_serializing_if = "Option::is_none")]
-    pub http_settings: Option<crate::user_config::protocol_settings::HttpSettings>,
+    pub http_settings: Option<Box<crate::user_config::protocol_settings::HttpSettings>>,
     // 元数据
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
@@ -801,65 +822,104 @@ mod tests {
     /// 于是「又内联进来一个 200 B 的协议设置」这件事的代价是 `200 × 节点数`，而它**不会让任何
     /// 行为测试转红**：序列化产物一个字节不变、全仓功能照常。本门就是补这个盲区。
     ///
-    /// 基线（2026-08-17 实测）：装箱前 3096 B，把 8 个「体积大 × 极少出现」的协议设置改
-    /// `Option<Box<T>>` 后 1512 B（分两批落地：前 6 项 → 1904 B，补 wireguard / tailscale
-    /// 两项再省 `(216−8)+(192−8) = 392 B` → 1512 B）；按真机 119 节点算，单次反序列化的 `Vec`
-    /// 底层分配 368,424 B → 179,928 B。
+    /// 基线（2026-08-17 实测）：装箱前 3096 B，把 12 个「体积大 × 极少出现」的协议设置改
+    /// `Option<Box<T>>` 后 1128 B（分三批落地：前 6 项 → 1904 B，补 wireguard / tailscale
+    /// 两项 → 1512 B，再补 snell / http / shadowsocks / ws 四项省
+    /// `(128−8)+(104−8)+(96−8)+(88−8) = 384 B` → 1128 B）；按真机 119 节点算，单次反序列化的
+    /// `Vec` 底层分配 368,424 B → 134,232 B。
     ///
-    /// **红了不等于有 bug，红了等于「该看一眼」**。字段尺寸之和 = 1508 B，`size_of` = 1512 B ⇒
-    /// **仍只剩 4 B 尾隙**（装箱不改变尾隙：换掉的两个字段本就 8 字节对齐）。所以两种情形都会
-    /// 让它红，处方**完全相反**，先分清是哪一种：
+    /// **红了不等于有 bug，红了等于「该看一眼」**。字段尺寸之和 = 1124 B，`size_of` = 1128 B ⇒
+    /// **仍只剩 4 B 尾隙**（装箱不改变尾隙：换掉的字段本就 8 字节对齐）。所以两种情形都会
+    /// 让上界那条红，处方**完全相反**，先分清是哪一种：
     ///
     /// - **本仓有意新增了一个 ≥8 B 的标量 / 字符串字段**（`meshRoutes` / `disableChromeParrot`
     ///   就是这个形态，也是本结构体最常见的演进方式）：4 B 尾隙吃不下，**必红**。
-    ///   2026-08-17 逐档实测：`Option<u32>`（8 B）⇒ 1512 → **1520 红**；
+    ///   2026-08-17 逐档实测（当时 1512 B 基线）：`Option<u32>`（8 B）⇒ **1520 红**；
     ///   `Option<String>`（24 B）⇒ **1536 红**。
     ///   处方是**重新实测 `size_of` 并连同日期更新常量** —— 不是把那个 24 B 的 String 装箱
     ///   （那毫无意义，只多一次 malloc）。工具链换版改了布局而本仓一字未动，同理。
-    ///   ⚠️ **≤4 B 的小标量塞得进尾隙，门会保持绿，这不是漏网**：同批实测
-    ///   `bool` / `Option<bool>`（1 B）与 `Option<u16>`（4 B）加进来后 `size_of` 仍是 1512。
+    ///   ⚠️ **≤4 B 的小标量塞得进尾隙，上界那条会保持绿**：同批实测
+    ///   `bool` / `Option<bool>`（1 B）与 `Option<u16>`（4 B）加进来后 `size_of` 不变。
     ///   那 4 B 是真空位（当前 `protocol` 1 + `port` 2 + `naive_settings` 1 = 4 B 已占的另一半），
     ///   而 `Option<u16>` 不是假想形态 —— `TailscaleSettings` 里就有两个端口字段是它。
-    ///   这类字段本就**不在本门射程内**：本门量的是「按节点数放大的宽度」，4 B 塞进既有空位
-    ///   等于零成本，没有可报的事。
+    ///   这类字段不在**上界**的射程内（它量的是按节点数放大的宽度，4 B 塞进既有空位等于零成本），
+    ///   但**仍会被下面那条登记表拦下**：任何新字段都得在表里露个面。那是登记，不是反对。
     /// - **有人又内联了一个大结构体**（几十上百 B 的协议设置）：这才是本门要拦的那一类。
     ///   按结构体头注的判据（体积大 × 罕见）决定它该不该装箱，**不得为了让它过门而调大常量**。
     ///
     /// 只在 64 位靶子上断言：指针宽度直接进 `Option<Box<_>>` / `String` / `Vec` 的尺寸，32 位上
     /// 这个常量没有意义。本仓四条打包腿（mac-arm64 / mac-x64 / linux-x64 / win-x64）全是 64 位。
     ///
-    /// # 为什么还有第二条断言（上界单独一条是**会奖励错误做法**的）
+    /// # 🔴 为什么光有上界不够：上界是一个**可以重新基线的**门
     ///
-    /// 上界只守判据的「大」那一半：把 `tlsSettings` 装箱能让 `size_of` 掉到 1344 B，上界**更绿** ——
-    /// 而按判据那恰恰不该做（它 60/60 出现，装箱等于每个节点多一次 malloc 换字节打平）。
-    /// 只有上界的门不但不拦这种「压数字」的改法，还给它发绿灯。故第二条钉住高频字段**保持内联**。
+    /// 上界只守判据的「大」那一半，而且守得很软 —— 它的失败文案自己就写着「重新实测并连同日期
+    /// 更新 MEASURED」。谁新内联一个大结构体，照做一遍常量就绿了。
+    /// **`snell`(128) / `http`(104) / `shadowsocks`(96) / `ws`(88) 四个字段共 416 B 就是这么在
+    /// 门全绿的情况下躺过了两批**：它们从来没被枚举到，而上界的常量正是**含着它们**实测出来的。
     ///
-    /// # 为什么第二条只钉 `tlsSettings` 一个字段
+    /// 另一半同样漏：把 `tlsSettings` 装箱能让 `size_of` 更小、上界**更绿** —— 而按判据那恰恰
+    /// 不该做（它 60/60 出现，装箱等于每节点多一次 malloc 换字节打平）。只有上界的门不但不拦
+    /// 这种「压数字」的改法，还给它发绿灯。
     ///
-    /// 2026-08-17 补装 WG/TS 后重新问过「要不要扩到别的字段」，结论是**不扩**，两条理由：
+    /// 两个洞的根因是同一个：**上界是个标量，看不见「哪些字段、各多宽、谁装了谁没装」**。
+    /// 故下面补一张按字段的登记表，判据面由 serde 自己给（见 `FieldProbe`）。
     ///
-    /// ① **手上的样本面撑不起第二条禁令**。同一份 60 节点真机配置实测：`tlsSettings` 60/60、
-    /// `realitySettings` 30/60、`naiveSettings` 30/60、其余全 0/60。数是有的，但那是**一台机器
-    /// 一份配置**；把某字段的**内联**冻成禁令，需要的证据强度高于「这份样本里它常见」。
-    /// `tlsSettings` 是唯一一个 60/60 且有独立机制解释（几乎所有 vless/trojan/vmess 都带 TLS）的，
-    /// 才配得上一条门。
+    /// # 登记表怎么用（改本结构体的人只需读这一段）
     ///
-    /// ② **最像候选的那个算下来其实边缘可做**。`realitySettings` 48 B，glibc 下 48 B 载荷落 64 B
-    /// chunk：装箱后在场节点 `8 + 64 = 72 B` vs 内联 48 B ⇒ 每节点亏 24 B，缺席省 40 B，
-    /// `p* = 40/64 = 62.5%`；实测 50% ⇒ 装箱它在字节上**是净赚的**，只是多一次 malloc。
-    /// 也就是说它是**边缘可做**而非明确不该做 —— 写进断言等于用一条门把一个边缘取舍冻成禁令。
+    /// 加字段 ⇒ 表里加一行，四选一：
+    /// - `Decision::Plain` —— 普通字段，宽度必须**低于门槛**（= 已装箱项里最小的那个）；
+    /// - `Decision::Boxed(size_of::<T>())` —— 已改 `Option<Box<T>>`，附**被指向结构体**的宽度；
+    /// - `Decision::Exempt("理由")` —— 宽度已达门槛但刻意保持内联，**理由是硬要求**；
+    /// - `Decision::Considered("账")` —— 低于门槛但算过账的候选，把结论留下；门槛降到它以下会转红。
     ///
-    /// 要扩这条断言，先把出现率样本面补厚（多机器 / 多订阅源），别照着 `size_of` 排序扩。
+    /// 不加行 ⇒ 完整性断言当场红（表不会自己长，而探针会）。这就是这一批要补的那件事：
+    /// 前两批的候选面是**人肉枚举**出来的，于是「判据没错、清单不全」连着复发了三次。
     ///
-    /// **变异探针**：把任一 `Option<Box<T>>` 改回 `Option<T>` ⇒ 上界转红；
-    /// 反过来把 `tls_settings` 改成 `Option<Box<TlsSettings>>` ⇒ 上界照绿（1344 ≤ 1512），
-    /// 由第二条转红接住。
+    /// # 目前唯一的豁免项与它的理由强度
+    ///
+    /// `tlsSettings`（176 B）：真机 60 节点实测 **60/60**，且有独立机制解释（几乎所有
+    /// vless/trojan/vmess 都带 TLS），调用面也是全部协议设置里最大的（80 处）。
+    /// 它是唯一一个 ≥ 门槛却保持内联的字段，也是「为压数字而装箱」最诱人的目标。
+    ///
+    /// 另有三行登记为 `Considered`（低于门槛、账已算过、暂不装）：`tuicSettings` /
+    /// `shadowTlsSettings` 各 80 B（p\* = 75%、真机 0/60，账是正的，共 144 B 还在桌上，属排期）、
+    /// `realitySettings` 48 B（p\* = 62.5%、实测 50% ⇒ 净赚仅 8 B/节点，**边缘取舍**，
+    /// 本仓明确决定不用门冻结它）。**`Considered` 不是禁令**：要装其中任何一个，把那行改成
+    /// `Boxed` 即可；门槛会随之降低，另外两行会跟着转红要求重新表态 —— 那正是判据一致性该有的连锁。
+    /// 真要按出现率翻案，先把样本面补厚（多机器 / 多订阅源），别照 `size_of` 排序扩。
+    ///
+    /// # 🔴 本门登记在案的漏报面（别把它读成「全都守住了」）
+    ///
+    /// 1. **门槛是相对量**：取「已装箱项的最小宽度」。把当前最小的那个改回内联，门槛会跟着抬高 ⇒
+    ///    自洽地放过它自己。故另取一个**下限** `FLOOR = size_of::<WebSocketSettings>()`（本仓装过的
+    ///    最小项），门槛取两者更小者。但若日后装了比 ws 更小的项，`FLOOR` **不会自动跟着降**，
+    ///    要手动改 —— 门不会提醒。
+    /// 2. **`Boxed(w)` 那个 `w` 没有第二处交叉校验**。布局对差只用得上「实际宽度」（装箱项恒 8），
+    ///    看不见被指向类型写没写对。某一行把类型写成一个更大的结构 ⇒ 门槛被抬高 ⇒ 漏报。
+    /// 3. **只量宽度，不量出现率**。判据的另一半「极少同时出现」没有任何自动来源 —— 门只能逼人
+    ///    「登记 + 写理由」，判断不了那条理由是真是假。一条空洞理由同样能让它变绿。
+    /// 4. **射程只到本结构体一层**。子结构自己内联了什么（如 `TlsSettings` 里再塞一个大结构）、
+    ///    `UserConfig` 其它 `Vec<T>` 的元素类型，都不在内。
+    /// 5. **`#[serde(skip)]` 的字段不进 `FIELDS`**（本结构体当前一个都没有）。真加了这么一个大字段，
+    ///    探针看不见、表里也不缺行 ⇒ **完全漏报**。反过来，`#[serde(flatten)]` 会让 serde 改走
+    ///    `deserialize_map`、探针一个名字都拿不到 —— 那是 fail-loud（下面第一条断言就红）。
+    /// 6. 量的是 `size_of`，**不是真实内存占用**：堆上的 `String` / `Vec` 内容不在内。
+    ///
+    /// **变异探针**（双向对照见提交说明）：
+    /// - 把 `snell_settings` 改回 `Option<T>` 并把它那行改成 `Plain`（再按实测调小 MEASURED，
+    ///   模拟「照失败文案重新基线」）⇒ 加门前全绿，加门后**自曝那条**红；
+    /// - 新增一个 ≥ 门槛的未装箱字段 ⇒ 表里缺行，**完整性那条**红；补上行改 `Plain` ⇒ 自曝那条红；
+    /// - 把 `tls_settings` 改成 `Option<Box<TlsSettings>>` ⇒ 上界照绿（size 更小），**豁免那条**红。
     #[test]
     #[cfg(target_pointer_width = "64")]
     fn server_config_stays_narrow() {
-        /// 2026-08-17 实测值（装箱前 3096 B；只装前 6 项时 1904 B）。
-        const MEASURED: usize = 1512;
-        let actual = std::mem::size_of::<ServerConfig>();
+        use crate::user_config::protocol_settings as ps;
+        use std::collections::BTreeSet;
+        use std::mem::{size_of, size_of_val};
+
+        /// 2026-08-17 实测值（装箱前 3096 B；只装 6 项时 1904 B，8 项时 1512 B）。
+        const MEASURED: usize = 1128;
+        let actual = size_of::<ServerConfig>();
         assert!(
             actual <= MEASURED,
             "size_of::<ServerConfig>() = {actual} B > {MEASURED} B。\
@@ -868,16 +928,269 @@ mod tests {
              不得为此调大常量。两者的分辨方法见本测试的文档注释。"
         );
 
-        // 「罕见」那一半：高频字段必须保持内联，不得靠装箱它们来压上面那个数字。
-        // `Option<Box<_>>` 恒为 8 B（指针 + niche），故 `> 8` 精确等价于「没被装箱」，
-        // 且不随子结构增删字段漂移 —— 不写死 176 就是为了不要一条会自己过期的断言。
+        // ── 判据面：由 serde 自己交出全部字段名，不是人写的清单 ────────────────
+        //
+        // `#[derive(Deserialize)]` 生成的代码会把**全部**字段名以 `&'static [&'static str]`
+        // 传给 `Deserializer::deserialize_struct`。下面这个探针就在那一跳把它截下来。
+        // 于是「本结构体有哪些字段」的来源是**类型本身**：新增字段 ⇒ 探针立刻多一项，
+        // 而登记表不会自己长 ⇒ 完整性断言当场红。前三次翻车缺的正是这一半。
+        #[derive(Debug)]
+        struct ProbeDone;
+        impl std::fmt::Display for ProbeDone {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("字段名已截获（探针恒以 Err 收尾，不真的反序列化）")
+            }
+        }
+        impl std::error::Error for ProbeDone {}
+        impl serde::de::Error for ProbeDone {
+            fn custom<T: std::fmt::Display>(_: T) -> Self {
+                ProbeDone
+            }
+        }
+        struct FieldProbe<'a> {
+            out: &'a mut Vec<&'static str>,
+        }
+        impl<'de> Deserializer<'de> for FieldProbe<'_> {
+            type Error = ProbeDone;
+            fn deserialize_any<V: serde::de::Visitor<'de>>(
+                self,
+                _v: V,
+            ) -> Result<V::Value, Self::Error> {
+                Err(ProbeDone)
+            }
+            fn deserialize_struct<V: serde::de::Visitor<'de>>(
+                self,
+                _name: &'static str,
+                fields: &'static [&'static str],
+                _v: V,
+            ) -> Result<V::Value, Self::Error> {
+                self.out.extend_from_slice(fields);
+                Err(ProbeDone)
+            }
+            serde::forward_to_deserialize_any! {
+                bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+                bytes byte_buf option unit unit_struct newtype_struct seq tuple
+                tuple_struct map enum identifier ignored_any
+            }
+        }
+
+        /// 对一个字段作过的决定。
+        enum Decision {
+            /// 普通字段：宽度小到没有可讨论的，必须**低于门槛**。
+            Plain,
+            /// `Option<Box<T>>`：附**被指向结构体**的宽度 `size_of::<T>()`（不是装箱后的 8 B）——
+            /// 门槛正是从这一列取最小值来的。
+            Boxed(usize),
+            /// 宽度**已达门槛**但刻意保持内联，附理由。
+            /// **只留名字的豁免表 = 又一份后人读不出为什么的清单**，故理由是硬要求。
+            Exempt(&'static str),
+            /// 低于门槛、但**算过账**的候选：把结论留在这里，免得下一个人从头再算一遍。
+            /// 门槛一旦降到它以下（有人装了更小的项），本行会转红，逼作者重新表态。
+            Considered(&'static str),
+        }
+        struct FieldRow {
+            /// serde 名（探针给的就是这个）。
+            key: &'static str,
+            /// 该字段**实际**占的宽度（`size_of_val`，装箱项恒 8 B）。
+            actual: usize,
+            decision: Decision,
+        }
+
         let s = ServerConfig::default();
+        macro_rules! rows {
+            ($( $key:literal => $field:ident : $decision:expr ),* $(,)?) => {
+                [$( FieldRow {
+                    key: $key,
+                    actual: size_of_val(&s.$field),
+                    decision: $decision,
+                } ),*]
+            };
+        }
+        use Decision::{Boxed, Considered, Exempt, Plain};
+        let table = rows![
+            "id" => id: Plain,
+            "name" => name: Plain,
+            "protocol" => protocol: Plain,
+            "address" => address: Plain,
+            "port" => port: Plain,
+            "detour" => detour: Plain,
+            "meshRoutes" => mesh_routes: Plain,
+            "subscriptionId" => subscription_id: Plain,
+            "providerName" => provider_name: Plain,
+            "uuid" => uuid: Plain,
+            "encryption" => encryption: Plain,
+            "flow" => flow: Plain,
+            "packetEncoding" => packet_encoding: Plain,
+            "password" => password: Plain,
+            "username" => username: Plain,
+            "naiveSettings" => naive_settings: Plain,
+            "alterId" => alter_id: Plain,
+            "vmessSecurity" => vmess_security: Plain,
+            "hysteria2Settings" => hysteria2_settings: Boxed(size_of::<ps::Hysteria2Settings>()),
+            "tuicSettings" => tuic_settings: Considered(
+                "80 B、真机 0/60。glibc 下 80 B 载荷落 96 B chunk（align16(80+8)）⇒ 在场亏 24 B、\
+                 缺席省 72 B、p* = 72/96 = 75%，账是正的。本批不做只因它低于门槛、且每装一项都要\
+                 各自过一遍调用面 —— 是排期，不是否决。桌上还剩它与 shadowTlsSettings 共 144 B。"
+            ),
+            "hysteriaSettings" => hysteria_settings: Boxed(size_of::<ps::HysteriaSettings>()),
+            "torSettings" => tor_settings: Boxed(size_of::<ps::TorSettings>()),
+            "openconnectSettings" => openconnect_settings:
+                Boxed(size_of::<ps::OpenconnectSettings>()),
+            "openvpnClientSettings" => openvpn_client_settings:
+                Boxed(size_of::<ps::OpenvpnClientSettings>()),
+            "wireguardSettings" => wireguard_settings: Boxed(size_of::<WireGuardSettings>()),
+            "tailscaleSettings" => tailscale_settings: Boxed(size_of::<TailscaleSettings>()),
+            "customSettings" => custom_settings: Plain,
+            "anyTlsSettings" => any_tls_settings: Plain,
+            "multiplexSettings" => multiplex_settings: Plain,
+            "shadowsocksSettings" => shadowsocks_settings:
+                Boxed(size_of::<ps::ShadowsocksSettings>()),
+            "snellSettings" => snell_settings: Boxed(size_of::<ps::SnellSettings>()),
+            "sshSettings" => ssh_settings: Boxed(size_of::<ps::SshSettings>()),
+            "shadowTlsSettings" => shadow_tls_settings: Considered(
+                "80 B、真机 0/60，账与 tuicSettings 完全同型（chunk 96、p* = 75%）。同样是排期，不是否决。"
+            ),
+            "network" => network: Plain,
+            "security" => security: Plain,
+            "tlsSettings" => tls_settings: Exempt(
+                "真机 60 节点实测 60/60 出现（被装箱的那些同批 0/60），且有独立机制解释：\
+                 几乎所有 vless/trojan/vmess 节点都带 TLS。装箱后每个 TLS 节点省下 168 B 内联却\
+                 多付一次 malloc 加 176 B 堆，字节上近乎打平甚至更差；调用面也是全部协议设置里\
+                 最大的一个（80 处）。判据是「体积大 × 极少出现」，不是「体积大」。"
+            ),
+            "realitySettings" => reality_settings: Considered(
+                "48 B、真机 30/60 = 50%。落 64 B chunk ⇒ 在场亏 24 B、缺席省 40 B、p* = 62.5% ⇒ \
+                 装箱净赚仅 8 B/节点外加一次 malloc，属**边缘取舍**。本仓已明确决定不用门冻结它 —— \
+                 这行是结论存档，不是禁令：真要装它，把本行改 Boxed 即可（门槛会随之降到 48，\
+                 tuic/shadowTls 两行会跟着转红，那正是判据一致性该有的连锁）。"
+            ),
+            "wsSettings" => ws_settings: Boxed(size_of::<ps::WebSocketSettings>()),
+            "grpcSettings" => grpc_settings: Plain,
+            "httpSettings" => http_settings: Boxed(size_of::<ps::HttpSettings>()),
+            "createdAt" => created_at: Plain,
+            "updatedAt" => updated_at: Plain,
+        ];
+
+        // ① 完整性：登记表 ≡ serde 交出来的字段集。表不会自己长，探针会。
+        let mut declared: Vec<&'static str> = Vec::new();
+        let _ = ServerConfig::deserialize(FieldProbe { out: &mut declared });
         assert!(
-            std::mem::size_of_val(&s.tls_settings) > 8,
-            "tlsSettings 被装箱了 —— 它 60/60 出现，装箱只是把内联宽度换成每节点一次 malloc，\
-             字节上打平甚至更差。上界断言看不见这件事（size 反而变小 ⇒ 更绿），故由本条接住。\
-             判据是「体积大 × 极少出现」，不是「体积大」。"
+            !declared.is_empty(),
+            "探针一个字段名都没拿到。最可能的原因：有人给 ServerConfig 加了 \
+             `#[serde(flatten)]` —— 那会让 serde 改走 `deserialize_map`，本探针的 \
+             `deserialize_struct` 再也不被调用。此时整张登记表失去判据面，必须先换探针形态。"
         );
+        let declared_set: BTreeSet<&str> = declared.iter().copied().collect();
+        let registered: BTreeSet<&str> = table.iter().map(|r| r.key).collect();
+        assert_eq!(
+            registered.len(),
+            table.len(),
+            "登记表里有重复键（同一个 key 写了两行）"
+        );
+        let missing: Vec<&str> = declared_set.difference(&registered).copied().collect();
+        assert!(
+            missing.is_empty(),
+            "ServerConfig 新增了字段但没在登记表里露面：{missing:?}。\
+             按本测试文档「登记表怎么用」那段补一行（Plain / Boxed / Exempt / Considered 四选一）。\
+             这一条就是为了不让「清单不全」再发生第四次 —— 别绕过它。"
+        );
+        let stale: Vec<&str> = registered.difference(&declared_set).copied().collect();
+        assert!(
+            stale.is_empty(),
+            "登记表里有 ServerConfig 已经没有的键：{stale:?}（字段被删或被改名）"
+        );
+
+        // ② 布局对差：每一行确实读到了它自己那个字段。
+        // 复制粘贴时「键名换了、`size_of_val` 里的字段没换」是本表最现实的失手方式 ——
+        // 那会让另一个字段的宽度从未被量过，下面两条对它就瞎了。
+        let sum: usize = table.iter().map(|r| r.actual).sum();
+        assert!(
+            sum <= actual && actual - sum <= 8,
+            "登记表量到的字段宽度之和 = {sum} B，而 size_of::<ServerConfig>() = {actual} B，\
+             差值超出尾隙上限 8 B。多半是某一行的 `size_of_val(&s.X)` 读错了字段。"
+        );
+
+        // ③ 装箱行自查：登记为 Boxed 的必须真的是 `Option<Box<_>>`（恒 8 B）。
+        for r in &table {
+            if let Boxed(pointee) = r.decision {
+                assert_eq!(
+                    r.actual, 8,
+                    "{} 登记为 Boxed 却占 {} B —— 它被改回内联了（或这行标错了）。\
+                     改回内联是可以的，但要连同这一行改成 Plain/Exempt，让下面那条自曝断言看得见它。",
+                    r.key, r.actual
+                );
+                assert!(
+                    pointee > 8,
+                    "{}: 被指向结构体只有 {pointee} B，装箱它只是多一次 malloc",
+                    r.key
+                );
+            }
+        }
+
+        // ④ 门槛 = 已装箱项的最小宽度，取与 FLOOR 的更小者。
+        //
+        // 为什么要 FLOOR：门槛若纯粹相对，「把当前最小的那个改回内联」会顺手把门槛抬上去、
+        // 自洽地给自己发绿灯。FLOOR 钉住「本仓装过的最小项」这个历史事实，堵住那一步。
+        // ⚠️ 日后装了比 ws 更小的项，FLOOR 不会自动跟着降 —— 见文档注释里的漏报面第 1 条。
+        let floor = size_of::<ps::WebSocketSettings>();
+        let boxed_min = table
+            .iter()
+            .filter_map(|r| match r.decision {
+                Boxed(w) => Some(w),
+                _ => None,
+            })
+            .min()
+            .expect("装箱面不该为空");
+        let threshold = boxed_min.min(floor);
+
+        // ⑤ 🔴 自曝：未装箱字段里不得存在宽度 ≥ 门槛者，除非显式登记豁免。
+        for r in &table {
+            if matches!(r.decision, Plain | Considered(_)) {
+                assert!(
+                    r.actual < threshold,
+                    "`{}` 内联占 {} B ≥ 门槛 {} B（= 已装箱项里最小的那个），\
+                     既没装箱也没登记豁免。按 ServerConfig 头注的判据（体积大 × 极少同时出现）二选一：\
+                     ① 改成 `Option<Box<T>>`，本行改 `Boxed(size_of::<T>())`；\
+                     ② 若它在真实配置里常出现（装箱净亏），本行改 `Exempt(\"理由\")`，\
+                     理由里写清出现率证据。**不许**为了让本条变绿去动门槛或删行 —— \
+                     同一个根因已经复发过三次，这条断言就是为它写的。\
+                     （本行若原本是 `Considered`，说明门槛刚被降到它以下 —— 那条旧结论是在更高的\
+                     门槛下算的，得重新表态。）",
+                    r.key,
+                    r.actual,
+                    threshold
+                );
+            }
+        }
+
+        // ⑥ 豁免行自查：豁免必须仍然内联、必须真的够宽、必须带理由。
+        // 「把 tlsSettings 装箱来压 size_of」这条错误做法由本条接住 —— 上界看不见它（size 反而更小）。
+        for r in &table {
+            match r.decision {
+                Exempt(why) => {
+                    assert!(
+                        !why.trim().is_empty(),
+                        "{}: 豁免必须写理由，不能只留名字",
+                        r.key
+                    );
+                    assert!(
+                        r.actual >= threshold,
+                        "{} 登记了豁免却只占 {} B（< 门槛 {}）。两种情形：\
+                         它被装箱了（豁免项必须保持内联，装箱等于推翻这条豁免本身的理由）；\
+                         或者这条豁免本就多余，降回 Considered/Plain。",
+                        r.key,
+                        r.actual,
+                        threshold
+                    );
+                }
+                Considered(why) => assert!(
+                    !why.trim().is_empty(),
+                    "{}: 登记为「算过账、暂不装」就必须把账留下来",
+                    r.key
+                ),
+                Plain | Boxed(_) => {}
+            }
+        }
     }
 
     /// 🔴 **透明门**：`Option<Box<T>>` 的序列化产物必须与 `Option<T>` **逐字节相同**。
@@ -942,6 +1255,31 @@ mod tests {
                 advertise_routes: vec!["192.168.1.0/24".into()],
                 ..Default::default()
             })),
+            // snell 带一个**无 `skip_serializing_if` 的必填标量**（`version`），
+            // ws/http 各带一个容器（`BTreeMap` / `Vec<String>`）——
+            // 钉住装箱后 map 仍是 map、数组仍是数组，不多包一层。
+            snell_settings: Some(Box::new(ps::SnellSettings {
+                version: 6,
+                userkey: Some("uk".into()),
+                ..Default::default()
+            })),
+            shadowsocks_settings: Some(Box::new(ps::ShadowsocksSettings {
+                method: "aes-256-gcm".into(),
+                password: "pw".into(),
+                ..Default::default()
+            })),
+            ws_settings: Some(Box::new(ps::WebSocketSettings {
+                path: Some("/ws".into()),
+                headers: Some(
+                    std::iter::once(("Host".to_string(), "h.example.com".to_string())).collect(),
+                ),
+                ..Default::default()
+            })),
+            http_settings: Some(Box::new(ps::HttpSettings {
+                path: Some("/p".into()),
+                host: Some(vec!["h.example.com".into()]),
+                ..Default::default()
+            })),
             ..Default::default()
         };
         let v = serde_json::to_value(&s).expect("节点应可序列化");
@@ -964,6 +1302,10 @@ mod tests {
                     "authKey": "tskey-auth-X",
                     "advertiseRoutes": ["192.168.1.0/24"]
                 },
+                "snellSettings": { "version": 6, "userkey": "uk" },
+                "shadowsocksSettings": { "method": "aes-256-gcm", "password": "pw" },
+                "wsSettings": { "path": "/ws", "headers": { "Host": "h.example.com" } },
+                "httpSettings": { "path": "/p", "host": ["h.example.com"] },
             }),
             "装箱字段的键名/嵌套形状必须与未装箱时逐字节一致 —— 多一层包装 = 老配置读不回来。\
              ⚠️ 本条是整份 JSON 相等，射程覆盖全部字段：若红在一个**新增字段**上（左侧多出一个键），\
@@ -986,7 +1328,7 @@ mod tests {
             serde_json::json!({
                 "id": "s2", "name": "n2", "protocol": "vless", "address": "b.com", "port": 443
             }),
-            "八个装箱字段缺席时一个键都不该出现"
+            "十二个装箱字段缺席时一个键都不该出现"
         );
         // 第三态：装箱字段**在场、但内容全缺省**。前两态都盖不到它，而它才是两个谓词分岔的地方：
         // 字段级的 `Option::is_none` 只看**字段在不在**、与内容无关；一旦有人把它换成内容相关的
@@ -994,13 +1336,15 @@ mod tests {
         // 而前两态一条都不红。顺带这也是子结构里那些 `skip_serializing_if = "Vec::is_empty"`
         // 唯一有牙的一态 —— 满字段态里那些 `Vec` 恒非空，碰不到该谓词。
         //
-        // 🔴 **八个装箱字段一个都不能少**：本态的判据是「字段级谓词是否与内容无关」，那是**每个**
+        // 🔴 **十二个装箱字段一个都不能少**：本态的判据是「字段级谓词是否与内容无关」，那是**每个**
         // 装箱字段各自的属性，不是可以抽样的共性。少写一个，同一个变异换到那个字段上就一态不红。
         // 本态初版只放了 wireguard/tailscale 两个（补装它俩那批顺手加的），另外六个在三态里的形态
         // 是「填了个标量 / 缺席 / 缺席」—— 恰好绕开本态要拦的那件事，等于门只补到 2/8。
-        // 期望值 `{}` 是**实测**来的（八个结构 `Default` 逐个序列化确认），不是「反正全带
-        // skip_serializing_if 所以应该是空」的推断：哪天有人给某个结构加一个不带 skip 的必填字段，
-        // 该改的是这里的期望值，而本条会先红出来提醒。
+        // 期望值是**实测**来的（十二个结构 `Default` 逐个序列化确认），不是「反正全带
+        // skip_serializing_if 所以应该是空」的推断 —— 这一批就当场证伪了那个推断：
+        // `snellSettings` 实测是 `{"version":0}`、`shadowsocksSettings` 是
+        // `{"method":"","password":""}`，因为它们各有不带 skip 的必填标量。
+        // 哪天有人再给某个结构加一个这样的字段，该改的是这里的期望值，而本条会先红出来提醒。
         let empty_boxed = ServerConfig {
             id: "s3".into(),
             name: "n3".into(),
@@ -1015,6 +1359,10 @@ mod tests {
             ssh_settings: Some(Box::new(ps::SshSettings::default())),
             wireguard_settings: Some(Box::new(WireGuardSettings::default())),
             tailscale_settings: Some(Box::new(TailscaleSettings::default())),
+            snell_settings: Some(Box::new(ps::SnellSettings::default())),
+            shadowsocks_settings: Some(Box::new(ps::ShadowsocksSettings::default())),
+            ws_settings: Some(Box::new(ps::WebSocketSettings::default())),
+            http_settings: Some(Box::new(ps::HttpSettings::default())),
             ..Default::default()
         };
         assert_eq!(
@@ -1024,11 +1372,18 @@ mod tests {
                 "address": "c.com", "port": 51820,
                 "hysteria2Settings": {}, "hysteriaSettings": {}, "torSettings": {},
                 "openconnectSettings": {}, "openvpnClientSettings": {}, "sshSettings": {},
-                "wireguardSettings": {}, "tailscaleSettings": {}
+                "wireguardSettings": {}, "tailscaleSettings": {},
+                // 这两个**不是** `{}`，且这正是本态期望值必须实测、不能靠「反正都带 skip」推断的
+                // 活证据：`SnellSettings::version` 与 `ShadowsocksSettings::{method,password}`
+                // 是必填标量，没有 `skip_serializing_if`，缺省值照发。
+                "snellSettings": { "version": 0 },
+                "shadowsocksSettings": { "method": "", "password": "" },
+                "wsSettings": {}, "httpSettings": {}
             }),
-            "在场的装箱字段即使内容全缺省，键也必须在、值恰为 `{{}}` —— 空对象与缺席是两回事：\
+            "在场的装箱字段即使内容全缺省，键也必须在、值恰为实测形状 —— 空对象与缺席是两回事：\
              真机上「新建了 TS 节点还没填任何设置」就是这个形态（`tailscaleSettings: {{}}`），\
-             丢了它，节点回读时会当成从没配过。子结构里的 `Vec` 字段也不得因为空就冒出 `[]`。"
+             丢了它，节点回读时会当成从没配过。子结构里的 `Vec` / `BTreeMap` 字段也不得因为空就\
+             冒出 `[]` / `{{}}`。"
         );
     }
 

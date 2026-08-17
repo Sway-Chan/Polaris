@@ -1017,11 +1017,11 @@ mod tests {
     #[test]
     fn shadowsocks_method_password() {
         let mut s = server(Protocol::Shadowsocks, "ss.com");
-        s.shadowsocks_settings = Some(ps::ShadowsocksSettings {
+        s.shadowsocks_settings = Some(Box::new(ps::ShadowsocksSettings {
             method: "aes-256-gcm".into(),
             password: "secret".into(),
             ..Default::default()
-        });
+        }));
         let ob = build_proxy_outbound(&s, "proxy-s1", &test_dial_resolver(), "x64", "linux");
         assert_eq!(ob.method.as_deref(), Some("aes-256-gcm"));
         assert_eq!(ob.password.as_deref(), Some("secret"));
@@ -1663,10 +1663,10 @@ mod tests {
         let mut s = server(Protocol::Vless, "w.com");
         s.uuid = Some("u".into());
         s.network = Some("ws".into());
-        s.ws_settings = Some(ps::WebSocketSettings {
+        s.ws_settings = Some(Box::new(ps::WebSocketSettings {
             path: Some("/ws?ed=2560".into()),
             ..Default::default()
-        });
+        }));
         let ob = build_proxy_outbound(&s, "proxy-s1", &test_dial_resolver(), "x64", "linux");
         let t = ob.transport.as_ref().unwrap();
         assert_eq!(t.type_field, "ws");

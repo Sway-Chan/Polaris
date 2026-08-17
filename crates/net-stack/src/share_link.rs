@@ -279,9 +279,11 @@ fn apply_transport_settings(
     };
     config.network = Some(net.to_string());
     match net {
-        "ws" | "httpupgrade" => config.ws_settings = Some(parse_websocket_settings(params)),
+        "ws" | "httpupgrade" => {
+            config.ws_settings = Some(Box::new(parse_websocket_settings(params)))
+        }
         "grpc" => config.grpc_settings = Some(parse_grpc_settings(params)),
-        "http" => config.http_settings = Some(parse_http_settings(params)),
+        "http" => config.http_settings = Some(Box::new(parse_http_settings(params))),
         // tcp 无额外配置。
         _ => {}
     }
@@ -696,7 +698,7 @@ fn parse_snell(u: &Url, id_gen: &mut impl FnMut() -> String) -> Result<ServerCon
 
     let mut c = new_config(id_gen, b.name, Protocol::Snell, b.address, b.port);
     c.password = Some(psk); // psk 复用 password 字段（同 trojan/hysteria2 惯例）
-    c.snell_settings = Some(snell);
+    c.snell_settings = Some(Box::new(snell));
     Ok(c)
 }
 
@@ -729,11 +731,11 @@ fn parse_shadowsocks(
     }
     let (method, password) = decode_ss_userinfo(user_info, u.password())
         .map_err(|e| format!("Shadowsocks URL 格式错误: {e}"))?;
-    c.shadowsocks_settings = Some(ShadowsocksSettings {
+    c.shadowsocks_settings = Some(Box::new(ShadowsocksSettings {
         method,
         password,
         ..Default::default()
-    });
+    }));
 
     let params = Params::from_url(u);
     if let Some(plugin) = params.get_ne("plugin") {
@@ -1009,7 +1011,7 @@ fn parse_vmess(raw_url: &str, id_gen: &mut impl FnMut() -> String) -> Result<Ser
     match net {
         // httpupgrade 与 ws 同款 path/host 承载（sing-box 支持 vmess+httpupgrade）。
         "ws" | "httpupgrade" => {
-            c.ws_settings = Some(WebSocketSettings {
+            c.ws_settings = Some(Box::new(WebSocketSettings {
                 path: Some(path.unwrap_or("/".into())),
                 headers: host.map(|h| {
                     let mut m = std::collections::BTreeMap::new();
@@ -1017,14 +1019,14 @@ fn parse_vmess(raw_url: &str, id_gen: &mut impl FnMut() -> String) -> Result<Ser
                     m
                 }),
                 ..Default::default()
-            });
+            }));
         }
         "http" => {
-            c.http_settings = Some(HttpSettings {
+            c.http_settings = Some(Box::new(HttpSettings {
                 path: Some(path.unwrap_or("/".into())),
                 host: host.map(|h| h.split(',').map(str::to_string).collect()),
                 ..Default::default()
-            });
+            }));
         }
         "grpc" => {
             c.grpc_settings = Some(GrpcSettings {

@@ -97,13 +97,13 @@ fn apply_stream_settings(server: &mut ServerConfig, ss: Option<&Value>) {
             let headers = ws.and_then(|w| w.get("headers"));
             let host = str_ne(headers.and_then(|h| h.get("Host")))
                 .or_else(|| str_ne(headers.and_then(|h| h.get("host"))));
-            server.ws_settings = Some(WebSocketSettings {
+            server.ws_settings = Some(Box::new(WebSocketSettings {
                 path: Some(
                     str_ne(ws.and_then(|w| w.get("path"))).unwrap_or_else(|| "/".to_string()),
                 ),
                 headers: host.map(host_header),
                 ..Default::default()
-            });
+            }));
         }
         "grpc" => {
             server.network = Some("grpc".to_string());
@@ -120,7 +120,7 @@ fn apply_stream_settings(server: &mut ServerConfig, ss: Option<&Value>) {
             server.network = Some("http".to_string());
             let h2 = ss.get("httpSettings");
             let host_val = h2.and_then(|h| h.get("host"));
-            server.http_settings = Some(HttpSettings {
+            server.http_settings = Some(Box::new(HttpSettings {
                 path: Some(
                     str_ne(h2.and_then(|h| h.get("path"))).unwrap_or_else(|| "/".to_string()),
                 ),
@@ -132,19 +132,19 @@ fn apply_stream_settings(server: &mut ServerConfig, ss: Option<&Value>) {
                     other => str_ne(other).map(|h| vec![h]),
                 },
                 ..Default::default()
-            });
+            }));
         }
         "httpupgrade" => {
             server.network = Some("httpupgrade".to_string());
             let hu = ss.get("httpupgradeSettings");
             let host = str_ne(hu.and_then(|h| h.get("host")));
-            server.ws_settings = Some(WebSocketSettings {
+            server.ws_settings = Some(Box::new(WebSocketSettings {
                 path: Some(
                     str_ne(hu.and_then(|h| h.get("path"))).unwrap_or_else(|| "/".to_string()),
                 ),
                 headers: host.map(host_header),
                 ..Default::default()
-            });
+            }));
         }
         // DESIGN-REVIEW(xray-transport-fallback)：未知传输静默降级 tcp（忠实 上游；与 #263 相反）。
         _ => server.network = Some("tcp".to_string()),
@@ -299,11 +299,11 @@ fn map_xray_outbound(
                 sub_id,
                 now,
             );
-            server.shadowsocks_settings = Some(ShadowsocksSettings {
+            server.shadowsocks_settings = Some(Box::new(ShadowsocksSettings {
                 method,
                 password,
                 ..Default::default()
-            });
+            }));
             apply_stream_settings(&mut server, o.get("streamSettings"));
             Some(server)
         }
