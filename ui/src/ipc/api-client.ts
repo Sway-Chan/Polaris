@@ -1018,6 +1018,18 @@ export interface UpdateInstallResult {
   detail?: string;
 }
 
+/**
+ * `update:progress` 的一帧（= Rust `commands/updater.rs::progress_payload`，字段集由
+ * `contracts/update-progress-payload.test.ts` 双向对拍）。
+ *
+ * # 帧里为什么带着「随行事实」而不只是一个状态
+ *
+ * 本事件走 `events::broadcast` fan-out 给**所有**窗口 ⇒ 别的窗口发起的下载（启动自动下载腿
+ * `startup_tasks::spawn_auto_download`、弹窗「更新/重试」腿 `update_popup_action`）同样会把
+ * **设置页**推进 downloading/downloaded/error，而设置页**拿不到那次 invoke 的回包**。
+ * 帧里只有状态时，设置页只能拿本页上一次检查的结果去描述别人刚下的那个包 —— 版本号、体积、
+ * 安装路径全都不是这条路径上真实发生的那件事。故状态所依赖的数据必须与状态同帧同行。
+ */
 export interface UpdateProgress {
   status:
     | 'idle'
@@ -1030,6 +1042,20 @@ export interface UpdateProgress {
   percentage: number;
   message: string;
   error?: string;
+  /**
+   * 本帧描述的那份包的发布清单（**每一帧都有**：Rust 侧它是 `progress_payload` 的形参，
+   * 不是可选项）。设置页据此渲染版本号 / 体积 / 预发布档次，并在 error 态拿它重试。
+   */
+  updateInfo?: UpdateInfo;
+  /** 已落位的安装包路径；**仅 `downloaded` 帧有**（Rust `ProgressStage::Downloaded` 的必填字段）。 */
+  filePath?: string;
+  /**
+   * 已收字节；**仅 `downloading` 帧有**。是下载回调给的原值，不是从 `percentage` 反推的估算
+   * （百分比被夹在 `1..=99` 且按整数去重，反推出来的字节数每一帧都是错的）。
+   */
+  receivedBytes?: number;
+  /** 摘要是否逐字节校验过；**仅 `downloaded` 帧有**（与 `updateApi.download()` 回包的同名字段同源）。 */
+  verified?: boolean;
 }
 
 export const updateApi = {

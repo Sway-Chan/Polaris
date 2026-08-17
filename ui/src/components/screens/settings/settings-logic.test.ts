@@ -38,8 +38,10 @@ import {
   releaseShipsDigest,
   appDownloadIntegrity,
   progressResetsIntegrity,
+  updateCardPatch,
+  type ProgressDrivenState,
 } from './settings-logic';
-import type { UpdateProgress } from '@/ipc/api-client';
+import type { UpdateInfo, UpdateProgress } from '@/ipc/api-client';
 
 describe('defaultOn —— 缺省为开的三态布尔', () => {
   it('仅显式 false 判关', () => {
@@ -909,6 +911,148 @@ describe('progressResetsIntegrity —— 对整个 status 联合闭合的真值�
 });
 
 /**
+ * `updateCardPatch` —— 「一帧 → 卡片的一次完整变更」的真值表。
+ *
+ * # 本门守的那件事
+ *
+ * 设置页被 `update:progress` 推着走的三个态（downloading / downloaded / error），其**随行事实**
+ * （这份包的清单、落位路径、已收字节）必须与态同帧到手。此前监听器只搬状态，事实全部来自本页
+ * 自己上一次的操作 ⇒ 由别的窗口发起的下载走完后，「重启并安装」与「重试」双双是哑键、版本号
+ * 与体积说的是另一个版本。判定既然收进了这一个纯函数，本门就在这里把它逐格钉死。
+ *
+ * # 为什么期望表也写成 `Record<UpdateProgress['status'], …>`
+ *
+ * 两侧都靠类型强制全键：`status` 联合将来加一个成员 ⇒ 实现那张 `PROGRESS_CARD_RULE` 与这张
+ * 期望表**同时 tsc 红**，而不是变成监听器里「第四个没人补的分支」这种运行期静默漏项。
+ *
+ * **变异探针**：把 `PROGRESS_CARD_RULE.downloaded.takesIntegrity` 改成 `false` ⇒ 第 4 组转红；
+ * 把 `path: p.filePath ?? null` 改成恒 `null` ⇒ 第 4 组转红；把 `error` 那格的
+ * `takesError` 改成 `false` ⇒ 第 5 组转红；把 `info: p.updateInfo ?? null` 改成恒 `null`
+ * ⇒ 第 2 / 4 / 5 组同时转红。
+ */
+describe('updateCardPatch —— 态与随行事实同帧落地', () => {
+  /** 一份带**未知字段**的清单：用来证明清单是原样带过去的，不是被逐字段抄了一遍。 */
+  const INFO = {
+    version: 'v1.2.0',
+    title: 'Polaris v1.2.0',
+    releaseNotes: '…',
+    downloadUrl: 'https://example.invalid/polaris.dmg',
+    fileSize: 52_000_000,
+    publishedAt: '2026-08-01T00:00:00Z',
+    isPrerelease: false,
+    fileName: 'polaris.dmg',
+    sha256: 'a'.repeat(64),
+    // 契约将来加字段时，这一格证明它不会在前端被静默吃掉。
+    futureField: 'kept',
+  } as unknown as UpdateInfo;
+
+  const frame = (p: Partial<UpdateProgress> & { status: UpdateProgress['status'] }): UpdateProgress =>
+    ({ percentage: 0, message: '', updateInfo: INFO, ...p });
+
+  /**
+   * 逐个 status 该把卡片推进哪个态；`null` = 本帧与更新卡无关，**一个字段都不动**。
+   *
+   * 后四格是联合里有、后端今天不发的取值：列出来是为了让表对**整个类型**闭合，而不是对
+   * 「今天恰好发什么」闭合。
+   */
+  const EXPECTED: Record<UpdateProgress['status'], ProgressDrivenState | null> = {
+    idle: null,
+    checking: null,
+    'no-update': null,
+    'update-available': null,
+    downloading: 'downloading',
+    downloaded: 'downloaded',
+    error: 'error',
+  };
+
+  it('① 逐个 status 断言推进到哪个态（键由类型穷尽，不是手写数组）', () => {
+    const statuses = Object.keys(EXPECTED) as UpdateProgress['status'][];
+    // 取材自检：键集空/塌缩会让下面的循环 0 次断言而「恰好」全绿。
+    expect(statuses.length, '期望表键数不对（联合是 7 个成员）').toBe(7);
+    for (const status of statuses) {
+      expect(updateCardPatch(frame({ status }))?.us ?? null, `${status} 推进的态与真值表不符`).toBe(
+        EXPECTED[status],
+      );
+    }
+  });
+
+  it('② 不描述下载的帧整帧丢弃 —— 绝不留下「改了态没带事实」的中间形态', () => {
+    for (const status of ['idle', 'checking', 'no-update', 'update-available'] as const) {
+      // `null` 而不是「一个 us 为空的 patch」：调用方只有一个 `if (!patch) return`，
+      // 返回半个 patch 就会让事实落地而态不动 —— 那是同一条缺陷方向反过来。
+      expect(updateCardPatch(frame({ status })), `${status} 不该产出 patch`).toBeNull();
+    }
+    // 正向对照：确实有产出 patch 的帧（否则上面那条在「函数恒返 null」时也绿）。
+    expect(updateCardPatch(frame({ status: 'downloading' }))).not.toBeNull();
+  });
+
+  it('③ downloading：带已收字节与百分比，不表态失败文案与校验结论', () => {
+    const patch = updateCardPatch(
+      frame({ status: 'downloading', percentage: 37, receivedBytes: 19_240_000 }),
+    );
+    expect(patch?.us).toBe('downloading');
+    expect(patch?.received, '已收字节没被搬过来 ⇒ 卡片只能从百分比反推（每帧都是错的）').toBe(
+      19_240_000,
+    );
+    expect(patch?.percentage).toBe(37);
+    expect(patch?.info, '清单没被搬过来 ⇒ 卡片的版本号与体积说的是另一个版本').toBe(INFO);
+    expect(patch?.path, '下载中不该有落位路径').toBeNull();
+    expect(patch?.error, '非失败帧不得表态错误文案（会盖掉 manual 态那条说明）').toBeNull();
+    expect(patch?.integrity, '还没下完就没有校验结论').toBeNull();
+    // 后端没给 Content-Length 时中间帧不发；`receivedBytes` 缺席须落 `null`，不是 `0`
+    // （`0` 是「确实一个字节都没收到」，两者不可混为一谈）。
+    expect(updateCardPatch(frame({ status: 'downloading' }))?.received).toBeNull();
+  });
+
+  it('④ downloaded：带落位路径 + 校验结论，且清单逐字原样', () => {
+    const patch = updateCardPatch(
+      frame({ status: 'downloaded', percentage: 100, filePath: '/tmp/updates/polaris.dmg', verified: true }),
+    );
+    expect(patch?.us).toBe('downloaded');
+    expect(patch?.path, '落位路径没被搬过来 ⇒ 「重启并安装」首行恒早退（哑键）').toBe(
+      '/tmp/updates/polaris.dmg',
+    );
+    // 「不丢字段」：清单是原样带过去的同一个对象，不是被逐字段抄了一遍的副本。
+    expect(patch?.info).toBe(INFO);
+    expect((patch?.info as unknown as { futureField?: string })?.futureField).toBe('kept');
+    expect(patch?.error).toBeNull();
+    // 校验结论走 `appDownloadIntegrity`（与 `update_download` 回包同一套三态映射）。
+    expect(patch?.integrity).toBe('verified');
+    expect(
+      updateCardPatch(frame({ status: 'downloaded', filePath: '/x', verified: false }))?.integrity,
+      'verified:false 必须如实落 unverified —— 外部腿下的无摘要包也该出警告',
+    ).toBe('unverified');
+    expect(
+      updateCardPatch(frame({ status: 'downloaded', filePath: '/x' }))?.integrity,
+      '字段缺席 = 不知道，不得折叠成 verified（假绿）或 unverified（凭空造警告）',
+    ).toBe('unknown');
+  });
+
+  it('⑤ error：带成因文案与清单（重试的前提），不带落位路径', () => {
+    const patch = updateCardPatch(frame({ status: 'error', message: 'x', error: '下载更新包失败' }));
+    expect(patch?.us).toBe('error');
+    expect(patch?.error).toBe('下载更新包失败');
+    expect(patch?.info, '清单没被搬过来 ⇒ 「重试」首行恒早退（哑键）').toBe(INFO);
+    expect(patch?.path, '失败不落位 ⇒ 不得留下一个指向不存在文件的安装入口').toBeNull();
+    expect(patch?.integrity, '失败帧不表态校验结论（盘上那份旧包的结论仍成立）').toBeNull();
+    // `error` 缺席时回落 `message`（两者在 Rust 侧同源，后端只填其一时不至于丢掉成因）。
+    expect(updateCardPatch(frame({ status: 'error', message: '建更新缓存目录失败' }))?.error).toBe(
+      '建更新缓存目录失败',
+    );
+    // 两者都空 ⇒ `''`（「失败但没说为什么」），**不是** `null`（那是「本帧不表态」）——
+    // 调用方据 `!== null` 决定要不要回落到本地文案，混同就再没有回落时机。
+    expect(updateCardPatch(frame({ status: 'error' }))?.error).toBe('');
+  });
+
+  it('⑥ 恰好三条 status 产出 patch，且正是后端真会发的那三条', () => {
+    const producing = (Object.keys(EXPECTED) as UpdateProgress['status'][]).filter(
+      (s) => updateCardPatch(frame({ status: s })) !== null,
+    );
+    expect(producing.sort()).toEqual(['downloaded', 'downloading', 'error']);
+  });
+});
+
+/**
  * 剥注释内核：用 TS 自己的 parser 逐 token 取注释区间并抹成空格（保留换行与偏移，行号不漂）。
  *
  * # 为什么本文件所有源码级判据都必须先剥注释
@@ -1055,19 +1199,17 @@ describe('无摘要明示：接线面 + 五语文案', () => {
     expect(listener).toMatch(
       /if \(progressResetsIntegrity\(p\.status\)\) setDownloadIntegrity\('unknown'\);/,
     );
-    // 反向：status 分支体内不得再出现复位（谓词是唯一判据）。
-    // **这条排在计数之前**：分支里多补一次同样会让计数不符，若计数先报，本条就永远不是首个
-    // 失败者 = 一条报不出话的装饰断言。排在前面它才能指出「多的那次在哪个分支」。
-    for (const arm of ['downloading', 'downloaded', 'error'] as const) {
-      const armStart = listener.indexOf(`p.status === '${arm}'`);
-      expect(armStart, `监听器缺 ${arm} 分支`).toBeGreaterThan(-1);
-      const armBody = listener.slice(armStart, listener.indexOf('}', armStart + 20));
-      expect(armBody.length, `${arm} 分支取材为空`).toBeGreaterThan(20);
-      expect(
-        armBody.includes("setDownloadIntegrity('unknown')"),
-        `${arm} 分支里不得再内联复位（判据只有真值表一处）`,
-      ).toBe(false);
-    }
+    // 反向：监听器里**一个 status 分支都不许有**（判据全在真值表里）。
+    //
+    // 前身是「逐个 status 分支取臂体、断言臂体内不得再复位」——那是**枚举型判据**：射程被钉死在
+    // 当时那三个分支上，联合里多一个取值就静默漏掉一格；而 W5 把监听器整体改成「一帧一次
+    // `updateCardPatch`」之后，那三个分支根本不存在了，旧断言只会在「监听器缺 downloading 分支」
+    // 上误红。现在的形态更强：分支存在本身就是违规，故直接禁掉 `p.status ===` 这个形状。
+    // 复位是否发生仍由下面的计数说话，两条合起来射程严格宽于前身。
+    expect(
+      /p\.status\s*===/.test(listener),
+      '监听器又开始按 status 分支取事实 —— 那是枚举型判据，判定必须全部下达给真值表',
+    ).toBe(false);
     const listenerResets = listener.match(/setDownloadIntegrity\('unknown'\)/g) ?? [];
     expect(listenerResets.length, '监听器只许有一个复位调用点（多于一个 = 枚举又长回来了）').toBe(1);
 
@@ -1209,50 +1351,51 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
    * 不差 —— 抄三遍只是噪声。档次这个**事实**由徽标在三条腿上持续持有，**解释**留在做决定的那屏。
    */
   /**
-   * 徽标的**资格判据**：安装屏那两条腿只在「盘上这份是本页下的」时才敢说档次。
+   * 徽标（连同版本号、体积、安装路径）描述的必须是**事件送来的那份包**。
    *
-   * `updateInfo` 描述的是本页**上一次检查**的结果，而 `us` 会被**别的窗口**的下载广播推到
-   * `downloaded`（弹窗「更新/重试」、`spawn_auto_download`）—— 那时两者毫无因果关系：用户查到
-   * `v1.3.0-beta.1` 没下、外部腿下了 `v1.2.0` 正式包 ⇒ 卡片举着预发布徽标去描述一份正式包。
+   * # 被守的那件事
    *
-   * 判据取 `downloadedPath`：它的**唯一**写点是 `downloadUpdate` 的成功分支（外部广播那条腿从不
-   * 设它）⇒ 恰好等价于「这次下载是本页完成的」。漏报（外部腿下的预发布不显示徽标）方向安全，
-   * 正解归 W5。
+   * `update:progress` 走 `events::broadcast` fan-out 给所有窗口 ⇒ 把设置页推进
+   * `downloading` / `downloaded` / `error` 的路径**大多不是本页发起的**（启动自动下载腿
+   * `spawn_auto_download`、弹窗「更新·重试」腿 `update_popup_action`），而本页拿不到那几次的
+   * invoke 回包。事件只搬状态、不搬状态所依赖的数据时，卡片只能拿本页上一次检查的结果去描述
+   * 别人刚下的那份包 —— 三条已核实的后果：「重启并安装」无 `downloadedPath` 恒早退（哑键）、
+   * 「重试」无 `updateInfo` 恒早退（哑键）、版本号/体积写的是另一个版本。
    *
-   * **为什么不是「清空 `updateInfo`」**：那条会让 `us==='error'` 的「重试」（该分支唯一按钮，
-   * 直通 `downloadUpdate` 首行 `if (!updateInfo) return`）变成哑键 —— 用真缺陷换假话，不划算。
-   * 本门连带把这条也钉住：`downloadUpdate` 的入口守卫仍在，且监听器**不得**清空 `updateInfo`。
+   * # 判据为什么落在**监听器的写入形态**上，而不是 JSX 上
    *
-   * **变异探针**：任一腿去掉 `downloadedPath &&` ⇒ 转红；监听器里加回 `setUpdateInfo(null)` ⇒ 转红。
+   * JSX 那半（徽标挂在 `updateInfo?.isPrerelease` 上）由上面两道门守着，它们只能证明「徽标由
+   * 档次判据驱动」，证明不了「那个 `updateInfo` 说的是哪份包」。后者是**数据从哪来**的问题，
+   * 只有监听器答得了：态与随行事实必须由同一帧、经**同一个** `updateCardPatch` 一次性落地。
+   *
+   * 前身（W4）走的是另一条路：给安装屏两条腿的徽标前置 `downloadedPath &&` 做资格审查
+   * （`downloadedPath` 当时的唯一写点是 `downloadUpdate` 的成功分支 ⇒ 恰好等价于「这次是本页
+   * 下的」）。那是**收窄断言**，止住了误报，代价是外部腿下的预发布包不显示徽标（漏报），
+   * 且版本号那半根本收不住。随行事实到位后正解替下收窄：本门因此**反向**断言资格判据已撤 ——
+   * 加回去 = 漏报重现。
+   *
+   * **变异探针**：删掉监听器里的 `setUpdateInfo(patch.info)` ⇒ 第 3 组转红（徽标与版本号又开始
+   * 描述上一次检查的包）；删掉 `setDownloadedPath(patch.path)` ⇒ 第 3 组转红（「重启并安装」变
+   * 哑键）；在 `downloadUpdate` 里加回 `setDownloadedPath(r.filePath ?? null)` ⇒ 第 4 组转红
+   * （落位路径又有了两个写点）；给任一腿加回 `downloadedPath &&` ⇒ 第 1 组转红。
    */
-  it('安装屏的徽标只描述本页下的那份包（不清数据，只收窄断言）', async () => {
+  it('安装屏描述的是事件送来的那份包（随行事实与态同帧落地）', async () => {
     const src = await readTsx();
-    for (const state of ['downloaded', 'manual'] as const) {
-      const block = stateBlock(src, state);
+
+    // ① 三条腿的徽标判据**逐字同形**：`{updateInfo?.isPrerelease && (` 直接起手，前面不许再有
+    //    任何资格判据。正则一路咬到 `prereleaseTag` —— `available` block 里
+    //    `updateInfo.isPrerelease` 出现**两次**（徽标 + 下面的 `prereleaseNote` 说明），
+    //    只判开头会被说明那条喂饱（本仓刚在这一格栽过）。
+    for (const state of ['available', 'downloaded', 'manual'] as const) {
       expect(
-        /\{downloadedPath && updateInfo\?\.isPrerelease &&/.test(block),
-        `${state} 态的预发布徽标没有由 downloadedPath 把关 —— 会贴到别的窗口下的正式包上`,
+        /\{updateInfo\??\.isPrerelease\s*&&\s*\([\s\S]{0,240}?prereleaseTag/.test(
+          stateBlock(src, state),
+        ),
+        `${state} 态的徽标被前置了资格判据 —— 随行事实已到位，收窄只会让外部腿下的预发布包漏标`,
       ).toBe(true);
     }
-    // `available` 是本页自己刚查出来的结果，数据源就是对的，不该也被这条判据挡住
-    // （那一屏 `downloadedPath` 恒为 null ⇒ 加了资格判据 = 徽标在**决策那一屏**彻底消失，
-    // 而那正是整批的立项理由）。
-    //
-    // ⚠️ 正则必须一路咬到 `prereleaseTag`：该 block 里 `updateInfo.isPrerelease` 出现**两次**
-    // （徽标 + 下面的 `prereleaseNote` 说明），只判「有没有这个开头」会被**说明那条**喂饱 ——
-    // 给徽标也加上 `downloadedPath &&` 时本条照样绿。这与 Rust 侧「别的臂替本臂作证」同形，
-    // 换到了 JSX 上。
-    //
-    // `\??` 与 `\s*` 两轴与 sibling（上一条门）对齐：把这里规范成 `updateInfo?.isPrerelease`
-    // 纯属风格统一，不该让本门红而 sibling 绿、消息还说「被多加了资格判据」—— 那是在与意图无关的
-    // 轴上更严。放宽零削弱：`\{` 紧接 `updateInfo` 已经排除任何前置资格判据。
-    expect(
-      /\{updateInfo\??\.isPrerelease\s*&&\s*\([\s\S]{0,240}?prereleaseTag/.test(
-        stateBlock(src, 'available'),
-      ),
-      'available 态的徽标被多加了资格判据 —— 那一屏的 updateInfo 本来就是本页查的，加了等于徽标消失',
-    ).toBe(true);
-    // 反向：绝不能回到「清空 updateInfo」那条路（会让 error 态的「重试」变哑键）。
+
+    // ② 反向：绝不能回到「清空 updateInfo」那条路（会让 error 态的「重试」变哑键）。
     expect(
       src.includes('setUpdateInfo(null)'),
       '监听器又开始清空 updateInfo —— error 态的「重试」会变成哑键',
@@ -1261,8 +1404,102 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
       src.includes('if (!updateInfo) return'),
       'downloadUpdate 的入口守卫没了 —— 上面那条反向断言就失去了意义',
     ).toBe(true);
+
+    // ③ 监听器：**每一样**随行事实都由同一帧的 patch 落地，且各只有一个写点。
+    //    表由 `UpdateCardPatch` 的字段名驱动，不是手抄一串 setter 名字：patch 加一个字段却忘了
+    //    接线时，这里不会自动红，但它至少把「哪个 setter 该拿哪个字段」钉成了逐字对应，
+    //    改错一处（如 `setProgress(patch.received)`）当场转红。
+    const listener = (() => {
+      const a = src.indexOf('updateApi.onProgress(');
+      const b = src.indexOf('async function checkUpdate(');
+      expect(a, '取材锚点不在了：updateApi.onProgress(').toBeGreaterThan(-1);
+      expect(b, '取材锚点不在了：async function checkUpdate(').toBeGreaterThan(a);
+      return src.slice(a, b);
+    })();
+    expect(listener.includes('updateCardPatch(p)'), '监听器不再经 updateCardPatch 判定').toBe(true);
+    // 本帧与更新卡无关时必须**整帧丢弃**：只 return 一半就会留下「改了态没带事实」的中间形态。
+    expect(listener).toMatch(/if \(!patch\) return;/);
+    const WIRING: Readonly<Record<string, string>> = {
+      setUs: 'patch.us',
+      setUpdateInfo: 'patch.info',
+      setDownloadedPath: 'patch.path',
+      setReceivedBytes: 'patch.received',
+      setProgress: 'patch.percentage',
+    };
+    for (const [setter, field] of Object.entries(WIRING)) {
+      const calls = listener.match(new RegExp(`${setter}\\(`, 'g')) ?? [];
+      expect(calls.length, `监听器里 ${setter} 必须恰好一个调用点`).toBe(1);
+      expect(
+        listener.includes(`${setter}(${field});`),
+        `${setter} 没有接在 ${field} 上 —— 态与随行事实必须来自同一帧的同一个 patch`,
+      ).toBe(true);
+    }
+
+    // ④ 落位路径的**唯一**写点就是上面那处：从 `update_download` 回包里另写一份只覆盖得到
+    //    「本页自己下的那次」，而「重启并安装」变哑键的恰恰是其余那几条腿。
+    const pathWrites = src.match(/setDownloadedPath\(/g) ?? [];
+    expect(pathWrites.length, 'downloadedPath 只许有一个写点（= 进度帧那处）').toBe(1);
+    // 清单有两个写点，各有各的理由：`checkUpdate` 是本页自己查的，监听器是事件送来的。
+    const infoWrites = src.match(/setUpdateInfo\(/g) ?? [];
+    expect(infoWrites.length, 'updateInfo 写点 = checkUpdate 一处 + 监听器一处').toBe(2);
   });
 
+  /**
+   * 三条后果的收口门：两个哑键 + 「0.0 / 0.0 MB」。
+   *
+   * 与上一条门正交：那条守「事实从哪来」，本条守「拿到事实之后 UI 真的用上了、且用户点得动」。
+   *
+   * **变异探针**：把 `downloading` 卡的左半边改回 `(progress / 100) * fileSize` ⇒ 第 2 组转红；
+   * 删掉 error 态那个「检查更新」按钮 ⇒ 第 3 组转红；把「重试」按钮的 `updateInfo &&` 去掉
+   * ⇒ 第 3 组转红。
+   */
+  it('两个哑键与假进度都收口（安装入口 / 重试 / 已下载字节）', async () => {
+    const src = await readTsx();
+
+    // ① 「重启并安装」仍以 `downloadedPath` 为唯一入参 —— 上一条门保证了它在 downloaded 态非空。
+    expect(
+      src.includes('if (!downloadedPath) return;'),
+      'installUpdate 的入口守卫没了 —— 那条门守的「路径必须到位」就没有了受益方',
+    ).toBe(true);
+    expect(
+      stateBlock(src, 'downloaded').includes('restartAndInstall'),
+      'downloaded 态缺「重启并安装」入口',
+    ).toBe(true);
+
+    // ② 下载中卡片的字节数取帧里的原值，**不得**从百分比反推（百分比被 `progress_percent`
+    //    夹在 1..=99 且按整数去重 ⇒ 反推出来的字节数每一帧都是错的）。
+    const downloading = stateBlock(src, 'downloading');
+    expect(downloading.includes('receivedBytes'), 'downloading 卡不消费 receivedBytes').toBe(true);
+    expect(
+      /progress\s*\/\s*100/.test(downloading),
+      'downloading 卡又开始从百分比反推字节数 —— 那个数在每一帧上都是错的',
+    ).toBe(false);
+    expect(
+      downloading.includes('updateInfo?.fileSize'),
+      'downloading 卡的分母必须来自本帧随行的清单',
+    ).toBe(true);
+
+    // ③ error 态：重试挂在「有清单」上，且**无条件**另有一个出口 —— 此前本态只有「重试」
+    //    一个按钮，重试再失败就一直停在红卡上，用户只能把组件卸载重挂才回得到 idle。
+    const errorBlock = stateBlock(src, 'error');
+    expect(
+      /\{updateInfo && \([\s\S]{0,200}?common\.retry/.test(errorBlock),
+      'error 态的「重试」没有挂在 updateInfo 上 —— 没有清单时它必然静默早退（哑键）',
+    ).toBe(true);
+    expect(
+      /onClick=\{checkUpdate\}/.test(errorBlock),
+      'error 态没有第二个出口 —— 用户会被卡在这张红卡里',
+    ).toBe(true);
+    // 出口不许也被条件包住（它是这里唯一不依赖任何随行事实的动作）。
+    const exitAt = errorBlock.indexOf('onClick={checkUpdate}');
+    const retryAt = errorBlock.indexOf('onClick={downloadUpdate}');
+    expect(retryAt, 'error 态缺「重试」').toBeGreaterThan(-1);
+    expect(exitAt, 'error 态缺出口').toBeGreaterThan(retryAt);
+    expect(
+      errorBlock.slice(retryAt, exitAt).includes(')}'),
+      '两个按钮之间没有条件块的收尾 —— 出口可能被和「重试」包在同一个条件里',
+    ).toBe(true);
+  });
   it('说明文案挂在决策那一屏', async () => {
     const src = await readTsx();
     expect(stateBlock(src, 'available').includes('prereleaseNote'), 'available 态缺档次说明').toBe(
