@@ -54,7 +54,9 @@ use polaris_updater::github::{
     check_app_update, find_suitable_singbox_asset, github_releases_api_url, AppUpdateCheck,
     AssetArch, AssetPlatform, GithubRelease, APP_UPDATE_REPO, CORE_UPDATE_REPO,
 };
-use polaris_updater::popup::{PopupAction, UpdatePopupState, DONE_AUTO_CLOSE_MS};
+use polaris_updater::popup::{
+    PopupAction, UpdatePopupState, DONE_AUTO_CLOSE_MS, NO_UPDATE_AUTO_CLOSE_MS,
+};
 use polaris_updater::state::PopupPhase;
 use polaris_updater::traits::{UnavailableDownloader, UpdateDownloader};
 use polaris_updater::verify::verify_bytes;
@@ -271,33 +273,59 @@ fn progress_payload(info: &Value, stage: ProgressStage<'_>) -> Value {
 /// （`update_popup_show`）能产出，于是弹窗里点「更新」后窗内零反馈、`PopupAction::Cancel`
 /// （仅 Progress 合法）结构性不可达。
 fn emit_progress(app: &AppHandle, info: &Value, stage: ProgressStage<'_>) {
-    let (status, percentage, message) = stage_facts(stage);
     crate::events::broadcast(
         app,
         crate::events::channel::EVENT_UPDATE_PROGRESS,
         progress_payload(info, stage),
     );
-
-    if let Some(st) = popup_state_for(status, percentage, message) {
-        push_popup_state(app, st);
-    }
+    push_popup_state(app, popup_state_for(info, stage));
 }
 
-/// 纯映射：`update:progress` 的 `status` → mini 弹窗四态之一。
+/// 纯映射：一帧下载进度 → 弹窗状态。**与 [`progress_payload`] 同参同源**。
 ///
-/// 未知 status → `None`（**不编造**一个态：弹窗停在原态好过跳到一个凭空猜的态）。
-/// `remind` 不在此映射内 —— 它由 `update_popup_show` 产出，不是进度事件的产物。
+/// # 为什么吃 `stage` 而不是吃压平后的 `(status, percentage, message)`
+///
+/// 本函数此前的形参是那三个标量 —— 于是**落位路径与版本号在那层压平里丢了**，`done` 只剩一个
+/// 「完成」的状态字：既说不出下的是哪一版、落在哪儿，也让「复查回来没有可下的东西」能借用同一个
+/// `UpdatePopupState::done()` 收场（弹窗照画「下载完成」+ 满格进度条，而一个字节都没下）。
+/// 改吃 [`ProgressStage`] 之后，弹窗镜像与 `update:progress` 载荷读的是**同一个**类型化的帧 +
+/// 同一份清单，两屏不可能各说各话；「未知 status」也不再是一种可达输入 —— 故本函数不再返
+/// `Option`，弹窗态是**总**有的。
+///
+/// `remind` / `noupdate` 不在此映射内：前者由 `update_popup_show` 产出，后者由
+/// [`update_popup_action`] 产出，都不是进度事件的产物。
+///
+/// **逐字段解构、不用 `..`**：给变体加字段时这里必须显式表态（同 [`progress_payload`] 的理由）。
 #[must_use]
-fn popup_state_for(status: &str, percentage: u8, error: &str) -> Option<UpdatePopupState> {
-    match status {
-        "downloading" => Some(UpdatePopupState::progress(percentage)),
-        "downloaded" => Some(UpdatePopupState::done()),
-        "error" => Some(UpdatePopupState::error(if error.is_empty() {
+fn popup_state_for(info: &Value, stage: ProgressStage<'_>) -> UpdatePopupState {
+    match stage {
+        ProgressStage::Downloading {
+            percentage,
+            received,
+        } => UpdatePopupState::progress(
+            percentage,
+            Some(received),
+            // 分母取本帧随行清单的 `fileSize`（与设置页下载卡右半边同源）。缺失/为 0 时
+            // `UpdatePopupState::progress` 会把它当「分母未知」，渲染端只显示已收量。
+            info.get("fileSize").and_then(Value::as_u64),
+        ),
+        ProgressStage::Downloaded {
+            path,
+            // `verified` 不进弹窗：它已在 `update:progress` 载荷里给设置页用了，而弹窗要为它多一句
+            // 五语文案才说得清「校验过 / 没校验」——那是另一件事，本批不夹带。
+            verified: _,
+        } => UpdatePopupState::done(
+            info.get("version")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            path.to_string_lossy(),
+        ),
+        ProgressStage::Failed(msg) => UpdatePopupState::error(if msg.is_empty() {
+            // 既存的硬编码中文出口（见 `crate::i18n` 模块文档登记的 #1），本批不扩大也不新增。
             "更新失败"
         } else {
-            error
-        })),
-        _ => None,
+            msg
+        }),
     }
 }
 
@@ -1842,7 +1870,7 @@ pub async fn update_popup_action(
         PopupAction::Update | PopupAction::Retry => {
             // 复查期没有进度事件（可达 15s）→ 先把弹窗推进 progress，否则窗内零反馈。
             // 用 force：这一发正是「用户点了更新」的动作本身，闸（只放行 Progress）对它恒 false。
-            force_popup_state(&app, UpdatePopupState::progress(0));
+            force_popup_state(&app, UpdatePopupState::progress(0, None, None));
             // 口径与「产出这次邀请」的那条腿同源（见 PUSH_UPDATE_INCLUDE_PRERELEASE）：
             // 弹窗上写着哪个版本，这里复查出来的就得是哪个版本。
             let checked = update_check(
@@ -1864,27 +1892,30 @@ pub async fn update_popup_action(
                 return Ok(ApiResponse::err(msg));
             };
             let Some(info) = data.get("updateInfo").cloned().filter(|v| !v.is_null()) else {
-                // 复查后发现已是最新：弹窗停在 progress 会永远转圈 → 明确回 done（随后自动关窗）。
+                // 复查回来没有任何可下载的包：弹窗停在 progress 会永远转圈 → 推进 `noupdate` 终态
+                // （随后自动关窗）。
                 //
                 // **只推弹窗，不广播 `update:progress`**：这条路径一个字节都没下、没有 filePath，
                 // 而全局广播会让设置页的 `onProgress` 显示「已下载」并给出一个不存在的安装入口
                 // （`SettingsUpdate` 据 status==='downloaded' 判定包已就位）。弹窗是本次动作的
                 // 唯一相关方，故状态只推给它。
                 //
-                // ⚠️ **如实登记：这一档的 `done` 是句半真话，本批未修**。弹窗 `done` 渲染的是
-                // `updatePopup.downloaded`（「已下载」），而这条路径一个字节都没下。除了「你已经是
-                // 最新版」，它还有第二种到达方式：用户在设置页/横幅对**同一个版本**按过「跳过此版本」，
-                // 再回弹窗点「更新」—— 复查被 `skipped_version` 过滤成 NoUpdate，于是弹窗打个勾关掉。
-                // 与下面那道版本对账**同源**（复查结果与弹窗承诺不符），但处置不同：那边有新版本号
-                // 可以退回 `remind` 重新征求，这边没有任何可展示的目标。
+                // # 这里 2026-08-17 前推的是 `done()`，那是一句谎话
                 //
-                // 不在本批修，因为诚实的处置需要一个**新的弹窗 phase**（「该版本已不再可用」）：
-                // `PopupPhase` 是四态封闭枚举，加一档要连同 `is_valid_for` 白名单、弹窗渲染分支、
-                // 五语文案与 `update-popup-action-parity` 那道双向对拍门一起动。硬塞进现有四态只能
-                // 二选一：`done`（谎称已下载，即现状）或 `error`（把用户自己的「跳过」说成故障）——
-                // 两个都不比现状更诚实。单列一批做，判据就是这段。
-                push_popup_state(&app, UpdatePopupState::done());
-                schedule_popup_auto_close(&app);
+                // 弹窗 `done` 渲染的是「下载完成」+ 满格进度条，而这条路径一个字节都没下。它至少
+                // 有两条已核实的到达方式：① 用户已经是最新版；② 用户此前对**同一个版本**按过
+                // 「跳过此版本」，再回弹窗点「更新」，复查被 `skipped_version` 过滤成 NoUpdate。
+                // 与下面那道版本对账**同源**（复查结果与弹窗承诺不符），但处置不同：那边有新版本
+                // 号可以退回 `remind` 重新征求，这边没有任何可下载的目标可展示。
+                //
+                // **不区分成因**：`check_app_update` 判 NoUpdate 有五条路（无正式发布 / 不比当前新 /
+                // 已跳过 / 无适配本平台的资产 / 平台不受支持），回包只有一个 `hasUpdate:false`，
+                // 后端**分辨不出**是哪一条。挑一条说出来就是拿状态冒充事实 —— 那正是本批要修的病。
+                // 故只陈述确实知道的那件事：这次检查没找到 `popup.version` 的更新包。
+                //
+                // 版本号取 `popup.version`（弹窗上写着的那串字），不是复查结果 —— 复查什么都没返回。
+                push_popup_state(&app, UpdatePopupState::no_update(popup.version.clone()));
+                schedule_popup_auto_close(&app, NO_UPDATE_AUTO_CLOSE_MS);
                 return Ok(ApiResponse::ok(
                     json!({ "handled": true, "hasUpdate": false }),
                 ));
@@ -1941,7 +1972,7 @@ pub async fn update_popup_action(
             // 下载腿内部经 emit_progress 推 downloading(n%) / downloaded(100%) / error。
             let resp = update_download(app.clone(), state, info).await?;
             if resp.success {
-                schedule_popup_auto_close(&app);
+                schedule_popup_auto_close(&app, DONE_AUTO_CLOSE_MS);
             }
             Ok(resp)
         }
@@ -1952,17 +1983,22 @@ pub async fn update_popup_action(
     }
 }
 
-/// `done` 态后 [`DONE_AUTO_CLOSE_MS`] 自动关窗（= 上游 `UpdateService.ts:772` 的 800ms）。
+/// 终态后延时自动关窗。
 ///
-/// 单独 spawn 而非在命令里 sleep：命令得立刻返回给渲染端，否则弹窗按钮多转 800ms 才复位。
-fn schedule_popup_auto_close(app: &AppHandle) {
+/// 延时**由调用点传**，不是写死的 [`DONE_AUTO_CLOSE_MS`]：两个终态对用户的要求不同 ——
+/// `done` 那一屏（= 上游 `UpdateService.ts:772` 的 800ms）用户不必读字就知道发生了什么；
+/// `noupdate` 是唯一要求把一句话读完才有信息量的一屏，故取 [`NO_UPDATE_AUTO_CLOSE_MS`]。
+/// 写死一个值就等于让后者一闪而过 —— 说了等于没说。
+///
+/// 单独 spawn 而非在命令里 sleep：命令得立刻返回给渲染端，否则弹窗按钮多转这么久才复位。
+fn schedule_popup_auto_close(app: &AppHandle, delay_ms: u64) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(DONE_AUTO_CLOSE_MS)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
         let Some(rt) = app.try_state::<AppRuntime>() else {
             return;
         };
-        // 800ms 内用户若手动关了窗，`close_update_popup` 是幂等的（窗没了只清会话槽）。
+        // 延时期间用户若手动关了窗，`close_update_popup` 是幂等的（窗没了只清会话槽）。
         if let Err(e) = close_update_popup(&app, rt.updater().popup()) {
             log::debug!("done 态自动关窗失败: {e}");
         }
@@ -4915,23 +4951,59 @@ mod tests {
         );
     }
 
-    /// 🟡 **调用点守卫：复查发现「已是最新」时不得广播假的 `downloaded`。**
+    /// 🟡 **调用点守卫：复查回来「没有可下的东西」时，既不广播假的 `downloaded`，也不对弹窗
+    /// 自己谎称「已下载」。**
     ///
-    /// 那条路径一个字节都没下、没有 filePath，全局广播会让设置页 `onProgress` 显示「已下载」
-    /// 并给出一个不存在的安装入口。状态只该推给发起本次动作的弹窗。
+    /// # 这道门此前只守住了一半
+    ///
+    /// 旧判据是「函数体里必须出现 `push_popup_state(&app, UpdatePopupState::done())`」+「函数体里
+    /// 不得出现 `ProgressStage::Downloaded`」。它守的是**广播给设置页的那一份**（后半条），而
+    /// 前半条**要求**把 `done()` 推给弹窗自己 —— 于是「一个字节都没下」在发起本次动作的那一屏上
+    /// 被渲染成 `updatePopup.downloaded`（「下载完成」）+ 满格进度条。门在，守的方向漏了发起方。
+    ///
+    /// 新判据把「推出 progress」与「推的是哪一档」拆开：仍必须把弹窗推出 progress（否则永远转圈），
+    /// 但那一档必须是 `no_update`；`done` 在本臂**一次都不许出现**。`UpdatePopupState::done` 现在
+    /// 是必填落位路径的构造函数，本臂根本没有路径可传 —— 源码门与类型闸在此重合，两道都留着：
+    /// 类型挡「拿不出路径」，本门挡「随手编一个路径喂给它」。
+    ///
+    /// # 判据限定在 `Update | Retry` 臂内
+    ///
+    /// 正向断言若打在整个函数体上，把这发推送搬进别的臂（或将来别处新增一发 `no_update`）就能
+    /// 替本臂作证 —— 本仓在同一个函数上栽过两次（见 `guard_scan::match_arm_body` 文档）。
+    /// 负向断言（不得广播 `ProgressStage::Downloaded`）**故意保持全函数**：任何一条臂都不许广播，
+    /// 那是更强的形态，与 `recheck_failures_settle_the_popup_without_broadcasting` 同一取向。
+    ///
+    /// **变异探针**：把 `no_update(...)` 改回 `done(popup.version.clone(), "")` ⇒ 两条正向断言与
+    /// 「不得出现 done」同时转红；把那发推送整个删掉 ⇒ 「必须推出 progress」转红；
+    /// 把它挪进 `ViewLog` 臂 ⇒ 臂内计数为 0，转红。
     #[test]
-    fn already_latest_path_only_settles_the_popup() {
+    fn the_no_download_path_never_claims_a_download() {
         let body = crate::commands::guard_scan::top_level_fn_body(
             SRC,
             "pub async fn update_popup_action(",
         );
+        let arm = crate::commands::guard_scan::match_arm_body(
+            &body,
+            "PopupAction::Update | PopupAction::Retry =>",
+            "PopupAction::",
+        );
         assert!(
-            body.contains("push_popup_state(&app, UpdatePopupState::done())"),
-            "「已是最新」仍须把弹窗推出 progress（否则永远转圈）"
+            arm.contains("push_popup_state(&app, UpdatePopupState::no_update("),
+            "「没有可下的东西」仍须把弹窗推出 progress（否则永远转圈），且必须推 `no_update` 那一档"
+        );
+        assert!(
+            !arm.contains("UpdatePopupState::done("),
+            "本臂一个字节都没下 —— 推 `done` 就是在发起本次动作的那一屏上谎称「下载完成」\
+             （2026-08-17 前的现状）。落位路径是 `done` 的必填参数，本臂拿不出真的那一个"
         );
         assert!(
             !body.contains("ProgressStage::Downloaded"),
-            "「已是最新」不得广播 downloaded —— 无文件、无 filePath，设置页会显示假的「已下载」"
+            "「没有可下的东西」不得广播 downloaded —— 无文件、无 filePath，设置页会显示假的「已下载」"
+        );
+        // 终态得真能关窗：推完态不排关窗 = 一个 always_on_top 的窗停在那儿不动。
+        assert!(
+            arm.contains("schedule_popup_auto_close(&app, NO_UPDATE_AUTO_CLOSE_MS)"),
+            "`noupdate` 终态没有排自动关窗，或沿用了 done 的 800ms —— 后者一闪而过，等于没说"
         );
     }
 
@@ -5395,7 +5467,7 @@ mod tests {
             "PopupAction::",
         );
         let force_at = arm
-            .find("force_popup_state(&app, UpdatePopupState::progress(0))")
+            .find("force_popup_state(&app, UpdatePopupState::progress(0, None, None))")
             .expect(
                 "复查前那发强制 progress(0) 没了 —— 窗内 15s 零反馈，且之后每一发状态推送都会被闸拦掉",
             );
@@ -5561,50 +5633,117 @@ mod tests {
 
     // ── 弹窗四态（此前只有 remind 一态可达）─────────────────────────────────
 
+    /// 🟡 **弹窗镜像与广播载荷读的是同一帧：三种帧各自带齐自己那一屏要的事实。**
+    ///
+    /// 本函数此前吃的是压平后的 `(status, percentage, error)`，落位路径与版本号在那层压平里丢了
+    /// ⇒ `done` 只剩一个状态字。改吃 [`ProgressStage`] + 同一份清单后，两屏结构上不可能各说各话。
+    ///
+    /// **变异探针**：把 `Downloaded` 那臂的 `path.to_string_lossy()` 换成常量串 ⇒ 落位路径那条转红；
+    /// 把 `info.get("fileSize")` 换成 `None` ⇒ 分母那条转红；
+    /// 把 `Downloading` 的 `Some(received)` 换成 `None` ⇒ 已收字节那条转红。
     #[test]
-    fn progress_status_maps_to_popup_phases() {
+    fn progress_frames_map_to_popup_phases_with_their_facts() {
+        let info = json!({ "version": "v1.2.0", "fileSize": 52_000_000_u64 });
+        let path = std::path::Path::new("/tmp/updates/polaris.dmg");
+
+        let downloading = popup_state_for(
+            &info,
+            ProgressStage::Downloading {
+                percentage: 42,
+                received: 19_240_000,
+            },
+        );
+        assert_eq!(downloading.phase, PopupPhase::Progress);
+        assert_eq!(downloading.percentage, Some(42));
         assert_eq!(
-            popup_state_for("downloading", 42, "").map(|s| s.phase),
-            Some(PopupPhase::Progress)
+            downloading.received_bytes,
+            Some(19_240_000),
+            "已收字节必须是回调原值 —— 从百分比反推的数每一帧都是错的"
         );
         assert_eq!(
-            popup_state_for("downloading", 42, "").and_then(|s| s.percentage),
-            Some(42)
+            downloading.total_bytes,
+            Some(52_000_000),
+            "分母取本帧随行清单的 fileSize（与设置页下载卡同源）"
+        );
+
+        let done = popup_state_for(
+            &info,
+            ProgressStage::Downloaded {
+                path,
+                verified: true,
+            },
+        );
+        assert_eq!(done.phase, PopupPhase::Done);
+        assert_eq!(
+            done.file_path.as_deref(),
+            Some("/tmp/updates/polaris.dmg"),
+            "「完成」得说得出包落在哪儿 —— 没有它，它与「什么都没下」长得一模一样"
         );
         assert_eq!(
-            popup_state_for("downloaded", 100, "").map(|s| s.phase),
-            Some(PopupPhase::Done)
+            done.version.as_deref(),
+            Some("v1.2.0"),
+            "得说得出下的是哪一版"
         );
-        let err = popup_state_for("error", 0, "网络不可达").unwrap();
+
+        let err = popup_state_for(&info, ProgressStage::Failed("网络不可达"));
         assert_eq!(err.phase, PopupPhase::Error);
         assert_eq!(err.error_text.as_deref(), Some("网络不可达"));
         // 错误文案缺失 → 兜底而非空串（空 error 态弹窗上是一片空白）。
         assert_eq!(
-            popup_state_for("error", 0, "").and_then(|s| s.error_text),
+            popup_state_for(&info, ProgressStage::Failed("")).error_text,
             Some("更新失败".to_string())
         );
-        // 未知 status → None（不编造态）。
-        assert_eq!(popup_state_for("idle", 0, ""), None);
-        assert_eq!(popup_state_for("", 0, ""), None);
+
+        // 清单缺 `fileSize` / 给 0 ⇒ 分母未知，只报已收量，**不拿已收字节凑假分母**。
+        for blind in [json!({}), json!({ "fileSize": 0 })] {
+            let s = popup_state_for(
+                &blind,
+                ProgressStage::Downloading {
+                    percentage: 42,
+                    received: 19_240_000,
+                },
+            );
+            assert_eq!(s.received_bytes, Some(19_240_000));
+            assert_eq!(s.total_bytes, None, "分母未知时不得编一个出来：{blind}");
+        }
+        // 清单缺 `version` ⇒ 不编版本号（会话继承会补上弹窗邀请的那一版，见 PopupSession）。
+        assert_eq!(
+            popup_state_for(
+                &json!({}),
+                ProgressStage::Downloaded {
+                    path,
+                    verified: false,
+                }
+            )
+            .version,
+            None
+        );
     }
 
     /// 🟡 **后台下载不得顶掉用户面前的 remind 提示。**
     ///
     /// `autoDownloadUpdate` 开启时，启动检查会「弹 remind 窗」+「后台下载」并行；若进度事件无条件
     /// 镜像进弹窗，用户**再也看不到**「要不要更新」那一屏。闸只放行 `Progress`（= 用户亲手点过
-    /// 「更新」的弹窗）。**变异探针**：把闸改成恒 true / 放行 Remind ⇒ 本条转红。
+    /// 「更新」的弹窗）。
+    ///
+    /// 判据面**遍历 [`PopupPhase::ALL`]**，不点名几个 phase：新加一档而闸忘了表态时，点名式清单
+    /// 静默漏掉那一格（且全绿），遍历式必判。`ALL` 自己与枚举由 `state.rs` 的门对账。
+    ///
+    /// **变异探针**：把闸改成恒 true / 放行任意一个非 Progress 档 ⇒ 本条转红并点名那一档。
     #[test]
     fn popup_only_follows_progress_it_was_put_into_by_the_user() {
+        for phase in PopupPhase::ALL {
+            let expected = phase == PopupPhase::Progress;
+            assert_eq!(
+                should_mirror_to_popup(phase),
+                expected,
+                "{phase} 档的跟随判定错了 —— 只有用户亲手推进 progress 的弹窗才跟随后台下载；\
+                 remind 被顶掉用户就再也看不到「要不要更新」那一屏，终态被顶掉则是拿一次无关\
+                 下载改写一个已经落定的结论"
+            );
+        }
+        // 正向对照：闸不是恒 false（那样弹窗里点「更新」后窗内零反馈）。
         assert!(should_mirror_to_popup(PopupPhase::Progress));
-        assert!(
-            !should_mirror_to_popup(PopupPhase::Remind),
-            "remind 是待用户决策的提示屏，后台下载不得把它顶掉"
-        );
-        assert!(
-            !should_mirror_to_popup(PopupPhase::Done),
-            "终态不该被一次无关下载改写"
-        );
-        assert!(!should_mirror_to_popup(PopupPhase::Error));
     }
 
     // ── 请求级总超时 ─────────────────────────────────────────────────────────

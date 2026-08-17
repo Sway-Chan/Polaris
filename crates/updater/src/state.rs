@@ -33,9 +33,41 @@ pub enum PopupPhase {
     #[default]
     Progress,
     /// 完成态：下载/校验/落位完成（800ms 后自动关窗，对齐 Polaris done 态）。= 上游 `'done'`。
+    ///
+    /// **「完成」= 盘上真有一份包**：载荷必带落位路径（[`crate::popup::UpdatePopupState::done`]
+    /// 的参数是必填的），故「什么都没下」在类型上就构造不出本态。成因见下面 [`Self::NoUpdate`]。
     Done,
+    /// 无更新可下态：用户点了「更新」，复查回来却没有任何可下载的包。**上游没有这一档**。
+    ///
+    /// # 为什么必须独立成一档（而不是塞进 `Done` 或 `Error`）
+    ///
+    /// 复查判 `NoUpdate` 有五条可达成因（`crate::github::check_app_update`：无正式发布 / 不比当前新 /
+    /// 该版本已被跳过 / 无适配本平台的资产；外加宿主层的平台不受支持），后端**分辨不出**是哪一条。
+    /// 塞进现有四态只有两条路，两条都是假话：
+    ///  - `Done` ⇒ 弹窗渲染「下载完成」+ 满格进度条，而一个字节都没下（2026-08-17 前的现状）；
+    ///  - `Error` ⇒ 把「用户自己按过跳过」「已经是最新版」说成故障。
+    ///
+    /// 本态只陈述后端**确实知道**的那一件事：这次复查没有找到可下载的更新包。不猜成因，
+    /// 也就没有任何一条成因会让这句话变假。
+    NoUpdate,
     /// 错误态：失败，可重试/手动下载/关闭（Polaris error 态重试循环）。= 上游 `'error'`。
     Error,
+}
+
+impl PopupPhase {
+    /// 全部阶段（**遍历用**）。
+    ///
+    /// 存在理由是让「加了一档但某处没跟上」由测试而不是人眼发现：判据面一旦写成手抄的字面量清单，
+    /// 失效方向就是「加了变体忘了加进清单」——所有遍历型断言会**静默少跑一格**（绿，且无信息量）。
+    /// 故本清单与真实变体表由 [`tests::all_lists_every_popup_phase_exactly_once`] 从 `Display` 的
+    /// 穷尽 match 反查对账，清单落后于枚举必转红。
+    pub const ALL: [Self; 5] = [
+        Self::Remind,
+        Self::Progress,
+        Self::Done,
+        Self::NoUpdate,
+        Self::Error,
+    ];
 }
 
 impl fmt::Display for PopupPhase {
@@ -44,6 +76,7 @@ impl fmt::Display for PopupPhase {
             Self::Remind => f.write_str("remind"),
             Self::Progress => f.write_str("progress"),
             Self::Done => f.write_str("done"),
+            Self::NoUpdate => f.write_str("noupdate"),
             Self::Error => f.write_str("error"),
         }
     }
@@ -107,6 +140,10 @@ impl UpdateState {
     }
 
     /// 映射到弹窗阶段（移植自 Polaris popup phase 选择逻辑）。
+    ///
+    /// [`PopupPhase::NoUpdate`] **不在本映射的值域里**，这是刻意的：它描述的是「复查回来没有可下的
+    /// 东西」，那不是 staged 更新周期里的任何一步，本枚举里没有与之对应的态（`Idle` 是「尚未开始
+    /// 或已重置」，含义不同）。它由 `commands::updater::update_popup_action` 直接产出。
     #[must_use]
     pub fn popup_phase(self) -> PopupPhase {
         match self {
@@ -410,6 +447,70 @@ mod tests {
         assert_eq!(PopupPhase::Remind.to_string(), "remind");
         assert_eq!(PopupPhase::Progress.to_string(), "progress");
         assert_eq!(PopupPhase::Done.to_string(), "done");
+        assert_eq!(PopupPhase::NoUpdate.to_string(), "noupdate");
         assert_eq!(PopupPhase::Error.to_string(), "error");
+    }
+
+    /// 🟡 **[`PopupPhase::ALL`] 必须逐个覆盖真实变体表。**
+    ///
+    /// `ALL` 是所有遍历型判据（弹窗载荷的随行事实门、镜像闸门、跨语言 phase 对拍）的取材源。
+    /// 它一旦落后于枚举，那些门就**静默少跑一格** —— 新加的那一档没有任何断言碰过，而全部转绿。
+    /// 故此处不比对手抄的清单，而是拿 `Display` 那个**编译器强制穷尽**的 match 当变体数的真值源。
+    ///
+    /// # 判据是「`Self::<Ident> =>` 这样的匹配臂」，不是「出现过 `Self::`」
+    ///
+    /// 裸数 `Self::` 会漂：同一个 impl 块里任何别的写法（`matches!(self, Self::Done)`、
+    /// `Self::from_str`、辅助分支）都会把计数顶高，而顶高之后本门要么误红、要么在 `ALL` 恰好也
+    /// 多一项时**假绿**。故只认「`Self::` + 标识符 + 可选空白 + `=>`」这一形状。
+    ///
+    /// 剩下的射程边界（如实登记，逐条都不是静默的）：
+    ///  1. **or-pattern 臂**（`Self::A | Self::B => …`）：只有末项后面跟着 `=>` ⇒ 计数**偏低**
+    ///     ⇒ 与 `ALL` 不等 ⇒ 转红。方向安全（宁可误红，不放过没被遍历到的变体）。
+    ///  2. **同 impl 块里出现第二个 `match self`**：计数偏高 ⇒ 同样转红。今天该块只有 `fmt` 一个
+    ///     方法，不可达。
+    ///  3. **`_ => …` 通配臂**：计数停在通配那一刻，且 match 不再被编译器强制穷尽 ⇒ 新变体既不
+    ///     编译红、也不被本门抓到 —— **这一条是真的哑**。今天无通配臂；谁要加，请连同本门一起
+    ///     重新设计判据（通配臂本身就是「新变体不必表态」的宣言）。
+    ///
+    /// **变异探针**：从 `ALL` 里删掉任意一项 ⇒ 数量不等，转红；把两项写成同一个变体 ⇒ 去重后数量
+    /// 不等，转红；给枚举加一档而不加进 `ALL` ⇒ 转红；在本 impl 块里加一行
+    /// `let _ = Self::Done;` ⇒ 裸数版本会转红，本版本纹丝不动。
+    #[test]
+    fn all_lists_every_popup_phase_exactly_once() {
+        const SRC: &str = include_str!("state.rs");
+        const ANCHOR: &str = "impl fmt::Display for PopupPhase {";
+        let at = SRC
+            .find(ANCHOR)
+            .expect("锚点消失：`Display for PopupPhase` 被改形，本门已失去变体数的真值源");
+        let rest = &SRC[at..];
+        let body = &rest[..rest.find("\n}\n").expect("找不到该 impl 块的列 0 右花括号")];
+        // 「`Self::` + 标识符 + 可选空白 + `=>`」= 一条匹配臂。本 crate 无 regex 依赖，手写扫描。
+        let variants = body
+            .match_indices("Self::")
+            .filter(|(i, m)| {
+                let tail = &body[i + m.len()..];
+                let ident_len = tail
+                    .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .unwrap_or(tail.len());
+                ident_len > 0 && tail[ident_len..].trim_start().starts_with("=>")
+            })
+            .count();
+        assert!(
+            variants >= 4,
+            "`Display` 的 match 一条臂都没解析到（实得 {variants}）—— 取材器塌了"
+        );
+        assert_eq!(
+            PopupPhase::ALL.len(),
+            variants,
+            "`PopupPhase::ALL` 有 {} 项，而枚举有 {variants} 个变体 —— 所有遍历型门都会漏掉那一格",
+            PopupPhase::ALL.len()
+        );
+        let distinct: std::collections::BTreeSet<String> =
+            PopupPhase::ALL.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            distinct.len(),
+            PopupPhase::ALL.len(),
+            "`PopupPhase::ALL` 里有重复项 —— 数量对得上，却有一格从没被遍历到"
+        );
     }
 }

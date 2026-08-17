@@ -52,6 +52,8 @@
     "mirror": "鏡像",
     "cancel": "取消",
     "downloaded": "下載完成",
+    "noUpdate": "暫無可下載的更新",
+    "noUpdateSubject": "本次檢查未找到 {{version}} 的更新套件",
     "failed": "更新失敗",
     "unknownError": "未知錯誤",
     "close": "關閉",

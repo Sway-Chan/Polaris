@@ -39,12 +39,38 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = fileURLToPath(new URL('../../..', import.meta.url));
 const POPUP_RS = join(REPO, 'crates', 'updater', 'src', 'popup.rs');
+const STATE_RS = join(REPO, 'crates', 'updater', 'src', 'state.rs');
 const MAIN_TS = join(REPO, 'ui', 'src', 'update-popup', 'main.ts');
 const EXIT_TS = join(REPO, 'ui', 'src', 'update-popup', 'exit-action.ts');
+const TYPES_TS = join(REPO, 'ui', 'src', 'contracts', 'types', 'update.ts');
 
-const RS = readFileSync(POPUP_RS, 'utf8');
-const TS = readFileSync(MAIN_TS, 'utf8');
-const EXIT = readFileSync(EXIT_TS, 'utf8');
+/**
+ * 整行注释换空行（保留行数与行序，故所有 `indexOf` 顺序切片语义不变）。
+ *
+ * **不是洁癖，是这道门刚栽过的坑**：本文件全部解析器都是文本正则，而两侧源码的注释里会**逐字
+ * 写出被解析的形状**（`is_valid_for` 的臂头长什么样、`data-act` 怎么写）——那正是这些注释存在
+ * 的目的：给下一个人解释判据。不剥的话，一句解释性注释就能往白名单里注入一个不存在的 phase：
+ * 轻则误红且诊断指错方向（实测：`PopupPhase::X => matches!(…)` 这句注释让本门报「阶段 x 的白名单
+ * 解析成空集 —— 解析器塌了」），重则**喂饱**判据 —— 注释里写一个 phase 就让「渲染端漏了它」查不出来。
+ *
+ * 与 Rust 侧 `commands::guard_scan::strip_line_comments` 同一条理由、同一约定（只剥整行；行尾
+ * 注释要剥就得先分辨字符串字面量里的 `//`，那是把取材器写成半个词法分析器）。
+ */
+function stripLineComments(src: string): string {
+  return src
+    .split('\n')
+    .map((l) => {
+      const t = l.trimStart();
+      return t.startsWith('//') || t.startsWith('*') || t.startsWith('/*') ? '' : l;
+    })
+    .join('\n');
+}
+
+const RS = stripLineComments(readFileSync(POPUP_RS, 'utf8'));
+const STATE = stripLineComments(readFileSync(STATE_RS, 'utf8'));
+const TS = stripLineComments(readFileSync(MAIN_TS, 'utf8'));
+const EXIT = stripLineComments(readFileSync(EXIT_TS, 'utf8'));
+const TYPES = stripLineComments(readFileSync(TYPES_TS, 'utf8'));
 
 // ── 解析器 ──────────────────────────────────────────────────────────────────
 
@@ -59,6 +85,27 @@ function parseActionEnum(rs: string): string[] {
   if (at < 0) return [];
   const body = rs.slice(at, rs.indexOf('\n}', at));
   return [...body.matchAll(/^\s{4}([A-Z]\w*),/gm)].map((m) => camel(m[1]));
+}
+
+/**
+ * `pub enum PopupPhase { … }` 的变体表 → serde 串（`rename_all = "lowercase"`，故整体小写）。
+ *
+ * **这是 phase 那一维的真值源**。此前本文件把四个 phase 名写成字面量清单，于是「后端加了一档」
+ * 只在别的断言上间接说话；现在枚举自己就是判据面，加一档而白名单 / 渲染端 / TS 联合任一没跟上，
+ * 逐条点名转红。
+ */
+function parsePhaseEnum(rs: string): string[] {
+  const at = rs.indexOf('pub enum PopupPhase {');
+  if (at < 0) return [];
+  const body = rs.slice(at, rs.indexOf('\n}', at));
+  return [...body.matchAll(/^\s{4}([A-Z]\w*),/gm)].map((m) => m[1].toLowerCase());
+}
+
+/** TS 侧 `export type PopupPhase = 'a' | 'b' | …` 的成员表。 */
+function parsePhaseUnion(ts: string): string[] {
+  const m = /export type PopupPhase =([^;]*);/.exec(ts);
+  if (!m) return [];
+  return [...m[1].matchAll(/'(\w+)'/g)].map((x) => x[1]);
 }
 
 /** `is_valid_for` 的 `PopupPhase::X => matches!(self, Self::A | Self::B)` 全部臂。 */
@@ -145,6 +192,8 @@ function actionDiff(
 }
 
 const ACTIONS = parseActionEnum(RS);
+const PHASES = parsePhaseEnum(STATE);
+const PHASE_UNION = parsePhaseUnion(TYPES);
 const WHITELIST = parseWhitelist(RS);
 const RENDERED = parseRendered(TS);
 const EXIT_ACTIONS = parseExitActions(EXIT);
@@ -153,6 +202,12 @@ const EXIT_ACTIONS = parseExitActions(EXIT);
 
 if (ACTIONS.length === 0) {
   throw new Error(`[update-popup-action-parity] 解析不出 PopupAction 变体表（${POPUP_RS}）`);
+}
+if (PHASES.length === 0) {
+  throw new Error(`[update-popup-action-parity] 解析不出 PopupPhase 变体表（${STATE_RS}）`);
+}
+if (PHASE_UNION.length === 0) {
+  throw new Error(`[update-popup-action-parity] 解析不出 TS 侧 PopupPhase 联合（${TYPES_TS}）`);
 }
 if (Object.keys(WHITELIST).length === 0) {
   throw new Error(`[update-popup-action-parity] 解析不出 is_valid_for 的白名单（${POPUP_RS}）`);
@@ -216,6 +271,29 @@ describe('守卫自检：解析器与差集算子都真的会报（防空集合�
     expect(parseWhitelist(rs)).toEqual({ remind: ['alpha', 'betaGamma'], done: ['alpha'] });
   });
 
+  /**
+   * 注释剥离必须真的在做事：本门的判据形状恰恰会被写进解释它的注释里（实测栽过 —— 一句
+   * `PopupPhase::X => matches!(…)` 的说明性注释被当成了真臂，报「阶段 x 的白名单解析成空集」）。
+   * 反向危害更重：注释里提一个 phase 就能把「渲染端漏了它」喂饱成绿。
+   */
+  it('整行注释不参与解析（注释里写出判据形状不得污染集合）', () => {
+    const poisoned = [
+      'pub enum PopupPhase {',
+      '    Remind,',
+      '}',
+      '    pub fn is_valid_for(self, phase: PopupPhase) -> bool {',
+      '        match phase {',
+      '            // 说明：本表逐臂解析 `PopupPhase::Ghost => matches!(self, Self::Bogus)`',
+      '            PopupPhase::Remind => matches!(self, Self::Alpha),',
+      '        }',
+      '    }',
+    ].join('\n');
+    expect(parseWhitelist(stripLineComments(poisoned))).toEqual({ remind: ['alpha'] });
+    expect(parsePhaseEnum(stripLineComments(poisoned))).toEqual(['remind']);
+    // 不剥的话，那句注释会凭空长出一个 `ghost` 阶段 —— 证明这一步不是空转。
+    expect(Object.keys(parseWhitelist(poisoned))).toContain('ghost');
+  });
+
   it('渲染端 / 退出动作解析器在合成 TS 片段上命中', () => {
     const ts = [
       'function render(state) {',
@@ -258,12 +336,30 @@ describe('守卫自检：解析器与差集算子都真的会报（防空集合�
     expect(broken.dead, '够得着而白名单拒的没被报成死按钮').toEqual(['remind::zz']);
   });
 
+  it('phase 解析器在合成 Rust / TS 片段上命中', () => {
+    const rs = [
+      'pub enum PopupPhase {',
+      '    /// 注释行不该被当成变体',
+      '    Remind,',
+      '    NoUpdate,',
+      '}',
+    ].join('\n');
+    // serde 是 `rename_all = "lowercase"`（不是 camelCase）⇒ `NoUpdate` → `noupdate`。
+    expect(parsePhaseEnum(rs)).toEqual(['remind', 'noupdate']);
+    expect(parsePhaseUnion("export type PopupPhase = 'remind' | 'noupdate';")).toEqual([
+      'remind',
+      'noupdate',
+    ]);
+  });
+
   it('真判据面非空（上面的合成样本过了不代表真文件也解析得动）', () => {
     expect(ACTIONS.length).toBeGreaterThanOrEqual(6);
-    expect(Object.keys(WHITELIST).sort()).toEqual(['done', 'error', 'progress', 'remind']);
-    expect(Object.keys(RENDERED).sort()).toEqual(['done', 'error', 'progress', 'remind']);
-    // 四态的角标关闭钮都真的挂上了（原型 :2948 `.ut-x` 四态恒在）——少一个，那一态的可达集就少一条腿。
-    for (const p of ['remind', 'progress', 'done', 'error']) {
+    // phase 那一维的判据面**由枚举给**，不再是本文件手抄的字面量清单：加一档就自动进判据面。
+    expect(PHASES.length).toBeGreaterThanOrEqual(4);
+    expect(Object.keys(WHITELIST).sort()).toEqual([...PHASES].sort());
+    expect(Object.keys(RENDERED).sort()).toEqual([...PHASES].sort());
+    // 每一态的角标关闭钮都真的挂上了（原型 :2948 `.ut-x` 恒在）——少一个，那一态的可达集就少一条腿。
+    for (const p of PHASES) {
       expect(hasCloseButton(TS, p), `${p} 态没有角标关闭钮`).toBe(true);
     }
   });
@@ -273,6 +369,26 @@ describe('G12：动作白名单 ↔ 渲染端按钮双向对拍', () => {
   it('两侧阶段集合相等（后端加了新 phase 而前端没跟 ⇒ 转红）', () => {
     // 变异对照：给 is_valid_for 加一条 `PopupPhase::Foo => …` → 本条转红。
     expect(Object.keys(RENDERED).sort()).toEqual(Object.keys(WHITELIST).sort());
+  });
+
+  /**
+   * 三侧对枚举本身对账 —— 上一条只管「白名单与渲染端彼此相等」，那在**两边一起漏掉同一档**时
+   * 照样全绿（`PopupPhase` 加了一档而 `is_valid_for` 用 `_ =>` 通配、渲染端也没写 case，
+   * 两个集合仍相等）。故判据得咬到枚举自己。
+   *
+   * TS 联合那一格是**此前完全没人守**的一维：`ui/src/contracts/types/update.ts` 自陈「改 Rust 侧
+   * 字段务必同步本文件」，而全仓没有任何门在对这句话。少一个成员时 `render()` 的 `case` 会被
+   * `tsc` 判成类型错误（那一格有兜底），**多**一个成员则一路静默 —— 前端从此为一个后端永不发送
+   * 的 phase 保留分支。
+   *
+   * 变异对照：给 `PopupPhase` 加一档而三处任一没跟 ⇒ 逐条点名转红。
+   */
+  it('后端枚举 / 动作白名单 / 渲染端 / TS 联合，四侧的 phase 集合逐字相等', () => {
+    const enumSet = [...PHASES].sort();
+    expect(Object.keys(WHITELIST).sort(), 'is_valid_for 的白名单没覆盖全部 phase').toEqual(enumSet);
+    expect(Object.keys(RENDERED).sort(), 'render() 少了某个 phase 的分支').toEqual(enumSet);
+    expect([...PHASE_UNION].sort(), 'contracts/types/update.ts 的 PopupPhase 联合与 Rust 枚举不符')
+      .toEqual(enumSet);
   });
 
   it('渲染端画出的每个 data-act 都是真实存在的 PopupAction（否则后端 serde 直接判「未知弹窗动作」）', () => {

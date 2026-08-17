@@ -14,6 +14,7 @@ const BACKEND_WHITELIST: Record<PopupPhase, readonly string[]> = {
   progress: ['cancel'],
   error: ['retry', 'manualDownload', 'close'],
   done: ['close'],
+  noupdate: ['close'],
 };
 
 describe('exitActionFor：退出动作必须在后端该 phase 的白名单里', () => {

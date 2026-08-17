@@ -31,6 +31,7 @@ import { updatePopup as enUS } from '@/i18n/locales/auxiliary/en-US.json';
 import { updatePopup as ru } from '@/i18n/locales/auxiliary/ru.json';
 import { updatePopup as fa } from '@/i18n/locales/auxiliary/fa.json';
 import { exitActionFor } from './exit-action';
+import { bytesText, doneSubject } from './state-facts';
 import './style.css';
 
 /**
@@ -126,18 +127,40 @@ function render(state: UpdatePopupState): void {
           }</div>
           <div class="bar"><i style="width:${pct}%"></i></div>
           <div class="row between">
-            <span class="sub">${esc(state.bytesText ?? `${pct}%`)}</span>
+            <span class="sub">${esc(bytesText(state.receivedBytes, state.totalBytes) ?? `${pct}%`)}</span>
             <button class="btn ghost" data-act="cancel">${esc(t('updatePopup.cancel'))}</button>
           </div>
         </div>`;
       break;
 
-    case 'done':
+    // 「完成」得说得出**下的是哪一版、落在哪儿**：不带随行事实的 done 与「什么都没下」在屏幕上
+    // 长得一模一样 —— 后者此前正是借用本档收场的（见 `case 'noupdate'`）。
+    case 'done': {
+      const subject = doneSubject(state.version, state.filePath);
       root.innerHTML = `
         <div class="card">
           ${closeButton(state.phase)}
           <div class="title">${esc(t('updatePopup.downloaded'))}</div>
           <div class="bar"><i style="width:100%"></i></div>
+          ${subject ? `<div class="sub path">${esc(subject)}</div>` : ''}
+        </div>`;
+      break;
+    }
+
+    // 用户点了「更新」，复查回来没有任何可下载的包。**不猜成因**：后端判 NoUpdate 有五条路
+    // （已是最新 / 该版本已被跳过 / 无正式发布 / 无适配本平台的资产 / 平台不受支持），回包只有
+    // 一个 `hasUpdate:false`，挑一条说出来就是拿状态冒充事实。故只陈述确实知道的那件事，
+    // 并带上主语（这次弹窗邀请的版本号）。
+    case 'noupdate':
+      root.innerHTML = `
+        <div class="card">
+          ${closeButton(state.phase)}
+          <div class="title">${esc(t('updatePopup.noUpdate'))}</div>
+          ${
+            state.version
+              ? `<div class="sub">${esc(t('updatePopup.noUpdateSubject', { version: state.version }))}</div>`
+              : ''
+          }
         </div>`;
       break;
 

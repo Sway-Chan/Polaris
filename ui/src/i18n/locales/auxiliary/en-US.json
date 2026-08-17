@@ -52,6 +52,8 @@
     "mirror": "Mirror",
     "cancel": "Cancel",
     "downloaded": "Download complete",
+    "noUpdate": "No update to download",
+    "noUpdateSubject": "This check found no package for {{version}}",
     "failed": "Update failed",
     "unknownError": "Unknown error",
     "close": "Close",

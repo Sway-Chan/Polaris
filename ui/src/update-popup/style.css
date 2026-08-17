@@ -97,6 +97,15 @@ body {
   font-size: 12px;
 }
 
+/* done 态那行「版本 · 落位路径」：路径长度无上限而窗高固定（`popup_height_for` 的 116）。
+ * 不截断的话它会换行把卡片顶穿 —— 本窗没有滚动条，溢出的那部分用户永远看不到，且会把
+ * 进度条挤出可视区。故单行截尾省略。 */
+.sub.path {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* `.notes` 已随 #311 删除：它对应的 `UpdatePopupState.notes` 自建档（`2076e86`）起从未被任何
  * 代码赋值，且带 `skip_serializing_if` ⇒ 那个 `<div>` 一次都没进过 DOM。
  * 连带作废的还有它原先声称的作用「按钮行换行时由本区块 `min-height:0` 让位」——从不渲染的元素

@@ -52,6 +52,8 @@
     "mirror": "آینه",
     "cancel": "لغو",
     "downloaded": "دانلود کامل شد",
+    "noUpdate": "به\u200cروزرسانی\u200cای برای دانلود نیست",
+    "noUpdateSubject": "این بررسی بسته\u200cای برای {{version}} پیدا نکرد",
     "failed": "به\u200cروزرسانی ناموفق بود",
     "unknownError": "خطای ناشناخته",
     "close": "بستن",
