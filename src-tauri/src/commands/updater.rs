@@ -51,8 +51,8 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use polaris_net_stack::safe_redirect::{safe_redirect_fetch, SafeRedirectFetchOptions};
 use polaris_updater::core_build::{ComparableVersion, CoreBuildKind};
 use polaris_updater::github::{
-    check_app_update, find_suitable_singbox_asset, github_releases_api_url, AppUpdateCheck,
-    AssetArch, AssetPlatform, GithubRelease, APP_UPDATE_REPO, CORE_UPDATE_REPO,
+    check_app_update, find_suitable_singbox_asset, github_releases_api_url, strip_v,
+    AppUpdateCheck, AssetArch, AssetPlatform, GithubRelease, APP_UPDATE_REPO, CORE_UPDATE_REPO,
 };
 use polaris_updater::popup::{PopupAction, UpdatePopupState, DONE_AUTO_CLOSE_MS};
 use polaris_updater::state::PopupPhase;
@@ -1642,6 +1642,19 @@ pub async fn update_install(
     Ok(ApiResponse::ok(json!({ "ok": true, "success": true })))
 }
 
+/// 「跳过此版本」存储口径的**唯一归一化点**（W8）。
+///
+/// [`check_app_update`] 的比较侧是 `strip_v(tag)`（如 `0.2.0`），而两个写点拿到的都是原始 tag
+/// （`AppUpdateInfo.version` 保留 `v` 前缀）——不归一化就是「v0.2.0 存进去、0.2.0 比出来，
+/// 永不相等」，跳过功能全仓失效（弹窗与设置页同病）。存这条状态只有经过本函数才算入口径；
+/// 顺带 trim，空串/纯空白仍由调用侧判掉。
+///
+/// ⚠️ 存量 `update-state.json` 里的原始 tag 条目（`v0.2.0`）**有意不救援**（2026-08-18 拍板）：
+/// 那些用户会重新开始收到提醒，正是功能恢复本意。
+fn stored_skip_version(input: &str) -> String {
+    strip_v(input.trim()).to_string()
+}
+
 /// 上游 `UPDATE_SKIP`：跳过本次版本。
 ///
 /// ✅ **已接线**：纯本地状态（`update-state.json` 的 `skippedVersion`，原子写 tmp+rename）。不依赖网络。
@@ -1650,9 +1663,10 @@ pub fn update_skip(state: State<'_, AppRuntime>, version: Option<String>) -> Api
     let Some(v) = version.filter(|s| !s.trim().is_empty()) else {
         return ApiResponse::err("update_skip 需要非空 version");
     };
+    let stored = stored_skip_version(&v);
     match state
         .updater()
-        .mutate_state(|s| s.skipped_version = Some(v))
+        .mutate_state(|s| s.skipped_version = Some(stored))
     {
         Ok(()) => ok_void(),
         Err(e) => ApiResponse::err(e),
@@ -1823,8 +1837,13 @@ pub async fn update_popup_action(
         }
         PopupAction::Skip => {
             let u = state.updater();
-            let v = u.popup_state().and_then(|s| s.version);
-            let r = u.mutate_state(|s| s.skipped_version = v);
+            // W8：popup.version 是原始 tag（AppUpdateInfo.version 含 `v`），与比较侧
+            // strip_v 后的口径不同 ⇒ 存前必须过同一个归一化点（stored_skip_version）。
+            let stored = u
+                .popup_state()
+                .and_then(|s| s.version)
+                .map(|v| stored_skip_version(&v));
+            let r = u.mutate_state(|s| s.skipped_version = stored);
             let _ = close_update_popup(&app, u.popup());
             Ok(match r {
                 Ok(()) => ApiResponse::ok(json!({ "handled": true })),
@@ -5657,5 +5676,129 @@ mod tests {
             body.contains("CODE_CHECK_TIMEOUT"),
             "超时必须返回可辨识错误码，不得折叠进泛化网络失败"
         );
+    }
+
+    // ── W8：「跳过此版本」存的与比的必须同口径 ─────────────────────────────
+
+    /// 🟡 **存储口径本体 = trim + strip_v，与比较侧同形。**
+    ///
+    /// **变异探针**：把 helper 里的 `strip_v` 删掉 ⇒ 第 1 条红；把 `trim` 删掉 ⇒ 第 3 条红。
+    #[test]
+    fn stored_skip_version_matches_the_compare_side_form() {
+        assert_eq!(stored_skip_version("v0.2.0"), "0.2.0");
+        assert_eq!(
+            stored_skip_version("0.2.0"),
+            "0.2.0",
+            "已归一化的输入必须幂等"
+        );
+        assert_eq!(
+            stored_skip_version("  v0.2.0 "),
+            "0.2.0",
+            "顺带 trim：比较侧的 strip_v 不会碰空白"
+        );
+        assert_eq!(
+            stored_skip_version("v1.2.3-beta.1"),
+            "1.2.3-beta.1",
+            "strip_v 只去前导一个 v，预发布后缀原样保留"
+        );
+        // 与比较侧的闭环另一半在 github.rs：check_app_update_skipped_version_is_no_update
+        // 里带「原始 tag ⇒ Available」反例，钉死不许把比较侧改回原始 tag 来「修」跳过。
+    }
+
+    /// 🟡 **调用点守卫：生产写点恰两处（update_skip / PopupAction::Skip），且都过归一化点。**
+    ///
+    /// 第三个写点若直写 `.skipped_version = …`，跳过功能会静默失效回 W8 前的形态
+    /// （用户按了跳过，下次照样被提醒）。
+    ///
+    /// 计数是**全仓**的（`src-tauri/src` + `crates/updater/src` 递归、带点形态 `.skipped_version = `，
+    /// 不依赖闭包参数名）：首版只扫本文件 + `s.` 前缀，跨文件或 `|st| st.` 形态的第三写点
+    /// 会把它喂饱（复审 F1 实证）。`mutate_state` 是这条状态唯一可变入口，生产赋值必然以
+    /// `.skipped_version = ` 文本出现 ⇒ 文本扫描无漏。
+    ///
+    /// **变异探针**：`update_skip` 里 `stored_skip_version(&v)` 换回 `v` ⇒ 第 1 条红；
+    /// Skip 臂删掉 `.map(|v| stored_skip_version(&v))` ⇒ 第 2 条红；
+    /// 在**任何文件**（含 runtime/updater.rs）新增生产赋值 ⇒ 第 3 条红；
+    /// 改用异参数名（`|st| st.skipped_version = …`）⇒ 仍第 3 条红（带点形态不分参数名）。
+    #[test]
+    fn skipped_version_write_points_all_go_through_the_normalizer() {
+        let cmd = crate::commands::guard_scan::top_level_fn_body(SRC, "pub fn update_skip(");
+        assert!(
+            cmd.contains("stored_skip_version(&v)"),
+            "update_skip 的写点绕过了归一化 —— 存原始 tag 与比较侧（strip_v 后）永不相等，W8 原发病理"
+        );
+        let act = crate::commands::guard_scan::top_level_fn_body(
+            SRC,
+            "pub async fn update_popup_action(",
+        );
+        assert!(
+            act.contains(".map(|v| stored_skip_version(&v))"),
+            "弹窗 Skip 臂的写点绕过了归一化 —— 同上"
+        );
+
+        // 全仓命中清单：`路径` → `.skipped_version = ` 出现次数（**不剔测试区**，见 helper 头注）。
+        let mut writes: Vec<(String, usize)> = vec![];
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        for root in [
+            format!("{manifest}/src"),
+            format!("{manifest}/../crates/updater/src"),
+        ] {
+            collect_skip_writes(std::path::Path::new(&root), &root, &mut writes);
+        }
+        // 今天的构成：生产 2（update_skip / PopupAction::Skip）+ 测试与 doc 示例 10
+        // （本文件 8、runtime/updater.rs 测试 2）。任何**新增**命中——生产第三写点、新测试写
+        // state、doc 示例串——都先红：红了就过目定性，属生产写点必须过 stored_skip_version
+        // 并两处体内断言，其余 bump 常量登记。（常量自己就咬过一次：helper 头注里的示例串
+        // 让首版钉 11 立刻红，正是「全响无哑」的实证。）
+        const PINNED_TOTAL: usize = 12;
+        let total: usize = writes.iter().map(|(_, n)| n).sum();
+        let locations = writes
+            .iter()
+            .filter(|(_, n)| *n > 0)
+            .map(|(p, n)| format!("{p}×{n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert_eq!(
+            total, PINNED_TOTAL,
+            "全仓 `.skipped_version = ` 命中数漂了（期望 {PINNED_TOTAL}，实得 {total}：[{locations}]）。\
+             多了：生产第三写点必须先过 stored_skip_version；测试/doc 新增也在此登记后 bump 常量。\
+             少了：写点被删/搬走 —— 两处体内断言应同步红，一并修"
+        );
+    }
+
+    /// 递归收集 `dir` 下 `.rs` 文件里 `.skipped_version = ` 的出现次数（**全文件**计数）。
+    ///
+    /// ⚠️ **不剔测试区**（复审 F2 实证的教训）：本仓存在三类打破「测试置尾」假设的合法布局——
+    /// 文件头部的 `#[cfg(test)] mod guard_scan`（commands.rs，93% 内容在首锚之后）、中部的具名
+    /// sub 测试 mod（commands/proxy.rs 的 `mod probe_tests`，其后还有 472 行）、inline
+    /// `#[cfg(test)]` 项（runtime/proxy.rs 的 `TEST_CORE_NOT_INJECTED` const、runtime.rs 的
+    /// TmpDir）。「按第一个锚截断」会让这些文件锚后的生产代码
+    /// 整段免扫——哑绿。安全截断需要 cfg(test) 块的完整花括号解析（半个 parser），不成比例；
+    /// 故改为全文件计数 + 总数钉扎（调用处断言），新增命中一律先红后登记，全响无哑。
+    fn collect_skip_writes(dir: &std::path::Path, root: &str, out: &mut Vec<(String, usize)>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            panic!(
+                "守卫扫描不到目录 {} —— 仓库布局变了，先修守卫再改代码",
+                dir.display()
+            );
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                collect_skip_writes(&p, root, out);
+                continue;
+            }
+            if p.extension().is_none_or(|x| x != "rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&p)
+                .unwrap_or_else(|e| panic!("读不了 {}: {e}", p.display()));
+            let n = src.matches(".skipped_version = ").count();
+            let rel = p
+                .strip_prefix(root)
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .into_owned();
+            out.push((format!("{}/{}", root.trim_end_matches('/'), rel), n));
+        }
     }
 }
