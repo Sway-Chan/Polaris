@@ -211,8 +211,10 @@ fn config_save_core(
             return Ok(SaveOutcome::Conflict { disk_version });
         }
     }
-    // 前端提交的全量 config 恒不含隐私 hash（前端唯一出口 config_get 由 strip_privacy_secrets
-    // strip 掉了；configChanged 已无载荷，不构成前端出口）→ 不回填就等于每次保存都拆锁。
+    // 前端提交的全量 config 恒不含隐私 hash（`config_get` 是全量快照的唯一出口，由
+    // strip_privacy_secrets strip 掉了；configChanged 已无载荷，不构成全量快照出口）→
+    // 不回填就等于每次保存都拆锁。（单键出口 `config_get_value` 另经 `is_privacy_key` 挡，
+    // 但它不产生全量快照，不是本行回填逻辑依赖的对象。）
     preserve_server_owned_secrets(config, incoming);
     // 后端权威字段以磁盘为准（前端快照对这些键恒可能陈旧，见 enforce_ 文档）。
     enforce_backend_authoritative_fields(config, incoming);
@@ -333,10 +335,30 @@ pub fn config_update_mode(
     }
 }
 
-/// 上游 `CONFIG_GET_VALUE`：取单键（currentConfig 投影）。
+/// [`config_get_value`] 可测核心（剥掉 `State<'_, AppRuntime>`）：隐私密钥
+/// （[`is_privacy_key`]：legacy 明文 `privacyPassword` / legacy hash `privacyPasswordHash`，与
+/// `config_get`/`strip_privacy_secrets` 剥的是同一份真值）单键读也不放行——命中即当「键不存在」
+/// 处理，短路返回 `Null`，不额外暴露「这个键存在但被挡下」这个信号，与全量快照出口剥除整键（读出来
+/// 就是没有这键）的效果对齐；其余键照常走 [`ConfigManager::get_value`] 直读。
+///
+/// 拆成 `_core`（同 [`config_save_core`]/`unlock_core` 的理由）不只是为了绕开「单测构造不出 Tauri
+/// 运行时」——`ConfigManager` 本身不需要 Tauri，可以直接 `ConfigManager::new` 拿一份真实例，让
+/// `config_get_value_core_blocks_privacy_keys_even_when_present_on_disk` 端到端地证明「磁盘上真有
+/// 这个哈希、读接口却真的拿不到」，而不是靠源码扫描推断。
+fn config_get_value_core(
+    config: &ConfigManager,
+    key: &str,
+) -> Result<Value, polaris_store::StoreError> {
+    if is_privacy_key(key) {
+        return Ok(Value::Null);
+    }
+    config.get_value(key)
+}
+
+/// 上游 `CONFIG_GET_VALUE`：取单键（currentConfig 投影）。见 [`config_get_value_core`]。
 #[tauri::command]
 pub fn config_get_value(state: State<'_, AppRuntime>, key: String) -> ApiResponse<Value> {
-    ApiResponse::from_result(state.config().get_value(&key))
+    ApiResponse::from_result(config_get_value_core(state.config(), &key))
 }
 
 /// 上游 `CONFIG_SET_VALUE`：置单键 + 广播 event:configChanged。
@@ -424,10 +446,10 @@ fn invalidate_unlock_on_exit_change<S: UnlockEventSink>(
 //     任一步失败都不会出现「两者皆无」的锁死窗口。SHA-256 是单向 → 无法在启动期无明文批量转 scrypt，故迁移只能
 //     在「拿得到明文」的 unlock/set 时刻惰性做。
 //   - **legacy 键防护（过渡期）**：legacy `privacyPasswordHash`（未迁移态）+ 历史明文 `privacyPassword` 仍由
-//     [`strip_privacy_secrets`] 在 `config_get` 这唯一前端出口剥除（绝不下发前端；`configChanged` 已无
-//     载荷，`strip_privacy_secrets` 在那条广播路径上服务的是入核的那份 `cfg`，不是发给前端的），backup /
-//     诊断脱敏亦排除（见 store::backup / stats_engine::redact）。scrypt 独立文件本就不在 config 里，无从
-//     经这些出口泄漏。
+//     [`strip_privacy_secrets`] 在 `config_get`（全量快照的唯一出口）剥除（绝不下发前端；`configChanged`
+//     已无载荷，`strip_privacy_secrets` 在那条广播路径上服务的是入核的那份 `cfg`，不是发给前端的）；单键
+//     出口 `config_get_value` 另经 [`is_privacy_key`] 短路挡下同一份键。backup / 诊断脱敏亦排除（见
+//     store::backup / stats_engine::redact）。scrypt 独立文件本就不在 config 里，无从经这些出口泄漏。
 //   - **校验**：scrypt 与 legacy SHA-256 均**常量时间比较**，仅匹配返 true。
 //   - 隐私模式开关：进程内状态（随重启复位，对齐前端 app-store）；enter/exit 状态变更时
 //     emit `EVENT_ENTER/EXIT_PRIVACY_MODE`。
@@ -436,13 +458,15 @@ fn invalidate_unlock_on_exit_change<S: UnlockEventSink>(
 static PRIVACY_MODE: AtomicBool = AtomicBool::new(false);
 
 /// 历史遗留明文密码键（旧版本残留）。由 `store::migrate` 每次 load 清空 + 本层在 `config_get`
-/// 剥除（唯一前端出口；`configChanged` 已无载荷，不构成前端出口）。
+/// （全量快照的唯一出口；`configChanged` 已无载荷，不构成全量快照出口）与单键出口
+/// `config_get_value`（经 [`is_privacy_key`]）两处剥除。
 const PRIVACY_PASSWORD_KEY: &str = "privacyPassword";
 
 /// **legacy** 隐私密码 salted-SHA256 存储键（FX-privacy-kdf 之前的旧真值源）。新真值源已迁至独立
 /// `privacy-lock.json`（scrypt）；此键仅为**存量未迁移用户**保留读取/校验 + 迁移完成后清除。
-/// `config_get`（唯一前端出口）剥除此键 → 绝不下发前端；`broadcast_config_changed` 里的剥除服务的
-/// 是入核那份 `cfg`，`configChanged` 广播本身已无载荷，不构成前端出口。
+/// `config_get`（全量快照的唯一出口）与 `config_get_value`（单键出口，经 [`is_privacy_key`]）均
+/// 剥除此键 → 绝不下发前端；`broadcast_config_changed` 里的剥除服务的是入核那份 `cfg`，
+/// `configChanged` 广播本身已无载荷，不构成前端出口。
 const PRIVACY_PASSWORD_HASH_KEY: &str = "privacyPasswordHash";
 
 /// 隐私锁独立文件路径（`<userData>/privacy-lock.json`，与 config.json 同目录）。scrypt 新真值源。
@@ -460,12 +484,19 @@ fn strip_privacy_secrets(cfg: &mut Value) {
     }
 }
 
+/// `key` 是否命中 legacy 隐私键——与 [`strip_privacy_secrets`] 剥的是**同一份真值**
+/// （[`PRIVACY_PASSWORD_KEY`] / [`PRIVACY_PASSWORD_HASH_KEY`]），供单键出口 [`config_get_value`]
+/// 复用，不手抄第二份常量列表。
+fn is_privacy_key(key: &str) -> bool {
+    key == PRIVACY_PASSWORD_KEY || key == PRIVACY_PASSWORD_HASH_KEY
+}
+
 /// 回填「服务端独占」的隐私密钥，供**前端来的全量保存**用。
 ///
 /// # 为什么必须有
 ///
-/// `config_get`（唯一前端出口）经 [`strip_privacy_secrets`]（hash 绝不下发；`configChanged` 已无
-/// 载荷，不构成出口），故前端 store
+/// `config_get`（全量快照的唯一出口）经 [`strip_privacy_secrets`]（hash 绝不下发；`configChanged`
+/// 已无载荷，不构成出口），故前端 store
 /// 里的 config **恒无** `privacyPasswordHash`。用户改任意设置走 `saveConfig({...config, ...})` 全量提交
 /// → `save_full` 全量覆盖 → 磁盘与缓存里的 hash 被静默抹除 → `has_password` 恒 false、`unlock` 任意
 /// 密码放行（`unlock_core`：hash 为空 = 未设密码 = 自由解锁）。即：**设了隐私密码后，第一次改任何
@@ -501,7 +532,7 @@ pub(crate) fn preserve_server_owned_secrets(config: &ConfigManager, incoming: &m
 //
 // # 与 `preserve_server_owned_secrets` 是两条不同策略，不能合并
 //
-// 隐私密钥在 `config_get`（唯一前端出口）被 `strip_privacy_secrets` 剥除 ⇒ 前端快照里
+// 隐私密钥在 `config_get`（全量快照的唯一出口）被 `strip_privacy_secrets` 剥除 ⇒ 前端快照里
 // **根本没有该键**，故「键缺失即回填、键在即尊重入参」够用（且必须尊重入参——清密码用的就是键缺失）。
 //
 // 本组字段**照常下发前端**（`TrayMenu` 要读 `recentServerIds` 渲染「节点·最近」）⇒ 前端快照里
@@ -1174,7 +1205,14 @@ mod config_changed_payload_tests {
     /// `new_value`）或直接把载荷内容写成字面量，两条禁词一条都不命中，守卫全绿而配置树已在路上。
     /// 判据按配对括号取实参，不要求 emit 与其实参写在同一行（rustfmt 拆行不影响本判据）。
     ///
-    /// 牙：把载荷改回 `json!({ "config": new_value })`（或任何非空内容，哪怕换个变量名）→ 转红。
+    /// 扫**全部** `app.emit(` 调用点，只对事件名匹配 `EVENT_CONFIG_CHANGED` 的逐一断言载荷——
+    /// 而不是只看函数体里第一个 `app.emit(`：只看第一个会两头出错：本函数如果先发别的事件（如
+    /// 隐私模式跃迁）再发 configChanged，事件名断言会误红；反过来，如果 configChanged 之后又插入
+    /// 第二个带载荷的 `app.emit(EVENT_CONFIG_CHANGED, …)`，第一个合规、第二个违规，只看第一个会
+    /// 让第二个静默漏检。
+    ///
+    /// 牙：把载荷改回 `json!({ "config": new_value })`（或任何非空内容，哪怕换个变量名）→ 转红；
+    /// 在合规 emit 之后再插一个带载荷的 `app.emit(EVENT_CONFIG_CHANGED, …)` → 同样转红。
     #[test]
     fn emit_site_carries_no_config_content() {
         let body = top_level_fn_body(
@@ -1193,58 +1231,69 @@ mod config_changed_payload_tests {
             "切片切进了本测试模块，判据会被自己写的字面量喂饱"
         );
 
-        let call_at = body
-            .find("app.emit(")
-            .expect("变异锁：configChanged 的发射点没了");
-        let args_at = call_at + "app.emit(".len();
-        // 按配对括号取到本次调用的实参列表（而非要求「事件名 + 逗号」紧跟在 `app.emit(` 后面同一行）。
-        let mut depth = 1i32;
-        let mut close = None;
-        for (k, ch) in body[args_at..].char_indices() {
-            match ch {
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        close = Some(k);
-                        break;
+        let mut config_changed_emits = 0usize;
+        for (call_at, _) in body.match_indices("app.emit(") {
+            let args_at = call_at + "app.emit(".len();
+            // 按配对括号取到本次调用的实参列表（而非要求「事件名 + 逗号」紧跟在 `app.emit(`
+            // 后面同一行）。
+            let mut depth = 1i32;
+            let mut close = None;
+            for (k, ch) in body[args_at..].char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(k);
+                            break;
+                        }
                     }
+                    _ => {}
                 }
-                _ => {}
+            }
+            let close = close.expect("app.emit(...) 括号未配对 —— 发射调用格式已变，需要更新守卫");
+            let args = body[args_at..args_at + close].trim();
+            let is_config_changed = match args.split_once(',') {
+                Some((event, payload)) if event.trim() == "EVENT_CONFIG_CHANGED" => {
+                    let payload = payload.trim().trim_end_matches(',').trim();
+                    assert_eq!(
+                        payload, "json!({})",
+                        "configChanged 的发射载荷不是空对象字面量（实参：`{payload}`）——\
+                         要发载荷必须用剥过隐私的那一份（`strip_privacy_secrets` 之后），且必须\
+                         同步改本断言"
+                    );
+                    true
+                }
+                Some(_) => false,                       // 别的事件，不归本守卫管。
+                None => args == "EVENT_CONFIG_CHANGED", // 单参数 emit，天然无载荷可言，直接过。
+            };
+            if is_config_changed {
+                config_changed_emits += 1;
             }
         }
-        let close = close.expect("app.emit(...) 括号未配对 —— 发射调用格式已变，需要更新守卫");
-        let args = body[args_at..args_at + close].trim();
-        let (event, payload) = args
-            .split_once(',')
-            .expect("app.emit(...) 少于两个实参 —— 发射调用格式已变，需要更新守卫");
-        assert_eq!(
-            event.trim(),
-            "EVENT_CONFIG_CHANGED",
-            "扫到的 emit 不是 configChanged 的发射点（事件名：`{}`）",
-            event.trim()
-        );
-        let payload = payload.trim().trim_end_matches(',').trim();
-        assert_eq!(
-            payload, "json!({})",
-            "configChanged 的发射载荷不是空对象字面量（实参：`{payload}`）——\
-             要发载荷必须用剥过隐私的那一份（`strip_privacy_secrets` 之后），且必须同步改本断言"
+        assert!(
+            config_changed_emits >= 1,
+            "变异锁：configChanged 的发射点没了"
         );
     }
 
     /// 四个消费方（三个渲染端 + Rust 侧托盘汇流）必须全部丢弃 payload。
     ///
-    /// 判据是「实参的形参表为空」，不是字面 `() =>` 前缀匹配——零参具名回调
-    /// （`onChanged(onCfg)`）、`function` 表达式（`onChanged(function () {})`）与 `() => …` 都同样
-    /// 一个字节 payload 都不读，但只有最后一种能被字面前缀命中。TS 类型签名
-    /// `onChanged(listener: () => void)` 本身已挡住绝大多数「读了 payload」的写法（形参数量不匹配
-    /// 编不过），本结构守卫因此只需覆盖类型层挡不住的那种——**rest 参数**：`(...args) => …` 在赋值
-    /// 检查里所有实参都是可选的，能合法通过 `() => void` 的类型检查，只有源码级结构扫描能拦住它。
-    /// 故：实参以 `(` 开头（箭头函数的括号形参表）才检查形参表是否为 `()`；具名回调/`function`
-    /// 表达式退回类型层，不在本处判定。
+    /// 判据是「形参表为空」，不是字面 `() =>` 前缀匹配。TS 可赋值性规则是「source **必需**形参数
+    /// ≤ target 形参数」，rest 形参在这条规则下视作「零个必需形参」——`(...a: unknown[]) => void`、
+    /// `async (...a: unknown[]) => void`、`function (...a: unknown[]) {}`，以及先具名再传入的
+    /// `const h = (...a: unknown[]) => {…}; onChanged(h)`，**全部**能合法赋给
+    /// `onChanged(listener: () => void)`（签名见 `ui/src/ipc/api-client.ts`）——类型层完全挡不住
+    /// rest 参数，这正是本结构守卫存在的理由；「非箭头字面量就退回类型层」这个论证只在「箭头函数
+    /// 只有裸 `(...) =>` 一种写法」时成立，`async`/`function` 前缀与具名传参都会绕开它。
     ///
-    /// 牙：任一 `onChanged(() => …)` 改成 `onChanged((...args) => …)`、或 `listen_any` 的 `move |_|`
-    /// 改成读事件的形态 → 逐条转红。
+    /// 故判定前先剥可选的 `async ` 前缀、再剥可选的 `function`(+可选具名) 前缀，落到真正的形参
+    /// 括号上再比较是否为 `()`；剥完仍不是 `(` 开头（裸标识符、或其它未识别形态，如无括号的单参
+    /// 箭头 `x => …`——这种反而已被类型层挡住，形参数量 1 > 0）**不静默放过**——源码扫描判不出
+    /// 那类实参的形参表，直接 panic 要求人工裁定，而不是默默当「已被类型层挡住」处理。
+    ///
+    /// 牙：`onChanged(() => …)` 改成 `onChanged((...args: unknown[]) => …)`（或加 `async`/裹进
+    /// `function` 表达式）→ 转红；改成 `onChanged(onCfg)`（具名回调）→ panic 要求人工裁定。
     #[test]
     fn every_consumer_discards_the_payload() {
         const CALL: &str = ".onChanged(";
@@ -1257,40 +1306,63 @@ mod config_changed_payload_tests {
                 sites += 1;
                 let rest = &src[i + CALL.len()..];
                 let rest = rest.trim_start();
-                if let Some(after_open) = rest.strip_prefix('(') {
-                    // 箭头函数：形参表 = 首个 `(` 到与之配对的 `)`（含首尾括号）。
-                    let mut depth = 1i32;
-                    let mut close = None;
-                    for (k, ch) in after_open.char_indices() {
-                        match ch {
-                            '(' => depth += 1,
-                            ')' => {
-                                depth -= 1;
-                                if depth == 0 {
-                                    close = Some(k);
-                                    break;
-                                }
-                            }
-                            _ => {}
-                        }
+                // 剥 `async `：`async (...) => …` 与 `(...) => …` 的形参表位置相同。
+                let rest = rest.strip_prefix("async").map_or(rest, str::trim_start);
+                // 剥 `function`(+可选具名)：形参表在关键字（与可选函数名）之后的括号里。
+                let param_scan_at = match rest.strip_prefix("function") {
+                    Some(after_fn) => {
+                        let after_fn = after_fn.trim_start();
+                        let name_len = after_fn
+                            .find(|c: char| c == '(' || c.is_whitespace())
+                            .unwrap_or(after_fn.len());
+                        after_fn[name_len..].trim_start()
                     }
-                    let close = close.unwrap_or_else(|| {
-                        panic!(
-                            "{path} 的 `.onChanged(` 实参括号未配对（实处：`{}`）",
-                            &rest[..rest.len().min(60)]
-                        )
-                    });
-                    let params = &rest[..close + 2];
-                    assert_eq!(
-                        params, "()",
-                        "{path} 的 configChanged 订阅读了 payload —— 事件已是无载荷信号，读到的只会是 \
-                         `{{}}`。形参表：`{params}`"
-                    );
+                    None => rest,
+                };
+                match param_scan_at.strip_prefix('(') {
+                    Some(after_open) => {
+                        // 形参表 = 首个 `(` 到与之配对的 `)`（含首尾括号）。
+                        let mut depth = 1i32;
+                        let mut close = None;
+                        for (k, ch) in after_open.char_indices() {
+                            match ch {
+                                '(' => depth += 1,
+                                ')' => {
+                                    depth -= 1;
+                                    if depth == 0 {
+                                        close = Some(k);
+                                        break;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        let close = close.unwrap_or_else(|| {
+                            panic!(
+                                "{path} 的 `.onChanged(` 实参括号未配对（实处：`{}`）",
+                                &rest[..rest.len().min(60)]
+                            )
+                        });
+                        let params = &param_scan_at[..close + 2];
+                        assert_eq!(
+                            params, "()",
+                            "{path} 的 configChanged 订阅读了 payload —— 事件已是无载荷信号，读到的\
+                             只会是 `{{}}`。形参表：`{params}`"
+                        );
+                    }
+                    None => panic!(
+                        "{path} 的 `.onChanged(` 实参不是箭头函数/`function` 表达式字面量（实处：\
+                         `{}`）—— 源码扫描判不出形参表是否为空，需要人工核实该回调是否读了 \
+                         payload，再决定是否扩展本判据",
+                        &rest[..rest.len().min(60)]
+                    ),
                 }
-                // else：具名回调 / `function` 表达式，退回类型层，本处不判定。
             }
             // 数量断言：订阅点增减必须停下来显式裁定，不许守卫自适应放行（多了 = 新消费方没过判据；
-            // 少了 = 这一腿已删，判据表该同步改）。
+            // 少了 = 这一腿已删，判据表该同步改）。射程记账：本判据只抗块注释伪造（见
+            // `strip_block_comments`），不抗**行尾**注释（`foo(); // 见 api.onChanged(cb)` 照数）、
+            // 也不抗字符串/模板字面量/JSX 文本里出现 `.onChanged(` 这串字面量——这两类都不做词法
+            // 分析，真被这么写就会被静默算作一次「订阅还在」。
             assert_eq!(sites, 1, "{path} 的 configChanged 订阅点数变了");
         }
 
@@ -1307,9 +1379,13 @@ mod config_changed_payload_tests {
         );
     }
 
-    /// **自检**：块注释（含 JSDoc）里的 `.onChanged(` 不得被计入——复现 `useConfig.ts` 头部 JSDoc
-    /// 里已经写着的 `` `configApi.onChanged` `` 那种真实场景。少了这条剥离，注释能伪造一次订阅、
-    /// 真订阅被删也仍全绿（`sites == 1` 是三腿「订阅还在」唯一的钉子）。
+    /// **预防性自检**：块注释（含 JSDoc）里若提到调用形态 `.onChanged(cb)` 不得被计入。
+    ///
+    /// 今天的收益是 0：`useConfig.ts` 头部 JSDoc 提到的是 `` `configApi.onChanged` ``（**没有**左
+    /// 括号），不含判据串 `.onChanged(`，就算没有 `strip_block_comments` 也数不进来——本用例钉的是
+    /// 「JSDoc 一旦被后人改写成带括号的调用形态」这类将来态，不是复现今天已经存在的漏洞。少了这条
+    /// 剥离、且真出现这种改写时：注释能伪造一次订阅、真订阅被删也仍全绿（`sites == 1` 是三腿
+    /// 「订阅还在」唯一的钉子）。
     ///
     /// 变异锁：把 `strip_block_comments(src)` 换成裸 `src` → 本用例转红（`sites` 变 2）。
     #[test]
@@ -1415,8 +1491,8 @@ mod privacy_tests {
 
     #[test]
     fn strip_privacy_secrets_removes_both_legacy_and_hash_keeps_rest() {
-        // `config_get`（唯一前端出口）与 `broadcast_config_changed`（入核那份 cfg，非前端出口）
-        // 共用的剥离：明文 + hash 都不下发，其余键保留。
+        // `config_get`（全量快照的唯一出口）与 `broadcast_config_changed`（入核那份 cfg，非前端
+        // 出口）共用的剥离：明文 + hash 都不下发，其余键保留。
         let mut cfg = json!({
             "privacyPassword": "legacy-plaintext",
             "privacyPasswordHash": "aabb$deadbeef",
@@ -1431,6 +1507,111 @@ mod privacy_tests {
         );
         assert_eq!(cfg["proxyMode"], json!("global"), "非敏感键保留");
         assert_eq!(cfg["mixedPort"], json!(7890));
+    }
+
+    /// [`is_privacy_key`] 与 [`strip_privacy_secrets`] 判的是同一份键，不多不少。
+    #[test]
+    fn is_privacy_key_matches_exactly_the_two_legacy_keys() {
+        assert!(is_privacy_key(PRIVACY_PASSWORD_KEY));
+        assert!(is_privacy_key(PRIVACY_PASSWORD_HASH_KEY));
+        assert!(!is_privacy_key("proxyMode"));
+        assert!(!is_privacy_key("mixedPort"));
+        assert!(!is_privacy_key(""));
+    }
+
+    /// **调用点守卫**：`config_get_value` 持 `State<'_, AppRuntime>`，单测构造不出 Tauri 运行时
+    /// ⇒ 用源码扫描锁「命令确实委托给可测核心」（同 `backup_import_routes_through_the_shared_save_core`
+    /// 的理由）；核心本身（[`config_get_value_core`]）不持 State，行为面由下面
+    /// `config_get_value_core_blocks_privacy_keys_even_when_present_on_disk` 端到端覆盖。
+    ///
+    /// 不盖住它的后果：单键出口 `configApi.getValue('privacyPasswordHash')` 会把 legacy hash 原样
+    /// 交给渲染端——`config_get`/`broadcast_config_changed` 的剥离都拦不住它，因为它们剥的是**另一条**
+    /// 路径（全量快照），`config_get_value` 走的是 `ConfigManager::get_value` 直读，从未经过
+    /// `strip_privacy_secrets`。
+    ///
+    /// 牙：把 `config_get_value` 改回直接调 `state.config().get_value(&key)`（绕开
+    /// `config_get_value_core`）→ 转红。
+    #[test]
+    fn config_get_value_delegates_to_the_testable_core() {
+        let body = crate::commands::guard_scan::top_level_fn_body(
+            include_str!("config.rs"),
+            "pub fn config_get_value(",
+        );
+        assert!(
+            body.contains("config_get_value_core(state.config(), &key)"),
+            "config_get_value 不再委托 config_get_value_core —— 单键读的隐私键短路可能被绕过"
+        );
+    }
+
+    /// **顺序守卫**：[`config_get_value_core`] 里的隐私键判定必须排在真正读配置**之前**短路返回，
+    /// 不是读完了再事后补救。
+    ///
+    /// 牙：把 `is_privacy_key(key)` 判定挪到 `config.get_value(key)` 之后 → 转红。
+    #[test]
+    fn config_get_value_core_checks_privacy_keys_before_touching_config_manager() {
+        let body = crate::commands::guard_scan::top_level_fn_body(
+            include_str!("config.rs"),
+            "fn config_get_value_core(",
+        );
+        let guard_at = body
+            .find("is_privacy_key(key)")
+            .expect("扫到的不是 config_get_value_core 的函数体 —— 守卫已失去判据");
+        let read_at = body
+            .find("config.get_value(key)")
+            .expect("真正的读配置调用没了 —— 守卫已失去判据");
+        assert!(
+            guard_at < read_at,
+            "隐私键判定必须排在读配置之前短路返回，不是读完了再事后补救"
+        );
+    }
+
+    /// **端到端实测**（不是源码扫描推断）：磁盘上真有隐私哈希时，单键读依然拿不到它。
+    ///
+    /// 先用底层 `ConfigManager::get_value` 直读做反证——证明磁盘上确实存了这个哈希、直读确实能
+    /// 读出真值，排除「碰巧键不存在所以是 Null」这个混淆；再证明经 `config_get_value_core` 读同一个
+    /// 键拿到的是 `Null`。
+    ///
+    /// 牙：删掉 [`config_get_value_core`] 里的 `is_privacy_key` 短路 → 第二组断言转红（会读到真哈希
+    /// 而不是 `Null`）。
+    #[test]
+    fn config_get_value_core_blocks_privacy_keys_even_when_present_on_disk() {
+        let dir = std::env::temp_dir().join(format!(
+            "polaris-config-get-value-privacy-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mgr = ConfigManager::new(dir);
+        // 首启默认配置本身已合法（含 `tunConfig` 等 validate 必需字段），在它上面叠两个隐私键，
+        // 不必手搭一份完整合法配置。
+        let mut cfg = mgr.current().expect("首启应给默认配置");
+        cfg["privacyPassword"] = json!("legacy-plaintext");
+        cfg["privacyPasswordHash"] = json!("aabb$deadbeef");
+        mgr.save_full(&cfg).expect("save_full 应成功");
+
+        // 反证：底层直读确实能拿到磁盘上真实存在的隐私键，下面的 Null 不是「键不存在」的巧合。
+        assert_eq!(
+            mgr.get_value(PRIVACY_PASSWORD_HASH_KEY).unwrap(),
+            json!("aabb$deadbeef"),
+            "ConfigManager::get_value 本身必须能读到真哈希，否则下面的测试无意义"
+        );
+
+        assert_eq!(
+            config_get_value_core(&mgr, PRIVACY_PASSWORD_HASH_KEY).unwrap(),
+            Value::Null,
+            "getValue('privacyPasswordHash') 必须拿不到值，即便磁盘上真有这个哈希"
+        );
+        assert_eq!(
+            config_get_value_core(&mgr, PRIVACY_PASSWORD_KEY).unwrap(),
+            Value::Null,
+            "legacy 明文键同样必须拦住"
+        );
+        assert_eq!(
+            config_get_value_core(&mgr, "proxyMode").unwrap(),
+            cfg["proxyMode"],
+            "非隐私键必须不受影响，堵洞不能堵过头"
+        );
     }
 
     /// 契约 L141「解锁失败 sleep(300) 弱限速」：只在失败路径限速，成功/未设密码自由解锁不拖手感。
