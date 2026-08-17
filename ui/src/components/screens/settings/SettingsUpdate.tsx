@@ -350,6 +350,14 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
   interface InstallSubject {
     path: string;
     info: UpdateProgressManifest | null;
+    /**
+     * 摘要校验结论。**它和上面两个是同一份包的四个事实之一，没有理由例外**：
+     * 说明框停在用户面前是分钟级的，其间外部腿落位另一份包会把本页的
+     * `downloadIntegrity` 一起改写 —— 只拉回版本号/路径而留着别人的校验结论，manual 卡就会
+     * 一边写「请手动解压覆盖（路径 A）」一边把「这份包未经摘要校验」的明示整块吞掉（漏报），
+     * 反向则是凭空造一条警告（误报）。
+     */
+    integrity: AppDownloadIntegrity;
   }
 
   /**
@@ -363,6 +371,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
     setUs(next);
     setUpdateInfo(subject.info);
     setDownloadedPath(subject.path);
+    setDownloadIntegrity(subject.integrity);
     setErrMsg(message);
   }
 
@@ -392,7 +401,11 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
   async function installUpdate(confirmed = false, subject?: InstallSubject) {
     // **本函数唯一一次读页面态**（`subject` 非空 = 从确认框回来，主语沿用第一段那次的快照）。
     // 下面一律走 `subj.*`：任何一处再去读 `downloadedPath` / `updateInfo`，跨 await 的错位就回来了。
-    const subj: InstallSubject = subject ?? { path: downloadedPath ?? '', info: updateInfo };
+    const subj: InstallSubject = subject ?? {
+      path: downloadedPath ?? '',
+      info: updateInfo,
+      integrity: downloadIntegrity,
+    };
     if (!subj.path) return;
     try {
       const r = await updateApi.install(subj.path, confirmed);
@@ -865,9 +878,15 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
                 <b>{t('settings.update.downloadedManual')}</b> <span className="cv-tag">{updateInfo?.version}</span>
                 {/* 第三条腿：`manual` 与 `downloaded` 互斥，转 manual 后上面那枚徽标整块消失，
                     而这里恰是「你自己解压覆盖当前程序」的一刻 —— 与摘要腿完全同形的理由。
-                    判据同上（`updateInfo` 自身）：本态只能由 `installUpdate` 从 `downloaded` 进入，
-                    其间没有任何东西改写 `updateInfo`（改写它的两处 —— 进度帧与 `checkUpdate` ——
-                    都会同时把 `us` 带离本态）⇒ 这里的清单仍是刚落位那份包的。 */}
+
+                    ⚠️ **别再用「其间没有任何东西改写 `updateInfo`」那条推理**（本处旧注释写过，
+                    已撤回）：`installUpdate` 横跨两个 await 窗口，其中说明框是**人手时间**，
+                    其间进度帧确实会把清单换成外部腿刚落位的另一份包 —— 「改写它的那几处都会把
+                    `us` 带离本态」是真的，但本函数结束时又把 `us` **拉回来**，而清单不会自己回来。
+
+                    今天这里的清单描述的仍是本次安装那份包，靠的是 `settleInstall` 从
+                    `InstallSubject` 快照**回填**（版本号 / 路径 / 档次 / 摘要结论四样一起），
+                    不是靠上面那条推理。写点现在是三处：进度帧、`checkUpdate`、`settleInstall`。 */}
                 {updateInfo?.isPrerelease && (
                   <>
                     {' '}

@@ -1128,13 +1128,26 @@ async function readTsx(rel = 'SettingsUpdate.tsx') {
   return src;
 }
 
-/** 抽出 `{us === 'X' && (` 起、到下一个 `{us === ` 为止的那一段 JSX。 */
+/**
+ * 抽出 `{us === 'X' && (` 那一段 JSX：到**下一个** `{us === ` 或**本块自己的收尾** `\n        )}`
+ * 为止，取先到的那个。
+ *
+ * # 为什么必须有第二个封顶
+ *
+ * 前身只按「下一个 `{us === `」封顶，于是**最后一个**态屏（`error`）一路切到文件尾 ——
+ * 把它后面的自动下载开关、sing-box 卡、规则资源卡、订阅卡全吞进来。后果两种都有：正向断言被
+ * 卡外的同名标识符**喂饱**（假绿），负向断言被卡外内容**顶红**（错误诊断）。本仓 2026-08-17
+ * 刚在同一形态上栽过一次（剥除表扫描面的切点漂移），这里是它的姊妹实现。
+ *
+ * `\n        )}`（8 空格）是这几个态屏统一的收尾形状，嵌套的 `)}` 缩进更深、不会误命中。
+ */
 function stateBlock(src: string, state: string): string {
   const start = src.indexOf(`{us === '${state}'`);
   expect(start, `SettingsUpdate 里找不到 ${state} 态分支`).toBeGreaterThan(-1);
   const rest = src.slice(start + 1);
-  const nextIdx = rest.indexOf('{us === ');
-  const block = nextIdx === -1 ? rest : rest.slice(0, nextIdx);
+  const bounds = [rest.indexOf('{us === '), rest.indexOf('\n        )}')].filter((i) => i > -1);
+  expect(bounds.length, `${state} 态分支切不出封顶 —— 取材器已失效`).toBeGreaterThan(0);
+  const block = rest.slice(0, Math.min(...bounds));
   expect(block.length, `${state} 态分支取材为空`).toBeGreaterThan(200);
   return block;
 }
@@ -1547,15 +1560,35 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
    * 在随行事实到位之前这个窗口是不存在的：那时 `downloadedPath` 只有一个写点、`updateInfo`
    * 监听器根本不写，两个窗口里两者都不动。所以这不是「一直有的老问题」，是本批欠的账。
    *
-   * # 判据为什么是「裸标识符各只许出现一次」
+   * # 判据的射程（**如实登记，别读成「拦得住任何人」**）
    *
-   * 「快照了没有」用 `contains` 判是没有牙的：快照写了、后面某一处又去读了一次页面态，照样绿。
-   * 直接禁掉**再读**：整个函数体里 `downloadedPath` / `updateInfo` 各只许出现一次（就是取快照
-   * 那一行），此后一律走 `subj.*`。新增任何一处读页面态都当场转红，不依赖谁记得。
+   * 下面②读点计数的射程分两半，强弱不同：
+   *
+   *  - **落位路径这一半守得住**：`downloadedPath` 在**整个组件**里只许被读一处（取快照那一行）。
+   *    复审给的那个绕法 —— 在组件作用域另开一个 `liveSubject()` 工厂读页面态、三条终态腿都传它
+   *    —— 会让这个计数变 2，当场红。
+   *  - **清单这一半守不住**：`updateInfo` 在组件里有一堆正当读点（`available` 那一屏、
+   *    `skipVersion`、`downloadUpdate`、`releaseShipsDigest` 的入参……），无从按计数封顶。
+   *    于是「把 await 之后那段抽成 `finishInstall(r)` 再在里面读 `updateInfo`」这类**一层间接**
+   *    仍能出界，而 `tsc` 与全量都绿。
+   *
+   * 真要关上清单那一半，得让「主语从哪来」变成**类型问题** —— 把 `installUpdate` 整体挪出组件、
+   * 主语作必填入参，同模块内任何函数都能读组件 state，brand 字段之类的伪加固挡不住。那是独立
+   * 一批的改动量。**本门今天守的是：字面函数体内不再读页面态 + 路径读点全组件唯一**，别多读。
+   *
+   * # ①为什么不判「快照那一行长什么样」
+   *
+   * 前身写的是逐字源码行 `body.includes("const subj: InstallSubject = subject ?? { … };")`。
+   * 那是**夹具型判据** —— 与本批刚拆掉的 `setDownloadedPath` 写点计数门同一种毛病，换了个位置
+   * 又长出来：把它等价拆成「先算 snapshot、再 `subject ?? snapshot`」时，主语仍在入口钉死、
+   * 计数仍 1、`tsc` 仍 0，而它当场红，消息还说「不再在入口处钉死主语」——**与真实原因相反**。
+   * 现在改判它真正该判的那件事：**快照表达式出现在第一个 `await` 之前**（那正是逐字行判不出的
+   * 性质），形状怎么写随意。
    *
    * **变异探针**：把 `isPortableZipUpdate(subj.path)` 改回 `isPortableZipUpdate(downloadedPath)`
-   * ⇒ 计数变 2 ⇒ 转红；把 `installUpdate(true, subj)` 的第二个实参去掉（确认框回来重新读页面态）
-   * ⇒ 转红；把某处 `settleInstall(...)` 拆回 `setUs(...) + setErrMsg(...)` ⇒ 转红。
+   * ⇒ ②转红；把快照那几行挪到第一个 `await` 之后 ⇒ ①转红；把 `installUpdate(true, subj)` 的第二个
+   * 实参去掉 ⇒ ③转红；把某处 `settleInstall(...)` 拆回 `setUs(...) + setErrMsg(...)` ⇒ ④转红；
+   * `InstallSubject` 加一个字段而 `settleInstall` 不写它 ⇒ ⑤转红。
    */
   it('installUpdate 的主语在进函数那一刻钉死（跨 await 不再读页面态）', async () => {
     const src = await readTsx();
@@ -1569,44 +1602,158 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
     const body = cut('async function installUpdate(', 'async function runCoreOp(');
     expect(body.length, 'installUpdate 取材为空').toBeGreaterThan(400);
 
-    // ① 快照：主语要么沿用上一段传进来的，要么在这里从页面态取一次。
+    // ① **结构性**判据：快照必须落在第一个 await 之前。形状怎么写随意（见头注）。
+    const snapAt = body.search(/const subj: InstallSubject =/);
+    const firstAwait = body.search(/\bawait\b/);
+    expect(snapAt, 'installUpdate 里找不到主语快照 —— 跨 await 的错位会回来').toBeGreaterThan(-1);
+    expect(firstAwait, 'installUpdate 里一个 await 都没有？取材器失效').toBeGreaterThan(-1);
     expect(
-      body.includes("const subj: InstallSubject = subject ?? { path: downloadedPath ?? '', info: updateInfo };"),
-      'installUpdate 不再在入口处钉死主语 —— 跨 await 的错位会回来',
-    ).toBe(true);
-    // ② 之后**不得再读**：两个页面态标识符在整个函数体里各只许出现一次（就是①那一行）。
-    for (const live of ['downloadedPath', 'updateInfo'] as const) {
+      snapAt,
+      '主语快照排在第一个 await 之后 —— 那时页面态可能已经被外部腿换成另一份包了',
+    ).toBeLessThan(firstAwait);
+
+    // ② 之后**不得再读**页面态：快照那一行读了哪几个 state，就逐个断言它们在函数体里只出现一次。
+    //    被查的名单**从快照表达式里反推**，不是手抄：主语将来多快照一个 state，本条自动跟着长。
+    const snapExpr = body.slice(snapAt, body.indexOf('};', snapAt));
+    const stateNames = new Set(
+      [...src.matchAll(/const \[(\w+), set\w+\] = useState/g)].map((m) => m[1]),
+    );
+    expect(stateNames.size, '解析不到组件 state —— 取材器失效').toBeGreaterThan(5);
+    const snapshotted = [...new Set([...snapExpr.matchAll(/\b(\w+)\b/g)].map((m) => m[1]))].filter(
+      (n) => stateNames.has(n),
+    );
+    expect(snapshotted.length, '快照表达式里一个页面态都没读到 —— 取材器失效').toBeGreaterThan(1);
+    for (const live of snapshotted) {
       const hits = body.match(new RegExp(`\\b${live}\\b`, 'g')) ?? [];
       expect(
         hits.length,
-        `installUpdate 里 ${live} 出现 ${hits.length} 次 —— 只许在取快照那一行出现，` +
+        `installUpdate 里 ${live} 出现 ${hits.length} 次 —— 只许在取快照那一处出现，` +
           '再读一次就会拿到 await 期间被外部腿换掉的另一份包',
       ).toBe(1);
     }
+    // ②b 落位路径这一半再收一道**全组件**的封顶：它今天只有取快照那一个读点，故按计数封得住。
+    //     这一条正是「在组件作用域另开一个工厂读页面态」那种一层间接绕法的拦截点。
+    //     清单那一半封不住（正当读点一堆），射程见头注，别把本条读成两半都守住了。
+    const pathReads = (src.match(/\bdownloadedPath\b/g) ?? []).length;
+    expect(
+      pathReads,
+      `downloadedPath 在组件里出现 ${pathReads} 次 —— 只许有「useState 声明 + 取快照」两处；` +
+        '多出来的那处（哪怕包在另一个函数里）就是在 await 窗口外重新读页面态',
+    ).toBe(2);
+
     // ③ 确认框回来时沿用**同一个**快照，不是重新读页面（那正是第二个、分钟级的窗口）。
     expect(
       body.includes('await installUpdate(true, subj);'),
       '两段式确认回来时没有把主语带回去 —— 人手时间里页面态早就换人了',
     ).toBe(true);
-    // ④ 三处终态一律经 settleInstall（态与随行事实同批落地），函数体内不得裸写这两个 setter。
-    for (const setter of ['setUs(', 'setErrMsg(', 'setUpdateInfo(', 'setDownloadedPath('] as const) {
+    // ④ 终态一律经 settleInstall（态与随行事实同批落地），函数体内不得裸写这些 setter。
+    //    名单由 settleInstall 自己写了哪些 setter 反推（见⑤），不在这里另抄一份。
+    const settle = cut('function settleInstall(', 'async function installUpdate(');
+    // 过滤：`settleInstall(` 自己也以 `set` 起手，只认真正的 useState setter。
+    const declaredSetters = new Set(
+      [...src.matchAll(/const \[\w+, (set\w+)\] = useState/g)].map((m) => m[1]),
+    );
+    const settleSetters = [...new Set([...settle.matchAll(/\b(set\w+)\(/g)].map((m) => m[1]))].filter(
+      (n) => declaredSetters.has(n),
+    );
+    expect(settleSetters.length, 'settleInstall 里一个 setter 都没解析到 —— 取材器失效').toBeGreaterThan(3);
+    for (const setter of settleSetters) {
       expect(
-        body.includes(setter),
-        `installUpdate 里出现裸 ${setter}… —— 终态必须经 settleInstall，否则总有一处忘了带事实`,
+        body.includes(`${setter}(`),
+        `installUpdate 里出现裸 ${setter}( —— 终态必须经 settleInstall，否则总有一处忘了带事实`,
       ).toBe(false);
     }
     const settles = body.match(/settleInstall\(/g) ?? [];
     expect(settles.length, 'installUpdate 的三条终态腿（便携 / 形态错配 / 抛错）都得 settle').toBe(3);
 
-    // ⑤ settleInstall 自己必须把「态 + 三样事实」一起写下 —— 少一样就又回到只搬状态。
-    const settle = cut('function settleInstall(', 'async function installUpdate(');
-    for (const w of [
-      'setUs(next)',
-      'setUpdateInfo(subject.info)',
-      'setDownloadedPath(subject.path)',
-      'setErrMsg(message)',
-    ] as const) {
+    // ⑤ settleInstall 必须把「态 + `InstallSubject` 的**每一个**字段」一起写下。
+    //    名单**由类型派生**：前身逐字枚举四条 setter，于是主语加第 5 个事实时第 5 格永远不会
+    //    自己长出来 —— 摘要校验结论（`integrity`）当初正是这么漏掉的。现在改为扫
+    //    `interface InstallSubject` 的字段，每个字段都必须出现在一次 `setXxx(subject.<字段>)` 里。
+    // 收尾锚点用 `function settleInstall(`：取材器剥了注释，块注释当不了锚点。
+    const subjIface = cut('interface InstallSubject {', 'function settleInstall(');
+    const subjFields = [...subjIface.matchAll(/^\s{4}(\w+):/gm)].map((m) => m[1]);
+    expect(subjFields.length, 'InstallSubject 的字段一个都没解析到 —— 取材器失效').toBeGreaterThan(2);
+    for (const f of subjFields) {
+      expect(
+        new RegExp(`set\\w+\\(subject\\.${f}\\)`).test(settle),
+        `settleInstall 没有回填 subject.${f} —— 主语的四个事实描述同一份包，落一个就是` +
+          '「拉回了三个、留着别人那第四个」，manual 卡会一边写 A 的路径一边举 B 的结论',
+      ).toBe(true);
+    }
+    for (const w of ['setUs(next)', 'setErrMsg(message)'] as const) {
       expect(settle.includes(w), `settleInstall 缺 ${w} —— 态与随行事实必须同批落地`).toBe(true);
+    }
+  });
+
+  /**
+   * `settleInstall` 落地的每一个态，其**屏上渲染到的全部事实**都必须由它钉住。
+   *
+   * 这是上一条门的对偶方向：那条守「主语里的字段都被写下了」，本条守「屏上要用的事实都进了
+   * 主语」。少了本条，`InstallSubject` 漏掉一个事实时上一条门是**恒绿**的 —— 摘要校验结论
+   * （`downloadIntegrity` → `downloadUnverified` → `digestMissingAfter` 正文 + 徽标）当初正是
+   * 这么漏的：manual 卡把「这份包未经摘要校验」的明示整块吞掉（漏报），反向则凭空造一条警告。
+   *
+   * 判据两侧都不点名：**落地哪些态**从 `settleInstall(<态>, …)` 的实参反推，**屏上读了哪些事实**
+   * 从那些态的 JSX 块里扫标识符、再经组件作用域的一层派生（`const downloadUnverified =
+   * downloadIntegrity === …`）解析回 state。新增一个态、或在这些屏上新渲染一个 state，
+   * 都会自己长进射程。
+   *
+   * **变异探针**：从 `settleInstall` 里删掉 `setDownloadIntegrity(subject.integrity)` ⇒ 转红
+   * （`downloadUnverified` 解析回 `downloadIntegrity`，不在被钉住的集合里）。
+   */
+  it('settleInstall 钉住的事实覆盖它落地那几屏渲染的全部事实', async () => {
+    const src = await readTsx();
+    const settleAt = src.indexOf('function settleInstall(');
+    expect(settleAt, '找不到 settleInstall —— 本门已失去判据').toBeGreaterThan(-1);
+    const settle = src.slice(settleAt, src.indexOf('async function installUpdate('));
+
+    // 组件 state 名 → setter 名（本门唯一的「名字表」，从 useState 声明派生）。
+    const stateOfSetter = new Map(
+      [...src.matchAll(/const \[(\w+), (set\w+)\] = useState/g)].map((m) => [m[2], m[1]]),
+    );
+    expect(stateOfSetter.size, '解析不到组件 state —— 取材器失效').toBeGreaterThan(5);
+    const pinned = new Set(
+      [...settle.matchAll(/\b(set\w+)\(/g)]
+        .map((m) => stateOfSetter.get(m[1]))
+        .filter((v): v is string => !!v),
+    );
+    expect(pinned.size, 'settleInstall 一个 state 都没写 —— 取材器失效').toBeGreaterThan(3);
+
+    // 组件作用域的一层派生：`const X = <含某些 state 的表达式>;`
+    const derived = new Map(
+      [...src.matchAll(/^ {2}const (\w+) = ([^;]*);$/gm)].map(([, name, expr]) => [
+        name,
+        [...new Set([...expr.matchAll(/\b(\w+)\b/g)].map((m) => m[1]))].filter((n) =>
+          [...stateOfSetter.values()].includes(n),
+        ),
+      ]),
+    );
+
+    // 落地哪些态 —— 从 settleInstall 的调用实参反推，不点名。
+    const landed = [...new Set([...src.matchAll(/settleInstall\(\s*'(\w+)'/g)].map((m) => m[1]))];
+    expect(landed.sort(), 'settleInstall 落地的态解析不到 —— 取材器失效').toEqual(['error', 'manual']);
+
+    for (const state of landed) {
+      const block = stateBlock(src, state);
+      const idents = new Set([...block.matchAll(/\b(\w+)\b/g)].map((m) => m[1]));
+      for (const id of idents) {
+        // 屏上直接读的 state：必须被钉住。
+        if (stateOfSetter.has(`set${id[0].toUpperCase()}${id.slice(1)}`)) {
+          expect(
+            pinned.has(id),
+            `${state} 屏渲染了 \`${id}\`，而 settleInstall 不钉它 —— 拉回态时它还留着` +
+              '别人（外部腿刚落位那份包）的值',
+          ).toBe(true);
+        }
+        // 屏上读的派生量：它依赖的 state 必须被钉住。
+        for (const dep of derived.get(id) ?? []) {
+          expect(
+            pinned.has(dep),
+            `${state} 屏渲染了 \`${id}\`（派生自 \`${dep}\`），而 settleInstall 不钉 \`${dep}\``,
+          ).toBe(true);
+        }
+      }
     }
   });
 

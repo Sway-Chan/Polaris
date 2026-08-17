@@ -28,7 +28,8 @@
  * 「没检查」与「检查通过」的输出不可区分 = 没有这道门。
  */
 
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -212,10 +213,16 @@ describe('进度帧的清单投影 —— 剥掉的那两个字段', () => {
     const omitted = rustOmittedManifestFields();
     // 剥注释：注释里提到字段名会顶红判据（本仓踩过的老坑）。
     const src = stripLineComments(stripBlockComments(SETTINGS_UPDATE_TSX));
+    // 切到**下一个** `{us === `，不是切到写死的 `{us === 'downloading'`。
+    // 前身那种写法今天恰好重合，但在两者之间插一屏新态并让它读被剥字段 ⇒ 那一屏被整块吞进
+    // `availableBlock`、排除在扫描面外，全量全绿。判据面必须由「下一个态屏」定，不由夹具定
+    // （姊妹实现见 `settings-logic.test.ts` 的 `stateBlock()`）。
     const availAt = src.indexOf("{us === 'available'");
-    const availEnd = src.indexOf("{us === 'downloading'");
     expect(availAt, "找不到 available 态分支 —— 扫描面切不出来").toBeGreaterThan(-1);
-    expect(availEnd, "找不到 downloading 态分支 —— 扫描面切不出来").toBeGreaterThan(availAt);
+    const after = src.slice(availAt + 1);
+    const nextUs = after.indexOf('{us === ');
+    expect(nextUs, 'available 之后没有下一个态屏 —— 扫描面切不出来').toBeGreaterThan(-1);
+    const availEnd = availAt + 1 + nextUs;
     const availableBlock = src.slice(availAt, availEnd);
     const reachable = src.slice(0, availAt) + src.slice(availEnd);
 
@@ -239,5 +246,39 @@ describe('进度帧的清单投影 —— 剥掉的那两个字段', () => {
       [...omitted].some((f) => availableReads.has(f)),
       '被剥掉的字段在 available 那一屏也没人读了 —— 上面那条断言已无信息量，请复核剥除表',
     ).toBe(true);
+  });
+});
+
+/**
+ * `update:progress` 的**消费点普查** —— 扫描面的文件集不能由夹具定。
+ *
+ * 上面那道「progress 可达面不读被剥字段」的门只扫 `SettingsUpdate.tsx`。这在今天成立，因为
+ * 全仓只有一个消费者；但那是**事实**不是**判据** —— 第二个消费者出现时它会静默出界：新组件
+ * 读 `patch.info.releaseNotes` 拿到 `undefined`，两道门都不响。
+ *
+ * 故本条把「消费点恰好一处、且就是被扫的那个文件」钉住：普查方式是**递归遍历** `ui/src`
+ * （排除测试自身），不是点名几个文件。第二个消费者一出现，这条先红，作者必须回到上面那道门
+ * 把扫描面补齐。
+ *
+ * **变异探针**：在任意组件里再加一句 `updateApi.onProgress(() => {})` ⇒ 转红。
+ */
+describe('update:progress 的消费点', () => {
+  const walk = (dir: string): string[] =>
+    readdirSync(dir).flatMap((name) => {
+      const full = join(dir, name);
+      if (statSync(full).isDirectory()) return walk(full);
+      return /\.tsx?$/.test(full) && !/\.test\.tsx?$/.test(full) ? [full] : [];
+    });
+
+  it('全仓恰好一处消费，且就是被剥除表扫描的那个文件', () => {
+    const files = walk(fileURLToPath(new URL('..', import.meta.url)));
+    // 取材自检：遍历不到文件时下面的断言会在空集合上「恰好」失败/通过，两个方向都无意义。
+    expect(files.length, '递归遍历 ui/src 一个源文件都没拿到 —— 取材器失效').toBeGreaterThan(50);
+    const consumers = files.filter((f) => readFileSync(f, 'utf8').includes('updateApi.onProgress('));
+    expect(
+      consumers.map((f) => f.replace(/^.*\/ui\/src\//, '')),
+      '`update:progress` 的消费点不再是唯一那一处 —— 剥除表扫描面只覆盖 SettingsUpdate.tsx，' +
+        '新消费者会静默出界（读到的被剥字段恒 undefined，两道门都不响）',
+    ).toEqual(['components/screens/settings/SettingsUpdate.tsx']);
   });
 });

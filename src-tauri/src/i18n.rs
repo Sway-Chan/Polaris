@@ -104,6 +104,11 @@
 //! | # | 出口 | 载荷 | 显示点（前端原样展示） |
 //! |---|---|---|---|
 //! | 1 | `commands/updater.rs::ProgressStage::Failed(msg)`（经 `emit_progress` 广播） | `update:progress` 的 `error` | `SettingsUpdate.tsx` 的 `setErrMsg(patch.error …)`；同一真值经 `popup_state_for` 镜像进 mini 更新弹窗 error 态 |
+//! | 2 | `response::ApiResponse::err(msg)` / `err_with_code(msg, _)` | 响应**信封**的 `msg` | `ipc-client.ts` 抛 `IpcError(msg)`，各调用点多以 `e.message` 直落 toast / 错误行 |
+//! | 3 | `commands/subscription.rs::update_failure(...)`（`:330`；文案来自 `:813`「订阅不存在」/ `:821`「订阅缺少 URL」/ `:861` / `:917` 等 9 处调用点） | `event:subscriptionUpdateProgress` 终态帧的 `error` | `SubInfoBar.tsx:372` 的 `data-tip={failure.error \|\| t('nodes.subRefreshFail')}` |
+//! | 4 | `runtime/subscription_scheduler.rs:302`（兜底串 `"订阅更新失败"`，其余透传 #3 的文案） | `event:subscriptionAutoUpdate` 的 `error` | `App.tsx:679` 的 `toast.error(t('nodes.subAutoUpdateFail'), data.error)` —— 第 2 参数是 toast 描述行 |
+//! | 5 | **`ApiResponse::ok` 的载荷内嵌 `error` 字段**（≠ #2 的信封通道）：`commands/proxy.rs:522` / `:532`、`commands/misc.rs:1035` / `:1036` | `{ ok:false, error }` / `{ error }` | `components/dialogs/node-spec.ts:1050` 的 `message: r.error ?? ''`（NodeDialog 探测结果条）；misc 那两条落进诊断导出正文 |
+//! | 6 | `runtime/proxy.rs:752` 的 `emit_proxy_error(message, error_code)` 的 `message` | `event:proxyError` / `event:proxyLifecycle` 的 `message` | `domain/proxy-error-text.ts` **三段式的第 2 段**（`STARTUP_FAILED` / `ROOT_ORPHAN_BLOCKED` 等无键码走这一段）→ `PendingChangesBar` 的「应用失败：{{reason}}」 |
 //!
 //! **#1 的改造量级（2026-08-17 复审校准，别照抄成「只需换个载荷」）**：`Failed(&str)` →
 //! `Failed { code, params }` 要动 **变体定义 1 处 + 构造点 9 处**（每处都要挑 code 与 params）
@@ -115,11 +120,6 @@
 //! 产地从 13 个平行实参调用点收敛成一个枚举 + 一个 `emit` 闭包）；改载荷会在那 9 处**编译红**
 //! 而不是静默沿用旧字符串；「哪一格是用户可见文案」由类型在**一处**声明（`Failed` 的那个
 //! 字段），不再散在每个调用点的第 4 个实参里。
-//! | 2 | `response::ApiResponse::err(msg)` / `err_with_code(msg, _)` | 响应**信封**的 `msg` | `ipc-client.ts` 抛 `IpcError(msg)`，各调用点多以 `e.message` 直落 toast / 错误行 |
-//! | 3 | `commands/subscription.rs::update_failure(...)`（`:330`；文案来自 `:813`「订阅不存在」/ `:821`「订阅缺少 URL」/ `:861` / `:917` 等 9 处调用点） | `event:subscriptionUpdateProgress` 终态帧的 `error` | `SubInfoBar.tsx:372` 的 `data-tip={failure.error \|\| t('nodes.subRefreshFail')}` |
-//! | 4 | `runtime/subscription_scheduler.rs:302`（兜底串 `"订阅更新失败"`，其余透传 #3 的文案） | `event:subscriptionAutoUpdate` 的 `error` | `App.tsx:679` 的 `toast.error(t('nodes.subAutoUpdateFail'), data.error)` —— 第 2 参数是 toast 描述行 |
-//! | 5 | **`ApiResponse::ok` 的载荷内嵌 `error` 字段**（≠ #2 的信封通道）：`commands/proxy.rs:522` / `:532`、`commands/misc.rs:1035` / `:1036` | `{ ok:false, error }` / `{ error }` | `components/dialogs/node-spec.ts:1050` 的 `message: r.error ?? ''`（NodeDialog 探测结果条）；misc 那两条落进诊断导出正文 |
-//! | 6 | `runtime/proxy.rs:752` 的 `emit_proxy_error(message, error_code)` 的 `message` | `event:proxyError` / `event:proxyLifecycle` 的 `message` | `domain/proxy-error-text.ts` **三段式的第 2 段**（`STARTUP_FAILED` / `ROOT_ORPHAN_BLOCKED` 等无键码走这一段）→ `PendingChangesBar` 的「应用失败：{{reason}}」 |
 //!
 //! **#6 已有前端侧对账文档与门**，不必在此重复：判据写在 `ui/src/domain/proxy-error-text.ts`
 //! 的头注（含「为什么不把 Rust message 也翻译了」的取舍），覆盖门是
