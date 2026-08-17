@@ -133,7 +133,18 @@ pub fn build_tailscale_endpoint(
     platform: &str,
     detour_tag: Option<&str>,
 ) -> Endpoint {
-    let ts = server.tailscale_settings.clone().unwrap_or_default();
+    // 只读，故借而不拷（与 `builder/outbound.rs` 的 snell 那处同型、同修法）。
+    // 此前写的是 `.clone().unwrap_or_default()` —— 装箱后 Some/None **两支各多一次堆分配**
+    // （`Box::clone` 先 alloc 再深拷；`Box::<T>::default()` 也 alloc），而 `ts` 在本函数里
+    // 全程只读（10 个字段访问点，零写入）。调用点 `builder/outbounds.rs` 在每节点循环里。
+    let fallback;
+    let ts = match server.tailscale_settings.as_deref() {
+        Some(ts) => ts,
+        None => {
+            fallback = crate::user_config::server_config::TailscaleSettings::default();
+            &fallback
+        }
+    };
     let mut ep = Endpoint {
         type_field: "tailscale".into(),
         tag: tag.to_string(),

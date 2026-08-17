@@ -245,8 +245,9 @@ pub fn build_proxy_outbound(
             // 且修法是纯收窄（4/6 之外的值本就会被内核拒），故不留着。
             {
                 // 只读，故借而不拷。此前写的是 `.clone().unwrap_or_default()` —— 那在装箱之前
-                // 就已经是白拷一份带 6 个 `String` 的结构体，装箱后更是 Some/None 两支**各多一次
-                // 堆分配**（`Box::clone` 先 alloc；`Box::<T>::default()` 也 alloc）。
+                // 就已经是白拷一份带 5 个 `Option<String>` + 1 个 `Option<bool>` 的结构体
+                // （`SnellSettings`，另有一个 `u32` 版本号），装箱后更是 Some/None 两支
+                // **各多一次堆分配**（`Box::clone` 先 alloc；`Box::<T>::default()` 也 alloc）。
                 // 本函数有两个生产调用点（`builder/outbounds.rs` 的每节点循环、
                 // `runtime/speedtest.rs` 的每轮测速 × 每节点），故按节点数放大，不是一次性的。
                 // 改成借用后两支都零分配，比装箱前还省一次拷贝。
