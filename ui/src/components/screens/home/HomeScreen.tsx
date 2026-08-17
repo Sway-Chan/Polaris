@@ -41,9 +41,6 @@ import { applyFakeIpTunEntry } from './fakeip-tun-entry';
 import { notifyDesktop } from '@/lib/desktop-notify';
 import { withProxyStartClaim } from '@/lib/proxy-start-claim';
 import { ProxyErrorCode } from '@/contracts/types';
-import type {
-  ConnectionsAggregate,
-} from '@/contracts/types';
 import { ConnectionTopology } from './ConnectionTopology';
 import { useSwitchNode } from '@/components/screens/shared/use-switch-node';
 import { NodeMenu } from './NodeMenu';
@@ -426,7 +423,9 @@ export function HomeScreen() {
 
     /* 订阅生命周期交给 `createTopicSubscription`：它保证「监听先于订阅挂上」与「订过就一定退」
        两条不变式（各自守着一个真机缺陷，见该文件头注），并可脱离组件直测。 */
-    const sub = createTopicSubscription<ConnectionsAggregate>(
+    /* 泛型是 `number`：topology 的推送载荷是一个时间戳（`EVENT_CONNECTIONS_TOPOLOGY_CHANGED`），
+       不是聚合表。本端口不收帧，标错不会有运行期后果，但错型会让下一个读者以为首页还在吃聚合。 */
+    const sub = createTopicSubscription<number>(
       {
         /* 这枚端口只发**令牌**，不收帧：完整表变化信号的真监听在 ConnectionTopology 自己那条
          * effect 上（`onConnectionsTopologyChangedReady`），故此处返回空注销函数。

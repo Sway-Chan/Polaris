@@ -230,6 +230,20 @@ struct StreamGateState {
     /// 门变更代次（订阅 / 退订 / 可见性翻转即 +1）。等在门上的 relay 靠 `watch` 立刻醒——
     /// `watch` 记版本而非边沿信号，故「判定为假」与「开始等」之间发生的 bump 不会丢。
     epoch: watch::Sender<u64>,
+    /// 「有新的排名聚合订阅者进场，欠它一帧基线」的**边沿**标志（连接流任务消费即清）。
+    ///
+    /// # 为什么电平采样不够
+    ///
+    /// 连接流任务每轮循环读一次 `topic_open(Topic::Connections)` 与上一轮比对（`agg_was_open`）。
+    /// `watch` 记的是版本不是边沿，退订与重订两次 bump 若都落在两次 poll 之间就被合并掉 ——
+    /// 电平没变 ⇒ 转换不触发 ⇒ 新订阅者拿不到基线，正是本批要关掉的那类空窗。
+    ///
+    /// 「这个合并窗只有 µs–ms，而需要基线的场景（订阅方 state 已丢 = 组件卸载过）是人类尺度」
+    /// 是条**对的**推理，但它是「判据的成立依赖一个没被钉住的外部性质」—— 前端换个 key 让组件
+    /// 快速重挂就不再成立。故改成边沿事件：`subscribe` 置、流任务 swap 取走，电平比对留作兜底。
+    /// 两条腿互为补集（边沿在流未起时被取走 → 建流处 `last_sig = None` 兜住；边沿被合并 →
+    /// 电平比对兜住），**不是**同一条判据写两遍。
+    aggregate_baseline_due: AtomicBool,
     /// 主窗可见性缓存（relay 只读它，**从不**碰窗口 getter）。
     vis: VisibilityCache,
 }
@@ -279,6 +293,7 @@ impl StreamGateState {
         Self {
             registry: Mutex::new(SubscriptionRegistry::new()),
             epoch: watch::channel(0).0,
+            aggregate_baseline_due: AtomicBool::new(false),
             vis: VisibilityCache {
                 window_alive: AtomicBool::new(false),
                 visible: AtomicBool::new(true),
@@ -286,6 +301,20 @@ impl StreamGateState {
                 error_streak: AtomicU64::new(0),
             },
         }
+    }
+
+    /// 记一笔「欠新订阅者一帧排名聚合基线」（见 [`Self::aggregate_baseline_due`]）。
+    ///
+    /// 每次 `aggregate` 订阅都置，不只 0→1：第二个订阅者同样没有基线，而「订阅即回初始帧」本就是
+    /// 本模块头注写明的语义（`closed` 那条走的是 `subscribe` 里直接广播快照的同一条口径）。多置的
+    /// 代价是一帧全量拓扑，比漏置的代价（排名页空到下一次拓扑变化）小一个量级。
+    fn request_aggregate_baseline(&self) {
+        self.aggregate_baseline_due.store(true, Ordering::SeqCst);
+    }
+
+    /// 取走并清除上一条标志（消费者只有连接流任务，swap 保证一帧只兑现一次）。
+    fn take_aggregate_baseline(&self) -> bool {
+        self.aggregate_baseline_due.swap(false, Ordering::SeqCst)
     }
 
     /// 主窗可见性（**非阻塞**）：读缓存，并顺带投递一次主线程刷新。
@@ -962,6 +991,11 @@ impl StatsRelay {
                 subs.push((window_label.to_string(), topic, token));
             }
         }
+        // 新的排名聚合订阅者手上没有任何基线 → 记一笔边沿，由连接流任务在下一轮兑现（见该字段文档）。
+        // 必须在 bump 之前置：bump 会立刻唤醒流任务，先 bump 后置就有一轮读不到这笔账。
+        if topic == Topic::Connections {
+            self.gate.request_aggregate_baseline();
+        }
         // 订阅集变了 → 唤醒该 topic 已在跑但正断流待命的 relay（无订阅时停在门上的那条腿）。
         self.gate.bump();
         // 数据面 relay（订阅即起，内部按核起停自适应）：
@@ -1416,8 +1450,13 @@ fn signature_changed(agg: &ConnectionsAggregate, last: &Option<String>) -> Optio
     }
 }
 
-/// 排名聚合令牌的开合转换处理：**翻开**即作废签名基线 + 记一次待推（⇒ 强制发一帧当前真相）。
-/// 返回新的 `was_open`（调用方存回）。
+/// 排名聚合令牌的开合转换处理：**翻开或新订阅者进场**即作废签名基线 + 记一次待推（⇒ 强制发一帧
+/// 当前真相）。返回新的 `was_open`（调用方存回）。
+///
+/// 两条触发腿互为补集，缺一条都留窗口：`baseline_requested` 是 `subscribe` 置的**边沿**（挡住
+/// 「退订+重订两次 bump 被 watch 合并、电平没变」那个窗，见 `StreamGateState::aggregate_baseline_due`）；
+/// `!was_open` 是**电平**兜底（挡住「边沿在流未起时被别人取走」）。`open` 为假时两条都不生效 ——
+/// 那一刻没有消费者，强制的帧只会白付；此时 `was_open` 落回 false，下次开门由电平腿接住。
 ///
 /// # 为什么必须两件事一起做
 ///
@@ -1434,10 +1473,11 @@ fn signature_changed(agg: &ConnectionsAggregate, last: &Option<String>) -> Optio
 fn apply_aggregate_demand_transition(
     open: bool,
     was_open: bool,
+    baseline_requested: bool,
     last_sig: &mut Option<String>,
     emit: &mut EmitGate,
 ) -> bool {
-    if open && !was_open {
+    if open && (baseline_requested || !was_open) {
         *last_sig = None;
         emit.note_change();
     }
@@ -1598,6 +1638,12 @@ async fn run_connections_stream(
 
         // ② 核未运行 → 不碰 gRPC，推一帧离线态（只在进入该态时推一次；核停着重复推相同空帧
         //    只会让渲染端白重渲）。
+        //
+        //    **已知缺口（既存，本批未改，改它要另开射程）**：本分支不做排名聚合令牌的开合处理 ——
+        //    核停着时打开排名页，流任务已驻此处且 `offline_sent` 已真 ⇒ 新订阅者收不到空基线帧，
+        //    前端 `aggregate` 停在 `null`。判为可接受：`null` 与空聚合在排名页的读点上同解
+        //    （`aggregate?.hosts ?? []`），且「无连接」正是核停着时的真相；核一起来建流即
+        //    `last_sig = None` 自愈。**待真机确认**：`null` 态与空帧态的占位文案/骨架是否真的同形。
         let status = proxy.status();
         if !status.running || status.clash_api_port == 0 {
             if !offline_sent {
@@ -1744,10 +1790,13 @@ async fn run_connections_stream(
                 detail_was_open = detail_open;
             }
             // 排名聚合令牌的开合转换（与上面 detail 那一跳同构；两件事缺一条都留空窗，见函数文档）。
+            // 边沿标志**每轮无条件取走**：留着会在下一轮门开时兑现一帧陈账。
             let agg_open = gate.topic_open(Topic::Connections);
+            let baseline_due = gate.state.take_aggregate_baseline();
             agg_was_open = apply_aggregate_demand_transition(
                 agg_open,
                 agg_was_open,
+                baseline_due,
                 &mut last_sig,
                 &mut agg_emit,
             );
@@ -2624,13 +2673,16 @@ mod tests {
     /// 直到下一次拓扑变化 —— 直接违反「及时性」不变量。
     ///
     /// **变异探针**：删 `*last_sig = None` ⇒ 第二段「同内容也必须发」转红；删 `emit.note_change()`
-    /// ⇒ 「必须记待推」转红；把条件从 `open && !was_open` 放宽成 `open` ⇒ 「保持开不得动状态」转红。
+    /// ⇒ 「必须记待推」转红；把条件从 `open && (baseline_requested || !was_open)` 放宽成 `open`
+    /// ⇒ 「保持开不得动状态」转红；删掉 `baseline_requested ||` 那条边沿腿 ⇒ 「电平没变但有新订阅者」
+    /// 那段转红。
     #[test]
     fn 排名令牌翻开必须清签名并强制一帧() {
         let mut last_sig = Some("SIG-A".to_string());
         let mut emit = EmitGate::new(AGGREGATE_EMIT_MIN_INTERVAL);
         assert!(apply_aggregate_demand_transition(
             true,
+            false,
             false,
             &mut last_sig,
             &mut emit
@@ -2651,26 +2703,101 @@ mod tests {
             signature_changed(&agg, &stale).is_none(),
             "对照组：签名未作废 → 同内容被去重（这正是空窗的来源）"
         );
-        apply_aggregate_demand_transition(true, false, &mut stale, &mut emit);
+        apply_aggregate_demand_transition(true, false, false, &mut stale, &mut emit);
         assert!(
             signature_changed(&agg, &stale).is_some(),
             "令牌翻开后：内容与上次逐字相同也必须发一帧"
         );
 
-        // 保持开 / 开→关 / 保持关：一律不得动签名基线，也不得凭空造待推（会白发一帧）。
+        // 🔴 边沿腿：**电平没变**（一直开着）但有新订阅者进场 —— 退订+重订两次 bump 被 watch 合并
+        // 掉时就是这个形态。只靠电平比对会把它整个漏掉，新订阅者一直空到下一次拓扑变化。
+        let mut merged = Some("SIG-M".to_string());
+        let mut merged_emit = EmitGate::new(AGGREGATE_EMIT_MIN_INTERVAL);
+        assert!(apply_aggregate_demand_transition(
+            true,
+            true,
+            true,
+            &mut merged,
+            &mut merged_emit
+        ));
+        assert!(
+            merged.is_none() && merged_emit.is_pending(),
+            "电平合并窗：边沿标志必须独立触发基线，否则新订阅者拿不到首帧"
+        );
+        // 门关着时边沿不得兑现（没有消费者，强制的帧纯白付）。
+        let mut closed_sig = Some("SIG-C".to_string());
+        let mut closed_emit = EmitGate::new(AGGREGATE_EMIT_MIN_INTERVAL);
+        assert!(!apply_aggregate_demand_transition(
+            false,
+            false,
+            true,
+            &mut closed_sig,
+            &mut closed_emit
+        ));
+        assert_eq!(closed_sig.as_deref(), Some("SIG-C"));
+        assert!(!closed_emit.is_pending());
+
+        // 保持开 / 开→关 / 保持关（且无边沿）：一律不得动签名基线，也不得凭空造待推（会白发一帧）。
         let mut sig = Some("SIG-B".to_string());
         let mut idle = EmitGate::new(AGGREGATE_EMIT_MIN_INTERVAL);
         assert!(apply_aggregate_demand_transition(
-            true, true, &mut sig, &mut idle
+            true, true, false, &mut sig, &mut idle
         ));
         assert!(!apply_aggregate_demand_transition(
-            false, true, &mut sig, &mut idle
+            false, true, false, &mut sig, &mut idle
         ));
         assert!(!apply_aggregate_demand_transition(
-            false, false, &mut sig, &mut idle
+            false, false, false, &mut sig, &mut idle
         ));
         assert_eq!(sig.as_deref(), Some("SIG-B"), "非翻开转换不得动签名基线");
         assert!(!idle.is_pending(), "非翻开转换不得凭空造待推");
+    }
+
+    /// 🔴 **边沿标志的接线**：`subscribe('aggregate')` 必须置账、且只被取走一次；别的 topic 不得置。
+    ///
+    /// 上一条只证「函数收到 `baseline_requested=true` 时会做对的事」，置账那一端断了它照绿 ——
+    /// 而置账断掉的表现正是本条要挡的空窗。
+    ///
+    /// **变异探针**：删 `subscribe` 里的 `request_aggregate_baseline()` ⇒ 首段转红；把 `take` 从
+    /// `swap` 改成 `load` ⇒ 「只兑现一次」转红；把置账条件放宽成任意 topic ⇒ 末段转红。
+    #[test]
+    fn 排名订阅必须记一笔基线欠账且只兑现一次() {
+        let state = StreamGateState::new();
+        assert!(!state.take_aggregate_baseline(), "缺省不得欠账");
+        state.request_aggregate_baseline();
+        assert!(state.take_aggregate_baseline(), "订阅后必须欠一笔基线");
+        assert!(
+            !state.take_aggregate_baseline(),
+            "取走即清 —— 留着会在下一轮门开时兑现一帧陈账"
+        );
+
+        // 接线端：只有 aggregate 订阅置账（topology / detail / closed 不消费聚合载荷）。
+        // `subscribe` 是 `impl` 内的方法，不能用 `top_level_fn_body`（它按列 0 的 `}` 封顶 ⇒ 会一路
+        // 切到整个 impl 块末尾，射程盖住后面十几个方法，`contains` 类断言随即形同虚设）。
+        let src = include_str!("stats.rs");
+        let head = "    pub fn subscribe(";
+        let start = src
+            .find(head)
+            .expect("subscribe 锚点消失，本守卫已失去判据");
+        let rest = &src[start..];
+        let end = rest
+            .find("\n    }\n")
+            .expect("找不到 subscribe 自己的右花括号，本守卫已失去判据");
+        let body = crate::commands::guard_scan::strip_line_comments(&rest[..end]);
+        let wire = body
+            .find("self.gate.request_aggregate_baseline();")
+            .expect("订阅侧没记基线欠账 —— 电平合并窗下新订阅者会一直空着");
+        let bump = body
+            .find("self.gate.bump();")
+            .expect("bump 锚点消失，本守卫已失去判据");
+        assert!(
+            wire < bump,
+            "必须先置账再 bump：bump 立刻唤醒流任务，倒过来就有一轮读不到这笔账"
+        );
+        assert!(
+            body.contains("if topic == Topic::Connections {"),
+            "置账必须限定在 aggregate topic —— 别的 topic 不消费聚合载荷，置了就是每次订阅白发一帧"
+        );
     }
 
     /// 🟡 **源码型守卫**：开合转换真被接在流循环里、排在 emit 之前；且新流必然作废签名基线。
@@ -2689,6 +2816,13 @@ mod tests {
         let transition = body
             .find("apply_aggregate_demand_transition(")
             .expect("开合转换没接进流循环 —— 令牌翻开时排名页会空窗到下一次拓扑变化");
+        let take = body
+            .find("gate.state.take_aggregate_baseline()")
+            .expect("边沿标志没人消费 —— 电平合并窗下新订阅者拿不到基线，且陈账会一直挂着");
+        assert!(
+            take < transition,
+            "边沿标志必须先取走再喂进转换：取在后面等于本轮用的是上一轮的账"
+        );
         let emit = body
             .find("if agg_emit.should_emit(now) {")
             .expect("aggregate emit 闸门锚点消失，本守卫已失去判据");
@@ -3053,7 +3187,12 @@ mod tests {
         .await;
 
         // aggregate / detail / closed（连接流）：门关 = 流不该开着。
-        for topic in [Topic::Connections, Topic::Detail, Topic::Closed] {
+        for topic in [
+            Topic::Connections,
+            Topic::Topology,
+            Topic::Detail,
+            Topic::Closed,
+        ] {
             let (state, mut gate, visible) = test_stream_gate();
             state.registry.lock().unwrap().subscribe(topic, "main");
             visible.store(false, Ordering::Relaxed);
@@ -3084,13 +3223,13 @@ mod tests {
             &mut sgate,
             true,
             &visible,
-            "三个连接视图都没订阅者 → 连接流必须保持断开",
+            "四条连接需求都没订阅者 → 连接流必须保持断开",
         )
         .await;
     }
 
     /// 退订到零 → 原本放行的门必须翻成 park（订阅集是门的另一条腿）。
-    /// 🔴 **三个投影都退订才断流；任一仍在看时流必须留着。**
+    /// 🔴 **四条需求都退订才断流；任一仍在看时流必须留着。**
     ///
     /// **变异探针**：`should_stream_connections` 改成 `&&`（或 `stop_connections_stream` 的
     /// 计数改成只看一条 topic）⇒ 「关掉首页但连接页还开着」时流被停掉 ⇒ 转红。
@@ -3112,12 +3251,17 @@ mod tests {
             .lock()
             .unwrap()
             .subscribe(Topic::Closed, "main");
+        let t_topo = state
+            .registry
+            .lock()
+            .unwrap()
+            .subscribe(Topic::Topology, "main");
         let src = flag_visibility_source(visible.clone());
         tokio::time::timeout(Duration::from_secs(5), gate.wait_until(true, &src))
             .await
             .expect("有订阅 + 可见 → 流必须开");
 
-        // 只退订拓扑：明细还在看 → 流必须留着
+        // 只退订排名聚合：其余三条还在看 → 流必须留着
         state
             .registry
             .lock()
@@ -3127,11 +3271,11 @@ mod tests {
             &mut gate,
             false,
             &visible,
-            "只退订拓扑、活动与已结束仍订着 → 连接流绝不能断",
+            "只退订排名聚合、首页信号/活动/已结束仍订着 → 连接流绝不能断",
         )
         .await;
 
-        // 活动明细也退订，已结束历史仍在看 → 继续保持
+        // 活动明细也退订，首页信号与已结束历史仍在看 → 继续保持
         state
             .registry
             .lock()
@@ -3141,7 +3285,21 @@ mod tests {
             &mut gate,
             false,
             &visible,
-            "已结束历史仍订着 → 连接流绝不能断",
+            "首页信号与已结束历史仍订着 → 连接流绝不能断",
+        )
+        .await;
+
+        // 🔴 只剩首页信号这一条：它同样是连接流的需求方，漏算它 = 只开着首页时拓扑冻结。
+        state
+            .registry
+            .lock()
+            .unwrap()
+            .unsubscribe(Topic::Closed, t_closed);
+        assert_gate_holds(
+            &mut gate,
+            false,
+            &visible,
+            "只剩首页流向信号 → 连接流绝不能断（它是需求方，不是搭便车的）",
         )
         .await;
 
@@ -3150,7 +3308,7 @@ mod tests {
             .registry
             .lock()
             .unwrap()
-            .unsubscribe(Topic::Closed, t_closed);
+            .unsubscribe(Topic::Topology, t_topo);
         let src = flag_visibility_source(visible.clone());
         tokio::time::timeout(Duration::from_secs(5), gate.wait_until(false, &src))
             .await

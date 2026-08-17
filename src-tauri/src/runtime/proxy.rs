@@ -6641,9 +6641,16 @@ impl ProxyRuntime {
     ///
     /// 那条判据经 `UserConfig` 走 `selected_server_id` → `servers.iter().find(id)` →
     /// `protocol == Protocol::Tailscale`。三处键名与取法在此**逐字对齐**：`selectedServerId`
-    /// （`UserConfig` 的 `#[serde(rename)]`）、`servers[].id`、`servers[].protocol`
-    /// （`Protocol` 带 `#[serde(rename_all = "lowercase")]` ⇒ 线上字面量恒为 `"tailscale"`）。
+    /// （`UserConfig` 的 `#[serde(rename)]`）、`servers[].id`、`servers[].protocol`。
     /// 同样用 `find` 而非 `any`：id 重复时两条路必须取到同一个元素。
+    ///
+    /// 🔴 **等价性依赖一条本函数管不到的外部性质**：`Protocol` 的反序列化严格小写、无别名
+    /// （`#[serde(rename_all = "lowercase")]` 且未手写宽容 `Deserialize`）⇒ 线上字面量恒为
+    /// `"tailscale"`。它并非天然如此 —— 同一个文件里的 `SecurityMode` 就是大小写不敏感解析的活先例。
+    /// 若有人照抄着给 `Protocol` 加宽容解析，`"Tailscale"` 会让完整判据说「符合」、本判据说「不符合」
+    /// ⇒ **engage 帧被早退闸吃掉**，未登录的 TS 出口永不让位，而本模块的等价性测试（只喂现存形态）
+    /// 不会转红。绊线落在定义侧：`config-engine` 的 `protocol_deserialization_is_case_strict`。
+    /// **要给 `Protocol` 加宽容解析，先来改这里**（改成走 `Protocol::deserialize` 或对齐新口径）。
     ///
     /// 任何让 `UserConfig::deserialize` 失败的形态（缺 `protocol`、大小写不符、类型不对）在本判据
     /// 下同样落 `false`，而 `reconcile_login_fallback` 遇反序列化失败本就 `return` ⇒ 两条路的可观测
@@ -7281,6 +7288,12 @@ impl ProxyRuntime {
         // | 4 | true     | 其它 / 无帧 | 任意    | 维持（过渡态不翻转，避免抖动 / 已登录节点起核闪直连）   |
         // | 5 | false    | 任意        | true    | **disengage**：关开关 / 切非 TS / authKey / direct 模式 |
         // | 6 | false    | 任意        | false   | **无任何效果** ← 本闸的射程，且**仅此一行**             |
+        //
+        // ⚠️ 上表是**过了下面两条前置早退之后**的决策图，不是本函数的全图：`current_config` 为空、
+        // 或 `UserConfig` 反序列化失败时（见下方两条 `else { return; }`），函数在读到 `eligible` 之
+        // 前就退场 —— `engaged=true` 时这**同样吞掉 disengage**（既存行为，本批未改：那两条是「连
+        // 真值都读不出来」，此时按旧状态维持比按残缺配置翻转更保守）。本闸只在 `!engaged` 时开火，
+        // 与这两条早退不相交，故上面的论证不受影响；但别把这张表当成函数全图。
         //
         // 谓词必须是两条的合取：`eligible ⇒ 选中是 TS`（`mesh_login_fallback_should_engage` 的必要
         // 条件之一），故 `!选中是 TS` 单独就排除第 1 行；第 2/5 行则一律以 `engaged` 为前提，故

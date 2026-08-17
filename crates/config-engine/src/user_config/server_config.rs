@@ -88,6 +88,16 @@ impl<'de> Deserialize<'de> for SecurityMode {
 }
 
 /// 节点协议（上游 `Protocol`，子集——仅当前 builder 所需 + endpoint 全集）。
+///
+/// 🔴 **反序列化必须保持严格小写、不得加别名或大小写不敏感解析**（同文件的 [`SecurityMode`] 恰好是
+/// 宽容解析的活先例，别照抄过来）。`polaris::runtime::proxy` 的 A4 早退闸有一条**廉价判据**
+/// （`ProxyRuntime::selected_exit_is_tailscale`）绕过本类型、直接在原始 JSON 上比 `protocol ==
+/// "tailscale"`；它与 `login_fallback_eligible` 的等价性正建立在「本类型只认小写」之上。一旦这里
+/// 放宽，`"Tailscale"` 会变成 `eligible=true` 而廉价判据为假 ⇒ **engage 帧被闸吃掉**，未登录的
+/// Tailscale 出口永远等不到让位。
+///
+/// 要改这里，先去改那条判据（并在其文档里对着改回来）。`protocol_deserialization_is_case_strict`
+/// 是这条契约的绊线。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Protocol {
@@ -661,6 +671,38 @@ mod tests {
         assert_eq!(
             s.tls_settings.unwrap().fingerprint.as_deref(),
             Some("chrome")
+        );
+    }
+
+    /// 🔴 **绊线：`Protocol` 的反序列化必须严格小写**（见该枚举文档的跨 crate 契约）。
+    ///
+    /// 守的不是本 crate 的行为，而是 `polaris::runtime::proxy` 那条绕过本类型、直接在原始 JSON 上
+    /// 比 `"tailscale"` 的 A4 早退闸廉价判据。给本类型加宽容解析/别名，会让 `"Tailscale"` 这类写法
+    /// 变成「完整判据说符合、廉价判据说不符合」⇒ engage 帧被早退闸吃掉，未登录的 TS 出口永不让位。
+    /// 那条链路上**没有任何测试会因此转红**（等价性测试只喂现存形态），所以绊线必须落在这里。
+    ///
+    /// **变异探针**：给 `Protocol` 换成 `SecurityMode` 那样的大小写不敏感 `Deserialize` 手写实现
+    /// （或加 `#[serde(alias = "Tailscale")]`）⇒ 本条转红。
+    #[test]
+    fn protocol_deserialization_is_case_strict() {
+        assert_eq!(
+            serde_json::from_value::<Protocol>(serde_json::json!("tailscale")).unwrap(),
+            Protocol::Tailscale,
+            "线上字面量恒为小写（`rename_all = \"lowercase\"`）"
+        );
+        for wrong in ["Tailscale", "TAILSCALE", "TailScale"] {
+            assert!(
+                serde_json::from_value::<Protocol>(serde_json::json!(wrong)).is_err(),
+                "`{wrong}` 必须解析失败 —— 一旦被接受，proxy.rs 那条按 `\"tailscale\"` 比对的 A4 \
+                 早退闸就会静默假阴性，engage 帧被吃掉（见 Protocol 的文档注释）"
+            );
+        }
+        // 同文件的宽容解析先例就在隔壁，正向对照一下**它确实宽容** —— 免得日后 `SecurityMode` 也收严
+        // 时，上面那组断言被误读成「本文件一律严格」而顺手推广。
+        assert_eq!(
+            serde_json::from_value::<SecurityMode>(serde_json::json!("REALITY")).unwrap(),
+            SecurityMode::from_raw("reality"),
+            "对照：SecurityMode 是大小写不敏感的（两者刻意不同口径，别统一）"
         );
     }
 
