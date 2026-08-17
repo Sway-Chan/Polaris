@@ -75,6 +75,32 @@ pub(crate) mod guard_scan {
             .join("\n")
     }
 
+    /// 剥掉 `/* … */` 块注释（含 JSDoc `/** … */`），原地换成空白（换行保留、其余字符换成空格）。
+    ///
+    /// 只用于 TS/TSX 源码取材（`config.rs` 的 `every_consumer_discards_the_payload`）——**不**扩展
+    /// [`strip_line_comments`] 本身来做这件事：那是 Rust 侧 `top_level_fn_body` 的共用地基，已有
+    /// 8 处调用点全在 Rust 源码上，块注释在 Rust 里的分布/语义与 TS 的 JSDoc 不同源，扩它风险面
+    /// 过宽；故新开一个明确命名的 helper，两处调用点各自按语言选取材器。
+    ///
+    /// 剥的理由与 [`strip_line_comments`] 同一条：调用点计数对注释文本敏感，JSDoc 里提到调用形态的
+    /// 字面量（如 `` `configApi.onChanged` ``）会喂饱/顶红判据。
+    pub(crate) fn strip_block_comments(src: &str) -> String {
+        let mut out = String::with_capacity(src.len());
+        let mut rest = src;
+        while let Some(start) = rest.find("/*") {
+            out.push_str(&rest[..start]);
+            let body = &rest[start..];
+            let end = body
+                .find("*/")
+                .unwrap_or_else(|| panic!("块注释未闭合（缺少 `*/`）—— 取材器判据已过期"));
+            let comment = &body[..end + 2];
+            out.extend(comment.chars().map(|c| if c == '\n' { '\n' } else { ' ' }));
+            rest = &body[end + 2..];
+        }
+        out.push_str(rest);
+        out
+    }
+
     /// **守卫的守卫（第二条）**：证明 [`top_level_fn_body`] 真的剥掉了整行注释。
     ///
     /// 不剥的两种假绿都在这里钉死：正面 `contains` 被注释里的锚点文本喂饱（删了调用仍绿）、

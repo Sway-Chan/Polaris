@@ -211,7 +211,8 @@ fn config_save_core(
             return Ok(SaveOutcome::Conflict { disk_version });
         }
     }
-    // 前端提交的全量 config 恒不含隐私 hash（两个出口都 strip 掉了）→ 不回填就等于每次保存都拆锁。
+    // 前端提交的全量 config 恒不含隐私 hash（前端唯一出口 config_get 由 strip_privacy_secrets
+    // strip 掉了；configChanged 已无载荷，不构成前端出口）→ 不回填就等于每次保存都拆锁。
     preserve_server_owned_secrets(config, incoming);
     // 后端权威字段以磁盘为准（前端快照对这些键恒可能陈旧，见 enforce_ 文档）。
     enforce_backend_authoritative_fields(config, incoming);
@@ -423,8 +424,10 @@ fn invalidate_unlock_on_exit_change<S: UnlockEventSink>(
 //     任一步失败都不会出现「两者皆无」的锁死窗口。SHA-256 是单向 → 无法在启动期无明文批量转 scrypt，故迁移只能
 //     在「拿得到明文」的 unlock/set 时刻惰性做。
 //   - **legacy 键防护（过渡期）**：legacy `privacyPasswordHash`（未迁移态）+ 历史明文 `privacyPassword` 仍由
-//     [`strip_privacy_secrets`] 在 config_get / configChanged 两个前端出口剥除（绝不下发前端），backup / 诊断
-//     脱敏亦排除（见 store::backup / stats_engine::redact）。scrypt 独立文件本就不在 config 里，无从经这些出口泄漏。
+//     [`strip_privacy_secrets`] 在 `config_get` 这唯一前端出口剥除（绝不下发前端；`configChanged` 已无
+//     载荷，`strip_privacy_secrets` 在那条广播路径上服务的是入核的那份 `cfg`，不是发给前端的），backup /
+//     诊断脱敏亦排除（见 store::backup / stats_engine::redact）。scrypt 独立文件本就不在 config 里，无从
+//     经这些出口泄漏。
 //   - **校验**：scrypt 与 legacy SHA-256 均**常量时间比较**，仅匹配返 true。
 //   - 隐私模式开关：进程内状态（随重启复位，对齐前端 app-store）；enter/exit 状态变更时
 //     emit `EVENT_ENTER/EXIT_PRIVACY_MODE`。
@@ -432,12 +435,14 @@ fn invalidate_unlock_on_exit_change<S: UnlockEventSink>(
 /// 隐私模式当前状态（进程内；重启复位——对齐前端 app-store 的 `privacyMode: false` 初值）。
 static PRIVACY_MODE: AtomicBool = AtomicBool::new(false);
 
-/// 历史遗留明文密码键（旧版本残留）。由 `store::migrate` 每次 load 清空 + 本层两个前端出口剥除。
+/// 历史遗留明文密码键（旧版本残留）。由 `store::migrate` 每次 load 清空 + 本层在 `config_get`
+/// 剥除（唯一前端出口；`configChanged` 已无载荷，不构成前端出口）。
 const PRIVACY_PASSWORD_KEY: &str = "privacyPassword";
 
 /// **legacy** 隐私密码 salted-SHA256 存储键（FX-privacy-kdf 之前的旧真值源）。新真值源已迁至独立
 /// `privacy-lock.json`（scrypt）；此键仅为**存量未迁移用户**保留读取/校验 + 迁移完成后清除。
-/// `config_get` / `broadcast_config_changed` 两个前端出口均剥除此键 → 绝不下发前端。
+/// `config_get`（唯一前端出口）剥除此键 → 绝不下发前端；`broadcast_config_changed` 里的剥除服务的
+/// 是入核那份 `cfg`，`configChanged` 广播本身已无载荷，不构成前端出口。
 const PRIVACY_PASSWORD_HASH_KEY: &str = "privacyPasswordHash";
 
 /// 隐私锁独立文件路径（`<userData>/privacy-lock.json`，与 config.json 同目录）。scrypt 新真值源。
@@ -459,7 +464,8 @@ fn strip_privacy_secrets(cfg: &mut Value) {
 ///
 /// # 为什么必须有
 ///
-/// `config_get` / `configChanged` 两个出口都 [`strip_privacy_secrets`]（hash 绝不下发），故前端 store
+/// `config_get`（唯一前端出口）经 [`strip_privacy_secrets`]（hash 绝不下发；`configChanged` 已无
+/// 载荷，不构成出口），故前端 store
 /// 里的 config **恒无** `privacyPasswordHash`。用户改任意设置走 `saveConfig({...config, ...})` 全量提交
 /// → `save_full` 全量覆盖 → 磁盘与缓存里的 hash 被静默抹除 → `has_password` 恒 false、`unlock` 任意
 /// 密码放行（`unlock_core`：hash 为空 = 未设密码 = 自由解锁）。即：**设了隐私密码后，第一次改任何
@@ -495,7 +501,7 @@ pub(crate) fn preserve_server_owned_secrets(config: &ConfigManager, incoming: &m
 //
 // # 与 `preserve_server_owned_secrets` 是两条不同策略，不能合并
 //
-// 隐私密钥在 `config_get` / `configChanged` 两个出口被 `strip_privacy_secrets` 剥除 ⇒ 前端快照里
+// 隐私密钥在 `config_get`（唯一前端出口）被 `strip_privacy_secrets` 剥除 ⇒ 前端快照里
 // **根本没有该键**，故「键缺失即回填、键在即尊重入参」够用（且必须尊重入参——清密码用的就是键缺失）。
 //
 // 本组字段**照常下发前端**（`TrayMenu` 要读 `recentServerIds` 渲染「节点·最近」）⇒ 前端快照里
@@ -1128,12 +1134,27 @@ pub(crate) fn broadcast_config_changed_with(
 /// `strip_privacy_secrets` 脱敏、也没走 `config_get` 那侧的 bypassLANList 补齐（见 `useConfig.ts`）。
 #[cfg(test)]
 mod config_changed_payload_tests {
-    use crate::commands::guard_scan::{strip_line_comments, top_level_fn_body};
+    use crate::commands::guard_scan::{
+        strip_block_comments, strip_line_comments, top_level_fn_body,
+    };
 
     /// 三个渲染端消费点（仓内相对路径 → 源码）。
     ///
     /// 用 `include_str!` 而不是运行期读盘：文件被挪走 = **编译失败**，而不是守卫静默扫了个空串
     /// 然后断言恒真。仓内已有同款先例（本文件的 `config-version.fixture.json`）。
+    ///
+    /// # 跨语言耦合是刻意的
+    ///
+    /// 这三份前端源码被直接嵌进 Rust 测试判据：`App.tsx` / `TrayMenu.tsx` / `useConfig.ts` 任一个
+    /// 多挂或删掉一个 `.onChanged(` 都会让 `cargo test -p polaris` 转红（见下面
+    /// `every_consumer_discards_the_payload` 的数量断言）。只改前端的人未必会想到去跑 Rust 测试——
+    /// 灯下记账：
+    ///
+    /// CI 覆盖面（`.github/workflows/ci.yml` 实测）：`pull_request` 触发**无路径过滤**，纯改这三个
+    /// 文件的 PR 仍会跑 `cargo test --workspace`，本测试正常拦截。只有**绕过 PR 直接 push 到
+    /// main**、且改动只命中 `on.push.paths-ignore` 里的 `ui/**`/`**.md`/`docs/**` 时，整条 Rust 链
+    /// （含本测试）才会被跳过——那是 push 主干的调试期额度优化，不针对本测试。结论：这道门在
+    /// 「PR 流程」下始终执行；只在「绕过 PR 的直接 push」这一条路径上失效。
     const TS_CONSUMERS: [(&str, &str); 3] = [
         ("ui/src/App.tsx", include_str!("../../../ui/src/App.tsx")),
         (
@@ -1146,9 +1167,14 @@ mod config_changed_payload_tests {
         ),
     ];
 
-    /// 发射点：`app.emit(EVENT_CONFIG_CHANGED, …)` 的实参里不得再出现配置内容。
+    /// 发射点：`app.emit(EVENT_CONFIG_CHANGED, …)` 的实参必须是空对象字面量 `json!({})`。
     ///
-    /// 牙：把载荷改回 `json!({ "newValue": cfg })` → 转红。
+    /// 判据是**对实参的正向等值断言**，不是负向枚举——旧版判据是「实参里不出现 `cfg`/`newValue`
+    /// 这两个今天恰好在用的标识符」，换个变量名（`broadcast_config_changed_with` 的形参本身就叫
+    /// `new_value`）或直接把载荷内容写成字面量，两条禁词一条都不命中，守卫全绿而配置树已在路上。
+    /// 判据按配对括号取实参，不要求 emit 与其实参写在同一行（rustfmt 拆行不影响本判据）。
+    ///
+    /// 牙：把载荷改回 `json!({ "config": new_value })`（或任何非空内容，哪怕换个变量名）→ 转红。
     #[test]
     fn emit_site_carries_no_config_content() {
         let body = top_level_fn_body(
@@ -1160,46 +1186,108 @@ mod config_changed_payload_tests {
             body.contains("strip_privacy_secrets(&mut cfg)"),
             "扫到的不是 broadcast_config_changed_with 的函数体 —— 守卫已失去判据"
         );
-        // 切点自检②：判据词（`newValue` / `cfg`）在本文件的测试代码里也各有一份，切片若漏封顶
-        // 就会被自己喂饱 —— 那正是「源码级判据被自己污染」的形态。
+        // 切点自检②：判据词在本文件的测试代码里也各有一份，切片若漏封顶就会被自己喂饱 ——
+        // 那正是「源码级判据被自己污染」的形态。
         assert!(
             !body.contains("config_changed_payload_tests"),
             "切片切进了本测试模块，判据会被自己写的字面量喂饱"
         );
 
-        let at = body
-            .find("app.emit(EVENT_CONFIG_CHANGED,")
+        let call_at = body
+            .find("app.emit(")
             .expect("变异锁：configChanged 的发射点没了");
-        let tail = &body[at..];
-        let args = &tail[..tail.find(");").expect("发射调用未闭合")];
-        assert!(
-            !args.contains("cfg") && !args.contains("newValue"),
-            "configChanged 又带上配置载荷了（实参：`{args}`）——\
-             `cfg` 在 emit 之后仍被使用 ⇒ 载荷只能借用 ⇒ 每次配置写都额外深拷一整棵配置树 + 整份序列化，\
-             而四个消费方一个都不读它"
+        let args_at = call_at + "app.emit(".len();
+        // 按配对括号取到本次调用的实参列表（而非要求「事件名 + 逗号」紧跟在 `app.emit(` 后面同一行）。
+        let mut depth = 1i32;
+        let mut close = None;
+        for (k, ch) in body[args_at..].char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(k);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let close = close.expect("app.emit(...) 括号未配对 —— 发射调用格式已变，需要更新守卫");
+        let args = body[args_at..args_at + close].trim();
+        let (event, payload) = args
+            .split_once(',')
+            .expect("app.emit(...) 少于两个实参 —— 发射调用格式已变，需要更新守卫");
+        assert_eq!(
+            event.trim(),
+            "EVENT_CONFIG_CHANGED",
+            "扫到的 emit 不是 configChanged 的发射点（事件名：`{}`）",
+            event.trim()
+        );
+        let payload = payload.trim().trim_end_matches(',').trim();
+        assert_eq!(
+            payload, "json!({})",
+            "configChanged 的发射载荷不是空对象字面量（实参：`{payload}`）——\
+             要发载荷必须用剥过隐私的那一份（`strip_privacy_secrets` 之后），且必须同步改本断言"
         );
     }
 
     /// 四个消费方（三个渲染端 + Rust 侧托盘汇流）必须全部丢弃 payload。
     ///
-    /// 牙：任一 `onChanged(() => …)` 改成 `onChanged((data) => …)`、或 `listen_any` 的 `move |_|`
+    /// 判据是「实参的形参表为空」，不是字面 `() =>` 前缀匹配——零参具名回调
+    /// （`onChanged(onCfg)`）、`function` 表达式（`onChanged(function () {})`）与 `() => …` 都同样
+    /// 一个字节 payload 都不读，但只有最后一种能被字面前缀命中。TS 类型签名
+    /// `onChanged(listener: () => void)` 本身已挡住绝大多数「读了 payload」的写法（形参数量不匹配
+    /// 编不过），本结构守卫因此只需覆盖类型层挡不住的那种——**rest 参数**：`(...args) => …` 在赋值
+    /// 检查里所有实参都是可选的，能合法通过 `() => void` 的类型检查，只有源码级结构扫描能拦住它。
+    /// 故：实参以 `(` 开头（箭头函数的括号形参表）才检查形参表是否为 `()`；具名回调/`function`
+    /// 表达式退回类型层，不在本处判定。
+    ///
+    /// 牙：任一 `onChanged(() => …)` 改成 `onChanged((...args) => …)`、或 `listen_any` 的 `move |_|`
     /// 改成读事件的形态 → 逐条转红。
     #[test]
     fn every_consumer_discards_the_payload() {
         const CALL: &str = ".onChanged(";
         for (path, src) in TS_CONSUMERS {
-            // 剥整行注释：注释里出现调用形态会喂饱/顶红判据（与 Rust 侧同一理由）。
-            let src = strip_line_comments(src);
+            // 先剥块注释（含 JSDoc）再剥整行注释：注释里出现调用形态（如 `useConfig.ts` 头部 JSDoc
+            // 提到的 `` `configApi.onChanged` ``）会喂饱/顶红判据（与 Rust 侧剥行注释同一理由）。
+            let src = strip_line_comments(&strip_block_comments(src));
             let mut sites = 0usize;
             for (i, _) in src.match_indices(CALL) {
                 sites += 1;
                 let rest = &src[i + CALL.len()..];
-                assert!(
-                    rest.trim_start().starts_with("() =>"),
-                    "{path} 的 configChanged 订阅读了 payload —— 事件已是无载荷信号，读到的只会是 `{{}}`。\
-                     实处：`{}`",
-                    &rest[..rest.len().min(60)]
-                );
+                let rest = rest.trim_start();
+                if let Some(after_open) = rest.strip_prefix('(') {
+                    // 箭头函数：形参表 = 首个 `(` 到与之配对的 `)`（含首尾括号）。
+                    let mut depth = 1i32;
+                    let mut close = None;
+                    for (k, ch) in after_open.char_indices() {
+                        match ch {
+                            '(' => depth += 1,
+                            ')' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    close = Some(k);
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    let close = close.unwrap_or_else(|| {
+                        panic!(
+                            "{path} 的 `.onChanged(` 实参括号未配对（实处：`{}`）",
+                            &rest[..rest.len().min(60)]
+                        )
+                    });
+                    let params = &rest[..close + 2];
+                    assert_eq!(
+                        params, "()",
+                        "{path} 的 configChanged 订阅读了 payload —— 事件已是无载荷信号，读到的只会是 \
+                         `{{}}`。形参表：`{params}`"
+                    );
+                }
+                // else：具名回调 / `function` 表达式，退回类型层，本处不判定。
             }
             // 数量断言：订阅点增减必须停下来显式裁定，不许守卫自适应放行（多了 = 新消费方没过判据；
             // 少了 = 这一腿已删，判据表该同步改）。
@@ -1216,6 +1304,23 @@ mod config_changed_payload_tests {
         assert!(
             main_body.contains("handle.listen_any(ev, move |_| reconcile_tray(&h));"),
             "托盘汇流的事件回调不再是丢弃形态 —— configChanged 已无载荷，读它只会拿到空对象"
+        );
+    }
+
+    /// **自检**：块注释（含 JSDoc）里的 `.onChanged(` 不得被计入——复现 `useConfig.ts` 头部 JSDoc
+    /// 里已经写着的 `` `configApi.onChanged` `` 那种真实场景。少了这条剥离，注释能伪造一次订阅、
+    /// 真订阅被删也仍全绿（`sites == 1` 是三腿「订阅还在」唯一的钉子）。
+    ///
+    /// 变异锁：把 `strip_block_comments(src)` 换成裸 `src` → 本用例转红（`sites` 变 2）。
+    #[test]
+    fn block_comment_mentioning_on_changed_is_not_counted() {
+        let src = "/**\n * see `configApi.onChanged(cb)` for details\n */\n\
+                   const off = api.onChanged(() => void load());\n";
+        let src = strip_line_comments(&strip_block_comments(src));
+        let sites = src.match_indices(".onChanged(").count();
+        assert_eq!(
+            sites, 1,
+            "块注释里的 `.onChanged(` 被计入了 —— TS 取材器漏剥块注释，注释能伪造一次订阅"
         );
     }
 }
@@ -1310,7 +1415,8 @@ mod privacy_tests {
 
     #[test]
     fn strip_privacy_secrets_removes_both_legacy_and_hash_keeps_rest() {
-        // 两个前端出口（config_get / configChanged）共用的剥离：明文 + hash 都不下发，其余键保留。
+        // `config_get`（唯一前端出口）与 `broadcast_config_changed`（入核那份 cfg，非前端出口）
+        // 共用的剥离：明文 + hash 都不下发，其余键保留。
         let mut cfg = json!({
             "privacyPassword": "legacy-plaintext",
             "privacyPasswordHash": "aabb$deadbeef",

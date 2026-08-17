@@ -58,7 +58,8 @@ pub mod channel {
     /// **托盘刻意不订阅**（托盘图标语汇另有待拍板项，不捆进来）。
     pub const EVENT_PROXY_LIFECYCLE: &str = "event:proxyLifecycle";
 
-    // 配置变更
+    // 配置变更。**无载荷**：payload 恒为 `{}`，四个消费方（三个渲染端 + Rust 侧托盘汇流）全部丢弃，
+    // 详见 `commands/config.rs::broadcast_config_changed_with` 与其调用点守卫。
     pub const EVENT_CONFIG_CHANGED: &str = "event:configChanged";
 
     // 订阅后台自动更新结果（scheduler 每个 due 订阅拉取后发；渲染端仅失败态 toast，对齐 上游

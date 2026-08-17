@@ -237,6 +237,8 @@ export function useConfig(): UseConfigResult {
   // 停在打开那一刻的快照。事件是**无载荷信号**（后端 emit `{}`）：曾经带过的 newValue 经
   // strip_privacy_secrets 脱敏、且没走 config_get 那侧的 bypassLANList 补齐，与本 hook 的契约不同源，
   // 四个消费方因此没有一个读它 —— 既然全员重拉，那份载荷就是纯白做的深拷贝，已在后端删掉。
+  // 回调必须零参（不得读 payload）：Rust 侧 `commands/config.rs` 的 `config_changed_payload_tests`
+  // 把本文件 include_str! 进测试判据锁住这条形态，改成读参数的形态会让 `cargo test -p polaris` 转红。
   useEffect(() => {
     const off = configApi.onChanged(() => void load(true));
     return off;
