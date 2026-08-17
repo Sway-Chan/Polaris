@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "tray",
-  "description": "托盘自绘浮层窗（label=tray）能力集：订阅代理生命周期事件 + 读平台标识；自绘浮层的连接/断开/切节点/打开主窗/退出经自定义 command（app command 不受 ACL 限制）。窗口显隐/尺寸由 Rust 侧 tray 模块管理，故不授前端 window 写权限。",
+  "description": "托盘自绘浮层窗（label=tray）能力集：订阅代理生命周期事件 + 读平台标识；自绘浮层的连接/断开/切节点/打开主窗/退出经自定义 command。窗口显隐/尺寸由 Rust 侧 tray 模块管理，故不授前端 window 写权限。\n**「app command 不受 ACL 限制」只在 local origin 成立，remote 面恰恰相反** —— 判据是 `tauri-2.11.5` 的 `webview/mod.rs:1823`：`(plugin_command || has_app_acl_manifest || !is_local) && acl.is_none() ⇒ reject`。本仓无 `src-tauri/permissions/` ⇒ `has_app_acl_manifest == false`，故 local origin 的 app command 免 ACL；而 `!is_local` 是与 label 无关的独立闸，远程源 webview（如面板窗 `singbox-dashboard`）的 app command **一律被拒**。照字面读成「无条件不受限」会得出与事实相反的风险判断。常驻门见 `tests/remote_webview_cannot_reach_app_commands.rs`。\n**本文件的窄 permission 列表只窄在 core/plugin 面**：本窗是 local origin ⇒ 全部 138 个 app command（含 `helper_install` / `app_uninstall_all` / `config_get`）照常可达。别把这份列表读成「这个窗权限很小」。",
   "windows": ["tray"],
   "permissions": ["core:default", "core:event:default", "os:default"]
 }
