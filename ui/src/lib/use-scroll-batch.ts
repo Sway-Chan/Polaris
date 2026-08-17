@@ -99,11 +99,21 @@ export interface ScrollBatch {
 }
 
 /**
+ * `resetKey` 的取值域**必须是原始值**，签名故意收窄到这里（原先是 `unknown`）。
+ *
+ * 复位改到渲染期之后，判等走 `Object.is`：传对象/数组字面量 ⇒ 每次渲染都是新引用 ⇒ 每次渲染都
+ * 复位并 `setState` ⇒ 渲染期自激，React 直接抛 `Maximum update depth exceeded`（白屏，不是退化）。
+ * `unknown` 不但拦不住，还等于在邀请人传 `{ tab, search }`。三个消费方今天全是字符串。
+ * 想用多个维度就拼成字符串（`NodesScreen` 用 NUL 作分隔符，免得 `a|b` 与 `a` + `|b` 撞）。
+ */
+export type ScrollBatchResetKey = string | number | boolean | null | undefined;
+
+/**
  * @param total     过滤后的**总条数**（到顶即止，不越过实际条数）。
  * @param resetKey  结果集的身份（通常是搜索词）。**一变即回首批** —— 否则搜完窄结果再清空搜索，
- *                  会残留一个大计数，等于分批白做。
+ *                  会残留一个大计数，等于分批白做。取值域见 [`ScrollBatchResetKey`]。
  */
-export function useScrollBatch(total: number, resetKey: unknown): ScrollBatch {
+export function useScrollBatch(total: number, resetKey: ScrollBatchResetKey): ScrollBatch {
   const [count, setCount] = useState(SCROLL_BATCH_PAGE);
   // 渲染期复位（判据见头注「为什么复位写在渲染期」）：React 会丢弃这趟渲染、立刻重跑本组件，
   // 故 `resetKey` 变的那一次**提交出去的就是首批**，不存在按旧计数画的中间帧。

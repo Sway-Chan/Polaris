@@ -4,6 +4,14 @@
  * 同 `settings/settings-logic.ts` 的既有约定：这些判定全是「UI 显示态 ↔ 后端实际行为」的对齐点，
  * 写错的后果不是样式歪，而是**界面说的和后端做的不一致**（最恶劣：pill 显示"自动刷新中"而调度器
  * 根本没在跑，或反过来）。组件**直接消费**这里的导出，不并行复刻，否则测试是假绿。
+ *
+ * # 分层记账：本模块有一条 logic → store 的反向边
+ *
+ * `latencySortSelector` 委托 `store/use-latency-store` 的 `latencyMapWhen`（连带把 zustand 与
+ * `@/ipc` 拉进本模块的传递依赖）。方向上是 logic 依赖 store，与「纯逻辑」这个定位相反。
+ * 之所以接受：那个哨兵的**引用恒等**是首页与节点页共用的一条前提，放两份就有两处可以各自漂，
+ * 而它天然属于延迟 store 的词汇表。代价是本模块不再是零依赖模块 —— 若哪天要把它搬去 worker
+ * 或跨端复用，这条边是第一个要断的。node 环境直测不受影响（store 模块加载期无副作用）。
  */
 
 import type { ServerConfig, SubscriptionConfig, InvalidNodeInfo } from '@/contracts/types';

@@ -126,6 +126,22 @@ describe('自曝 · 扫描面还在', () => {
     );
     expect(NODES, '运行期自曝没了：这一向量在源码门下不可见').toContain('warnMissingScroller()');
   });
+
+  /**
+   * fail-open 必须跑在 **passive** 档。它把 count 顶到 total，几千张卡（每卡 ≥22 个 DOM 元素、
+   * 含 10 处内联 SVG）若压在 paint 之前，「少显示节点」就被换成「窗口冻住数秒」——用户连
+   * 首批都看不到，比原缺陷更糟。判据：`renderAllRef.current()` 所在的 effect 不是 layout 档。
+   */
+  it('fail-open 走 passive 档（layout 档下一次全渲染 = paint 前冻住）', () => {
+    const at = NODES.indexOf('renderAllRef.current()');
+    expect(at, 'fail-open 腿不见了').toBeGreaterThan(-1);
+    const openedAt = NODES.lastIndexOf('Effect(', at);
+    expect(NODES.slice(openedAt - 24, openedAt + 7)).toContain('useEffect(');
+    expect(
+      NODES.slice(openedAt - 24, openedAt + 7),
+      'fail-open 被挪进 layout 档了 ⇒ 一次全渲染压在 paint 之前'
+    ).not.toContain('useIsomorphicLayoutEffect(');
+  });
 });
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -370,43 +386,47 @@ describe('门 3 · 分批接线', () => {
    * 真正的保证是那条「每次提交后按同一判据补批、收敛于撑出滚动条或取完」的 effect，
    * 而不是把每批数调大 —— 后者在 4K 满屏下照样不够。两条都钉。
    */
-  /** 补批 effect 的依赖数组（本 describe 里两条断言共用；解析不到就让两条都当场炸）。 */
-  const topUpDeps = (() => {
-    const m = NODES.match(/useIsomorphicLayoutEffect\(topUpBatch,\s*\[([^\]]*)\]/);
-    expect(m, '补批 effect 的锚点消失（改名 / 改回 passive 档？），本节失去判据').not.toBeNull();
-    return (m?.[1] ?? '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-  })();
-
   it('有「补批到撑出滚动条为止」的 effect（不是靠把批量数调大蒙混）', () => {
     expect(NODES).toContain('const topUpBatch = useCallback(');
-    // 挂载时装监听的那条 + 每次提交后补批的那条，两条都必须在。
+    // 装监听的那条 + 每次提交后补批的那条，两条都必须在。
     expect(NODES).toMatch(/scroller\.addEventListener\('scroll', topUpBatch/);
-    // 走 layout 档：passive 档下每轮补批之间夹着一次真实绘制，4K/超宽首屏会分 3~4 次自下而上长出来。
-    expect(topUpDeps.length).toBeGreaterThan(0);
-    // 窗口变大 → 网格改列数 → 内容变矮，可能从「溢出」跌回「不溢出」，也要能续上。
-    expect(NODES).toMatch(/window\.addEventListener\('resize', topUpBatch\)/);
+    expect(NODES).toContain('useIsomorphicLayoutEffect(topUpBatch)');
   });
 
   /**
-   * **布局维必须在触发面里**。`topUpBatch` 是 `useCallback(..., [])` 恒稳定 ⇒ 依赖数组里真正
-   * 有触发力的只有后面那几项。缺 `view` 的复现（2560×1440 最大化、300 节点、列表视图进入）：
-   * 首屏溢出 ⇒ 收敛在 60；点「卡片」后整页不再溢出 ⇒ scroll 事件永不到来 ⇒ 另外 240 个节点本次
-   * 会话再也点不到，且没有滚动条、没有任何「还有更多」的暗示，而全选/测速读的仍是 300。
-   * 缺 `sidebarCollapsed` 同型（折叠改主区宽 ⇒ 网格改列数 ⇒ 行数成倍变），且它连 `resize` 都不发。
-   * 其余向量为什么不在这里，见 `NodesScreen` 的 `topUpBatch` 头注那张向量表（判据是幅度是否
-   * 跨得过 `SCROLL_BATCH_AHEAD_PX` 这段余量）。
+   * **补批 effect 不得有依赖数组** —— 这一条是「放弃枚举、改观测结果」的落点。
+   *
+   * 曾经的做法是把「能改变网格高度」的向量枚举进依赖数组。两处实证否掉了它（详见 `NodesScreen`
+   * 文件顶部「为什么放弃枚举」留档）：① `.side` 带 300ms 宽度过渡，`sidebarCollapsed` 那一帧量到的
+   * 是折叠**前**的几何，枚举进去也收不住；② 一张列到 12 行的表仍漏了 `selectedServerId`
+   * （`.nd-cur` chip 换卡 → 最高卡行数变 → `grid-auto-rows:1fr` 让**每一行**跟着变，15 行 × ~23px
+   * = 345px，远超 240px 余量）。每加一颗角标就多一条要枚举的边，漏一条的后果是「用户永远点不到
+   * 剩下的节点且看不出少了」。故不再钉具体依赖项，改钉「没有依赖项」。
    */
-  it('补批的触发面含两条**布局维**：view / sidebarCollapsed', () => {
-    expect(topUpDeps).toEqual([
-      'topUpBatch',
-      'renderCount',
-      'visibleServers.length',
-      'view',
-      'sidebarCollapsed',
-    ]);
+  it('补批 effect **没有依赖数组**（放弃枚举触发面，改观测结果）', () => {
+    expect(NODES).toMatch(/useIsomorphicLayoutEffect\(topUpBatch\)\s*;/);
+    expect(NODES, '又把补批退回按依赖枚举了 —— 见 NodesScreen 顶部「为什么放弃枚举」').not.toMatch(
+      /useIsomorphicLayoutEffect\(topUpBatch\s*,/
+    );
+  });
+
+  /**
+   * **可视区/宽度这一维靠观测，不靠 `window resize`**。观测的是 `.main-scroll` 的盒子：
+   * 它是「内容够不够高」唯一的外生变量，且侧栏折叠的整个 300ms 过渡里会连续回报 —— 而
+   * `window resize` 在那段过渡里一次都不发。RO 观测滚动容器不构成自激（追加内容涨的是
+   * `scrollHeight`，不涨它的 border-box；自激只发生在观测被撑高的那个元素本身，即 `.node-grid`）。
+   */
+  it('`.main-scroll` 上挂 ResizeObserver，且不再依赖 window resize', () => {
+    expect(NODES).toMatch(/new ResizeObserver\(topUpBatch\)/);
+    expect(NODES).toMatch(/ro\.observe\(scroller\)/);
+    expect(NODES, 'RO 没退订 ⇒ 切屏泄漏一个观测').toMatch(/ro\.disconnect\(\)/);
+    // 观测的必须是滚动容器，不是网格本身（后者才会自激）。
+    expect(NODES, 'RO 观测到 `.node-grid` 上了 ⇒ 追加内容撑高它 ⇒ 通知循环').not.toMatch(
+      /\.observe\(\s*gridRef\.current/
+    );
+    expect(NODES, 'window resize 监听是 RO 的真子集，留着就是第二条要同步的路径').not.toMatch(
+      /window\.addEventListener\('resize'/
+    );
   });
 
   it('每批数至少覆盖窗口最小尺寸下的一屏（980×740、200px 最小列宽、141px 卡高）', () => {

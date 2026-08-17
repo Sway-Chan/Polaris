@@ -177,6 +177,46 @@ describe('`useScrollBatch` 计数推进', () => {
     expect(batch.count).toBe(SCROLL_BATCH_PAGE);
   });
 
+  /**
+   * **一次采样不够，必须能被重复回调**（这条是「补批为什么改用 ResizeObserver 观测、不靠
+   * 依赖数组枚举」的行为面判据）。侧栏 `.side` 带 `transition:width .3s ease-out`：折叠那一次
+   * commit 后立刻量，过渡 progress=0 ⇒ 量到的是折叠**前**的几何 ⇒ 判「仍溢出」不补批；
+   * 300ms 后列数 4→5、行数 15→12、内容矮 423px ⇒ 不再溢出。若那时没有第二次回调就永久卡死。
+   *
+   * 射程如实记账：本条钉的是**判据**（同一状态下两次不同几何的采样各自该怎么走），
+   * 「回调真的挂在 `.main-scroll` 上」是 DOM 接线，由 `nodes-render-budget.test.tsx` 的源码门钉。
+   */
+  it('侧栏折叠时序：t=0 量到旧几何不推进，过渡结束后再量一次才推进', () => {
+    mount();
+    const total = 300;
+    let batch = commit(() => useScrollBatch(total, 'k'));
+    // 收敛态（窄窗 4 列、60 张卡 15 行 ≈ 2115px，视口 1800px ⇒ 距底 315 > 240）。
+    batch.onScroll({ currentTarget: { scrollHeight: 2115, scrollTop: 0, clientHeight: 1800 } });
+    batch = commit(() => useScrollBatch(total, 'k'));
+    expect(batch.count, 't=0 量到的是折叠前的几何 ⇒ 本就不该补批').toBe(SCROLL_BATCH_PAGE);
+    // 过渡结束：5 列 12 行 ≈ 1692px < 1800 ⇒ 不再溢出，此刻必须还有人来敲一次。
+    batch.onScroll({ currentTarget: { scrollHeight: 1692, scrollTop: 0, clientHeight: 1800 } });
+    batch = commit(() => useScrollBatch(total, 'k'));
+    expect(batch.count, '过渡结束后的那次回调没能补批 ⇒ 剩下 240 个节点永久点不到').toBe(
+      SCROLL_BATCH_PAGE * 2
+    );
+  });
+
+  /**
+   * `resetKey` 必须是原始值 —— 类型已收窄到 [`ScrollBatchResetKey`]，本条钉的是**收窄的理由**：
+   * 复位改到渲染期后判等走 `Object.is`，传对象字面量 ⇒ 每次渲染都是新引用 ⇒ 每次渲染都复位并
+   * `setState` ⇒ 渲染期自激。真机上 React 抛 `Maximum update depth exceeded`（白屏）；
+   * 本宿主的表现是「重跑 20 趟仍不收敛」。少了这条，将来有人加个 `as any` 绕过类型就没人拦。
+   */
+  it('`resetKey` 传对象引用会渲染期自激（故类型收窄成原始值）', () => {
+    mount();
+    // 组件体里每次求值都造一个新对象（`useScrollBatch(n, { tab, search })` 就是这形状）。
+    const render = () => useScrollBatch(100, {} as unknown as string);
+    // 首次提交把槽初始化成那一次的引用，收敛；**下一次**提交起每趟重跑都是新引用 ⇒ 永不收敛。
+    expect(commit(render).count).toBe(SCROLL_BATCH_PAGE);
+    expect(() => commit(render)).toThrowError(/没有收敛/);
+  });
+
   it('`renderAll` 一次取到底（消费方找不到滚动祖先时的 fail-open），且之后不再增长', () => {
     mount();
     const total = SCROLL_BATCH_PAGE * 3 + 7;

@@ -143,14 +143,17 @@ describe('门 4 · 首页 aggregate 只持订阅令牌，不挂帧监听', () =>
   });
 
   /**
-   * 正向对照：**撤掉首页的帧监听会不会连累别处的真监听**。
+   * 「撤掉首页帧监听」这件事**安全**的两个前提，本条只证第一个：
+   *  (a) `createTopicSubscription` 不吞帧、`dispose()` 只摘自己那条监听 —— **本条**（端口契约直测）；
+   *  (b) 连接页**确实**还挂着 aggregate 真监听 —— 不在本文件，由
+   *      `lib/topic-subscription-wiring.test.ts` 的「真帧监听的分布」正向对照钉住
+   *      （把连接页端口改成 `onFrame: () => () => {}` ⇒ 那条转红）。
    *
-   * 原实现在这里跨文件逐字断言 `ConnectionsScreen.tsx` 里那行 `onFrame: (cb) => api.stats...` ——
-   * 连接页任何等价重构都会让**首页**这道门转红，红点落在一个与本门无关的文件上。而要证的命题
-   * （「事件按监听独立投递」）本来就是 `createTopicSubscription` 的端口契约，可以直测。
-   * 改成直测与本文件既有分层一致：真断言优先于源码文本。
+   * 分工的理由：这里原先跨文件逐字断言 `ConnectionsScreen.tsx` 的 `onFrame:` 那一行，连接页任何
+   * 等价重构都会让**首页**这道门转红、红点落在无关文件上。(b) 属于「谁挂着监听」这类全局接线事实，
+   * 归 wiring 那份统一记账；本文件只留可直测的 (a)，与既有分层一致（真断言优先于源码文本）。
    */
-  it('正向对照：帧监听按订阅独立投递 —— 首页只持令牌不挂监听，不影响别处的真监听', () => {
+  it('端口契约：帧只发给挂了监听的那条，dispose 只摘自己（首页空壳监听不吞别人的帧）', () => {
     const listeners = new Set<(d: number) => void>();
     const tokens: string[] = [];
     const emit = (d: number) => listeners.forEach((cb) => cb(d));
