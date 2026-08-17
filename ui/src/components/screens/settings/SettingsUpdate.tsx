@@ -26,7 +26,7 @@ import {
   versionApi,
   type InstallAdvisory,
   type UpdateProgress,
-  type UpdateInfo,
+  type UpdateProgressManifest,
   type VersionInfo,
 } from '@/ipc/api-client';
 import { useDialogStore } from '../../dialogs/dialog-store';
@@ -142,7 +142,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
   // 用户刚选中「自定义…」但尚未输入内容时的本地态：此时 config.ghProxyPrefix 仍为空，
   // 不能仅凭 prefix 派生显示态，否则自定义输入框永远不可达（选中即弹回默认项）。
   const [ghCustomMode, setGhCustomMode] = useState(false);
-  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [updateInfo, setUpdateInfo] = useState<UpdateProgressManifest | null>(null);
   const [progress, setProgress] = useState(0);
   /** 已收字节（下载中卡片的「x / y MB」左半边）。来自进度帧原值，不从百分比反推。 */
   const [receivedBytes, setReceivedBytes] = useState<number | null>(null);
@@ -342,17 +342,60 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
   }
 
   /**
+   * 一次安装动作的**主语**：它装的到底是哪一份包。
+   *
+   * 存在的理由是 `installUpdate` 跨了两个 await 窗口（见该函数），而页面态在那期间会被别的
+   * 窗口的下载广播整体换掉 —— 主语必须在动作开始的那一刻钉死，不能事后再去读页面。
+   */
+  interface InstallSubject {
+    path: string;
+    info: UpdateProgressManifest | null;
+  }
+
+  /**
+   * 把卡片拉回一个**由本次安装描述**的终态：态与它的随行事实同批落地。
+   *
+   * 与进度帧那条规矩同源，只是主语来自快照而不是事件帧。分出这个函数不是为了少写几行：
+   * `installUpdate` 有三处会把 `us` 拉回来（便携手动替换 / 形态错配 / 抛错），三处各写一遍
+   * 就会有一处忘了带事实 —— 而「只搬状态不搬事实」正是本批立项要修的那件事。
+   */
+  function settleInstall(next: 'manual' | 'error', message: string, subject: InstallSubject) {
+    setUs(next);
+    setUpdateInfo(subject.info);
+    setDownloadedPath(subject.path);
+    setErrMsg(message);
+  }
+
+  /**
    * 安装已下载的更新包。**两段式**：后端返 `needConfirm` 时先弹说明框讲清 OS 会怎么拦、用户怎么放行，
    * 确认后才带 `confirmed:true` 重调（此时后端才停代理 + 起脚本）。
    *
    * 为什么必须讲：**本应用走 ad-hoc 签名**（无 Developer ID / Authenticode）。macOS 侧安装脚本会
    * 自动清 quarantine，但万一失败用户会遇到「装完打不开」；Windows 侧 SmartScreen 根本消不掉。
    * 装完打不开还不告诉人 = 制造一个静默故障。
+   *
+   * # ⚠️ 进函数就快照，之后**一次都不再读页面态**
+   *
+   * 本函数横跨两个窗口：① `updateApi.install()` 的后端往返；② 两段式确认框（`openDialog` →
+   * 用户点确认 → `installUpdate(true, subj)`），**人手时间、分钟级**。这两个窗口里进度监听器会把
+   * `updateInfo` 与 `downloadedPath` 一起换成外部腿（启动自动下载 / 弹窗「更新·重试」）刚落位的
+   * 另一份包 B，并把 `us` 推到 `downloaded`；而本函数在窗口结束后又把 `us` **拉回** manual/error。
+   * 不快照的后果是具体的：manual 卡的版本号与预发布徽标描述 **B**，而 `errMsg` 里给用户去手动
+   * 解压的路径、以及刚才真正交给系统的那个文件是 **A** —— A 正式、B 预发布时就是「对一份正式包
+   * 说它是预发布」，方向是**误报**，正是本批承诺挡住的那件事。
+   *
+   * 这个窗口是随行事实那一批**新开的**：在此之前 `downloadedPath` 只有一个写点、`updateInfo`
+   * 监听器根本不写，两个窗口里两者都不动。旧注释「本态只能由 installUpdate 从 downloaded 进入，
+   * 其间没有任何东西改写 `updateInfo`」漏的正是「其间」—— 改写它的两处确实会带走 `us`，但本函数
+   * 结束时会把 `us` 拉回来，`updateInfo` 不会跟着回来。
    */
-  async function installUpdate(confirmed = false) {
-    if (!downloadedPath) return;
+  async function installUpdate(confirmed = false, subject?: InstallSubject) {
+    // **本函数唯一一次读页面态**（`subject` 非空 = 从确认框回来，主语沿用第一段那次的快照）。
+    // 下面一律走 `subj.*`：任何一处再去读 `downloadedPath` / `updateInfo`，跨 await 的错位就回来了。
+    const subj: InstallSubject = subject ?? { path: downloadedPath ?? '', info: updateInfo };
+    if (!subj.path) return;
     try {
-      const r = await updateApi.install(downloadedPath, confirmed);
+      const r = await updateApi.install(subj.path, confirmed);
       if (r.needConfirm && r.advisory) {
         const adv = r.advisory as InstallAdvisory;
         openDialog({
@@ -363,7 +406,7 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
             confirmLabel: t('settings.update.advisory.continue'),
             onConfirm: async () => {
               closeDialog();
-              await installUpdate(true);
+              await installUpdate(true, subj);
             },
           },
         });
@@ -371,24 +414,19 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
       }
       if (r.handedToSystem || r.reason === 'form-mismatch') {
         // 便携版 zip：**不是失败**，是「已下载、待手动替换」（判据与理由见 isPortableZipUpdate）。
-        if (isPortableZipUpdate(downloadedPath)) {
-          setUs('manual');
-          setErrMsg(
-            t('settings.update.portableManualReplace', {
-              path: downloadedPath,
-            }),
+        if (isPortableZipUpdate(subj.path)) {
+          settleInstall(
+            'manual',
+            t('settings.update.portableManualReplace', { path: subj.path }),
+            subj,
           );
         } else {
-          setUs('error');
-          setErrMsg(
-            t('settings.update.formMismatch'),
-          );
+          settleInstall('error', t('settings.update.formMismatch'), subj);
         }
       }
       // 成功路径无需处理：后端已 app.exit(0)，进程随即退出。
     } catch (e) {
-      setUs('error');
-      setErrMsg(e instanceof Error ? e.message : String(e));
+      settleInstall('error', e instanceof Error ? e.message : String(e), subj);
     }
   }
 

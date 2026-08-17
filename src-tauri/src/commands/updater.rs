@@ -133,6 +133,22 @@ const CODE_CHECK_TIMEOUT: &str = "UPDATE_CHECK_TIMEOUT";
 /// 修法是让**态与其随行事实同行**，并且由**类型**保证同行：`Downloaded` 不给落位路径就构造不
 /// 出来，`Downloading` 不给已收字节就构造不出来。平行形参表达不了这条 —— `("downloaded", 100,
 /// None, None)` 照样编译通过，只能另加一道源码级门去数，而那种门是后加的、可被新写法绕开。
+///
+/// # ⚠️ 类型挡不住的三样（如实登记，2026-08-17 复审补）
+///
+/// 「必填」只保证**字段在**，不保证**值可用**。以下三条今天在生产上都不可达，方向也安全，
+/// 但别把本类型读成「构造得出来就一定对」：
+///
+///  1. `Downloaded { path: Path::new("") }` —— 空串照样是合法的 `&Path`，而前端
+///     `if (!downloadedPath) return` 对空串同样早退 ⇒ 哑键原样复发。生产的两个构造点传的都是
+///     `&dest`（`dir.join(&file_name)`，`file_name` 经 `unwrap_or_else` 兜底非空），够不着。
+///     要挡得住得上 newtype（`NonEmptyPath`），代价与收益不成比例。
+///  2. `Downloading { percentage: 200 }` —— [`stage_facts`] 原样透传。生产只有两个来源：字面量
+///     `0`，与 [`progress_percent`] 的 `clamp(1, 99)`。同上，挡它要 newtype。
+///  3. **给已有变体加字段**曾经会被 `..` 静默吃掉（三处解构都写 `{ .., }` ⇒ 加字段三处全不红、
+///     载荷里不出现、跨语言对拍也不红）。**这一条已修**：三处解构一律写成逐字段绑定
+///     （不需要的写 `_`），加字段现在是编译错误。「加变体被挡住了、加字段没有」这个不对称
+///     由此消掉 —— 留这段是为了让下一个想图省事改回 `..` 的人看见代价。
 #[derive(Clone, Copy)]
 enum ProgressStage<'a> {
     /// 下载中：本帧的百分比 + **已收字节**（下载刚开始那一发是 `0 / 0`）。
@@ -149,12 +165,57 @@ enum ProgressStage<'a> {
 ///
 /// `percentage` 在两个终态上是**由类型定死的**：`Downloaded` 恒 100、`Failed` 恒 0，
 /// 调用点没有把它写错的余地（此前是每个调用点自己传一个数）。
+///
+/// **不用 `..` 通配**（本函数与 [`progress_payload`] 及其行为门的解构一律逐字段写）：`..` 会把
+/// 「给已有变体新加一个字段」静默吃掉 —— 三处都不红、载荷里不出现、跨语言对拍也不红。写成
+/// `received: _` 之后，加字段是编译错误。
 const fn stage_facts<'a>(stage: ProgressStage<'a>) -> (&'static str, u8, &'a str) {
     match stage {
-        ProgressStage::Downloading { percentage, .. } => ("downloading", percentage, ""),
-        ProgressStage::Downloaded { .. } => ("downloaded", 100, ""),
+        ProgressStage::Downloading {
+            percentage,
+            received: _,
+        } => ("downloading", percentage, ""),
+        ProgressStage::Downloaded {
+            path: _,
+            verified: _,
+        } => ("downloaded", 100, ""),
         ProgressStage::Failed(msg) => ("error", 0, msg),
     }
+}
+
+/// 进度帧**不带**的清单字段（其余一律原样带过）。
+///
+/// # 为什么是「剥两个」而不是「留几个」
+///
+/// 剥除表的失效方向是**多带**（上游将来加一个大字段没被剥 ⇒ 帧胖了，性能退化，正确性零损失）；
+/// 白名单的失效方向是**漏带**（消费方要的字段没在表里 ⇒ 「重试」重新变哑键、卡片又开始显示别的
+/// 版本）—— 后者正是本批立项要修的那三条缺陷。判据面同样是枚举，但两者的**失效代价不对称**，
+/// 故取失效安全的那一侧。
+///
+/// 逐条依据（均已核实，非估算）：
+///  - `releaseNotes` = GitHub release body 原文，**无截断**（GitHub 单 body 上限 125 KB）。它只在
+///    「已发现新版本」那一屏渲染（`SettingsUpdate.tsx` 的 `available` 态，且本就写着
+///    `{updateInfo.releaseNotes && …}`），而 `available` **不可能**由进度帧进入 ——
+///    `PROGRESS_CARD_RULE` 的取值里没有它，两侧状态集合由跨语言门对拍。
+///  - `title` 全仓**零消费点**（前端 grep 已核：`title:` 的命中全是 i18n 对话框标题）。
+///
+/// 不剥的后果是具体的：一次下载最多 ~100 帧 × 所有窗口，20 KB 的 release notes ⇒ 约 2 MB 在
+/// webview 主线程反序列化。**这是及时性问题，不是省内存**：进度条本身就是要「现在」到。
+const PROGRESS_MANIFEST_OMITTED: [&str; 2] = ["releaseNotes", "title"];
+
+/// 取清单在进度帧里的投影：删掉 [`PROGRESS_MANIFEST_OMITTED`]，**其余一个字段都不动**。
+///
+/// 非对象（理论上不可达：三条调用腿传的都是 `update_check` 的 `updateInfo`）原样返回 ——
+/// 宁可把说不清的东西原样递过去，也不伪造一个空对象。
+fn progress_manifest(info: &Value) -> Value {
+    let Some(obj) = info.as_object() else {
+        return info.clone();
+    };
+    let mut out = obj.clone();
+    for key in PROGRESS_MANIFEST_OMITTED {
+        out.remove(key);
+    }
+    Value::Object(out)
 }
 
 /// 纯函数：把一帧 + 它描述的那份发布清单拼成 `update:progress` 的载荷。
@@ -163,7 +224,9 @@ const fn stage_facts<'a>(stage: ProgressStage<'a>) -> (&'static str, u8, &'a str
 /// （与前端 `UpdateProgress` 契约逐字对齐；两侧的字段集由
 /// `ui/src/contracts/update-progress-payload.test.ts` 做**双向**对拍）。
 ///
-/// `updateInfo` 恒在：它是形参而不是可选项，故不存在「发了个态却没说是哪份包」的帧。
+/// `updateInfo` 恒在：它是形参而不是可选项，故不存在「发了个态却没说是哪份包」的帧。带的是
+/// [`progress_manifest`] 的投影（剥掉两个只在 `available` 那一屏渲染、且体积无上限的字段），
+/// 其余字段一律原样 —— 「不丢字段」在剩下的字段上仍逐字成立。
 ///
 /// 抽成纯函数是为了**可测**：[`emit_progress`] 持 `AppHandle`，单测构造不出 Tauri 运行时，
 /// 判据留在里面就只剩源码级守卫，而那守得住「写没写那一行」，守不住「写出来的是什么」。
@@ -175,13 +238,18 @@ fn progress_payload(info: &Value, stage: ProgressStage<'_>) -> Value {
         "message": message,
         // 随行事实之一：这一帧描述的是**哪一份包**。设置页据此渲染版本号 / 体积 / 预发布档次，
         // 并在 error 态拿它重试 —— 没有它，那些数字说的是本页上一次检查的另一个版本。
-        "updateInfo": info,
+        "updateInfo": progress_manifest(info),
     });
     if !message.is_empty() {
         payload["error"] = Value::String(message.to_string());
     }
+    // 逐字段解构（不用 `..`）：给变体加字段时这里必须显式表态，否则编译红。成因见
+    // [`ProgressStage`] 文档「类型挡不住的三样」第 3 条。
     match stage {
-        ProgressStage::Downloading { received, .. } => {
+        ProgressStage::Downloading {
+            received,
+            percentage: _,
+        } => {
             payload["receivedBytes"] = Value::from(received);
         }
         ProgressStage::Downloaded { path, verified } => {
@@ -4313,7 +4381,13 @@ mod tests {
     /// # 判据由**类型**穷尽，不由夹具点名
     ///
     /// 「哪个变体该带哪些键」写在 `required` 的穷尽 `match` 里 ⇒ [`ProgressStage`] 新增变体
-    /// **编译不过**，作者必须回到这里显式回答它带得起哪些事实。样本覆盖到不到另有自检兜底。
+    /// **编译不过**，作者必须回到这里显式回答它带得起哪些事实。
+    ///
+    /// 「样本有没有覆盖到每个变体」则由**从源码派生的臂数**兜底，不是手写常数：前身写
+    /// `assert_eq!(samples.len(), VARIANTS)`（两个手写数字互比），2026-08-17 复审实测 ——
+    /// 加第 4 变体 + 补齐两处生产 match + **只**补一条 `required` 臂、不动样本 ⇒ 全量 4181 全绿，
+    /// 那个变体的载荷一次都没跑过。现改为数 [`stage_facts`] 那个**编译器强制穷尽**的 match
+    /// 有几条臂，臂数即变体数，两个数字都不再由人手维护。
     /// 每格还反向断言「白名单之外不得夹带」——两个方向合起来是**逐变体的集合相等**，
     /// 而不是「至少有这几个键」这种只挡得住删除的弱判据。
     ///
@@ -4326,16 +4400,25 @@ mod tests {
     #[test]
     fn progress_frame_carries_the_facts_its_state_depends_on() {
         /// 每个变体的帧里**必须**存在、且不得多于此的键（穷尽 match ⇒ 新增变体即编译错误）。
+        ///
+        /// 逐字段解构（不写 `..`）：给已有变体加字段时这里也必须表态，否则「加变体被挡住了、
+        /// 加字段没有」那个不对称会从生产代码搬到门里来。
         const fn required(stage: ProgressStage<'_>) -> &'static [&'static str] {
             match stage {
-                ProgressStage::Downloading { .. } => &[
+                ProgressStage::Downloading {
+                    percentage: _,
+                    received: _,
+                } => &[
                     "status",
                     "percentage",
                     "message",
                     "updateInfo",
                     "receivedBytes",
                 ],
-                ProgressStage::Downloaded { .. } => &[
+                ProgressStage::Downloaded {
+                    path: _,
+                    verified: _,
+                } => &[
                     "status",
                     "percentage",
                     "message",
@@ -4349,18 +4432,47 @@ mod tests {
             }
         }
 
-        /// [`ProgressStage`] 的变体数。**不是可以随手改的数字**：`required` 是穷尽 match，
-        /// 加变体会先在那里编译红，作者到那时必须连本常量与下面的样本一起补。
-        const VARIANTS: usize = 3;
+        /// [`ProgressStage`] 的变体数，**从源码派生**：[`stage_facts`] 的 match 由编译器强制
+        /// 穷尽 ⇒ 它有几条臂就有几个变体。数 `ProgressStage::` 而不数 `=>`：签名里的
+        /// `ProgressStage<'a>` 不含冒号，不会被误计。
+        ///
+        /// 射程边界（如实登记）：臂头若写成 or-pattern（`A::X { .. } | A::Y { .. } =>`），
+        /// 本计数会**高于**臂数 ⇒ 断言转红（安全方向：宁可误红也不放过没样本的变体）。
+        fn variant_count() -> usize {
+            let body =
+                crate::commands::guard_scan::top_level_fn_body(SRC, "const fn stage_facts<'a>(");
+            let n = body.matches("ProgressStage::").count();
+            assert!(
+                n >= 3,
+                "锚点消失：`stage_facts` 的 match 一条臂都没解析到 —— 本门已失去变体数的真值源"
+            );
+            n
+        }
 
         let path = std::path::Path::new("/tmp/updates/polaris.dmg");
         let info = json!({
             "version": "v1.2.0",
             "fileSize": 52_000_000_u64,
             "isPrerelease": true,
-            // 契约将来加字段时，这一格证明清单是**原样**带过去的，不是被逐字段抄了一遍。
+            // 两个**必须被剥掉**的字段：样本里没有它们，下面那条「剥掉了」的断言就无信息量。
+            "releaseNotes": "## v1.2.0\n- 大段更新说明……",
+            "title": "Polaris v1.2.0",
+            // 契约将来加字段时，这一格证明其余字段是**原样**带过去的，不是被逐字段抄了一遍。
             "futureField": "kept",
         });
+        // 期望的投影：从样本清单里**逐个删掉**登记为剥除的键，其余一个不动。
+        // 表驱动 ⇒ 剥除表加一项时，本断言的两个方向（该没的没了、该在的逐字还在）自动跟着长。
+        let expected_manifest = {
+            let mut m = info.as_object().expect("样本清单必须是对象").clone();
+            for key in PROGRESS_MANIFEST_OMITTED {
+                assert!(
+                    m.remove(key).is_some(),
+                    "样本清单里没有 `{key}` ⇒ 「它被剥掉了」这条断言无信息量（假绿）"
+                );
+            }
+            Value::Object(m)
+        };
+
         let samples = [
             ProgressStage::Downloading {
                 percentage: 37,
@@ -4372,12 +4484,17 @@ mod tests {
             },
             ProgressStage::Failed("下载更新包失败"),
         ];
-        assert_eq!(samples.len(), VARIANTS, "样本没覆盖到每个变体");
+        let variants = variant_count();
+        assert_eq!(
+            samples.len(),
+            variants,
+            "样本表没跟上变体数（`stage_facts` 有 {variants} 条臂）—— 新增的那个变体的载荷一次都没跑过"
+        );
         let tags: std::collections::BTreeSet<&str> =
             samples.iter().map(|s| stage_facts(*s).0).collect();
         assert_eq!(
             tags.len(),
-            VARIANTS,
+            samples.len(),
             "样本里有重复变体 —— 有一格根本没被测到"
         );
 
@@ -4397,9 +4514,20 @@ mod tests {
             assert_eq!(obj["status"], json!(status));
             assert_eq!(obj["percentage"], json!(percentage));
             assert_eq!(obj["message"], json!(message));
+            // 「剥掉的真没了」——先单独判，失败消息才指得出是哪个字段。
+            for key in PROGRESS_MANIFEST_OMITTED {
+                assert!(
+                    obj["updateInfo"].get(key).is_none(),
+                    "{status} 帧仍带着 `{key}` —— 它无上限且 progress 可达态一律不渲染，\
+                     每帧广播给所有窗口是纯粹的主线程开销"
+                );
+            }
+            // 「该在的逐字还在」——**整对象相等**，不是「有几个字段」：少带一个字段就是
+            // 「重试」重新变哑键 / 卡片又开始显示别的版本，正是本批立项要修的那三条。
             assert_eq!(
-                obj["updateInfo"], info,
-                "{status} 帧的清单不是原样带过来的 —— 卡片会拿它渲染版本号/体积/档次"
+                obj["updateInfo"], expected_manifest,
+                "{status} 帧的清单投影与「原样减去剥除表」不符 —— 卡片会拿它渲染版本号/体积/档次，\
+                 「重试」也要拿它重下"
             );
         }
 

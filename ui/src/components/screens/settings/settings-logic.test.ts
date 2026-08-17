@@ -515,7 +515,14 @@ describe('便携交接文案：消费面 + 内容守卫', () => {
     const p = await paths();
     const tsx = fs.readFileSync(p.updateTsx, 'utf8');
     expect(tsx.includes('isPortableZipUpdate'), '组件必须消费该判据，不得并行复刻').toBe(true);
-    expect(tsx.includes("setUs('manual')"), '便携交接必须落 manual 态').toBe(true);
+    // 终态改由 `settleInstall(next, …)` 统一落地（态 + 随行事实同批），故判据从「有没有
+    // `setUs('manual')` 这个字面量」改为「便携那条腿 settle 到的是 manual，且排在形态错配
+    // 那条 error 腿之前」——守的东西一个字没变，只是终态的写法收敛了。
+    const portableAt = tsx.search(/isPortableZipUpdate\(/);
+    const manualAt = tsx.search(/settleInstall\(\s*'manual'/);
+    const mismatchAt = tsx.search(/settleInstall\(\s*'error',\s*t\('settings\.update\.formMismatch'\)/);
+    expect(manualAt, '便携交接必须落 manual 态').toBeGreaterThan(portableAt);
+    expect(mismatchAt, '形态错配那条腿必须仍落 error 态').toBeGreaterThan(manualAt);
     expect(
       tsx.includes('settings.update.portableManualReplace'),
       '便携交接必须走 portableManualReplace 文案',
@@ -881,9 +888,11 @@ describe('progressResetsIntegrity —— 对整个 status 联合闭合的真值�
     checking: false,
     'no-update': false,
     'update-available': false,
-    // 唯一两条由真实下载腿发出的进度；事件是 app 级广播，可能来自别的窗口发起的下载。
+    // 「一次新的下载开始了」；事件是 app 级广播，可能来自别的窗口发起的下载。
     downloading: true,
-    // 复用本地已有包那条腿**只发这一条**，不发 downloading ⇒ 少了它就漏掉整条复用路径。
+    // ⚠️ 这一格今天是**空转**：同一次监听器调用里，`updateCardPatch` 的 `integrity` 会用落位帧
+    // 带来的 `verified` 真值把它覆盖掉。保留是为射程闭合（不带 `verified` 的落位帧会落
+    // `unknown`，与这一发同值 ⇒ 行为不变），不是因为它在守什么。判据本体见实现处的文档。
     downloaded: true,
     // 失败不落位（tmp 由 RAII 清掉，dest 未动）⇒ 盘上旧包与它的结论都还成立。
     error: false,
@@ -1435,13 +1444,36 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
       ).toBe(true);
     }
 
-    // ④ 落位路径的**唯一**写点就是上面那处：从 `update_download` 回包里另写一份只覆盖得到
-    //    「本页自己下的那次」，而「重启并安装」变哑键的恰恰是其余那几条腿。
-    const pathWrites = src.match(/setDownloadedPath\(/g) ?? [];
-    expect(pathWrites.length, 'downloadedPath 只许有一个写点（= 进度帧那处）').toBe(1);
-    // 清单有两个写点，各有各的理由：`checkUpdate` 是本页自己查的，监听器是事件送来的。
-    const infoWrites = src.match(/setUpdateInfo\(/g) ?? [];
-    expect(infoWrites.length, 'updateInfo 写点 = checkUpdate 一处 + 监听器一处').toBe(2);
+    // ④ 落位路径与清单的**来源**受限，不是写点计数受限。
+    //
+    //    前身钉的是「`setDownloadedPath` 全文件恰好 1 处」——那是**夹具型判据**：Med-2 给
+    //    `installUpdate` 补快照回填时它当场误红，而误红的原因与它要守的东西（路径不得从
+    //    invoke 回包另取一份）毫无关系。现在改为扫**实参来源**并做集合包含：写点可以增加，
+    //    但每一处的来源必须是登记过的三种之一，新增第四种来源必须显式改这张表并回答
+    //    「它描述的是不是同一份包」。
+    const argsOf = (setter: string) =>
+      new Set([...src.matchAll(new RegExp(`${setter}\\(([^)]*)\\)`, 'g'))].map((m) => m[1].trim()));
+    const PATH_SOURCES = new Set([
+      'patch.path', // 进度帧带来的落位路径（事件是外部腿唯一的事实通道）
+      'subject.path', // `settleInstall` 回填 —— 同一条路径的快照，跨 await 钉死的主语
+    ]);
+    const INFO_SOURCES = new Set([
+      'patch.info', // 同上，进度帧
+      'r.updateInfo', // `checkUpdate` 自己查回来的
+      'subject.info', // `settleInstall` 回填
+    ]);
+    const pathArgs = argsOf('setDownloadedPath');
+    expect(pathArgs.size, 'setDownloadedPath 一处都没有 ⇒ 取材器失效').toBeGreaterThan(0);
+    for (const a of pathArgs) {
+      expect(
+        PATH_SOURCES.has(a),
+        `setDownloadedPath(${a}) 的来源没登记 —— 落位路径只许来自事件帧或它的快照，` +
+          '从 update_download 回包另取一份只覆盖得到「本页自己下的那次」',
+      ).toBe(true);
+    }
+    for (const a of argsOf('setUpdateInfo')) {
+      expect(INFO_SOURCES.has(a), `setUpdateInfo(${a}) 的来源没登记`).toBe(true);
+    }
   });
 
   /**
@@ -1458,7 +1490,7 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
 
     // ① 「重启并安装」仍以 `downloadedPath` 为唯一入参 —— 上一条门保证了它在 downloaded 态非空。
     expect(
-      src.includes('if (!downloadedPath) return;'),
+      src.includes('if (!subj.path) return;'),
       'installUpdate 的入口守卫没了 —— 那条门守的「路径必须到位」就没有了受益方',
     ).toBe(true);
     expect(
@@ -1500,6 +1532,84 @@ describe('预发布档次明示：接线面 + 五语文案', () => {
       '两个按钮之间没有条件块的收尾 —— 出口可能被和「重试」包在同一个条件里',
     ).toBe(true);
   });
+  /**
+   * `installUpdate` 的**主语**必须在进函数那一刻钉死，之后一次都不再读页面态。
+   *
+   * # 这个窗口是随行事实那一批**新开的**
+   *
+   * 本函数横跨两个 await 窗口：① `updateApi.install()` 的后端往返；② 两段式确认框（人手时间、
+   * 分钟级）。这两个窗口里进度监听器会把 `updateInfo` 与 `downloadedPath` 一起换成外部腿刚落位
+   * 的另一份包 B、并把 `us` 推到 `downloaded`；而 `installUpdate` 在窗口结束后又把 `us`
+   * **拉回** manual/error。于是 manual 卡的版本号与预发布徽标描述 B，而 `errMsg` 里给用户去手动
+   * 解压的路径、以及刚才真正交给系统的那个文件是 A —— A 正式、B 预发布时就是「对一份正式包说
+   * 它是预发布」，**误报**，正是本批承诺挡住的那件事。
+   *
+   * 在随行事实到位之前这个窗口是不存在的：那时 `downloadedPath` 只有一个写点、`updateInfo`
+   * 监听器根本不写，两个窗口里两者都不动。所以这不是「一直有的老问题」，是本批欠的账。
+   *
+   * # 判据为什么是「裸标识符各只许出现一次」
+   *
+   * 「快照了没有」用 `contains` 判是没有牙的：快照写了、后面某一处又去读了一次页面态，照样绿。
+   * 直接禁掉**再读**：整个函数体里 `downloadedPath` / `updateInfo` 各只许出现一次（就是取快照
+   * 那一行），此后一律走 `subj.*`。新增任何一处读页面态都当场转红，不依赖谁记得。
+   *
+   * **变异探针**：把 `isPortableZipUpdate(subj.path)` 改回 `isPortableZipUpdate(downloadedPath)`
+   * ⇒ 计数变 2 ⇒ 转红；把 `installUpdate(true, subj)` 的第二个实参去掉（确认框回来重新读页面态）
+   * ⇒ 转红；把某处 `settleInstall(...)` 拆回 `setUs(...) + setErrMsg(...)` ⇒ 转红。
+   */
+  it('installUpdate 的主语在进函数那一刻钉死（跨 await 不再读页面态）', async () => {
+    const src = await readTsx();
+    const cut = (from: string, to: string) => {
+      const a = src.indexOf(from);
+      const b = src.indexOf(to);
+      expect(a, `取材锚点不在了：${from}`).toBeGreaterThan(-1);
+      expect(b, `取材锚点不在了：${to}`).toBeGreaterThan(a);
+      return src.slice(a, b);
+    };
+    const body = cut('async function installUpdate(', 'async function runCoreOp(');
+    expect(body.length, 'installUpdate 取材为空').toBeGreaterThan(400);
+
+    // ① 快照：主语要么沿用上一段传进来的，要么在这里从页面态取一次。
+    expect(
+      body.includes("const subj: InstallSubject = subject ?? { path: downloadedPath ?? '', info: updateInfo };"),
+      'installUpdate 不再在入口处钉死主语 —— 跨 await 的错位会回来',
+    ).toBe(true);
+    // ② 之后**不得再读**：两个页面态标识符在整个函数体里各只许出现一次（就是①那一行）。
+    for (const live of ['downloadedPath', 'updateInfo'] as const) {
+      const hits = body.match(new RegExp(`\\b${live}\\b`, 'g')) ?? [];
+      expect(
+        hits.length,
+        `installUpdate 里 ${live} 出现 ${hits.length} 次 —— 只许在取快照那一行出现，` +
+          '再读一次就会拿到 await 期间被外部腿换掉的另一份包',
+      ).toBe(1);
+    }
+    // ③ 确认框回来时沿用**同一个**快照，不是重新读页面（那正是第二个、分钟级的窗口）。
+    expect(
+      body.includes('await installUpdate(true, subj);'),
+      '两段式确认回来时没有把主语带回去 —— 人手时间里页面态早就换人了',
+    ).toBe(true);
+    // ④ 三处终态一律经 settleInstall（态与随行事实同批落地），函数体内不得裸写这两个 setter。
+    for (const setter of ['setUs(', 'setErrMsg(', 'setUpdateInfo(', 'setDownloadedPath('] as const) {
+      expect(
+        body.includes(setter),
+        `installUpdate 里出现裸 ${setter}… —— 终态必须经 settleInstall，否则总有一处忘了带事实`,
+      ).toBe(false);
+    }
+    const settles = body.match(/settleInstall\(/g) ?? [];
+    expect(settles.length, 'installUpdate 的三条终态腿（便携 / 形态错配 / 抛错）都得 settle').toBe(3);
+
+    // ⑤ settleInstall 自己必须把「态 + 三样事实」一起写下 —— 少一样就又回到只搬状态。
+    const settle = cut('function settleInstall(', 'async function installUpdate(');
+    for (const w of [
+      'setUs(next)',
+      'setUpdateInfo(subject.info)',
+      'setDownloadedPath(subject.path)',
+      'setErrMsg(message)',
+    ] as const) {
+      expect(settle.includes(w), `settleInstall 缺 ${w} —— 态与随行事实必须同批落地`).toBe(true);
+    }
+  });
+
   it('说明文案挂在决策那一屏', async () => {
     const src = await readTsx();
     expect(stateBlock(src, 'available').includes('prereleaseNote'), 'available 态缺档次说明').toBe(

@@ -37,6 +37,7 @@ const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.met
 const UPDATER_RS = read('../../../src-tauri/src/commands/updater.rs');
 const API_CLIENT_TS = read('../ipc/api-client.ts');
 const SETTINGS_LOGIC_TS = read('../components/screens/settings/settings-logic.ts');
+const SETTINGS_UPDATE_TSX = read('../components/screens/settings/SettingsUpdate.tsx');
 
 /** 整行注释换空行（保留行序）。两侧的判据都对注释文本敏感：注释里提字段名会喂饱集合。 */
 function stripLineComments(src: string): string {
@@ -144,5 +145,99 @@ describe('update:progress 载荷 —— Rust ↔ TS 双向对拍', () => {
     expect([...tsStatusesThatDriveTheCard()].sort(), 'stage_facts 与 PROGRESS_CARD_RULE 已经分叉').toEqual(
       [...rustEmittedStatuses()].sort(),
     );
+  });
+});
+
+/**
+ * 进度帧**剥掉**的清单字段 —— 单一真值在 Rust 的 `PROGRESS_MANIFEST_OMITTED`。形变即抛。
+ */
+function rustOmittedManifestFields(): Set<string> {
+  const m = /const PROGRESS_MANIFEST_OMITTED: \[&str; \d+\] = \[([\s\S]*?)\];/.exec(UPDATER_RS);
+  if (!m) {
+    throw new Error('updater.rs 里找不到 `PROGRESS_MANIFEST_OMITTED` 的字面量 —— 本门已失去判据');
+  }
+  const fields = [...m[1].matchAll(/"(\w+)"/g)].map((x) => x[1]);
+  if (fields.length === 0) throw new Error('`PROGRESS_MANIFEST_OMITTED` 里一个字段都没解析到');
+  return new Set(fields);
+}
+
+/** TS `UpdateProgressManifest` 的 `Omit<UpdateInfo, …>` 列表。形变即抛。 */
+function tsOmittedManifestFields(): Set<string> {
+  const m = /export interface UpdateProgressManifest extends Omit<UpdateInfo,([^>]*)>/.exec(
+    API_CLIENT_TS,
+  );
+  if (!m) {
+    throw new Error('api-client.ts 里找不到 `UpdateProgressManifest` 的 Omit 列表 —— 本门已失去判据');
+  }
+  const fields = [...m[1].matchAll(/'(\w+)'/g)].map((x) => x[1]);
+  if (fields.length === 0) throw new Error('`UpdateProgressManifest` 的 Omit 里一个字段都没解析到');
+  return new Set(fields);
+}
+
+describe('进度帧的清单投影 —— 剥掉的那两个字段', () => {
+  it('剥除表两侧一致（Rust 剥的 == TS 声明成可选的）', () => {
+    // 两侧分叉的后果各不相同、都静默：Rust 多剥一个 ⇒ TS 说它是必有的 `string`，
+    // 下一个人 `.length` 就在运行期炸；TS 多列一个 ⇒ 类型上可选、运行期恒在，白白让消费方加判空。
+    expect([...tsOmittedManifestFields()].sort(), 'PROGRESS_MANIFEST_OMITTED 与 UpdateProgressManifest 已分叉').toEqual(
+      [...rustOmittedManifestFields()].sort(),
+    );
+  });
+
+  it('`available` 不可能由进度帧进入 —— 剥除的整条论证就架在这一句上', () => {
+    // 剥掉 releaseNotes 之所以「准确性零损失」，唯一理由是它只在 available 那一屏渲染，
+    // 而 available 进不去进度帧。哪天有人把某个 status 映射到 available，这条先红。
+    const at = SETTINGS_LOGIC_TS.indexOf('const PROGRESS_CARD_RULE');
+    if (at < 0) throw new Error('找不到 `PROGRESS_CARD_RULE` —— 本门已失去判据');
+    const body = SETTINGS_LOGIC_TS.slice(at, at + SETTINGS_LOGIC_TS.slice(at).indexOf('\n};'));
+    const targets = [...body.matchAll(/us:\s*'([\w-]+)'/g)].map((m) => m[1]);
+    expect(targets.length, '一条 us 取值都没解析到 —— 取材器失效').toBeGreaterThan(0);
+    expect(targets, '有 status 会把卡片推进 available —— 剥掉 releaseNotes 的前提当场不成立').not.toContain(
+      'available',
+    );
+  });
+
+  /**
+   * **遗漏自曝**：progress 可达面一旦读了被剥掉的字段，这条必须红。
+   *
+   * 剥除表是枚举型判据，而枚举型判据在本仓一路在栽 —— 差别在于它的**失效方向**是「多带」
+   * （帧胖了，性能退化，正确性零损失），不是白名单那种「漏带」（消费方要的字段没了 ⇒ 「重试」
+   * 重新变哑键）。即便如此，「剥掉的东西没人读」这句话仍须有门守着，否则它只是一句注释。
+   *
+   * 扫描面 = **整个组件减去 `available` 那一段**（上一条门刚证明了进度帧进不去 available），
+   * 且**由剥除表驱动**：剥除表加第三个字段时，本门的扫描面自动跟着长，不用谁记得来改。
+   *
+   * **变异探针**：在 `downloaded` 那格加一行 `{updateInfo?.releaseNotes}` ⇒ 转红。
+   */
+  it('progress 可达面没有任何一处读被剥掉的字段（扫描面由剥除表驱动）', () => {
+    const omitted = rustOmittedManifestFields();
+    // 剥注释：注释里提到字段名会顶红判据（本仓踩过的老坑）。
+    const src = stripLineComments(stripBlockComments(SETTINGS_UPDATE_TSX));
+    const availAt = src.indexOf("{us === 'available'");
+    const availEnd = src.indexOf("{us === 'downloading'");
+    expect(availAt, "找不到 available 态分支 —— 扫描面切不出来").toBeGreaterThan(-1);
+    expect(availEnd, "找不到 downloading 态分支 —— 扫描面切不出来").toBeGreaterThan(availAt);
+    const availableBlock = src.slice(availAt, availEnd);
+    const reachable = src.slice(0, availAt) + src.slice(availEnd);
+
+    // 收集「在清单对象上取字段」的全部读法（`updateInfo.x` / `updateInfo?.x` / `patch.info.x` …）。
+    const readsIn = (region: string) =>
+      new Set([...region.matchAll(/\b(?:updateInfo|info|manifest)\s*\??\.\s*(\w+)/g)].map((m) => m[1]));
+    const reachableReads = readsIn(reachable);
+    // 取材自检：扫不到东西时下面的循环 0 次断言而「恰好」全绿。
+    expect(reachableReads.has('version'), '扫描器没抓到 progress 可达面的清单读法 —— 取材器失效').toBe(true);
+    expect(reachableReads.has('fileSize'), '同上').toBe(true);
+    for (const field of omitted) {
+      expect(
+        reachableReads.has(field),
+        `progress 可达面读了 \`${field}\`，而进度帧根本不带它 —— 要么别读，要么把它从剥除表里拿掉`,
+      ).toBe(false);
+    }
+    // 正向对照：被剥的字段确实**还有**消费方（只是在 available 那一屏）。
+    // 全都没人读了 ⇒ 上面那条循环恒真、无信息量，届时该问的是「这个字段还留着干嘛」。
+    const availableReads = readsIn(availableBlock);
+    expect(
+      [...omitted].some((f) => availableReads.has(f)),
+      '被剥掉的字段在 available 那一屏也没人读了 —— 上面那条断言已无信息量，请复核剥除表',
+    ).toBe(true);
   });
 });

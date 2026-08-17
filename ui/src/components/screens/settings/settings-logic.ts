@@ -17,7 +17,7 @@
 
 // 仅类型（编译期擦除）：本文件必须能在 node 环境被 vitest 直接 import，
 // 而 `api-client` 的值侧会牵进 `@tauri-apps/api`。
-import type { UpdateInfo, UpdateProgress } from '@/ipc/api-client';
+import type { UpdateProgress, UpdateProgressManifest } from '@/ipc/api-client';
 
 /* ────────────────────────────────────────────────────────────────────────────
  * 通用：缺省为开的三态布尔
@@ -651,12 +651,18 @@ export function appDownloadIntegrity(
  *
  * # 逐格判据
  *
- *  - `downloading` / `downloaded` → **复位**。这两条是唯一由真实下载腿发出的进度
- *    （`commands/updater.rs::emit_progress`），而事件走 `events::broadcast`（`events.rs` 的
- *    `handle.emit`）fan-out 给**所有窗口** ⇒ 本页收到的可能是别的窗口发起的下载
- *    （`startup_tasks::spawn_auto_download` 的启动腿、`update_popup_action` 的「更新/重试」），
- *    那些下载的 invoke 回包不回本页 ⇒ 不复位就会把上一次的结论盖到这个新包头上。
- *    两条**都要**：复用本地已有包那条腿只发 `downloaded`，根本不发 `downloading`。
+ *  - `downloading` → **复位**。它是「一次新的下载开始了」的信号，而事件走
+ *    `events::broadcast`（`events.rs` 的 `handle.emit`）fan-out 给**所有窗口** ⇒ 本页收到的可能
+ *    是别的窗口发起的下载（`startup_tasks::spawn_auto_download` 的启动腿、`update_popup_action`
+ *    的「更新/重试」），那些下载的 invoke 回包不回本页 ⇒ 不复位就会把上一次的结论盖到新包头上。
+ *  - `downloaded` → **复位，但今天是空转**（2026-08-17 如实订正）。原理由是「复用本地已有包那条
+ *    腿只发 `downloaded`、不发 `downloading`，少了它就漏掉整条复用路径」——那条理由已被**随行
+ *    事实**取代：落位帧现在带着 `verified`，同一次监听器调用里 [`updateCardPatch`] 的 `integrity`
+ *    会紧接着用帧里的真值把这一发 `unknown` 覆盖掉，故这一格对结果**没有影响**。
+ *
+ *    保留而不是删掉，理由是射程闭合、不是惯性：万一将来某条 `downloaded` 帧不带 `verified`，
+ *    `appDownloadIntegrity` 判 `unknown`，与这一发**同值** ⇒ 行为不变；删掉则要求那条腿的作者
+ *    记得来补一行。代价只是一次会被立刻覆盖的 setState。**别把这一格读成「它在守什么」**。
  *  - `error` → **不复位**。下载失败不落位（临时文件由 RAII 清掉，`dest` 一个字节没动），
  *    盘上那份旧包与它的结论都还成立；且 `error` 态本就不渲染明示。
  *  - `idle` / `checking` / `no-update` / `update-available` → **不复位**。它们一个字节都不下载。
@@ -730,8 +736,11 @@ const PROGRESS_CARD_RULE: Record<UpdateProgress['status'], ProgressCardRule | nu
 /** 一帧 `update:progress` 落到更新卡上的**全部**改动。字段与卡片实际渲染的东西一一对应。 */
 export interface UpdateCardPatch {
   us: ProgressDrivenState;
-  /** 本帧描述的那份包的发布清单（版本号 / 体积 / 预发布档次 / 重试时要用的下载地址都在里面）。 */
-  info: UpdateInfo | null;
+  /**
+   * 本帧描述的那份包的发布清单（版本号 / 体积 / 预发布档次 / 重试时要用的下载地址都在里面）。
+   * 剥掉了 `releaseNotes` / `title`，成因见 [`UpdateProgressManifest`]。
+   */
+  info: UpdateProgressManifest | null;
   /** 已落位的安装包路径（「重启并安装」拿的就是它）。 */
   path: string | null;
   /** 已收字节。 */
