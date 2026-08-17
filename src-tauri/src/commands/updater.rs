@@ -5769,8 +5769,9 @@ mod tests {
     ///
     /// ⚠️ **不剔测试区**（复审 F2 实证的教训）：本仓存在三类打破「测试置尾」假设的合法布局——
     /// 文件头部的 `#[cfg(test)] mod guard_scan`（commands.rs，93% 内容在首锚之后）、中部的具名
-    /// sub 测试 mod（runtime/proxy.rs 的 `mod probe_tests` 之后还有约 1.9 万行）、inline
-    /// `#[cfg(test)]` 项（runtime.rs 的 TmpDir）。「按第一个锚截断」会让这些文件锚后的生产代码
+    /// sub 测试 mod（commands/proxy.rs 的 `mod probe_tests`，其后还有 472 行）、inline
+    /// `#[cfg(test)]` 项（runtime/proxy.rs 的 `TEST_CORE_NOT_INJECTED` const、runtime.rs 的
+    /// TmpDir）。「按第一个锚截断」会让这些文件锚后的生产代码
     /// 整段免扫——哑绿。安全截断需要 cfg(test) 块的完整花括号解析（半个 parser），不成比例；
     /// 故改为全文件计数 + 总数钉扎（调用处断言），新增命中一律先红后登记，全响无哑。
     fn collect_skip_writes(dir: &std::path::Path, root: &str, out: &mut Vec<(String, usize)>) {
