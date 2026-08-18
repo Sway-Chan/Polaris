@@ -978,27 +978,38 @@ function updaterLinuxCandidates(names, ext) {
  * （产物 52 MiB 撞上 16 MiB 下载闸、构建 CI 一路绿、只有用户真机更新失败才暴露）正是这么长出来的。
  * 早警值必须**贴着真实量级**设，不是贴着灾难值设。
  *
- * # 96 MiB 是怎么定出来的（实测，非拍脑袋）
+ * # 200 MiB 是怎么定出来的（实测，非拍脑袋；2026-08-18 二次定标）
  *
  * 本机留存的真实 CI 产物逐个 `stat`（updater 目标资产口径）：
  *
  * | 资产 | 字节 | MiB | 出处 |
  * |---|---|---|---|
+ * | `*_amd64.AppImage` | 128,530,936 | 122.58 | run 32109475236（PKG-1 收据 run，linux 全量打包**首次真跑**） |
  * | `*-mac-arm64.dmg` | 54,232,313（12 份留存里的最大值） | 51.72 | 本地 `/tmp/polaris-mac*` CI 产物 |
  * | `*-mac-x64.dmg`   | 51,102,510 | 48.73 | run 30990315709（记录在 vault `~/docs/polaris/design/polaris-windows-packaging-first-green-2026-08-05.md`，**不在本仓**） |
  * | `*-win-setup.exe` | 39,015,611 | 37.21 | run 31659532293 |
  * | `polaris-portable-*.zip` | 53,347,731 | 50.88 | run 31659532293 |
- * | `.deb` / `.AppImage` | **未测** | — | 本机无留存产物，且本轮不联网取；见下 |
+ * | `*_amd64.deb`     | —（字节未记录） | 53.42 | run 32109475236 |
  *
- * 取 **96 MiB ≈ 实测最大值（51.72 MiB）的 1.86 倍**：
+ * 取 **200 MiB ≈ 实测最大值（122.58 MiB，linux AppImage）的 1.63 倍**：
  *  - 常规增长（内核/cronet/dashboard 版本迭代，每次几 MiB）撞不到，不会假红；
- *  - 已知的两类**阶跃式**回潮全部落在门外：四平台内核死重（§10.2，约 210 MiB）、
- *    误把 WebView2 离线负载打进主安装包（离线版实测 251,392,830 B = 239.75 MiB）；
- *  - 比客户端绝对闸早 5.3 倍触发 —— 它才是「早警」的那一份。
+ *  - 已知的两类**阶跃式**回潮仍落在门外：四平台内核死重（§10.2，约 210 MiB）、
+ *    误把 WebView2 离线负载打进主安装包（离线版实测 251,392,830 B；主包将 ≥ ~277 MiB）；
+ *    `*-offline-setup.exe` 资产本身（239.75 MiB）不在射程内，见下。
+ *  - 比客户端绝对闸早 2.56 倍触发 —— 它才是「早警」的那一份。
  *
- * Linux 两形态未测是**如实登记的判据缺口**：它们与 win/mac 同一份 payload（sing-box 内核 +
- * dashboard + 前端），量级同族，96 MiB 有近一倍余量；但这是推断不是实测。真红时先看输出里印的
- * 实际字节数再决定是「产物真涨了」还是「门定紧了」，别直接调门。
+ * # 二次定标纪要（2026-08-18；首轮数据不是陈旧噪声，是缺口被实测关闭的记录）
+ *
+ * 首轮定标取 96 MiB ≈ 51.72（mac dmg）× 1.86，当时 linux 两形态**无实测**，按「与 win/mac
+ * 同一份 payload、量级同族」推断留的近一倍余量，并如实登记为判据缺口。run 32109475236 首次
+ * 真跑 linux 全量打包：AppImage 实测 122.58 MiB 撞门 ⇒ 推断错了——**AppImage 内含 linuxdeploy
+ * 拖入的 GTK/webkit 运行库，deb 走系统依赖不拖，两者体积本就差一倍量级**。缺口由实测关闭，
+ * 门随之抬到新实测最大值的 1.63 倍。
+ * AppImage 必须留在 updater 射程里（deb 只覆盖 dpkg 系，其余发行版用户的自动更新只有这一条腿）
+ * ⇒ 解法是抬门，不是把 AppImage 踢出 updater 资产（2026-08-18 拍板）。
+ * 代价如实登记：mac/win 腿的检测余量从 1.86 倍放宽到 3.86 倍，那两条腿上「多打进一份
+ * ~60 MiB 级死资源」的失误本门不再抓，只能靠 payload 门（单文件口径）兜大头。
+ * 真红时先看输出里印的实际字节数再决定是「产物真涨了」还是「门定紧了」，别直接调门。
  *
  * # 射程：只覆盖 updater 会命中的资产
  *
@@ -1019,7 +1030,7 @@ function updaterLinuxCandidates(names, ext) {
  * 一律判成「判据取不到」而转红 —— 因为「读到了对的那一行」与「读到了别处一句同形文本」在结果上
  * 无从分辨。注释里出现同形文本**不影响**判据（它不以 marker 起头），故本段可以照常引用它。
  */
-const MAX_UPDATE_ASSET_BYTES = 96 * 1024 * 1024;
+const MAX_UPDATE_ASSET_BYTES = 200 * 1024 * 1024;
 
 /** 随 release 一起发布的摘要清单（U3）。名字是**资产名**，不是路径。 */
 const SHA256SUMS_NAME = 'SHA256SUMS';
@@ -1027,12 +1038,13 @@ const SHA256SUMS_NAME = 'SHA256SUMS';
 const mib = (n) => `${(n / 1024 / 1024).toFixed(2)} MiB`;
 
 /**
- * 定阈值时实测到的**最大** updater 目标资产（mac-arm64 dmg，54,232,313 B）。
+ * 定阈值时实测到的**最大** updater 目标资产（linux AppImage，128,530,936 B，run 32109475236；
+ * 2026-08-18 二次定标时由 mac-arm64 dmg 的 54,232,313 换成这个新高）。
  *
- * 只用于失败文案：光看「97 MiB > 96 MiB」判不出这是常规漂移还是阶跃回潮，得有个基线才判得了
+ * 只用于失败文案：光看「201 MiB > 200 MiB」判不出这是常规漂移还是阶跃回潮，得有个基线才判得了
  * 「涨了多少倍」。它不参与任何断言 —— 参与断言就等于把一个会过期的历史值变成第三份需要维护的常量。
  */
-const MEASURED_MAX_UPDATE_ASSET_BYTES = 54_232_313;
+const MEASURED_MAX_UPDATE_ASSET_BYTES = 128_530_936;
 
 /**
  * 本 label 下 **updater 会真正命中**的资产名 —— 体积门的射程恰好是这些。
@@ -1081,7 +1093,7 @@ function checkUpdateAssetSizes(label, targets, pathOf) {
     if (size > MAX_UPDATE_ASSET_BYTES) {
       fail(
         `体积门（U2）：updater 目标资产 '${name}' 为 ${mib(size)}（${size} B），超过上限 ${mib(MAX_UPDATE_ASSET_BYTES)}。\n` +
-          `  定门时的实测基线是 ${mib(MEASURED_MAX_UPDATE_ASSET_BYTES)}（mac-arm64 dmg），本次相当于它的 ` +
+          `  定门时的实测基线是 ${mib(MEASURED_MAX_UPDATE_ASSET_BYTES)}（linux AppImage），本次相当于它的 ` +
           `${(size / MEASURED_MAX_UPDATE_ASSET_BYTES).toFixed(2)} 倍 —— 先据此判是常规漂移还是阶跃回潮。\n` +
           `  这道门是**早警**，不是客户端能力上限：客户端绝对写入闸是 512 MiB，走到那儿才炸就等于没警。\n` +
           `  先判定是「产物真的涨了」（查 payload：内核 / cronet / dashboard / 是否误把离线负载打进主包）\n` +
