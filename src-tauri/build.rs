@@ -26,8 +26,8 @@ fn main() {
 /// 「零结论不是绿」的根因。
 ///
 /// 修法即补齐缺口：`cargo:rustc-link-arg-tests` 把同款 manifest 嵌进本包全部测试目标。
-/// manifest 内容与 tauri-build 2.6.3 自带的 `windows-app-manifest.xml` 逐字等义
-/// （Common-Controls 6.0.0.0 依赖），刻意不引它的私有路径。
+/// manifest 内容与 tauri-build 2.6.3 自带的 `windows-app-manifest.xml` 等义（多一个可选
+/// XML 声明头，无语义影响；Common-Controls 6.0.0.0 依赖），刻意不引它的私有路径。
 fn embed_test_manifest_on_windows_msvc() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
@@ -36,6 +36,9 @@ fn embed_test_manifest_on_windows_msvc() {
         return;
     }
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("windows-test-manifest.xml");
+    // 本 build.rs 已有显式 rerun-if-changed 声明 ⇒ cargo 只按声明路径重跑：manifest 编辑
+    // 必须自己声明，否则测试二进制静默沿用旧嵌入内容（复审 F1）。
+    println!("cargo:rerun-if-changed={}", manifest.display());
     println!("cargo:rustc-link-arg-tests=/MANIFEST:EMBED");
     println!(
         "cargo:rustc-link-arg-tests=/MANIFESTINPUT:{}",
