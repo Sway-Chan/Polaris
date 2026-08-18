@@ -11,7 +11,36 @@ const EXPECTED_SRS_COUNT: usize = 28;
 fn main() {
     assert_bundled_geo_data();
     assert_bundled_dashboard();
+    embed_test_manifest_on_windows_msvc();
     tauri_build::build();
+}
+
+/// W9：给**测试目标**嵌入 Common-Controls v6 manifest（仅 windows-msvc）。
+///
+/// 病理（run 32109642349 探针实证）：`tests/remote_webview_cannot_reach_app_commands` 的
+/// 测试二进制导入 `comctl32.dll` 的 `TaskDialogIndirect / SetWindowSubclass /
+/// RemoveWindowSubclass / DefSubclassProc`——这四个是 **v6 专属导出**。应用 exe 由
+/// tauri-build 的 winres 拿到 v6 manifest（依赖声明），**测试 exe 拿不到**（winres 的
+/// link-arg 只打 bins），于是加载器把 comctl32 绑到 System32 的 v5.82 ⇒ 加载期
+/// `STATUS_ENTRYPOINT_NOT_FOUND`（0xC0000139），一条测试都没执行——W9 登记的
+/// 「零结论不是绿」的根因。
+///
+/// 修法即补齐缺口：`cargo:rustc-link-arg-tests` 把同款 manifest 嵌进本包全部测试目标。
+/// manifest 内容与 tauri-build 2.6.3 自带的 `windows-app-manifest.xml` 逐字等义
+/// （Common-Controls 6.0.0.0 依赖），刻意不引它的私有路径。
+fn embed_test_manifest_on_windows_msvc() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("windows-test-manifest.xml");
+    println!("cargo:rustc-link-arg-tests=/MANIFEST:EMBED");
+    println!(
+        "cargo:rustc-link-arg-tests=/MANIFESTINPUT:{}",
+        manifest.display()
+    );
 }
 
 /// **随包 dashboard 完整性断言（打包期硬门）** —— [`assert_bundled_geo_data`] 的同构对等物。
