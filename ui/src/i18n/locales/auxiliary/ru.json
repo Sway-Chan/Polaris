@@ -39,7 +39,8 @@
     "lockNow": "Заблокировать",
     "lightweight": "Лёгкий режим",
     "quit": "Выйти из Polaris",
-    "manageInMain": "Управление в окне…"
+    "manageInMain": "Управление в окне…",
+    "actionFailed": "«{{action}}» не удалось: {{detail}}"
   },
   "updatePopup": {
     "newVersion": "Новая версия {{version}}",

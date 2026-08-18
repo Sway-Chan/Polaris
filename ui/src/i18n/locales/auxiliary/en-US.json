@@ -39,7 +39,8 @@
     "lockNow": "Lock now",
     "lightweight": "Lightweight mode",
     "quit": "Quit Polaris",
-    "manageInMain": "Manage in main window…"
+    "manageInMain": "Manage in main window…",
+    "actionFailed": "\"{{action}}\" failed: {{detail}}"
   },
   "updatePopup": {
     "newVersion": "New version {{version}}",

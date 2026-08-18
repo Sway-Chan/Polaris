@@ -26,8 +26,8 @@ import { tray as fa } from '@/i18n/locales/auxiliary/fa.json';
 /**
  * 浮层可用的全部文案键（`tray.` + en-US 那棵子树的键名）。
  *
- * **迁移完整性就靠它**：`t()` 只收一个参数且类型是这个字面量联合 ⇒ 任何残留的
- * `t('中文', 'English')` 既是元数不符、又是类型不符，`tsc --noEmit` 必然报错。
+ * **迁移完整性就靠它**：`t()` 只收 `TrayKey` 字面量联合（可选插值 vars，见 `t('tray.actionFailed', {…})`）
+ * ⇒ 任何残留的 `t('中文', 'English')` 是类型不符，`tsc --noEmit` 必然报错。
  * 漏改一处 = 编译不过，不依赖肉眼核对。
  */
 export type TrayKey = `tray.${Extract<keyof typeof enUS, string>}`;

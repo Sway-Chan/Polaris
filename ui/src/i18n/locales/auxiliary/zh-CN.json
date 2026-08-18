@@ -39,7 +39,8 @@
     "lockNow": "立即锁定",
     "lightweight": "进入轻量模式",
     "quit": "退出 Polaris",
-    "manageInMain": "在主窗口管理…"
+    "manageInMain": "在主窗口管理…",
+    "actionFailed": "「{{action}}」失败：{{detail}}"
   },
   "updatePopup": {
     "newVersion": "发现新版本 {{version}}",

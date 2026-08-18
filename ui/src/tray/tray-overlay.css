@@ -210,3 +210,15 @@ body {
   white-space: normal;
   word-break: break-word;
 }
+
+/* W15：「全部节点」二级视图零节点的空态位——窗高自适应（tray_resize 按内容回报）在空列表时
+ * 会把浮层塌成一条头部的窄条，视觉上是「菜单坏了」。保住一个与几行分组头同量级的最小高度，
+ * 文案复用 tray.noNode（与主视图当前出口占位同源，不另立键）。 */
+.tray-menu .tray-nodes-empty {
+  min-height: 176px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: hsl(var(--fg-dim));
+  font-size: 11px;
+}

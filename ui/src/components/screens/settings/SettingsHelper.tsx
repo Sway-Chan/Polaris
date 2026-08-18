@@ -102,6 +102,11 @@ export default function SettingsHelper() {
       const r = await helperApi.install();
       setStatus(r.status);
       setState(deriveState(r.status));
+      // W10：Rust 侧把所有失败（用户取消/脚本失败/二进制缺失）都装进 success:false 的 ok 应答——
+      // 不在这里读出来，任何失败都是零反馈的「点击安装无反应」。信封不 reject，catch 永远等不到它。
+      if (!r.success) {
+        toast.error(t('helper.installFail'), r.error);
+      }
     } catch (err) {
       reportFailure(t('helper.installFail'), err);
     } finally {
@@ -124,6 +129,10 @@ export default function SettingsHelper() {
           const r = await helperApi.uninstall();
           setStatus(r.status);
           setState(deriveState(r.status));
+          // W10 同族：卸载的失败/取消同样装在信封里，不读就是「点了没反应」。
+          if (!r.success) {
+            toast.error(t('helper.uninstallFail'), r.error);
+          }
         } catch (err) {
           // `onClick={uninstall}` 丢弃返回值 ⇒ 不在这里 catch 就是没人能接的 rejection，用户零反馈。
           reportFailure(t('helper.uninstallFail'), err);
