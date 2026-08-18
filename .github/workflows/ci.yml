@@ -13,13 +13,20 @@ name: CI
 on:
   push:
     branches: [main]
-    # 纯文档/UI 改动不碰 Rust 链，push 直跑是纯浪费（本 workflow 无 UI 门，UI 由本地 gate +
-    # 发布期 package.yml 的 tauri build 覆盖）。注意 paths-ignore 只在**全部**改动文件命中时跳过。
+    # 纯文档改动不碰任何判据面，push 直跑是纯浪费。注意 paths-ignore 只在**全部**改动文件命中时跳过。
     # 只对 push 生效：PR 不加，避免将来设 required checks 后文档 PR 卡在 pending。
+    #
+    # ── CI-5（2026-08-18）：`ui/**` 从 paths-ignore 里删除 ──
+    # 此前这里还 ignore 了 `ui/**`，而 **Rust 判据面横跨 ui/**：`main.rs` 遍历整棵 `ui/src`、
+    # `i18n.rs` include_str! 五个 locale、键覆盖断言读前端源码 —— 纯 UI 改动 push 时 Rust 门
+    # 根本不触发。实证：`0742de0`（G1，只改一个 ui/ 文件）只跑了 UI workflow，CI 零 run。
+    # 这正是 ui.yml 头注明令防范的那个假门的**反方向**（那边写着「绝不能把 src-tauri/** 加进
+    # paths-ignore」，却没人检查对称的一侧）。代价：纯 UI 改动多跑一次 ubuntu 1x（约 5 分钟），
+    # 换「被 Rust 测试读取的路径改动 ⇒ Rust 门必跑到」。对称规则由
+    # `ui/src/contracts/ci-paths-contract.test.ts` 钉死（两个 workflow 都不得 ignore 对侧树）。
     paths-ignore:
       - '**.md'
       - 'docs/**'
-      - 'ui/**'
       - 'LICENSE'
       - 'NOTICE'
   pull_request:
