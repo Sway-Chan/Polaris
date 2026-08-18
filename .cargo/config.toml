@@ -1,0 +1,30 @@
+# PKG-3（2026-08-19）：Windows msvc 目标静态链接 CRT（`+crt-static`）。
+#
+# # 为什么（真机实测的缺陷，不是理论洁癖）
+#
+# 2026-08-19 在零 VC++ 运行库的干净真机上首装：`polaris.exe` 因缺 `MSVcp140` 加载器失败、
+# `polaris-helper.exe` 因缺 `VCRUNTIME140` 同病（两 exe 的导入表实测均含相应名字，混合大小写）。
+# "offline-setup 变体"同样中招 ⇒「离线/内网可用」主张在这类机器上不成立。静态 CRT 让所有
+# 自家 exe 彻底不依赖系统 VC++ 运行库，干净机器装完即起——helper 是 SYSTEM 服务、装进
+# `C:\ProgramData\Polaris` 后无法靠 app-local DLL 兜底，静态链接是唯一同时治两条腿的方案。
+#
+# # 生效面与刻意的不生效面
+#
+# - **package.yml（出包腿）生效**：它不设 `RUSTFLAGS` env ⇒ 本文件rustflags 参与链接
+#   （helper 的 `cargo build --target` 产物在 `target/<triple>/release/`；tauri build 仅 mac 腿带
+#   --target，windows 腿产物在 `target/release/`——两处同被本 rustflags 覆盖）。
+#   生效性由 package.yml 的 `Assert statically linked CRT` 步逐字节断言（导入表不得再出现
+#   msvcp140 / vcruntime140，大小写不敏感——实测名字是混合大小写）。
+# - **ci.yml 只有 clippy 步不生效（step 级 `RUSTFLAGS: "-D warnings"` env 覆盖本文件；clippy
+#   只 lint 不链接）**。Build / Test 两步没有该 env ⇒ windows-2022 腿上会静态链接整个 workspace
+#   并运行静态链接的测试二进制——这不是缺口而是**提前验证**：btls-sys 的 /MT 兼容问题若存在，
+#   第一个跑 windows 腿的 PR 就会红，比出包 dispatch 更早。Linux 腿的 cross-check（check 不链接）
+#   同样吃到 flag，无害。
+# - **Linux/mac/本机 Linux 开发零影响**：per-target 段只在为该 triple 编译时生效。
+#
+# # 体积代价
+#
+# 每个 exe 约 +1~2 MB（静态链入 UCRT/CPP 运行库）。相对「干净机器起不来」的可用性缺陷，
+# 这个代价在安装包口径下可忽略；体积门（MAX_UPDATE_ASSET_BYTES 200 MiB）余量充足。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
