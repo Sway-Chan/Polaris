@@ -747,7 +747,8 @@ export interface UpdateCardPatch {
   received: number | null;
   percentage: number;
   /** 失败文案；`null` = 本帧不表态（**不是**空串：空串是「失败但后端没给成因」）。 */
-  error: string | null;
+  errorCode: string | null;
+  errorDetail: string | null;
   /** 摘要校验结论；`null` = 本帧不表态。 */
   integrity: AppDownloadIntegrity | null;
 }
@@ -777,8 +778,9 @@ export function updateCardPatch(p: UpdateProgress): UpdateCardPatch | null {
     path: p.filePath ?? null,
     received: typeof p.receivedBytes === 'number' ? p.receivedBytes : null,
     percentage: p.percentage,
-    // `p.message` 是 `error` 的同源镜像（Rust 侧两者同一个串），留作后端只填其一时的兜底。
-    error: rule.takesError ? (p.error ?? p.message ?? '') : null,
+    // U1：失败只搬码与诊断串，正文由渲染端按码本地化（`null` = 本帧不表态）。
+    errorCode: rule.takesError ? (p.errorCode ?? null) : null,
+    errorDetail: rule.takesError ? (p.errorDetail ?? '') : null,
     // 判据复用 `appDownloadIntegrity`：帧里的 `verified` 与 `update_download` 回包里的
     // `verified` 是同一个值，两处各写一套三态映射早晚会漂。
     integrity: rule.takesIntegrity ? appDownloadIntegrity(p) : null,

@@ -43,9 +43,25 @@ export interface UpdatePopupState {
   mirror?: boolean;
   /** 包的落位路径（done 态；Rust 侧是 `done()` 的必填参数 —— 没有它就不是「下完了」）。 */
   filePath?: string;
-  /** 错误文案（error 态）。 */
-  errorText?: string;
+  /** 失败机器码（error 态；= Rust `UpdateErrCode::wire()`，覆盖门对拍）。 */
+  errorCode?: string;
+  /** 技术诊断串（error 态；语言中性数据：路径 / 哈希 / OS 错误原文，渲染端括注）。 */
+  errorDetail?: string;
 }
+
+/** Rust `UpdateErrCode::wire()` 的全联合（U1）。覆盖门与两张 i18n 表都对拍它。 */
+export type UpdateErrWire =
+  | 'missingDownloadUrl'
+  | 'digestFieldInvalid'
+  | 'cacheDirFailed'
+  | 'downloadFailed'
+  | 'backendUnavailable'
+  | 'downloadTaskFailed'
+  | 'sizeMismatch'
+  | 'digestHexInvalid'
+  | 'digestMismatch'
+  | 'landingFailed'
+  | 'recheckFailed';
 
 /** 弹窗动作（弹窗 → 主；= Rust `PopupAction`，serde camelCase）。 */
 export type PopupAction =

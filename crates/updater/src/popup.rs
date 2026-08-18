@@ -75,6 +75,103 @@ pub const DONE_AUTO_CLOSE_MS: u64 = 800;
 /// 未设显式时长），故取 3s 这个保守整数。
 pub const NO_UPDATE_AUTO_CLOSE_MS: u64 = 3_000;
 
+/// App 更新失败的**机器码**（U1）。
+///
+/// `update:progress` 的 error 帧、弹窗 error 态、以及 `update_download` 失败早退的信封
+/// 三条出口共用同一张码表；正文本地化全部在前端按码取键完成，后端只产 `detail`
+/// （语言中性的诊断串）。此前这三条出口直接携带硬编码中文正文（i18n 模块文档登记的
+/// 出口 #1/#2），俄语/波斯语用户在更新失败时看到的是俄语按钮 + 整段中文正文。
+///
+/// ⚠️ `wire()` 的返回串是**跨语言契约**（前端 locale 键 `update.err.<code>` /
+/// `updatePopup.err.<code>` 与覆盖门都咬它）——改串等于改协议，必须五语种同步。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateErrCode {
+    /// 调用契约破坏：`updateInfo.downloadUrl` 缺失/为空（前端与 Rust 的握手 bug，非用户可修）。
+    MissingDownloadUrl,
+    /// 摘要字段存在但类型不对（发布方写坏了清单，重试无用）。
+    DigestFieldInvalid,
+    /// 解析/创建更新缓存目录失败（本地文件系统问题）。
+    CacheDirFailed,
+    /// 下载本身失败（网络层）。
+    DownloadFailed,
+    /// 下载后端不可用（与「网络失败」必须可区分：重试后者有意义、修前者没意义）。
+    BackendUnavailable,
+    /// 下载任务异常终止（join 层面的 panic/取消，非网络错误）。
+    DownloadTaskFailed,
+    /// 已收字节数与清单声明不符（可能被截断或掉包）。
+    SizeMismatch,
+    /// 清单里的 sha256 不是合法 64 位十六进制（发布方写坏，重试无用）。
+    DigestHexInvalid,
+    /// sha256 逐字节校验不中（可能被截断或篡改）。
+    DigestMismatch,
+    /// 落位失败（fsync / rename 阶段）。
+    LandingFailed,
+    /// 弹窗「更新」动作的复查阶段失败（检查腿报错 / 复查契约破损）。
+    RecheckFailed,
+}
+
+impl UpdateErrCode {
+    /// 线上形态（camelCase，前端键的后缀）。
+    #[must_use]
+    pub const fn wire(self) -> &'static str {
+        match self {
+            Self::MissingDownloadUrl => "missingDownloadUrl",
+            Self::DigestFieldInvalid => "digestFieldInvalid",
+            Self::CacheDirFailed => "cacheDirFailed",
+            Self::DownloadFailed => "downloadFailed",
+            Self::BackendUnavailable => "backendUnavailable",
+            Self::DownloadTaskFailed => "downloadTaskFailed",
+            Self::SizeMismatch => "sizeMismatch",
+            Self::DigestHexInvalid => "digestHexInvalid",
+            Self::DigestMismatch => "digestMismatch",
+            Self::LandingFailed => "landingFailed",
+            Self::RecheckFailed => "recheckFailed",
+        }
+    }
+
+    /// 信封通道的英文回落文案（`err_with_code` 的 msg；诊断串由调用点拼进 detail）。
+    /// 只在信封里出现——事件/弹窗两条出口的正文由前端按码本地化，不走这个。
+    #[must_use]
+    pub const fn en(self) -> &'static str {
+        match self {
+            Self::MissingDownloadUrl => "update contract broken: missing downloadUrl",
+            Self::DigestFieldInvalid => "release digest field is malformed (retry won't help)",
+            Self::CacheDirFailed => "failed to resolve or create the update cache dir",
+            Self::DownloadFailed => "failed to download the update package",
+            Self::BackendUnavailable => "download backend unavailable",
+            Self::DownloadTaskFailed => "download task terminated abnormally",
+            Self::SizeMismatch => "package size does not match the release manifest",
+            Self::DigestHexInvalid => "release sha256 is not valid hex (retry won't help)",
+            Self::DigestMismatch => "package digest verification failed",
+            Self::LandingFailed => "failed to land the downloaded package",
+            Self::RecheckFailed => "update re-check failed",
+        }
+    }
+}
+
+/// 一次失败的全部事实：码 + 诊断串（`None` = 无可给的技术细节）。
+#[derive(Debug, Clone, Copy)]
+pub struct UpdateErr<'a> {
+    pub code: UpdateErrCode,
+    pub detail: Option<&'a str>,
+}
+
+impl<'a> UpdateErr<'a> {
+    #[must_use]
+    pub const fn new(code: UpdateErrCode) -> Self {
+        Self { code, detail: None }
+    }
+
+    /// 诊断串要求**语言中性**（路径 / 哈希 / OS 错误原文）：它是数据不是文案。
+    #[must_use]
+    pub const fn with_detail(code: UpdateErrCode, detail: &'a str) -> Self {
+        Self {
+            code,
+            detail: Some(detail),
+        }
+    }
+}
+
 /// 弹窗状态载荷（主 → 弹窗）。
 ///
 /// 移植自 上游 `UpdatePopupState`（`shared/types/update.ts`）。字段经 serde 转 camelCase
@@ -132,9 +229,14 @@ pub struct UpdatePopupState {
     /// 静默复活（实测：把源码门 `#[ignore]` 掉 ⇒ 全仓仍绿）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_path: Option<String>,
-    /// 错误文案（error 态）。
+    /// App 更新失败的**机器码**（U1：error 态）。前端按 `updatePopup.err.<code>` 取五语种文案，
+    /// 后端不再经任何通道产出本地化的（今天是硬编码中文的）失败正文。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error_text: Option<String>,
+    pub error_code: Option<String>,
+    /// 失败的**技术诊断串**（error 态；语言中性的数据：路径 / 哈希 / OS 错误原文）。
+    /// 不参与本地化——它给「想看细节的人」，正文那行给所有人。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_detail: Option<String>,
 }
 
 impl UpdatePopupState {
@@ -212,12 +314,13 @@ impl UpdatePopupState {
         }
     }
 
-    /// error 态（携带本地化后的错误文案）。
+    /// error 态（U1 起携带机器码 + 诊断串，本地化在渲染端完成）。
     #[must_use]
-    pub fn error(text: impl Into<String>) -> Self {
+    pub fn error(code: UpdateErrCode, detail: impl Into<String>) -> Self {
         Self {
             phase: PopupPhase::Error,
-            error_text: Some(text.into()),
+            error_code: Some(code.wire().to_string()),
+            error_detail: Some(detail.into()),
             ..Self::default()
         }
     }
@@ -495,7 +598,7 @@ impl<T: PopupTransport> PopupSession<T> {
         // serde_json 对本结构不可能失败（全 Plain Old Data，无 Map<非字符串键>/非有限浮点）；
         // 万一失败也必须给页面一个可渲染的初始态 —— 绝不产出「无 bootstrap 的窗」（那正是 #300）。
         let json = serde_json::to_string(state).unwrap_or_else(|_| {
-            r#"{"phase":"error","errorText":"popup bootstrap serialization failed"}"#.to_string()
+            r#"{"phase":"error","errorCode":"downloadFailed","errorDetail":"popup bootstrap serialization failed"}"#.to_string()
         });
         format!("window.__POLARIS_UPDATE_POPUP_INITIAL__ = {json};")
     }
@@ -666,7 +769,10 @@ mod tests {
 
         for (step, state) in [
             ("progress", UpdatePopupState::progress(30, None, None)),
-            ("error", UpdatePopupState::error("网络中断")),
+            (
+                "error",
+                UpdatePopupState::error(UpdateErrCode::DownloadFailed, "net down"),
+            ),
             ("done", UpdatePopupState::done(None, "/tmp/polaris.dmg")),
             ("noupdate", UpdatePopupState::no_update(None)),
         ] {
@@ -716,7 +822,11 @@ mod tests {
             .unwrap(); // 116 → 改高
         s.send_state(UpdatePopupState::progress(20, None, None))
             .unwrap(); // 116 → 同高，不改
-        s.send_state(UpdatePopupState::error("boom")).unwrap(); // 152 → 改高
+        s.send_state(UpdatePopupState::error(
+            UpdateErrCode::DownloadFailed,
+            "boom",
+        ))
+        .unwrap(); // 152 → 改高
 
         let heights = s.transport().heights.borrow();
         assert_eq!(
@@ -788,7 +898,7 @@ mod tests {
         assert!(j.contains("\"totalBytes\":52000000"), "camelCase: {j}");
         assert!(j.contains("\"mirror\":true"));
         // None 字段不出现（前端按可选处理）。
-        assert!(!j.contains("errorText"));
+        assert!(!j.contains("errorCode"));
         assert!(!j.contains("filePath"));
         // 新增那一档的 phase 串（跨语言契约：TS 侧 `PopupPhase` 联合逐字用它）。
         assert!(
@@ -1188,7 +1298,7 @@ mod tests {
                 // 落位路径必带 —— 没有它，本档与「什么都没下」在屏幕上长得一模一样。
                 PopupPhase::Done => &["phase", "version", "percentage", "filePath"],
                 PopupPhase::NoUpdate => &["phase", "version"],
-                PopupPhase::Error => &["phase", "version", "errorText"],
+                PopupPhase::Error => &["phase", "version", "errorCode", "errorDetail"],
             }
         }
 
@@ -1222,7 +1332,10 @@ mod tests {
                     "/tmp/updates/polaris.dmg",
                 )],
                 PopupPhase::NoUpdate => vec![UpdatePopupState::no_update(None)],
-                PopupPhase::Error => vec![UpdatePopupState::error("网络中断")],
+                PopupPhase::Error => vec![UpdatePopupState::error(
+                    UpdateErrCode::DownloadFailed,
+                    "net down",
+                )],
             }
         };
 

@@ -60,7 +60,18 @@
     "manualDownload": "手動下載",
     "retry": "重試",
     "unknownState": "未知更新狀態",
-    "bootstrapMissing": "彈窗初始狀態缺失（bootstrap 未注入）"
+    "bootstrapMissing": "彈窗初始狀態缺失（bootstrap 未注入）",
+    "errMissingDownloadUrl": "更新資訊缺少下載位址（內部錯誤，請重試或手動下載）",
+    "errDigestFieldInvalid": "發布資訊中的校驗摘要欄位格式錯誤（發布方問題，重試無用）",
+    "errCacheDirFailed": "無法建立更新快取目錄",
+    "errDownloadFailed": "下載更新包失敗",
+    "errBackendUnavailable": "下載後端不可用",
+    "errDownloadTaskFailed": "下載工作異常終止",
+    "errSizeMismatch": "更新包大小與發布清單不符（可能被截斷或調包）",
+    "errDigestHexInvalid": "發布資訊中的 sha256 摘要不是合法的十六進位（發布方寫壞，重試無用）",
+    "errDigestMismatch": "更新包校驗失敗（可能被截斷或竄改）",
+    "errLandingFailed": "更新包落盤失敗",
+    "errRecheckFailed": "檢查更新失敗"
   },
   "native": {
     "backupExportTitle": "匯出 Polaris 設定備份",

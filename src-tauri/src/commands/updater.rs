@@ -55,7 +55,8 @@ use polaris_updater::github::{
     AppUpdateCheck, AssetArch, AssetPlatform, GithubRelease, APP_UPDATE_REPO, CORE_UPDATE_REPO,
 };
 use polaris_updater::popup::{
-    PopupAction, UpdatePopupState, DONE_AUTO_CLOSE_MS, NO_UPDATE_AUTO_CLOSE_MS,
+    PopupAction, UpdateErr, UpdateErrCode, UpdatePopupState, DONE_AUTO_CLOSE_MS,
+    NO_UPDATE_AUTO_CLOSE_MS,
 };
 use polaris_updater::state::PopupPhase;
 use polaris_updater::traits::{UnavailableDownloader, UpdateDownloader};
@@ -158,30 +159,35 @@ enum ProgressStage<'a> {
     /// 已落位：包在盘上的路径 + 摘要是否逐字节校验过（与 `update_download` 回包的 `verified`
     /// 同一真值）。**路径是必填的**：设置页的「重启并安装」拿的就是它。
     Downloaded { path: &'a Path, verified: bool },
-    /// 失败：成因文案（今天仍是硬编码中文，见 `crate::i18n` 模块文档登记的既存出口 #1）。
-    Failed(&'a str),
+    /// 失败：机器码 + 诊断串（U1。此前是硬编码中文正文，i18n 模块文档登记的出口 #1/#2；
+    /// 现在本地化在前端按 [`UpdateErrCode::wire`] 取键完成，`detail` 是语言中性的诊断数据）。
+    Failed(UpdateErr<'a>),
 }
 
-/// 纯派生：一帧的 `(status, percentage, message)`。事件载荷与弹窗镜像共用同一份派生 ——
+/// 纯派生：一帧的 `(status, percentage)`。事件载荷与弹窗镜像共用同一份派生 ——
 /// 两处各写一遍必然漂出「设置页说 100%、弹窗说 99%」这种同源不同话。
 ///
 /// `percentage` 在两个终态上是**由类型定死的**：`Downloaded` 恒 100、`Failed` 恒 0，
 /// 调用点没有把它写错的余地（此前是每个调用点自己传一个数）。
 ///
+/// 第三格（`message`）在 U1 拆掉了：失败的正文本地化移到渲染端，这里只派生与文案无关的
+/// 两个字段；错误码/诊断串由 [`progress_payload`] / [`popup_state_for`] 直接从
+/// `Failed(UpdateErr)` 逐字段取——`UpdateErr` 的字段即契约。
+///
 /// **不用 `..` 通配**（本函数与 [`progress_payload`] 及其行为门的解构一律逐字段写）：`..` 会把
 /// 「给已有变体新加一个字段」静默吃掉 —— 三处都不红、载荷里不出现、跨语言对拍也不红。写成
 /// `received: _` 之后，加字段是编译错误。
-const fn stage_facts<'a>(stage: ProgressStage<'a>) -> (&'static str, u8, &'a str) {
+const fn stage_facts(stage: ProgressStage<'_>) -> (&'static str, u8) {
     match stage {
         ProgressStage::Downloading {
             percentage,
             received: _,
-        } => ("downloading", percentage, ""),
+        } => ("downloading", percentage),
         ProgressStage::Downloaded {
             path: _,
             verified: _,
-        } => ("downloaded", 100, ""),
-        ProgressStage::Failed(msg) => ("error", 0, msg),
+        } => ("downloaded", 100),
+        ProgressStage::Failed(UpdateErr { code: _, detail: _ }) => ("error", 0),
     }
 }
 
@@ -233,17 +239,21 @@ fn progress_manifest(info: &Value) -> Value {
 /// 抽成纯函数是为了**可测**：[`emit_progress`] 持 `AppHandle`，单测构造不出 Tauri 运行时，
 /// 判据留在里面就只剩源码级守卫，而那守得住「写没写那一行」，守不住「写出来的是什么」。
 fn progress_payload(info: &Value, stage: ProgressStage<'_>) -> Value {
-    let (status, percentage, message) = stage_facts(stage);
+    let (status, percentage) = stage_facts(stage);
     let mut payload = json!({
         "status": status,
         "percentage": percentage,
-        "message": message,
         // 随行事实之一：这一帧描述的是**哪一份包**。设置页据此渲染版本号 / 体积 / 预发布档次，
         // 并在 error 态拿它重试 —— 没有它，那些数字说的是本页上一次检查的另一个版本。
         "updateInfo": progress_manifest(info),
     });
-    if !message.is_empty() {
-        payload["error"] = Value::String(message.to_string());
+    // 失败帧带机器码 + 诊断串（U1）：正文在前端按 `update.err.<code>` 本地化，
+    // `errorDetail` 是语言中性的技术数据。旧的 `message`/`error` 中文通道已拆。
+    if let ProgressStage::Failed(UpdateErr { code, detail }) = stage {
+        payload["errorCode"] = Value::String(code.wire().to_string());
+        if let Some(d) = detail {
+            payload["errorDetail"] = Value::String((*d).to_string());
+        }
     }
     // 逐字段解构（不用 `..`）：给变体加字段时这里必须显式表态，否则编译红。成因见
     // [`ProgressStage`] 文档「类型挡不住的三样」第 3 条。
@@ -258,7 +268,7 @@ fn progress_payload(info: &Value, stage: ProgressStage<'_>) -> Value {
             payload["filePath"] = Value::String(path.to_string_lossy().into_owned());
             payload["verified"] = Value::Bool(verified);
         }
-        ProgressStage::Failed(_) => {}
+        ProgressStage::Failed(UpdateErr { code: _, detail: _ }) => {}
     }
     payload
 }
@@ -320,12 +330,11 @@ fn popup_state_for(info: &Value, stage: ProgressStage<'_>) -> UpdatePopupState {
                 .map(str::to_string),
             path.to_string_lossy(),
         ),
-        ProgressStage::Failed(msg) => UpdatePopupState::error(if msg.is_empty() {
-            // 既存的硬编码中文出口（见 `crate::i18n` 模块文档登记的 #1），本批不扩大也不新增。
-            "更新失败"
-        } else {
-            msg
-        }),
+        ProgressStage::Failed(UpdateErr { code, detail }) => {
+            // U1：弹窗 error 态与事件载荷同源（同一个 `UpdateErr`），本地化在渲染端按
+            // `updatePopup.err.<code>` 取键；`detail` 原样透传（语言中性的诊断数据）。
+            UpdatePopupState::error(code, detail.unwrap_or(""))
+        }
     }
 }
 
@@ -910,11 +919,9 @@ fn resolve_expected_digest(info: &Value) -> Result<Option<ExpectedDigest>, Strin
             continue; // 字段缺失 = 旧 release 的正常形态。
         };
         let Some(hex) = raw.as_str() else {
-            return Err(format!(
-                "更新信息里的 {} 字段不是字符串（实得 {}）——摘要写坏了，绝不当成「本来就没摘要」放行",
-                src.field(),
-                raw
-            ));
+            // U1：这是 errorDetail（诊断数据），语言中性；「绝不当成没摘要放行」的语义
+            // 由 DigestFieldInvalid 的 locale 文案承担，这里只报事实。
+            return Err(format!("{} field is not a string (got {raw})", src.field()));
         };
         let hex = hex.trim();
         if hex.is_empty() {
@@ -1133,11 +1140,12 @@ fn land_payload(
 ) -> LandingOutcome {
     // 先刷盘再改名：顺序不可换（换了就等于没做 —— 崩溃窗口正好在 rename 之后）。
     if let Err(e) = fs.sync_file(tmp) {
-        return LandingOutcome::Failed(format!("刷盘更新包失败 {}: {e}", tmp.display()));
+        // U1：LandingOutcome 的串只作 errorDetail（诊断数据），语言中性。
+        return LandingOutcome::Failed(format!("fsync {}: {e}", tmp.display()));
     }
     match polaris_updater::verify::promote_staged(fs, tmp, dest) {
         Ok(()) => LandingOutcome::Landed,
-        Err(e) => LandingOutcome::Failed(format!("写入更新包失败 {}: {e}", dest.display())),
+        Err(e) => LandingOutcome::Failed(format!("rename to {}: {e}", dest.display())),
     }
 }
 
@@ -1349,6 +1357,17 @@ pub async fn update_download(
     // 下面十余个调用点因此没有「漏带」或「带成另一个版本的清单」的余地 —— 而设置页正是靠
     // 这份清单渲染版本号/体积、并在失败时重试。射程与成因见 [`ProgressStage`]。
     let emit = |stage: ProgressStage<'_>| emit_progress(&app, &update_info, stage);
+    // U1：失败早退的统一出口——error 进度帧与失败信封两条出口共用同一个 `UpdateErr`
+    // （此前一处中文串喂两条通道，i18n 模块文档登记的出口 #1/#2）。信封 msg = 英文回落 +
+    // 诊断串；前端 toast 端拿到结构化 code 可优先本地化。
+    let fail = |e: UpdateErr<'_>| -> ApiResponse<Value> {
+        emit(ProgressStage::Failed(e));
+        let msg = match e.detail {
+            Some(d) => format!("{}: {d}", e.code.en()),
+            None => e.code.en().to_string(),
+        };
+        ApiResponse::err_with_code(msg, e.code.wire())
+    };
 
     let Some(url) = update_info
         .get("downloadUrl")
@@ -1358,9 +1377,7 @@ pub async fn update_download(
     else {
         // 前置校验的早退**也必须发 error 进度**：弹窗被 `force progress(0)` 推进 Progress 后，
         // 只有 `error` / `downloaded` 能把它推出去 —— 静默 return 会让窗永远转圈（只剩 Cancel）。
-        let msg = "update_download 需要 updateInfo.downloadUrl";
-        emit(ProgressStage::Failed(msg));
-        return Ok(ApiResponse::err(msg));
+        return Ok(fail(UpdateErr::new(UpdateErrCode::MissingDownloadUrl)));
     };
     let file_name = update_info
         .get("fileName")
@@ -1377,9 +1394,11 @@ pub async fn update_download(
     // 「本来就没摘要」（那等于把发布方的失误偷偷换成少一道校验）。
     let expected_digest = match resolve_expected_digest(&update_info) {
         Ok(d) => d,
-        Err(msg) => {
-            emit(ProgressStage::Failed(&msg));
-            return Ok(ApiResponse::err(msg));
+        Err(detail) => {
+            return Ok(fail(UpdateErr::with_detail(
+                UpdateErrCode::DigestFieldInvalid,
+                &detail,
+            )));
         }
     };
     let expected_sha = expected_digest.as_ref().map(|d| d.hex.clone());
@@ -1389,15 +1408,19 @@ pub async fn update_download(
     let dir = match app.path().app_cache_dir() {
         Ok(d) => d.join("updates"),
         Err(e) => {
-            let msg = format!("解析缓存目录失败: {e}");
-            emit(ProgressStage::Failed(&msg));
-            return Ok(ApiResponse::err(msg));
+            let detail = e.to_string();
+            return Ok(fail(UpdateErr::with_detail(
+                UpdateErrCode::CacheDirFailed,
+                &detail,
+            )));
         }
     };
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        let msg = format!("建更新缓存目录失败 {}: {e}", dir.display());
-        emit(ProgressStage::Failed(&msg));
-        return Ok(ApiResponse::err(msg));
+        let detail = format!("{}: {e}", dir.display());
+        return Ok(fail(UpdateErr::with_detail(
+            UpdateErrCode::CacheDirFailed,
+            &detail,
+        )));
     }
     let dest = dir.join(&file_name);
 
@@ -1474,30 +1497,44 @@ pub async fn update_download(
     {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            let msg = format!("下载更新包失败: {e}");
-            emit(ProgressStage::Failed(&msg));
             // 「后端未接线」与「下载失败」**必须**可区分（trait 契约；生产注入的是 CoreDownloader，
             // 故这条实际不可达，但映射保留——折叠进泛化失败会让上层无限重试一个永不成功的调用）。
+            // 信封 code 保留既有的 CODE_HTTP_UNAVAILABLE（上游契约），事件/弹窗走 U1 码表。
+            let detail = e.to_string();
             return Ok(match e {
                 polaris_updater::traits::DownloadError::BackendUnavailable(_) => {
-                    ApiResponse::err_with_code(msg, CODE_HTTP_UNAVAILABLE)
+                    emit(ProgressStage::Failed(UpdateErr::with_detail(
+                        UpdateErrCode::BackendUnavailable,
+                        &detail,
+                    )));
+                    ApiResponse::err_with_code(
+                        format!("{}: {detail}", UpdateErrCode::BackendUnavailable.en()),
+                        CODE_HTTP_UNAVAILABLE,
+                    )
                 }
-                _ => ApiResponse::err(msg),
+                _ => fail(UpdateErr::with_detail(
+                    UpdateErrCode::DownloadFailed,
+                    &detail,
+                )),
             });
         }
         Err(e) => {
-            let msg = format!("下载任务异常终止: {e}");
-            emit(ProgressStage::Failed(&msg));
-            return Ok(ApiResponse::err(msg));
+            let detail = e.to_string();
+            return Ok(fail(UpdateErr::with_detail(
+                UpdateErrCode::DownloadTaskFailed,
+                &detail,
+            )));
         }
     };
 
     // ── 完整性第 2 级：清单声明的 `fileSize` 等值判据（见 [`check_declared_size`]）。
     //    这一级专治无摘要腿：Content-Length 是撒谎方自己给的数，对撒谎方零约束。
     if let Err(e) = check_declared_size(streamed.bytes, declared_size) {
-        let msg = format!("更新包大小与发布清单声明不符（可能被截断或掉包）: {e}");
-        emit(ProgressStage::Failed(&msg));
-        return Ok(ApiResponse::err(msg));
+        let detail = e.to_string();
+        return Ok(fail(UpdateErr::with_detail(
+            UpdateErrCode::SizeMismatch,
+            &detail,
+        )));
     }
 
     // ── 完整性第 1 级：sha256 强校验（有摘要才做）——摘要是**边下边算**的，零额外 IO、零额外内存。
@@ -1507,18 +1544,17 @@ pub async fn update_download(
     //    正是把这条分野压成了一个 bool。
     if let Some(d) = expected_digest.as_ref() {
         if let Err(e) = polaris_updater::verify::verify_hex_digest(&streamed.sha256_hex, &d.hex) {
-            let msg = match e {
-                polaris_updater::verify::VerifyError::InvalidExpectedHash(_) => format!(
-                    "更新信息里的 sha256 摘要不是合法的 64 位十六进制（发布方写坏了，重试无用）: {}",
-                    d.hex
-                ),
-                polaris_updater::verify::VerifyError::HashMismatch { .. } => format!(
-                    "更新包校验失败（可能被截断或篡改）: expected {}, actual {}",
-                    d.hex, streamed.sha256_hex
-                ),
-            };
-            emit(ProgressStage::Failed(&msg));
-            return Ok(ApiResponse::err(msg));
+            // 「发布方 digest 写坏了」重下一万次也不会好，把它显示成「可能被截断或篡改」只会
+            // 引导用户反复重下——两个变体两个码，正文里的这句分野由 locale 文案承担。
+            let mismatch_detail = format!("expected {}, actual {}", d.hex, streamed.sha256_hex);
+            return Ok(fail(match e {
+                polaris_updater::verify::VerifyError::InvalidExpectedHash(_) => {
+                    UpdateErr::with_detail(UpdateErrCode::DigestHexInvalid, &d.hex)
+                }
+                polaris_updater::verify::VerifyError::HashMismatch { .. } => {
+                    UpdateErr::with_detail(UpdateErrCode::DigestMismatch, &mismatch_detail)
+                }
+            }));
         }
     }
 
@@ -1530,10 +1566,12 @@ pub async fn update_download(
     //    成因见 [`land_payload`]。先求值再 match，让 `partial` 的借用在 match 之前就结束。
     let landing = land_payload(&polaris_updater::traits::StdFs, partial.path(), &dest);
     match landing {
-        LandingOutcome::Failed(msg) => {
+        LandingOutcome::Failed(detail) => {
             // `promote_staged` 自己已尽力删过 tmp；`partial` 在此 return 时析构再兜一次。
-            emit(ProgressStage::Failed(&msg));
-            return Ok(ApiResponse::err(msg));
+            return Ok(fail(UpdateErr::with_detail(
+                UpdateErrCode::LandingFailed,
+                &detail,
+            )));
         }
         LandingOutcome::Landed => {
             // tmp 这个 inode 现在叫 dest 了 —— 先解除守卫，再广播成功。
@@ -1759,11 +1797,8 @@ pub fn update_popup_state(state: State<'_, AppRuntime>) -> ApiResponse<Option<Up
     ApiResponse::ok(state.updater().popup_state())
 }
 
-/// 弹窗「更新 / 重试」**复查阶段**失败时回给用户的文案。
-///
-/// 同一条分支里有两处早退共用它（复查请求本身失败 / 复查回包缺版本号）。提成常量不是洁癖：
-/// 两处原本是逐字相同的字面量，改一处漏一处就会出现「同一件事两种说法」。
-const POPUP_RECHECK_FAILED: &str = "检查更新失败";
+// 弹窗「更新 / 重试」复查阶段失败的文案常量已随 U1 退役：两处早退共用
+// `UpdateErrCode::RecheckFailed`（同一件事同一码），正文本地化在渲染端。
 
 /// 复查回来之后的三档处置（[`reconcile_recheck`] 的结论）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1904,11 +1939,16 @@ pub async fn update_popup_action(
                 // `update:progress` 广播出去，让**设置页**弹一条它从未发起过的下载错误。
                 // 弹窗是本次动作的唯一相关方（`emit_progress` 的弹窗镜像正是 `error(msg)` 这一发，
                 // 故行为对弹窗逐字不变，少掉的只有那次全局广播）。
-                let msg = checked
-                    .error
-                    .unwrap_or_else(|| POPUP_RECHECK_FAILED.to_string());
-                push_popup_state(&app, UpdatePopupState::error(&msg));
-                return Ok(ApiResponse::err(msg));
+                // U1：复查失败也走码表（detail = 检查腿带回的错误原文，语言中性的诊断数据）。
+                let detail = checked.error.unwrap_or_default();
+                push_popup_state(
+                    &app,
+                    UpdatePopupState::error(UpdateErrCode::RecheckFailed, detail.clone()),
+                );
+                return Ok(ApiResponse::err_with_code(
+                    format!("{}: {detail}", UpdateErrCode::RecheckFailed.en()),
+                    UpdateErrCode::RecheckFailed.wire(),
+                ));
             };
             let Some(info) = data.get("updateInfo").cloned().filter(|v| !v.is_null()) else {
                 // 复查回来没有任何可下载的包：弹窗停在 progress 会永远转圈 → 推进 `noupdate` 终态
@@ -1965,11 +2005,17 @@ pub async fn update_popup_action(
                 RecheckVerdict::Unusable => {
                     // hasUpdate 为真却没有版本号 = 后端契约破损。既无法对账，也**不弹空版本号**
                     // （与 `startup_tasks` / `tray` 两条产出腿同一处置）⇒ 按检查失败收场，
-                    // 弹窗停在 error 仍可重试。文案与上面那条早退共用 `POPUP_RECHECK_FAILED`。
+                    // 弹窗停在 error 仍可重试。码与上面那条早退共用 `RecheckFailed`（U1）。
                     // 同样**只推弹窗、不广播**（理由见上面那条早退）。
                     log::warn!("弹窗复查：hasUpdate 为真但 updateInfo 缺 version，放弃本次下载");
-                    push_popup_state(&app, UpdatePopupState::error(POPUP_RECHECK_FAILED));
-                    return Ok(ApiResponse::err(POPUP_RECHECK_FAILED.to_string()));
+                    push_popup_state(
+                        &app,
+                        UpdatePopupState::error(UpdateErrCode::RecheckFailed, ""),
+                    );
+                    return Ok(ApiResponse::err_with_code(
+                        UpdateErrCode::RecheckFailed.en(),
+                        UpdateErrCode::RecheckFailed.wire(),
+                    ));
                 }
                 RecheckVerdict::Renegotiate => {
                     log::info!(
@@ -4426,8 +4472,9 @@ mod tests {
     #[test]
     fn every_failure_path_emits_an_error_progress_event() {
         /// 「一条早退里出现两个 `ApiResponse::err*`、但只发一发 error 事件」的已知分支数。
-        /// 当前唯一一处：下载失败时按 `BackendUnavailable` 与否二选一造信封。
-        const SHARED_ERR_BRANCHES: usize = 1;
+        /// U1 起为 0：`BackendUnavailable` 分支改为自带一发 emit（与信封配对），其余早退
+        /// 全部经 `fail` 闭包（emit + 信封在同一函数体内，结构性配对）。
+        const SHARED_ERR_BRANCHES: usize = 0;
 
         let body =
             crate::commands::guard_scan::top_level_fn_body(SRC, "pub async fn update_download(");
@@ -4440,10 +4487,11 @@ mod tests {
             "失败信封 {errors} 处、error 进度事件 {emits} 发（另计 {SHARED_ERR_BRANCHES} 处共用分支）\
              —— 对不上的那条会让弹窗永远转圈"
         );
-        assert_eq!(
-            body.matches("ApiResponse::err_with_code(").count(),
-            SHARED_ERR_BRANCHES,
-            "带 code 的失败早退数变了 → 请确认它也发了 error 进度事件，并更新 SHARED_ERR_BRANCHES"
+        // U1 后带 code 的信封是**常态**（fail 闭包 + Backend 分支各一），不再逐个数；
+        // 配对改由结构保证：fail 闭包体内必须 emit 与 err_with_code 同体。
+        assert!(
+            body.contains("let fail = |e: UpdateErr<'_>|"),
+            "fail 统一出口被改形 —— 它体内 emit+信封的配对是本守卫的前提"
         );
     }
 
@@ -4488,27 +4536,18 @@ mod tests {
                 ProgressStage::Downloading {
                     percentage: _,
                     received: _,
-                } => &[
-                    "status",
-                    "percentage",
-                    "message",
-                    "updateInfo",
-                    "receivedBytes",
-                ],
+                } => &["status", "percentage", "updateInfo", "receivedBytes"],
                 ProgressStage::Downloaded {
                     path: _,
                     verified: _,
-                } => &[
+                } => &["status", "percentage", "updateInfo", "filePath", "verified"],
+                ProgressStage::Failed { .. } => &[
                     "status",
                     "percentage",
-                    "message",
+                    "errorCode",
+                    "errorDetail",
                     "updateInfo",
-                    "filePath",
-                    "verified",
                 ],
-                ProgressStage::Failed(_) => {
-                    &["status", "percentage", "message", "updateInfo", "error"]
-                }
             }
         }
 
@@ -4524,8 +4563,9 @@ mod tests {
         ///     也不被本门抓到。今天两处都是穷举、无通配臂，故不可达；谁要加通配臂，请连同本门
         ///     一起重新设计判据（通配臂本身就是「新变体不必表态」的宣言）。
         fn variant_count() -> usize {
-            let body =
-                crate::commands::guard_scan::top_level_fn_body(SRC, "const fn stage_facts<'a>(");
+            // 锚取无泛型的前缀（U1 起 stage_facts 不再带生命周期参数；锚写死旧签名会在
+            // 「锚消失」时掉进下方测试模块的字面量自匹配——本函数自己的锚串就在那）。
+            let body = crate::commands::guard_scan::top_level_fn_body(SRC, "const fn stage_facts(");
             let n = body.matches("ProgressStage::").count();
             assert!(
                 n >= 3,
@@ -4567,7 +4607,10 @@ mod tests {
                 path,
                 verified: true,
             },
-            ProgressStage::Failed("下载更新包失败"),
+            ProgressStage::Failed(UpdateErr::with_detail(
+                UpdateErrCode::DownloadFailed,
+                "net down",
+            )),
         ];
         let variants = variant_count();
         assert_eq!(
@@ -4584,7 +4627,7 @@ mod tests {
         );
 
         for stage in samples {
-            let (status, percentage, message) = stage_facts(stage);
+            let (status, percentage) = stage_facts(stage);
             let payload = progress_payload(&info, stage);
             let obj = payload.as_object().expect("载荷必须是 JSON 对象");
             for key in required(stage) {
@@ -4598,7 +4641,6 @@ mod tests {
             assert!(extra.is_empty(), "{status} 帧夹带了未登记的键: {extra:?}");
             assert_eq!(obj["status"], json!(status));
             assert_eq!(obj["percentage"], json!(percentage));
-            assert_eq!(obj["message"], json!(message));
             // 「剥掉的真没了」——先单独判，失败消息才指得出是哪个字段。
             for key in PROGRESS_MANIFEST_OMITTED {
                 assert!(
@@ -4639,9 +4681,21 @@ mod tests {
             json!(19_240_000),
             "已收字节必须是回调原值 —— 从百分比反推的数每一帧都是错的"
         );
-        let failed = progress_payload(&info, ProgressStage::Failed("下载更新包失败"));
-        assert_eq!(failed["error"], json!("下载更新包失败"));
-        assert_eq!(failed["message"], failed["error"], "两个字段在此同源同值");
+        let failed = progress_payload(
+            &info,
+            ProgressStage::Failed(UpdateErr::with_detail(
+                UpdateErrCode::DownloadFailed,
+                "net down",
+            )),
+        );
+        assert_eq!(failed["errorCode"], json!("downloadFailed"));
+        assert_eq!(failed["errorDetail"], json!("net down"));
+        // 无细节的那发不夹带 errorDetail（None 不进载荷，前端按可选处理）。
+        let bare = progress_payload(
+            &info,
+            ProgressStage::Failed(UpdateErr::new(UpdateErrCode::DownloadFailed)),
+        );
+        assert!(bare.get("errorDetail").is_none());
         assert_eq!(failed["percentage"], json!(0), "失败帧的百分比由类型定死");
     }
 
@@ -4772,7 +4826,7 @@ mod tests {
         );
         if let LandingOutcome::Failed(msg) = outcome {
             assert!(
-                msg.contains("写入更新包失败"),
+                msg.contains("rename to"),
                 "失败文案须与同文件其它早退一致：{msg}"
             );
         }
@@ -5644,9 +5698,9 @@ mod tests {
             "PopupAction::Update | PopupAction::Retry =>",
             "PopupAction::",
         );
+        // U1 起锚定码形（rustfmt 折行后旧串形不再逐字命中）。
         assert_eq!(
-            arm.matches("push_popup_state(&app, UpdatePopupState::error(")
-                .count(),
+            arm.matches("UpdatePopupState::error(UpdateErrCode::RecheckFailed").count(),
             2,
             "复查失败的两条早退（请求失败 / 回包缺版本号）必须各自把弹窗推进 error，否则窗内永远转圈"
         );
@@ -5823,14 +5877,24 @@ mod tests {
             "得说得出下的是哪一版"
         );
 
-        let err = popup_state_for(&info, ProgressStage::Failed("网络不可达"));
-        assert_eq!(err.phase, PopupPhase::Error);
-        assert_eq!(err.error_text.as_deref(), Some("网络不可达"));
-        // 错误文案缺失 → 兜底而非空串（空 error 态弹窗上是一片空白）。
-        assert_eq!(
-            popup_state_for(&info, ProgressStage::Failed("")).error_text,
-            Some("更新失败".to_string())
+        let err = popup_state_for(
+            &info,
+            ProgressStage::Failed(UpdateErr::with_detail(
+                UpdateErrCode::DownloadFailed,
+                "net down",
+            )),
         );
+        assert_eq!(err.phase, PopupPhase::Error);
+        // U1：弹窗 error 态带码 + 诊断串，正文本地化在渲染端。
+        assert_eq!(err.error_code.as_deref(), Some("downloadFailed"));
+        assert_eq!(err.error_detail.as_deref(), Some("net down"));
+        // 无细节 → 空 detail 而非缺键（弹窗渲染端按可选处理）。
+        let bare = popup_state_for(
+            &info,
+            ProgressStage::Failed(UpdateErr::new(UpdateErrCode::DownloadFailed)),
+        );
+        assert_eq!(bare.error_code.as_deref(), Some("downloadFailed"));
+        assert_eq!(bare.error_detail.as_deref(), Some(""));
 
         // 清单缺 `fileSize` / 给 0 ⇒ 分母未知，只报已收量，**不拿已收字节凑假分母**。
         for blind in [json!({}), json!({ "fileSize": 0 })] {

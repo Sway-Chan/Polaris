@@ -55,8 +55,8 @@ pub use github::{
 };
 pub use manifest::{AssetSelector, ManifestError, VersionManifest, VersionManifestEntry};
 pub use popup::{
-    popup_height_for, PopupAction, PopupBootstrap, PopupSession, PopupTransport, UpdatePopupState,
-    DONE_AUTO_CLOSE_MS, POPUP_WIDTH,
+    popup_height_for, PopupAction, PopupBootstrap, PopupSession, PopupTransport, UpdateErr,
+    UpdateErrCode, UpdatePopupState, DONE_AUTO_CLOSE_MS, NO_UPDATE_AUTO_CLOSE_MS, POPUP_WIDTH,
 };
 pub use scheduler::{ScheduleConfig, UpdateScheduler};
 pub use staged::{

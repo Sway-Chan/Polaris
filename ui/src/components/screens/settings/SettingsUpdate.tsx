@@ -53,6 +53,24 @@ import { markAppVersionSkipped } from '../../layout/app-update-banner';
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/error-handler';
 import { useConfirmTwice } from '@/lib/confirm-twice';
+
+/**
+ * U1：更新失败机器码 → 本地化正文（键集与 Rust `UpdateErrCode::wire()` 由
+ * `update-error-code-coverage.test.ts` 对拍）。未知码回落「下载中断」——宁可说一句
+ * 笼统的真话，也不把裸码串给用户。
+ */
+function updateErrText(
+  code: string | null | undefined,
+  detail: string | null | undefined,
+  t: (k: string) => string,
+): string {
+  const body = code ? t(`settings.update.err.${code}`) : '';
+  // react-i18next 缺键时回落键名本身 ⇒ 与键名相等视为「没这句话」。
+  if (!body || body === `settings.update.err.${code}`) {
+    return t('settings.update.downloadInterrupted');
+  }
+  return detail ? `${body} (${detail})` : body;
+}
 import { revealOnToggle } from '@/components/reveal';
 import {
   appDownloadIntegrity,
@@ -259,8 +277,8 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
       setDownloadedPath(patch.path);
       setReceivedBytes(patch.received);
       setProgress(patch.percentage);
-      // 后端没给成因时才回落到本地文案（`''` 是「失败但没说为什么」，不是「不表态」）。
-      if (patch.error !== null) setErrMsg(patch.error || t('settings.update.downloadInterrupted'));
+      // U1：按码取五语种正文，诊断串括注；码缺席/未知回落「下载中断」。
+      if (patch.errorCode !== null) setErrMsg(updateErrText(patch.errorCode, patch.errorDetail, t));
       // 落位帧带着真实的 `verified` ⇒ 别的窗口下的包也能给出准确的摘要结论，
       // 不再一律退化成上面那一发 `unknown`（那是**漏报**：该出的警告静默缺席）。
       if (patch.integrity !== null) setDownloadIntegrity(patch.integrity);
@@ -297,7 +315,11 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
       }
     } catch (e) {
       setUs('error');
-      setErrMsg(e instanceof Error ? e.message : String(e));
+      // U1：update_download 的失败信封带结构化码 ⇒ 优先按码本地化；其它命令的失败
+      // 仍显示原始 msg（信封 msg 自 U1 起为英文回落 + 诊断串）。
+      const coded = updateErrText((e as { code?: string }).code, undefined, t);
+      const fallback = e instanceof Error ? e.message : String(e);
+      setErrMsg(coded === t('settings.update.downloadInterrupted') ? fallback : coded);
     }
   }
 
@@ -337,7 +359,11 @@ export default function SettingsUpdate({ config, update }: SettingsUpdateProps) 
       }
     } catch (e) {
       setUs('error');
-      setErrMsg(e instanceof Error ? e.message : String(e));
+      // U1：update_download 的失败信封带结构化码 ⇒ 优先按码本地化；其它命令的失败
+      // 仍显示原始 msg（信封 msg 自 U1 起为英文回落 + 诊断串）。
+      const coded = updateErrText((e as { code?: string }).code, undefined, t);
+      const fallback = e instanceof Error ? e.message : String(e);
+      setErrMsg(coded === t('settings.update.downloadInterrupted') ? fallback : coded);
     }
   }
 

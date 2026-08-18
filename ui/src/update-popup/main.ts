@@ -66,6 +66,32 @@ const { t } = createAuxI18n<PopupKey>('updatePopup', {
  */
 const EVENT_POPUP_STATE = 'event:updatePopupState';
 
+/**
+ * U1：失败机器码 → 五语种正文（`updatePopup.err.*`，与 Rust `UpdateErrCode::wire()` 由
+ * `update-error-code-coverage.test.ts` 对拍）。`bootstrapMissing` 是本地渲染兜底用的
+ * 伪码（#300 逃生路径），正文复用既有键。
+ */
+const ERR_TEXT: Record<string, string> = {
+  missingDownloadUrl: t('updatePopup.errMissingDownloadUrl'),
+  digestFieldInvalid: t('updatePopup.errDigestFieldInvalid'),
+  cacheDirFailed: t('updatePopup.errCacheDirFailed'),
+  downloadFailed: t('updatePopup.errDownloadFailed'),
+  backendUnavailable: t('updatePopup.errBackendUnavailable'),
+  downloadTaskFailed: t('updatePopup.errDownloadTaskFailed'),
+  sizeMismatch: t('updatePopup.errSizeMismatch'),
+  digestHexInvalid: t('updatePopup.errDigestHexInvalid'),
+  digestMismatch: t('updatePopup.errDigestMismatch'),
+  landingFailed: t('updatePopup.errLandingFailed'),
+  recheckFailed: t('updatePopup.errRecheckFailed'),
+  bootstrapMissing: t('updatePopup.bootstrapMissing'),
+};
+
+/** 码 → 正文 + 诊断串括注；未知码/缺码回落 unknownError（说一句笼统真话，不甩裸码）。 */
+function errText(code: string | undefined, detail: string | undefined): string {
+  const body = (code && ERR_TEXT[code]) || t('updatePopup.unknownError');
+  return detail ? `${body} (${detail})` : body;
+}
+
 const root = document.getElementById('update-root');
 
 /** 发动作给主进程；失败静默（弹窗不该因上报失败再抛错）。 */
@@ -171,7 +197,7 @@ function render(state: UpdatePopupState): void {
         <div class="card">
           ${closeButton(state.phase)}
           <div class="title err">${esc(t('updatePopup.failed'))}</div>
-          <div class="sub">${esc(state.errorText ?? t('updatePopup.unknownError'))}</div>
+          <div class="sub">${esc(errText(state.errorCode, state.errorDetail))}</div>
           <div class="row">
             <button class="btn ghost" data-act="close">${esc(t('updatePopup.close'))}</button>
             <button class="btn ghost" data-act="manualDownload">${esc(t('updatePopup.manualDownload'))}</button>
@@ -218,7 +244,7 @@ if (initial) {
 } else {
   // 不可达（主进程 open() 必然注入）。真到这儿说明不变式被破坏 —— 显式报错 + 给逃生按钮，
   // 绝不留空白窗（空白窗 = 无按钮 + 无法关闭 = #300 的用户体感）。
-  render({ phase: 'error', errorText: t('updatePopup.bootstrapMissing') });
+  render({ phase: 'error', errorCode: 'bootstrapMissing', errorDetail: '' });
 }
 
 // 后续状态：订阅主进程推送（progress 百分比流转 / did-finish-load 重放）。

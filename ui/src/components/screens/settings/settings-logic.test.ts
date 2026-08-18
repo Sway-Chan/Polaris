@@ -956,7 +956,7 @@ describe('updateCardPatch —— 态与随行事实同帧落地', () => {
   } as unknown as UpdateInfo;
 
   const frame = (p: Partial<UpdateProgress> & { status: UpdateProgress['status'] }): UpdateProgress =>
-    ({ percentage: 0, message: '', updateInfo: INFO, ...p });
+    ({ percentage: 0, updateInfo: INFO, ...p });
 
   /**
    * 逐个 status 该把卡片推进哪个态；`null` = 本帧与更新卡无关，**一个字段都不动**。
@@ -1006,7 +1006,7 @@ describe('updateCardPatch —— 态与随行事实同帧落地', () => {
     expect(patch?.percentage).toBe(37);
     expect(patch?.info, '清单没被搬过来 ⇒ 卡片的版本号与体积说的是另一个版本').toBe(INFO);
     expect(patch?.path, '下载中不该有落位路径').toBeNull();
-    expect(patch?.error, '非失败帧不得表态错误文案（会盖掉 manual 态那条说明）').toBeNull();
+    expect(patch?.errorCode, '非失败帧不得表态错误（会盖掉 manual 态那条说明）').toBeNull();
     expect(patch?.integrity, '还没下完就没有校验结论').toBeNull();
     // 后端没给 Content-Length 时中间帧不发；`receivedBytes` 缺席须落 `null`，不是 `0`
     // （`0` 是「确实一个字节都没收到」，两者不可混为一谈）。
@@ -1024,7 +1024,7 @@ describe('updateCardPatch —— 态与随行事实同帧落地', () => {
     // 「不丢字段」：清单是原样带过去的同一个对象，不是被逐字段抄了一遍的副本。
     expect(patch?.info).toBe(INFO);
     expect((patch?.info as unknown as { futureField?: string })?.futureField).toBe('kept');
-    expect(patch?.error).toBeNull();
+    expect(patch?.errorCode).toBeNull();
     // 校验结论走 `appDownloadIntegrity`（与 `update_download` 回包同一套三态映射）。
     expect(patch?.integrity).toBe('verified');
     expect(
@@ -1037,20 +1037,22 @@ describe('updateCardPatch —— 态与随行事实同帧落地', () => {
     ).toBe('unknown');
   });
 
-  it('⑤ error：带成因文案与清单（重试的前提），不带落位路径', () => {
-    const patch = updateCardPatch(frame({ status: 'error', message: 'x', error: '下载更新包失败' }));
+  it('⑤ error：带码 + 诊断串与清单（重试的前提），不带落位路径', () => {
+    const patch = updateCardPatch(
+      frame({ status: 'error', errorCode: 'downloadFailed', errorDetail: 'net down' }),
+    );
     expect(patch?.us).toBe('error');
-    expect(patch?.error).toBe('下载更新包失败');
+    // U1：只搬码与诊断数据，正文本地化归渲染端。
+    expect(patch?.errorCode).toBe('downloadFailed');
+    expect(patch?.errorDetail).toBe('net down');
     expect(patch?.info, '清单没被搬过来 ⇒ 「重试」首行恒早退（哑键）').toBe(INFO);
     expect(patch?.path, '失败不落位 ⇒ 不得留下一个指向不存在文件的安装入口').toBeNull();
     expect(patch?.integrity, '失败帧不表态校验结论（盘上那份旧包的结论仍成立）').toBeNull();
-    // `error` 缺席时回落 `message`（两者在 Rust 侧同源，后端只填其一时不至于丢掉成因）。
-    expect(updateCardPatch(frame({ status: 'error', message: '建更新缓存目录失败' }))?.error).toBe(
-      '建更新缓存目录失败',
-    );
-    // 两者都空 ⇒ `''`（「失败但没说为什么」），**不是** `null`（那是「本帧不表态」）——
-    // 调用方据 `!== null` 决定要不要回落到本地文案，混同就再没有回落时机。
-    expect(updateCardPatch(frame({ status: 'error' }))?.error).toBe('');
+    // 码缺席 ⇒ `null` 之外的态不可达：后端失败帧必带码（Rust 侧 UpdateErr 构造即带），
+    // 帧里有 status:error 而无码 = 契约破坏，按「失败但没说为什么」处理（code null + detail ''）。
+    const bare = updateCardPatch(frame({ status: 'error' }));
+    expect(bare?.errorCode).toBeNull();
+    expect(bare?.errorDetail).toBe('');
   });
 
   it('⑥ 恰好三条 status 产出 patch，且正是后端真会发的那三条', () => {

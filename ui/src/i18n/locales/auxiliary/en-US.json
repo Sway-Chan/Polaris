@@ -60,7 +60,18 @@
     "manualDownload": "Download",
     "retry": "Retry",
     "unknownState": "Unknown update state",
-    "bootstrapMissing": "Popup initial state missing (bootstrap not injected)"
+    "bootstrapMissing": "Popup initial state missing (bootstrap not injected)",
+    "errMissingDownloadUrl": "Update info is missing the download URL (internal error; retry or download manually)",
+    "errDigestFieldInvalid": "The release digest field is malformed (publisher issue; retrying will not help)",
+    "errCacheDirFailed": "Failed to create the update cache directory",
+    "errDownloadFailed": "Failed to download the update package",
+    "errBackendUnavailable": "The download backend is unavailable",
+    "errDownloadTaskFailed": "The download task terminated abnormally",
+    "errSizeMismatch": "Package size does not match the release manifest (possibly truncated or tampered)",
+    "errDigestHexInvalid": "The release sha256 digest is not valid hex (publisher issue; retrying will not help)",
+    "errDigestMismatch": "Package verification failed (possibly truncated or tampered)",
+    "errLandingFailed": "Failed to finalize the downloaded package on disk",
+    "errRecheckFailed": "Update check failed"
   },
   "native": {
     "backupExportTitle": "Export Polaris Configuration Backup",

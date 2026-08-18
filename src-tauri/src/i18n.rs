@@ -103,8 +103,8 @@
 //!
 //! | # | 出口 | 载荷 | 显示点（前端原样展示） |
 //! |---|---|---|---|
-//! | 1 | `commands/updater.rs::ProgressStage::Failed(msg)`（经 `emit_progress` 广播） | `update:progress` 的 `error` | `SettingsUpdate.tsx` 的 `setErrMsg(patch.error …)`；同一真值经 `popup_state_for` 镜像进 mini 更新弹窗 error 态 |
-//! | 2 | `response::ApiResponse::err(msg)` / `err_with_code(msg, _)` | 响应**信封**的 `msg` | `ipc-client.ts` 抛 `IpcError(msg)`，各调用点多以 `e.message` 直落 toast / 错误行 |
+//! | 1 | ~~`ProgressStage::Failed(msg)`~~ **U1 已拆**（2026-08-18）：改为 `Failed(UpdateErr{code,detail})`，载荷带 `errorCode`/`errorDetail`，正文本地化在前端按码取键（五语种），`detail` 是语言中性诊断串 | `update:progress` 的 `errorCode` | `SettingsUpdate.tsx` 按码取 `settings.update.err.*`；弹窗镜像 `updatePopup.errXxx` |
+//! | 2 | `response::ApiResponse::err(msg)` —— **更新链路的 11 处早退已随 U1 改为 `err_with_code(英文回落 + 诊断串, wire 码)`**（前端 catch 优先按 `e.code` 本地化）；**其余命令的中文 msg 仍走原通道**（本表继续有效） | 响应**信封**的 `msg` | `ipc-client.ts` 抛 `IpcError(msg, code)`，更新链路调用点按码取键、其余仍 `e.message` 直落 |
 //! | 3 | `commands/subscription.rs::update_failure(...)`（`:330`；文案来自 `:813`「订阅不存在」/ `:821`「订阅缺少 URL」/ `:861` / `:917` 等 9 处调用点） | `event:subscriptionUpdateProgress` 终态帧的 `error` | `SubInfoBar.tsx:372` 的 `data-tip={failure.error \|\| t('nodes.subRefreshFail')}` |
 //! | 4 | `runtime/subscription_scheduler.rs:302`（兜底串 `"订阅更新失败"`，其余透传 #3 的文案） | `event:subscriptionAutoUpdate` 的 `error` | `App.tsx:680` 的 `toast.error(t('nodes.subAutoUpdateFail'), data.error)` —— 第 2 参数是 toast 描述行 |
 //! | 5 | **`ApiResponse::ok` 的载荷内嵌 `error` 字段**（≠ #2 的信封通道）：`commands/proxy.rs:522` / `:532`、`commands/misc.rs:1035` / `:1036` | `{ ok:false, error }` / `{ error }` | `components/dialogs/node-spec.ts:1050` 的 `message: r.error ?? ''`（NodeDialog 探测结果条）；misc 那两条落进诊断导出正文 |

@@ -1067,8 +1067,10 @@ export interface UpdateProgress {
     | 'downloaded'
     | 'error';
   percentage: number;
-  message: string;
-  error?: string;
+  /** 失败机器码；**仅 `error` 帧有**（U1：正文本地化在前端按码取键，后端不再产中文正文）。 */
+  errorCode?: string;
+  /** 技术诊断串；**仅 `error` 帧有且可缺**（语言中性的数据）。 */
+  errorDetail?: string;
   /**
    * 本帧描述的那份包的发布清单（**每一帧都有**：Rust 侧它是 `progress_payload` 的形参，
    * 不是可选项）。设置页据此渲染版本号 / 体积 / 预发布档次，并在 error 态拿它重试。
