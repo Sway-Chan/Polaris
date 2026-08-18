@@ -1,6 +1,17 @@
 //! **远程源 webview 够不到 app command** —— IPC 授权边界的常驻门。
 //!
-//! # 守的不变式
+//! # 平台射程（2026-08-19 订正：mac 排除，存量潜伏首曝）
+//!
+//! 本门只在非 macOS 上跑。机制性原因：`build_app()` 在测试线程上构建真实 app context，
+//! 配置驱动的托盘创建走到 `tray-icon-0.24.1/src/platform_impl/macos/mod.rs:35` 的
+//! `MainThreadMarker::new().ok_or(Error::NotMainThread)` —— mac 的托盘 API 结构上要求主线程，
+//! 测试线程恒过不去（本文件头注早写过「建 App 会摸 tray 的进程级初始化」，Linux 侧容忍、
+//! mac 不容忍）。这是 mac CI 腿数周未跑攒下的存量潜伏（2026-08-19 分支全矩阵首跑首曝），
+//! 非任何近期批次引入。ACL 判据本身（`webview/mod.rs:1823` 三析取）是平台无关逻辑，
+//! linux + windows 双平台跑本门；mac 侧仍有 `--all-targets` 的编译覆盖。
+#![cfg(not(target_os = "macos"))]
+//!
+//! # 守的不变量
 //!
 //! 一个加载**远程源**（非本应用资源源）的 webview，即便它的 label 没有任何 capability，
 //! 也**拿得到** `window.__TAURI_INTERNALS__`（Tauri 的注入脚本无 local/remote 分支，
