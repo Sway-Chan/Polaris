@@ -572,6 +572,38 @@ jobs:
         with:
           args: ${{ matrix.tauri_args }}
 
+      # ── PKG-3 门：crt-static 生效性断言（2026-08-19）──
+      # .cargo/config.toml 给 msvc 目标开了 +crt-static；本步逐字节断言两个自家 exe 的导入表里
+      # 不再出现 VC++ 运行库 DLL 名。🔴 大小写必须不敏感（-i）：实测导入名是混合大小写
+      # （polaris.exe 里是 MSVcp140 形态、helper 里是 VCRUNTIME140）——漏了 -i 就是恒绿假门。
+      # 红的含义：静态链接被某环节丢了（config 未生效 / 引入了要求动态 CRT 的库），
+      # 装到零 VC++ 运行库的干净机器上就是 2026-08-19 实测过的 MSVCP140 起不来。
+      - name: Assert statically linked CRT (Windows, PKG-3)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rc=0
+          # ⚠️ windows 腿的 tauri_args 不带 --target（mac 腿才带）⇒ polaris.exe 在宿主位
+          # target/release/；helper 步虽带 --target 但只编 helper。两路径勿混。
+          for exe in "target/release/polaris.exe" "resources/win/polaris-helper.exe"; do
+            if [ ! -f "$exe" ]; then
+              echo "::error::待检产物不存在：$exe（构建产物路径变了？门需同步）"
+              rc=1
+              continue
+            fi
+            for dll in msvcp140 vcruntime140; do
+              if LC_ALL=C grep -aqi -- "$dll" "$exe"; then
+                echo "::error::$exe 仍含 $dll 导入——crt-static 未生效（.cargo/config.toml 被改坏，或引入了要求动态 CRT 的依赖）"
+                rc=1
+              fi
+            done
+          done
+          if [ $rc -eq 0 ]; then
+            echo "crt-static 生效：两个 exe 均无 VC++ 运行库导入（大小写不敏感扫描）"
+          fi
+          exit $rc
+
       # ── 交付物断言：包里恰好一份内核、且是本平台那份（**输出侧**）──
       # 输入侧（conf 不变量）保证「配置写对了」，本步保证「bundler 真按配置铺了」。
       #
