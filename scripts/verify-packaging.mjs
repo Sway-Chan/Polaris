@@ -640,10 +640,11 @@ const PAYLOAD_FAMILIES = [
   },
 ];
 
-// ── ELF Build ID（PKG-1）：linuxdeploy 对 appimage 里的 ELF 合法改写 rpath，字节与体积
-// 都不可比；GNU Build ID（`.note.gnu.build-id`）是编译期烙进只读段的构建指纹，patchelf 不动它。
-// 用 `readelf -n` 而非手写 ELF 解析：runner 与本机都有 binutils，且解析器一旦自写就是下一个
-// 会被注释/字符串喂饱的扫描器。读取失败返回 null（调用方判红，不静默放行）。
+// ── ELF Build ID（PKG-1）：仅作 appimage 腿「体积失配」时的豁免证据——linuxdeploy 对动态
+// ELF 合法改写 rpath，体积必变；GNU Build ID（`.note.gnu.build-id`）是编译期烙进只读段的
+// 构建指纹，patchelf 不动它。**不是普适判据**：Go 剥离产物（sing-box）整个 ELF 无 note 段，
+// 返回 null 属合法形态（体积一致时根本不会走到这里）。用 `readelf -n` 而非手写 ELF 解析：
+// runner 与本机都有 binutils，且自写解析器就是下一个会被注释/字符串喂饱的扫描器。
 function elfBuildId(file) {
   try {
     const out = execFileSync('readelf', ['-n', file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -877,36 +878,35 @@ function checkPayload(label, root) {
       );
     }
 
-    // 完整性断言不用魔数：与源 resources/<平台>/ 里那份比对。源缺失 = 判红，不跳过。
-    // ⚠️ appimage 腿的 ELF 会被 linuxdeploy 合法改写（PKG-1）：装配 AppDir 时 linuxdeploy 对
-    // 每个 ELF 执行 `--set-rpath $ORIGIN/../lib`（本机 1-alpha-20251107-1 实测：helper
-    // 1222440B → 1230912B，sha 变，**GNU Build ID 前后同值**）。deb 腿是纯 fs::copy，字节不变。
-    // 故判据按 scope 分流：ELF 且是 appimage 产物 ⇒ 比 Build ID（patchelf 保留它，改的是
-    // dynamic 段）；其余（deb / staging / 非 ELF）⇒ 比字节数。两条都比「是不是同一份构建产物」，
-    // 只是 ELF 在 appimage 里换了件衣服。
+    // 完整性断言不用魔数：与源 resources/<平台>/ 里那份**先比体积**。源缺失 = 判红，不跳过。
+    // ⚠️ 体积不等 ≠ 坏包（PKG-1，复审 F1 修正为 B 案）：appimage 腿的**动态链接 ELF** 会被
+    // linuxdeploy 合法改写 rpath（本机 1-alpha-20251107-1 实测：helper 1222440B → 1230912B，
+    // sha 变，**GNU Build ID 前后同值**）。故体积失配时，appimage 侧用 Build ID 作「合法改写」
+    // 的豁免证据（同 ⇒ 绿）；任一侧读不出 Build ID 或不同 ⇒ 红。**不把 Build ID 当普适判据**：
+    // 真内核 sing-box 是 Go 剥离产物，整个 ELF 无 note 段（readelf -n 输出为空、非失败）——
+    // 它在 appimage 里体积与源一致（run 32063794443：只有 helper 失配），走体积分支即绿；
+    // 若哪天它也开始失配且无 Build ID 可证 ⇒ 红（fail-loud，来龙去脉当场可查）。
+    // deb / staging / mac 腿：tauri-bundler 是纯 fs::copy（fs_utils.rs），恒比体积。
     for (const p of seen.get(expected) ?? []) {
       const src = join(srcDir, basename(p));
       if (!existsSync(src)) {
         fail(`${scope.name}: 产物里有 ${p}，但源 ${src} 不存在 —— 完整性无从比对（前置缺失判红，不跳过）`);
         continue;
       }
-      const isAppImageElf = scope.name === 'bundle/appimage' && isElf(p);
-      if (isAppImageElf && isElf(src)) {
-        const got = elfBuildId(p);
-        const want = elfBuildId(src);
-        if (got === null || want === null || got !== want) {
-          fail(
-            `${scope.name}: 产物 ${family.what} 的 GNU Build ID 与源不符：${p} = ${got ?? '（读取失败）'}，` +
-              `源 ${src} = ${want ?? '（读取失败）'} —— linuxdeploy 的 rpath 改写不该动 Build ID，` +
-              `不符说明装进去的不是同一次构建的产物`
-          );
-        }
+      const got = statSync(p).size;
+      const want = statSync(src).size;
+      if (got === want) continue;
+      if (scope.name === 'bundle/appimage' && isElf(p) && isElf(src)) {
+        const gid = elfBuildId(p);
+        const wid = elfBuildId(src);
+        if (gid !== null && wid !== null && gid === wid) continue; // 合法 rpath 改写的豁免
+        fail(
+          `${scope.name}: 产物 ${family.what} 体积不符（${p} = ${got}B，源 ${src} = ${want}B）且` +
+            ` Build ID 无法证明其为 linuxdeploy 的合法 rpath 改写（产物 ${gid ?? '无 note 段/读取失败'}，` +
+            `源 ${wid ?? '无 note 段/读取失败'}）—— 装进去的可能不是同一次构建的产物`
+        );
       } else {
-        const got = statSync(p).size;
-        const want = statSync(src).size;
-        if (got !== want) {
-          fail(`${scope.name}: 产物 ${family.what} 体积不符：${p} = ${got}B，源 ${src} = ${want}B`);
-        }
+        fail(`${scope.name}: 产物 ${family.what} 体积不符：${p} = ${got}B，源 ${src} = ${want}B`);
       }
     }
 
@@ -919,14 +919,14 @@ function checkPayload(label, root) {
   if (trees.length > 0) {
     note(
       `payload：${label} → 产物验证，${scopes.map((s) => s.name).join(' + ')} 各自命中 ${expected} 的 ` +
-        `${PAYLOAD_FAMILIES.map((f) => f.what).join(' + ')}（deb 比字节，appimage 比 ELF Build ID——linuxdeploy 会改写后者的 rpath）`
+        `${PAYLOAD_FAMILIES.map((f) => f.what).join(' + ')}（体积与源一致；appimage 内被 linuxdeploy 改写 rpath 的 ELF 以 Build ID 豁免）`
     );
   } else {
     // 如实标注，不冒充产物验证：NSIS 把资源从**源路径**直接编进 .exe，bundle 侧没有可扫的副本，
     // 故这条腿只能证明「cargo 侧 staging 恰好只有本平台那几份且体积对」，证明不了安装器内容。
     note(
       `payload：${label} → **staging 检查**（不是产物验证）：扫的是 cargo build 铺的 ${root}/_up_/resources/，` +
-        `恰含 ${expected} 的 ${PAYLOAD_FAMILIES.map((f) => f.what).join(' + ')}（deb 比字节 / appimage 比 Build ID）。` +
+        `恰含 ${expected} 的 ${PAYLOAD_FAMILIES.map((f) => f.what).join(' + ')} 且体积与源一致。` +
         `NSIS 从源路径直接编译资源进 .exe，bundle 侧无副本可扫 ⇒ ` +
         `「安装器内容是否含这些二进制」在本仓无自动门，由 Windows 真机安装验证覆盖。`
     );
