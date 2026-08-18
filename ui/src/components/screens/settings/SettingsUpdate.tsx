@@ -60,10 +60,14 @@ import { useConfirmTwice } from '@/lib/confirm-twice';
  * 笼统的真话，也不把裸码串给用户。
  */
 function updateErrText(
-  code: string | null | undefined,
+  rawCode: string | null | undefined,
   detail: string | null | undefined,
   t: (k: string) => string,
 ): string {
+  let code = rawCode;
+  // 上游契约旧码（DownloadError::BackendUnavailable 的 CODE_HTTP_UNAVAILABLE）→ U1 码，
+  // 该分支信封带旧码、事件帧带 U1 码，两处该说同一句话。
+  if (code === 'HTTP_BACKEND_UNAVAILABLE') code = 'backendUnavailable';
   const body = code ? t(`settings.update.err.${code}`) : '';
   // react-i18next 缺键时回落键名本身 ⇒ 与键名相等视为「没这句话」。
   if (!body || body === `settings.update.err.${code}`) {

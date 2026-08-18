@@ -732,7 +732,9 @@ pub async fn update_check(
     let (owner, repo) = APP_UPDATE_REPO;
     let body = match fetch_releases_json(&state, owner, repo).await {
         Ok(b) => b,
-        Err(e) => return Ok(ApiResponse::err(format!("检查更新失败: {e}"))),
+        // U1/F1：msg 是信封正文（英文回落）兼 RecheckFailed 的 detail（语言中性诊断串）——
+        // 不再用中文（曾渗进弹窗括注：ru/fa 用户看到本地化正文 + 整句中文括注）。
+        Err(e) => return Ok(ApiResponse::err(format!("update check failed: {e}"))),
     };
     match check_app_update(
         &body,
@@ -751,7 +753,9 @@ pub async fn update_check(
             })))
         }
         Ok(AppUpdateCheck::NoUpdate) => Ok(ApiResponse::ok(json!({ "hasUpdate": false }))),
-        Err(e) => Ok(ApiResponse::err(format!("解析 GitHub 响应失败: {e}"))),
+        Err(e) => Ok(ApiResponse::err(format!(
+            "failed to parse GitHub response: {e}"
+        ))),
     }
 }
 
@@ -1939,7 +1943,7 @@ pub async fn update_popup_action(
                 // `update:progress` 广播出去，让**设置页**弹一条它从未发起过的下载错误。
                 // 弹窗是本次动作的唯一相关方（`emit_progress` 的弹窗镜像正是 `error(msg)` 这一发，
                 // 故行为对弹窗逐字不变，少掉的只有那次全局广播）。
-                // U1：复查失败也走码表（detail = 检查腿带回的错误原文，语言中性的诊断数据）。
+                // U1：复查失败也走码表（detail = 检查腿带回的错误原文，F1 后为语言中性英文）。
                 let detail = checked.error.unwrap_or_default();
                 push_popup_state(
                     &app,

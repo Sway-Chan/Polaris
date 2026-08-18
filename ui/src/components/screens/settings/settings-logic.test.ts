@@ -1048,8 +1048,8 @@ describe('updateCardPatch —— 态与随行事实同帧落地', () => {
     expect(patch?.info, '清单没被搬过来 ⇒ 「重试」首行恒早退（哑键）').toBe(INFO);
     expect(patch?.path, '失败不落位 ⇒ 不得留下一个指向不存在文件的安装入口').toBeNull();
     expect(patch?.integrity, '失败帧不表态校验结论（盘上那份旧包的结论仍成立）').toBeNull();
-    // 码缺席 ⇒ `null` 之外的态不可达：后端失败帧必带码（Rust 侧 UpdateErr 构造即带），
-    // 帧里有 status:error 而无码 = 契约破坏，按「失败但没说为什么」处理（code null + detail ''）。
+    // 码缺席 ⇒ `null`：后端失败帧必带码（Rust 侧 UpdateErr 构造即带），帧里有 status:error
+    // 而无码 = 契约破坏——消费端对这种帧**不表态**（监听器的 `!== null` 判据不触发，不回落）。
     const bare = updateCardPatch(frame({ status: 'error' }));
     expect(bare?.errorCode).toBeNull();
     expect(bare?.errorDetail).toBe('');
