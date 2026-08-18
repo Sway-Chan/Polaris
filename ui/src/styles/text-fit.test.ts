@@ -593,7 +593,9 @@ function connTableFixedCols(): { key: string; cls: string }[] {
  */
 function trayKeys(): string[] {
   const s = src('../tray/TrayMenu.tsx');
-  const inline = grepAll(s, /\bt\('(tray\.[\w]+)'\)/g, "TrayMenu t('tray.x') 键").map((m) => m[1]);
+  // 键后跟 `)`（单参）或 `,`（带 vars 的插值形态，如 W14 的 `t('tray.actionFailed', {…})`）。
+  // 消费点检测不需要解析参数——只认 `t('key')` 的话，插值键会从扫描器缝里漏成「死键」假红。
+  const inline = grepAll(s, /\bt\('(tray\.[\w]+)'[),]/g, "TrayMenu t('tray.x') 键").map((m) => m[1]);
   const tables = grepAll(s, /\bk:\s*'(tray\.[\w]+)'/g, 'TrayMenu MODES/TAKEOVERS 表键').map((m) => m[1]);
   return [...new Set([...inline, ...tables])];
 }
@@ -1212,6 +1214,9 @@ const TRAY_SLOT: Record<string, 'ROW' | 'GROUP_H' | 'STATUS_TITLE' | 'STATUS_SUB
   'tray.checkingUpdate': 'NOTE',
   'tray.upToDate': 'NOTE',
   'tray.updateCheckFailed': 'NOTE',
+  // W14 动作失败回执（`t(key, vars)` 插值形态）：量的是模板串；真实 detail 可变长，
+  // NOTE 槽 6 行预算 + `tray_resize` 的 [80,720] 夹取共同兜住极端长错误串。
+  'tray.actionFailed': 'NOTE',
 };
 /** 两栖键：既是菜单行、又会出现在状态卡副标题里。 */
 const TRAY_DUAL_SLOT = new Set(['tray.modeDirect', 'tray.blocked']);

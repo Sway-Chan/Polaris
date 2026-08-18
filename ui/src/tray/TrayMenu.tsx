@@ -324,6 +324,18 @@ export default function TrayMenu() {
 
   const hide = () => void invoke(IPC_CHANNELS.TRAY_HIDE).catch(() => {});
 
+  /**
+   * W14：动作失败必须在浮层里可见。旧口径「错误经 proxy:error 事件在主窗呈现」在主窗关闭
+   * （托盘常驻）时整条失效——那正是「点了没反应」的来源。浮层没有 toast/dialog，notice 行
+   * （`tray-note`）是它唯一的回显表面；失败路径一律**不关浮层**，让 notice 有机会被看到。
+   * detail 取 `err.message`（仓内惯例 inline 形态，见 SettingsHelper.reportFailure 等）。
+   */
+  const noticeActionFailure = (actionLabel: string, err: unknown) => {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error('[TrayMenu] action failed:', actionLabel, err);
+    setNotice(t('tray.actionFailed', { action: actionLabel, detail }));
+  };
+
   /* ── 连接钮派生态（与主窗 HomeScreen 共用 `deriveConnectButtonState`）──
    * 已配置含「直连」哨兵（isTrayServerConfigured），否则 direct-only 配置无法从托盘启动
    * （此前只判 servers.length>0，与 Home 的 serverConfigured 口径分裂，见 tray-node-select.ts）。
@@ -358,8 +370,9 @@ export default function TrayMenu() {
       }
       // **不关浮层**（原型 `:4236` `tray-connect` 无 `hidden=true`）：连完通常还要看一眼状态点/延迟，
       // 或接着切个节点。原型只有「选节点」那一条关（`:4237`）。
-    } catch {
-      /* 失败：保持浮层打开；错误经 proxy:error 事件在主窗呈现 */
+    } catch (err) {
+      /* 失败：保持浮层打开；主窗开着时错误仍经 proxy:error 呈现，托盘态（主窗关闭）由 notice 行兜底（W14） */
+      noticeActionFailure(action === 'start' ? t('tray.connect') : t('tray.disconnect'), err);
     } finally {
       setPending(null);
     }
@@ -372,8 +385,9 @@ export default function TrayMenu() {
     try {
       await api.config.updateMode(mode);
       setConfig((c) => (c ? { ...c, proxyMode: mode } : c));
-    } catch {
-      /* 忽略：切模式失败不阻断 */
+    } catch (err) {
+      noticeActionFailure(t('tray.groupMode'), err);
+      return; // 失败保持浮层开着（W14），成功才落到下面的正常路径
     }
   };
 
@@ -403,8 +417,9 @@ export default function TrayMenu() {
         void notifyDesktop(title, body);
         return; // 保持浮层打开，让 notice 有机会被看到
       }
-    } catch {
-      /* 忽略：切接管方式失败不阻断；错误经 proxy:error 事件在主窗呈现 */
+    } catch (err) {
+      noticeActionFailure(t('tray.groupTakeover'), err);
+      return; // 失败不关浮层（W14）；成功才 hide
     }
     hide();
   };
@@ -413,8 +428,9 @@ export default function TrayMenu() {
     try {
       await api.server.switch(id);
       setSelectedId(id);
-    } catch {
-      /* 忽略：切节点失败不阻断 */
+    } catch (err) {
+      noticeActionFailure(servers.find((s) => s.id === id)?.name ?? t('tray.nodes'), err);
+      return; // 失败不切视图不关浮层（W14）
     }
     setView('main');
     hide();
@@ -435,8 +451,9 @@ export default function TrayMenu() {
         await api.config.setValue('selectedServerId', DIRECT_SERVER_ID);
         setConfig(next);
         setSelectedId(DIRECT_SERVER_ID);
-      } catch {
-        /* 忽略：切直连失败不阻断 */
+      } catch (err) {
+        noticeActionFailure(t('tray.modeDirect'), err);
+        return; // 失败不关浮层（W14）
       }
     }
     setView('main');
@@ -454,8 +471,9 @@ export default function TrayMenu() {
         await api.config.setValue('selectedServerId', BLOCK_SERVER_ID);
         setConfig(next);
         setSelectedId(BLOCK_SERVER_ID);
-      } catch {
-        /* 忽略：切阻断失败不阻断 */
+      } catch (err) {
+        noticeActionFailure(t('tray.blocked'), err);
+        return; // 失败不关浮层（W14）
       }
     }
     setView('main');
@@ -502,7 +520,10 @@ export default function TrayMenu() {
    * 设置屏只存在于主窗（浮层里没有也不该有 268px 的设置页）⇒ 这是唯一需要「跨窗令主窗跳屏」的动作。
    * 走**既有** `tray_show_main` 加的受限目标屏参数，不新增 command、不复活已删净的 `EVENT_NAVIGATE`
    * 通用路由（选型理由见 `src-tauri/src/tray.rs::normalize_tray_screen` 上方注释）。 */
-  const openSettings = () => void invoke(IPC_CHANNELS.TRAY_SHOW_MAIN, { screen: 'settings' }).catch(() => {});
+  const openSettings = () =>
+    void invoke(IPC_CHANNELS.TRAY_SHOW_MAIN, { screen: 'settings' }).catch((err) =>
+      noticeActionFailure(t('tray.openSettings'), err),
+    );
 
   /* ── 检查更新（A1，对齐 上游 `TrayManager.ts:425` + `tray-actions.ts:195-220`）──
    *
@@ -842,7 +863,14 @@ export default function TrayMenu() {
               </svg>
               <span>{testing ? t('tray.testing') : t('tray.speedtest')}</span>
             </button>
-            <button className="tray-i" onClick={() => void invoke(IPC_CHANNELS.TRAY_SHOW_MAIN).catch(() => {})}>
+            <button
+              className="tray-i"
+              onClick={() =>
+                void invoke(IPC_CHANNELS.TRAY_SHOW_MAIN).catch((err) =>
+                  noticeActionFailure(t('tray.openMain'), err),
+                )
+              }
+            >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                 <rect x="3" y="4" width="18" height="16" rx="2" />
                 <path d="M3 9h18" />
@@ -883,7 +911,11 @@ export default function TrayMenu() {
                 唤出：托盘浮层的明确主窗入口、Linux 原生菜单或 Dock/任务栏 → show_main_window 重建主窗。 */}
             <button
               className="tray-i"
-              onClick={() => void invoke(IPC_CHANNELS.TRAY_ENTER_LIGHTWEIGHT).catch(() => {})}
+              onClick={() =>
+                void invoke(IPC_CHANNELS.TRAY_ENTER_LIGHTWEIGHT).catch((err) =>
+                  noticeActionFailure(t('tray.lightweight'), err),
+                )
+              }
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                 <path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" />
@@ -891,7 +923,14 @@ export default function TrayMenu() {
               <span>{t('tray.lightweight')}</span>
             </button>
             <div className="tray-sep" />
-            <button className="tray-i danger" onClick={() => void invoke(IPC_CHANNELS.TRAY_QUIT).catch(() => {})}>
+            <button
+              className="tray-i danger"
+              onClick={() =>
+                void invoke(IPC_CHANNELS.TRAY_QUIT).catch((err) =>
+                  noticeActionFailure(t('tray.quit'), err),
+                )
+              }
+            >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                 <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9" />
               </svg>
@@ -952,6 +991,9 @@ export default function TrayMenu() {
               )}
             </button>
             <div className="tray-sep" />
+
+            {/* W15：零节点时的空态——不给「菜单塌成一条」的错觉，保住与主视图同量级的高度 */}
+            {groups.length === 0 && <div className="tray-nodes-empty">{t('tray.noNode')}</div>}
 
             {/* 按分组列出（自建/组网/各订阅），组内可选按延迟排序（use-node-sort-store 持久偏好，
                 托盘/首页出口下拉/Nodes 工具栏三处共读，原型 :4475 "persisted + tray-synced"）。
@@ -1015,7 +1057,14 @@ export default function TrayMenu() {
               );
             })}
             <div className="tray-sep" />
-            <button className="tray-i" onClick={() => void invoke(IPC_CHANNELS.TRAY_SHOW_MAIN).catch(() => {})}>
+            <button
+              className="tray-i"
+              onClick={() =>
+                void invoke(IPC_CHANNELS.TRAY_SHOW_MAIN).catch((err) =>
+                  noticeActionFailure(t('tray.manageInMain'), err),
+                )
+              }
+            >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                 <path d="M4 6h16M4 12h16M4 18h10" />
               </svg>

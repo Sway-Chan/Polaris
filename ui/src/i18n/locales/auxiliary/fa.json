@@ -39,7 +39,8 @@
     "lockNow": "قفل کردن",
     "lightweight": "حالت سبک",
     "quit": "خروج از Polaris",
-    "manageInMain": "مدیریت در پنجره اصلی…"
+    "manageInMain": "مدیریت در پنجره اصلی…",
+    "actionFailed": "«{{action}}» ناموفق بود: {{detail}}"
   },
   "updatePopup": {
     "newVersion": "نسخه جدید {{version}}",
