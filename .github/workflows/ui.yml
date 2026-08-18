@@ -1,6 +1,6 @@
 name: UI
 
-# 前端门禁：typecheck + IPC 参数校验 + vitest（1726 条）。
+# 前端门禁：typecheck + IPC 参数校验 + vitest（全量）。
 #
 # 为什么独立成一个 workflow 而不是往 ci.yml 加一个 job（2026-07-31）：
 #   ci.yml 的 `on.push.paths-ignore` 里曾有 `ui/**`（CI-5 已删，理由存档）—— 那是**workflow 级**过滤，纯 UI 改动
@@ -20,7 +20,7 @@ on:
     branches: [main]
     # 只忽略**不可能影响前端测试**的路径。实测：ui/src 下无任何测试读取 .md（三处 `docs/` 命中
     # 全在注释里），唯一读仓外文件的 prototype-confirm-parity 已在 CI 排除。
-    # ⚠️ 绝不能把 `src-tauri/**` 加进来 —— 30 个测试直读 Rust 源做跨语言一致性断言（对称规则
+    # ⚠️ 绝不能把 `src-tauri/**` 加进来 —— 约 30 个测试直读 Rust 源做跨语言一致性断言（对称规则
 #   由 ui/src/contracts/ci-paths-contract.test.ts 钉死，本行是它的注释版）。
     paths-ignore:
       - '**.md'

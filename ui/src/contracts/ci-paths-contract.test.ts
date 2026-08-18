@@ -5,7 +5,7 @@
  *
  * 本仓的判据面**横跨 Rust 与前端两侧**：`main.rs` 遍历整棵 `ui/src`、`i18n.rs`
  * `include_str!` 五个 locale、`config.rs` 读 App.tsx / TrayMenu.tsx 等前端源码；反向地，
- * **30 个**前端测试文件（contracts/ 15 + 其它 15）读 `src-tauri/` 与 `crates/` 的 Rust 源码
+ * 约 30 个前端测试文件读 `src-tauri/` 与 `crates/` 的 Rust 源码
  * 当判据。于是两个 workflow 的 push 过滤器**都不得 ignore 对侧的树**，也没理由 ignore
  * 自己的树——只检查一个方向等于没检查。
  *
@@ -95,7 +95,7 @@ describe('CI 触发面对称契约（判据面横跨两侧 ⇒ 过滤器不得 i
     for (const banned of ['src-tauri/**', 'crates/**', 'ui/**', '.github/**']) {
       expect(
         entries.includes(banned),
-        `ui.yml 的 paths-ignore 含 ${banned} —— 前端 30 个测试文件读 Rust 源码当判据，` +
+        `ui.yml 的 paths-ignore 含 ${banned} —— 前端约 30 个测试文件读 Rust 源码当判据，` +
           `ignore 对侧就造出反方向的同类假门（ui.yml 头注早写明这条禁令，这里给牙）；` +
           `ignore ui/** 则让 UI 门与本门在纯 UI push 上全部转黑`,
       ).toBe(false);
