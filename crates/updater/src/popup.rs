@@ -328,6 +328,14 @@ pub trait PopupTransport {
     fn set_content_height(&self, height: u32) -> Result<(), String>;
 }
 
+/// 弹窗代次的**进程级**计数源（🟡#4，复审 F1 修正）。
+///
+/// 必须跨会话单调：宿主的 `close_update_popup` 会把整个 `PopupSession` 连槽丢弃、新建分支每次
+/// `PopupSession::new`——若代次是**每会话对象**自增，新会话从 1 重开，「关旧窗 → 3s 内开新窗」
+/// 恰好撞回同一编号（1==1），陈旧定时器照样关掉新窗（守卫在标称主场景失效）。进程级原子
+/// 计数让「另一扇窗」永远拿不到旧窗用过的号。
+static POPUP_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// 弹窗会话：持有 `last_state` + 推送通道，编排「建窗初始态 / 状态流转 / 重放」。
 ///
 /// **`last_state` 的写入点唯一**（[`Self::open`] 与 [`Self::send_state`]），且二者都在推送**之前**写——
@@ -336,15 +344,16 @@ pub trait PopupTransport {
 pub struct PopupSession<T: PopupTransport> {
     transport: T,
     last_state: Option<UpdatePopupState>,
-    /// 会话代次（confirm 轮 🟡#4）：每次 [`Self::open`]（= 每次新建窗口）单调 +1，`reuse` 不动。
-    /// 自动关窗定时器捕获调度时的代次、fire 时核对——代次已进说明用户手动关掉旧窗后
-    /// **另一条腿开了新弹窗**，陈旧定时器不得把新窗关掉。本批把 noupdate 窗口从 800ms 拉到
-    /// 3000ms（3.75 倍），「3s 内关旧开新」从理论竞态变成现实可达，这条守卫是它的解。
+    /// 本窗的代次（[`POPUP_GENERATION`] 进程级发号，`open` 时领取；`reuse`/`send_state` 不换号，
+    /// `new` 后、`open` 前为 0=未建窗）。自动关窗定时器捕获调度时的代次、fire 时核对——
+    /// 不等说明这扇窗已经不在了（用户关掉后另一条腿开了新窗），陈旧定时器不得关新窗。
+    /// 本批把 noupdate 窗口从 800ms 拉到 3000ms（3.75 倍），「3s 内关旧开新」从理论竞态变成
+    /// 现实可达，这条守卫是它的解。
     generation: u64,
 }
 
 impl<T: PopupTransport> PopupSession<T> {
-    /// 构造会话（尚未建窗，`last_state` 为空，代次 0——第一次 `open` 进到 1）。
+    /// 构造会话（尚未建窗，`last_state` 为空，代次 0=未领号——首次 `open` 从进程计数领新号）。
     pub fn new(transport: T) -> Self {
         Self {
             transport,
@@ -353,7 +362,7 @@ impl<T: PopupTransport> PopupSession<T> {
         }
     }
 
-    /// 当前会话代次（自动关窗定时器的核对值；语义见字段注释）。
+    /// 本窗代次（自动关窗定时器的核对值；0=尚未建窗，语义见 [`POPUP_GENERATION`]）。
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -372,8 +381,8 @@ impl<T: PopupTransport> PopupSession<T> {
         let init_script = Self::build_init_script(&state);
         // 先落 last_state：did-finish-load / renderer 崩溃重建时靠它重放（#300 的 lastPopupState 恒 null 即死在这）。
         self.last_state = Some(state);
-        // 新窗口 = 新代次（🟡#4）：让上一窗遗留的自动关窗定时器在 fire 时对不上号。
-        self.generation += 1;
+        // 新窗口 = 从进程计数领新号（🟡#4/F1）：跨会话不复用，上一窗遗留的定时器永远对不上新窗的号。
+        self.generation = POPUP_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         PopupBootstrap {
             init_script,
             width: POPUP_WIDTH,
@@ -596,38 +605,49 @@ mod tests {
         assert_eq!(s.last_state().unwrap().percentage, Some(42));
     }
 
-    // ── 邀请过的版本号：会话级事实，跨 phase 不蒸发 ──
+    // ── 代次（🟡#4/F1）：进程级发号，跨会话不复用 ──
 
-    /// 🟡#4：代次语义——`open`（新建窗口）单调 +1，`reuse` / `send_state`（同窗流转）不动。
+    /// 🟡#4/F1：代次语义——`open` 从**进程级**计数领新号；`reuse` / `send_state`（同窗流转）不换号；
+    /// **跨会话**（旧会话被丢弃、新会话从 `new` 重开）必须领到更大的号。
     ///
-    /// 自动关窗定时器靠「调度时与 fire 时代次相等」判定「窗还是那一扇」。`reuse` 若也 +1，
-    /// 同一扇窗的正常流转会把合法定时器作废（终态永驻屏角）；`open` 若不 +1，新窗会被
-    /// 旧窗的陈旧定时器关掉（noupdate 3000ms 窗口内「关旧开新」竞态）。
+    /// 生存域是这条守卫的命门（复审 F1 的教训）：若代次是每会话对象自增，宿主「关旧窗 →
+    /// 3s 内开新窗」恰好撞回同一编号（1==1），陈旧定时器照样关掉新窗——判据在单会话内全绿、
+    /// 在标称主场景失效。故第 4 条（跨会话）是本测试的真牙。
     ///
-    /// **变异探针**：把 `open` 里的 `self.generation += 1` 挪进 `reuse` ⇒ 第 3 条红；
-    /// 删掉 ⇒ 第 2 条红。
+    /// **变异探针**：把 `open` 的领号改回 `self.generation += 1` ⇒ 第 4 条红；挪进 `reuse` ⇒
+    /// 第 3 条红；删掉 ⇒ 第 2 条红。
     #[test]
-    fn generation_advances_only_on_new_windows() {
+    fn generation_is_process_scoped_and_advances_only_on_new_windows() {
         let mut s = PopupSession::new(RecordingTransport::default());
-        assert_eq!(s.generation(), 0, "未建窗的会话代次是 0");
+        assert_eq!(s.generation(), 0, "未建窗的会话代次是 0（未领号）");
         s.open(UpdatePopupState::remind("v1.2.0", "v1.1.0"));
         let first = s.generation();
-        assert_eq!(first, 1, "第一次建窗进到 1");
+        assert!(first > 0, "建窗后必须已从进程计数领到号");
         s.reuse(UpdatePopupState::progress(30, None, None)).unwrap();
         s.send_state(UpdatePopupState::no_update(Some("v1.2.0".to_string())))
             .unwrap();
         assert_eq!(
             s.generation(),
             first,
-            "同一扇窗的状态流转（reuse/send_state）不得动代次 —— 动了会作废本窗的合法定时器"
+            "同一扇窗的状态流转（reuse/send_state）不得换号 —— 换了会作废本窗的合法定时器"
         );
-        s.open(UpdatePopupState::remind("v1.3.0", "v1.1.0"));
-        assert_eq!(
-            s.generation(),
-            first + 1,
-            "再次 open（新建窗口）必须 +1 —— 不加，旧窗的陈旧定时器会关掉新窗"
+        // 跨会话（= 复审 F1 的主场景）：模拟宿主「关窗清槽（丢弃整个 session）→ 另一条腿
+        // 新建弹窗（new 一个新 session 再 open）」。新窗必须领到**更大**的号——否则两扇窗
+        // 同号，旧窗的定时器 fire 时对上号，把新窗关掉。
+        drop(s);
+        let mut s2 = PopupSession::new(RecordingTransport::default());
+        assert_eq!(s2.generation(), 0, "新会话建窗前同样未领号");
+        s2.open(UpdatePopupState::remind("v1.3.0", "v1.1.0"));
+        assert!(
+            s2.generation() > first,
+            "跨会话必须领到更大的号（实得 {} ≤ 旧窗 {}）—— 每会话自增的代次会让\
+             「关旧 3s 内开新」撞回同号，陈旧定时器关掉新窗（复审 F1）",
+            s2.generation(),
+            first
         );
     }
+
+    // ── 邀请过的版本号：会话级事实，跨 phase 不蒸发 ──
 
     /// 🟡 **不变量：一次弹窗会话邀请过的版本号，跨 phase 一直在。**
     ///
@@ -1155,7 +1175,7 @@ mod tests {
     ///
     /// **变异探针**：`done` 里删掉 `file_path: Some(...)` ⇒ done 那格转红；`no_update` 里补一个
     /// `percentage: Some(100)` ⇒ noupdate 那格报「夹带」；把 `receivedBytes` 从 `optional` 挪进
-    /// `required` ⇒ 复查前那一发的样本转红（证明这张表现在真по生产形态判，不是по夹具）。
+    /// `required` ⇒ 复查前那一发的样本转红（证明这张表现在真按生产形态判，不是按夹具）。
     #[test]
     fn every_phase_carries_the_facts_its_screen_depends_on() {
         /// 该档序列化后**必须**出现的键。穷尽 match ⇒ 新增一档即编译错误。

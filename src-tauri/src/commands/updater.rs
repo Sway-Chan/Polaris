@@ -2025,6 +2025,9 @@ fn schedule_popup_auto_close(app: &AppHandle, delay_ms: u64) {
     // 🟡#4 代次守卫：捕获**调度时刻**的会话代次，fire 时核对。代次已前进 = 用户手动关掉本窗
     // 后另一条腿开了新弹窗——陈旧定时器不得把新窗关掉（noupdate 窗口 3000ms 内这条竞态
     // 现实可达）。核对放在 `close_update_popup` 之前，且本函数只读代次不持锁进入关闭路径。
+    // ⚠️ 已知微窗（复审 F1 附带，登记不修）：核对通过后、close 取锁前恰逢开新窗仍会被误关
+    // ——两条 lock 之间的几条指令 vs 原本 3s 的窗口，缩小约六个数量级；全修需「持锁核对 +
+    // 清槽」合并成 checked-close，不值当。
     let scheduled_gen = popup_generation(app);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -4526,7 +4529,7 @@ mod tests {
             let n = body.matches("ProgressStage::").count();
             assert!(
                 n >= 3,
-                "锚点消失：`stage_facts` 的 match 一条臂都没解析到 —— 本门已失去变体数的真值源"
+                "`stage_facts` 的臂形状变了（一条 ProgressStage:: 臂都没解析到）—— 本门已失去变体数的真值源"
             );
             n
         }
@@ -5052,23 +5055,31 @@ mod tests {
         // 但留给后人的最省事修法就是把判据放宽跑 —— 这里先行改到**不随细分复制**的形态：
         // 头锚保持恰 1（let-else 那一行不该重样）；尾锚取**最后一次**出现且至少一次，区间 =
         // 头..最后一次。细分出的每一条子分支都被区间罩住，推送落在任一条里都判绿。
-        // ⚠️ 残余缺口如实登记（相对「恰 1」版弱了一格）：推送若被挪进 `updateInfo` **存在**的
-        // 路径、且位于所有 `hasUpdate:false` 之前，旧判据会红、新判据不红。补偿面：负向断言
-        // （全臂不得广播 Downloaded / 推 done）不变；且「挪进存在路径」意味着 no-update 分支
-        // 失去推送 ⇒ 弹窗永远转圈的缺陷形态，姊妹门与真机立即可见。
-        let head_n = arm.matches(BRANCH_HEAD).count();
-        assert_eq!(
-            head_n, 1,
-            "头锚 {BRANCH_HEAD:?} 在本臂里出现 {head_n} 次（须恰好 1）—— let-else 那一行被复制了，\
-             「落在分支内」这句话就不再指同一段代码"
-        );
-        let exit_n = arm.matches(BRANCH_EXIT).count();
+        // ⚠️ 残余缺口如实登记（相对「恰 1」版弱了一格，复审 F3 校正口径）：推送若被挪进
+        // `updateInfo` **存在**的路径、且其后还存在更晚的 `hasUpdate:false`，旧判据会红、新判据
+        // 不红。**没有自动姊妹门覆盖这个缺口**（本臂三道门都不钉「no_update 推送必须在该
+        // 分支」），暴露途径只剩 code review 与真机（转圈窗）；补门方向 = 对 else 块子区间
+        // 逐分支计数 no_update 推送 ≥1——真被咬到再做。
+        // 锚点先收集后断言（🟢#7/F4 的修法，消灭 n=0 误归因与两条不可达 expect）。
+        let heads: Vec<usize> = arm.match_indices(BRANCH_HEAD).map(|(i, _)| i).collect();
         assert!(
-            exit_n >= 1,
+            !heads.is_empty(),
+            "头锚 {BRANCH_HEAD:?} 在本臂里一次都没有 —— let-else 的形状变了，守卫失去判据"
+        );
+        assert_eq!(
+            heads.len(),
+            1,
+            "头锚 {BRANCH_HEAD:?} 在本臂里出现 {} 处 —— let-else 那一行被复制了，\
+             「落在分支内」这句话就不再指同一段代码",
+            heads.len()
+        );
+        let head = heads[0];
+        let exits: Vec<usize> = arm.match_indices(BRANCH_EXIT).map(|(i, _)| i).collect();
+        assert!(
+            !exits.is_empty(),
             "尾锚 {BRANCH_EXIT:?} 在本臂里一次都没有 —— no-update 早退的形状变了，守卫失去判据"
         );
-        let head = arm.find(BRANCH_HEAD).expect("锚点消失：守卫已失去判据");
-        let exit = arm.rfind(BRANCH_EXIT).expect("锚点消失：守卫已失去判据");
+        let exit = *exits.last().unwrap();
 
         // ── 那两发推送必须落在这条 `let-else` 的 else 体内 ──
         for (needle, why) in [
@@ -5087,8 +5098,12 @@ mod tests {
             //   ① `count == 1`：真调用 + 注释各一份 ⇒ 计数 2 ⇒ 红；
             //   ② 行级拒绝：命中的那一行若 needle 之前就有 `//`（= needle 落在行尾注释里）不算数
             //      ——「删掉真调用、只留一行注释」时计数仍 1，①抓不住，②让「找不到真调用」转红
-            //      （confirm 轮原始收据正是这个形态）。残余面：串字面量里带 `//` 又恰含同形串
-            //      ——登记不防（要认字符串就得 parser）。
+            //      （confirm 轮原始收据正是这个形态）。
+            // ② 的真实射程（复审 F2 校正口径，别照旧登记读反）：**未设防面 = 同形串出现在无先行
+            // `//` 的任何非调用文本里**（典型：字符串字面量 `let s = "push_popup_state(…"` 且真调用
+            // 已删 ⇒ ①计数 1、②当真 ⇒ 假绿——要防得认字符串=parser，不做）；串内带 `//` 且在
+            // 同形串之前的形态反而会被 ② 拒绝转红（安全方向，panic 文案归因略偏但响亮）；真调用
+            // 与行内更早的 `//` 同屏会被误拒（误红，安全）。
             let n = arm.matches(needle).count();
             assert_eq!(
                 n, 1,
