@@ -553,6 +553,8 @@ fn build_overlay(app: &AppHandle) -> Option<tauri::WebviewWindow> {
     };
 
     // 失焦即收起（点窗外 / 切到别的 app）：菜单语义。走 hide_overlay 统一拆 mac 全局监听器（defect#3）。
+    // （W13 的明暗信号源不挂这里：本窗限时存活——轻量转场与 120s 空闲回收都会销毁它；
+    // Win 直读注册表真值、Linux 留窗口探测链，均见 main.rs 的 system_dark_bg。）
     let app_handle = app.clone();
     win.on_window_event(move |event| {
         if let WindowEvent::Focused(false) = event {
