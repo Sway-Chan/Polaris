@@ -508,8 +508,10 @@ export default function TrayMenu() {
     setTesting(true);
     try {
       await api.server.speedTest(ids);
-    } catch {
-      /* 忽略：测速失败（含后端单飞闸拒绝）不阻断，仅复位灰态 */
+    } catch (err) {
+      // 后端单飞闸拒绝（在测时连点）是预期噪音，与真实失败同走 notice——两者对用户都是
+      // 「点了没反应」，区分成本大于收益；文案里 detail 自会带出原因（W14）。
+      noticeActionFailure(t('tray.speedtest'), err);
     } finally {
       setTesting(false);
     }
@@ -555,16 +557,19 @@ export default function TrayMenu() {
     }
   };
 
-  // 立即锁定：关浮层 + 进隐私态（原型 tray-lock: $('#tray').hidden=true; openLock()）。setPrivacyMode(true)
+  // 立即锁定：进隐私态（原型 tray-lock: $('#tray').hidden=true; openLock()）。setPrivacyMode(true)
   // → 后端 emit enterPrivacyMode → 主窗 App 订阅收敛 → LockOverlay 遮罩（主窗即便当前隐藏，renderer 仍活、
   // 订阅在，下次显示即锁）。不强行 tray_show_main：锁定是为隐藏内容，不该反把主窗弹出来。
+  // W14 修法顺序约束：**先 await 成功才 hide**。旧序「先 hide 再 await + 空 catch」= 失败时浮层已收起、
+  // 隐私态没进、notice 无处显示——用户以为锁了实际没锁，是安全相关的「点了没反应」。
   const lockNow = async () => {
-    hide();
     try {
       await api.config.setPrivacyMode(true);
-    } catch {
-      /* 忽略：进隐私态失败不阻断 */
+    } catch (err) {
+      noticeActionFailure(t('tray.lockNow'), err);
+      return;
     }
+    hide();
   };
 
   // A2：浮层状态（与原生图标同一条优先级，见 tray-status-tone.ts）+ 降级位。

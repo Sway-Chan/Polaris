@@ -46,8 +46,13 @@ const ACTION_CHANNELS_BANNED_SWALLOWS = [
   'TRAY_QUIT).catch(() => {})',
 ] as const;
 
-/** TrayMenu 里 `noticeActionFailure` 的调点数：定义 1 + 六个动作 handler + 五个按钮包裹。 */
-const NOTICE_CALL_SITES = 12;
+/** TrayMenu 里 `noticeActionFailure` 的调点数：定义 1 + 八个动作 handler（六改 + lockNow/onSpeedTest）+ 五个按钮包裹。 */
+const NOTICE_CALL_SITES = 14;
+
+/** lockNow 的顺序语义（Med-1）：必须「await 成功 → 才 hide」。先 hide 再 await 的旧序在失败时
+ * 连 notice 都无处显示。以 indexOf 顺序钉住——重排回去（hide 在 await 之前）即红。 */
+const LOCKNOW_AWAIT_NEEDLE = 'await api.config.setPrivacyMode(true);';
+const LOCKNOW_HIDE_NEEDLE = 'hide();';
 
 describe('点击类失败必须可见（W10/W14/W15 防回潮）', () => {
   it('托盘动作 channel 上不得再有静默吞错', () => {
@@ -68,6 +73,24 @@ describe('点击类失败必须可见（W10/W14/W15 防回潮）', () => {
       `noticeActionFailure 应恰有 ${NOTICE_CALL_SITES} 处（含定义）。少于它 = 有动作漏接；` +
         `多于它 = 改了动作面，本门计数与动作清单需同步审`,
     ).toBe(NOTICE_CALL_SITES);
+  });
+
+  it('lockNow 必须「await 成功才 hide」——先关浮层再试锁定，失败时 notice 无处显示（Med-1）', () => {
+    const src = read(TRAY_MENU);
+    const awaitAt = src.indexOf(LOCKNOW_AWAIT_NEEDLE);
+    const lockNowStart = src.indexOf('const lockNow');
+    const lockNowEnd = src.indexOf('};', lockNowStart);
+    expect(awaitAt, 'lockNow 里的 setPrivacyMode 调用形态变了（await 不在了？）').toBeGreaterThan(-1);
+    const hideAt = (() => {
+      const region = src.slice(lockNowStart, lockNowEnd);
+      const at = region.indexOf(LOCKNOW_HIDE_NEEDLE);
+      return at === -1 ? -1 : lockNowStart + at;
+    })();
+    expect(hideAt, 'lockNow 里没有 hide()——顺序判据失效，需同步更新').toBeGreaterThan(-1);
+    expect(
+      awaitAt < hideAt,
+      'lockNow 的 hide() 又跑到了 await 之前：失败时浮层已收起、隐私态没进、notice 无处显示',
+    ).toBe(true);
   });
 
   it('全部节点视图有零节点空态（W15：菜单不得塌成一条）', () => {
