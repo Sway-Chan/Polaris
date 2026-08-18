@@ -327,6 +327,69 @@ fn run_exit_cleanup(app: &tauri::AppHandle) {
 /// 对齐 上游 `TrayManager.ts:54` 的三态 + `:265` 的 `hasError` 分支（Polaris 侧此前二者都缺）。
 ///
 /// ⚠️ macOS 反色、Windows 任务栏主题、Linux portal 主题检测本机（Linux）均验不全 → 待真机（R15）。
+/// Win/Linux 托盘图标黑/白变体的**系统真值**读取（W13 正解，复审修法②）。
+///
+/// - **Windows**：直读注册表 `Personalize`（任务栏跟随系统主题，故取 `SystemUsesLightTheme`，
+///   缺失时退应用档 `AppsUseLightTheme`）。零窗口依赖——主窗/浮层窗全销毁的轻量态恒可用，
+///   且不受显式 uiTheme 的 `set_theme` 钉窗失真影响（复审 Med-1：窗口 `theme()` 读的是应用外观）。
+///   实时性：无窗时收不到 `WM_SETTINGCHANGE`，由既有 30s 自愈轮询（[`TRAY_ICON_POLL`]）兜住。
+/// - **Linux**：portal 读法需要窗口在场（tao 实现），无窗口时返回 `None` 落回窗口探测链——
+///   已知缺口如实记录（Linux 侧本就标 R15 待真机）。
+#[cfg(target_os = "windows")]
+fn system_dark_bg() -> Option<bool> {
+    use std::os::windows::ffi::OsStrExt;
+    const PERSONALIZE: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
+    fn wide(s: &str) -> Vec<u16> {
+        std::ffi::OsStr::new(s)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+    fn read_dword(value: &str) -> Option<u32> {
+        use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+        use windows_sys::Win32::System::Registry::{
+            RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD,
+        };
+        let subkey = wide(PERSONALIZE);
+        let val = wide(value);
+        let mut data: u32 = 0;
+        let mut size: u32 = 4;
+        let rc = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                subkey.as_ptr(),
+                val.as_ptr(),
+                RRF_RT_REG_DWORD,
+                std::ptr::null_mut(),
+                &mut data as *mut u32 as *mut std::ffi::c_void,
+                &mut size,
+            )
+        };
+        (rc == ERROR_SUCCESS).then_some(data)
+    }
+    let light = read_dword("SystemUsesLightTheme").or_else(|| read_dword("AppsUseLightTheme"))?;
+    Some(light != 1) // 1 = 浅色；0（或它值）= 深色
+}
+
+/// 非 Windows 侧（仅 Linux；mac 走 template 反色不进本链）：未引入零窗口真值源（portal/gsettings
+/// 直读需新依赖），返回 `None` 落回窗口探测链。门控与调用点 `not(macos)` 同构——若写成
+/// `not(windows)`，mac 展开下本 fn 零引用，clippy -D warnings 的 macos CI 腿必红（二审 High-1）。
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+fn system_dark_bg() -> Option<bool> {
+    None
+}
+
+/// Win/Linux 托盘图标黑/白变体的明暗探测（W13 抽出的纯函数）。
+///
+/// `primary` 依序取第一个 `Some`：注册表真值（Win，未引入时为 None）→ 主窗（显式 uiTheme 下被
+/// `set_theme` 钉住、读到的是应用外观而非任务栏明暗——已知失真，Linux 侧至今靠本句记录）。
+/// `fallback` = 托盘浮层窗（限时存活：轻量转场与 120s 空闲回收都会销毁它，聊胜于无的末位兜底）。
+/// 全部取不到 → 默认深色任务栏用白（沿用原取向：深底黑星融入不可辨）。
+#[cfg(not(target_os = "macos"))]
+fn dark_bg_from_probe(primary: Option<bool>, fallback: Option<bool>) -> bool {
+    primary.or(fallback).unwrap_or(true)
+}
+
 fn set_tray_state(app: &tauri::AppHandle, state: crate::tray::TrayState) {
     let Some(tray) = app.tray_by_id("main") else {
         return; // 托盘整体缺失（Linux 无 StatusNotifier / appindicator 不可用）→ 静默跳过
@@ -334,13 +397,20 @@ fn set_tray_state(app: &tauri::AppHandle, state: crate::tray::TrayState) {
     // macOS：template 由系统按菜单栏明暗**自动反色** ⇒ 明暗根本不是输入，恒 false 占位（不进视觉态）。
     #[cfg(target_os = "macos")]
     let dark_bg = false;
-    // Win/Linux：无 template 自动反色 → 按 `Window::theme()` 检测明暗选黑（浅底）/白（深底）变体。
+    // Win/Linux：无 template 自动反色 → 探测链（W13）：注册表真值（Win）→ 主窗（显式 uiTheme
+    // 下被钉、读到应用外观）→ 浮层窗（限时存活兜底）。
+    // 旧实现只探主窗，主窗一关取不到就回落白变体，浅色任务栏上图标直接隐身。
     #[cfg(not(target_os = "macos"))]
-    let dark_bg = app
-        .get_webview_window("main")
-        .and_then(|w| w.theme().ok())
-        .map(|t| t == tauri::Theme::Dark)
-        .unwrap_or(true); // 取不到默认深色任务栏用白，避免深底黑星融入
+    let dark_bg = dark_bg_from_probe(
+        system_dark_bg().or_else(|| {
+            app.get_webview_window("main")
+                .and_then(|w| w.theme().ok())
+                .map(|t| t == tauri::Theme::Dark)
+        }),
+        app.get_webview_window(crate::tray::TRAY_LABEL)
+            .and_then(|w| w.theme().ok())
+            .map(|t| t == tauri::Theme::Dark),
+    );
 
     // tooltip 语言：config.language（`ConfigManager` 缓存读），auto 回落系统 locale。
     let next = TrayVisual {
@@ -1930,6 +2000,62 @@ fn mark_clean_exit(app: &tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// W13：托盘图标黑/白变体的探测链（Win/Linux）。前两格是纯函数语义；后两格是源扫描守卫
+    /// （探测窗必须先于主窗被探、且 setup 必须真建它）——顺序翻回去 = 显式 uiTheme 下的
+    /// 读应用外观失真（复审 Med-1）复活，不建它 = 探测链退回旧缺陷。
+    /// W13：托盘图标黑/白变体的探测链（Win/Linux）。前三格是纯函数语义；后两格是守卫——
+    /// 注册表真值必须先于（被钉的）主窗被读；Windows 上注册表读法必须真的给出答案（CI win 腿上跑）。
+    #[cfg(not(target_os = "macos"))]
+    mod tray_dark_bg_probe {
+        use super::dark_bg_from_probe;
+
+        #[test]
+        fn primary_wins_when_present() {
+            assert!(dark_bg_from_probe(Some(true), Some(false)));
+            assert!(!dark_bg_from_probe(Some(false), Some(true)));
+        }
+
+        /// W13 的核心格：主信号（注册表→主窗）取不到时 fallback（浮层窗）接管——
+        /// 旧实现这格恒白，正是浅色任务栏图标隐身的真机缺陷本体。
+        #[test]
+        fn fallback_takes_over_when_primary_is_gone() {
+            assert!(!dark_bg_from_probe(None, Some(false)));
+            assert!(dark_bg_from_probe(None, Some(true)));
+        }
+
+        #[test]
+        fn all_missing_falls_back_to_dark_assumption() {
+            assert!(dark_bg_from_probe(None, None));
+        }
+
+        #[test]
+        fn registry_truth_is_probed_before_the_pinned_main_window() {
+            let src = include_str!("main.rs");
+            let body = crate::commands::guard_scan::top_level_fn_body(src, "fn set_tray_state(");
+            assert!(
+                !body.is_empty(),
+                "set_tray_state 函数体取不到——判据失效需同步更新"
+            );
+            let reg = body
+                .find("system_dark_bg()")
+                .expect("set_tray_state 不再读注册表真值（W13 回潮）");
+            let main = body
+                .find("get_webview_window(\"main\")")
+                .expect("set_tray_state 的主窗探测形态变了");
+            assert!(
+                reg < main,
+                "注册表真值又排到了主窗之后：显式 uiTheme 下主窗被钉、读到应用外观而非任务栏明暗"
+            );
+        }
+
+        /// Windows CI 腿上跑：Personalize 键自 Win10 1809 起恒在，读不出 Some 说明读法坏了。
+        #[cfg(target_os = "windows")]
+        #[test]
+        fn registry_probe_answers_on_real_windows() {
+            assert!(super::super::system_dark_bg().is_some());
+        }
+    }
 
     fn argv(rest: &[&str]) -> Vec<String> {
         // 首元素恒是程序名（std::env::args 的 argv[0]），判定须跳过它——测试连同 argv[0] 一起喂。

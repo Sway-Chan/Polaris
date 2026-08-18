@@ -93,6 +93,12 @@ objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSEvent", "NSRe
 # 不开 default features：只要 NSUserDefaults / NSString / NSArray / NSObject 四项（其余 178 项停用）。
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSUserDefaults", "NSString", "NSArray", "NSObject"] }
 
+# W13 托盘图标明暗真值：直读注册表 Personalize（SystemUsesLightTheme）。复用工作区既有 crate
+# （helper 的 win FFI 同源，版本一致、features 并集不新增 lock 包）；仅 cfg(windows) 参与，
+# Linux/mac 编译不拉入（与 helper 同款做法）。只要 Registry + Foundation 两项 feature。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Registry"] }
+
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
 tokio = { version = "1", features = ["test-util"] }
