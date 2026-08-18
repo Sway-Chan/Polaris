@@ -336,15 +336,26 @@ pub trait PopupTransport {
 pub struct PopupSession<T: PopupTransport> {
     transport: T,
     last_state: Option<UpdatePopupState>,
+    /// 会话代次（confirm 轮 🟡#4）：每次 [`Self::open`]（= 每次新建窗口）单调 +1，`reuse` 不动。
+    /// 自动关窗定时器捕获调度时的代次、fire 时核对——代次已进说明用户手动关掉旧窗后
+    /// **另一条腿开了新弹窗**，陈旧定时器不得把新窗关掉。本批把 noupdate 窗口从 800ms 拉到
+    /// 3000ms（3.75 倍），「3s 内关旧开新」从理论竞态变成现实可达，这条守卫是它的解。
+    generation: u64,
 }
 
 impl<T: PopupTransport> PopupSession<T> {
-    /// 构造会话（尚未建窗，`last_state` 为空）。
+    /// 构造会话（尚未建窗，`last_state` 为空，代次 0——第一次 `open` 进到 1）。
     pub fn new(transport: T) -> Self {
         Self {
             transport,
             last_state: None,
+            generation: 0,
         }
+    }
+
+    /// 当前会话代次（自动关窗定时器的核对值；语义见字段注释）。
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// **新建窗口路径的唯一入口**：产出注入页面的 bootstrap，并落 `last_state`。
@@ -361,6 +372,8 @@ impl<T: PopupTransport> PopupSession<T> {
         let init_script = Self::build_init_script(&state);
         // 先落 last_state：did-finish-load / renderer 崩溃重建时靠它重放（#300 的 lastPopupState 恒 null 即死在这）。
         self.last_state = Some(state);
+        // 新窗口 = 新代次（🟡#4）：让上一窗遗留的自动关窗定时器在 fire 时对不上号。
+        self.generation += 1;
         PopupBootstrap {
             init_script,
             width: POPUP_WIDTH,
@@ -585,11 +598,42 @@ mod tests {
 
     // ── 邀请过的版本号：会话级事实，跨 phase 不蒸发 ──
 
+    /// 🟡#4：代次语义——`open`（新建窗口）单调 +1，`reuse` / `send_state`（同窗流转）不动。
+    ///
+    /// 自动关窗定时器靠「调度时与 fire 时代次相等」判定「窗还是那一扇」。`reuse` 若也 +1，
+    /// 同一扇窗的正常流转会把合法定时器作废（终态永驻屏角）；`open` 若不 +1，新窗会被
+    /// 旧窗的陈旧定时器关掉（noupdate 3000ms 窗口内「关旧开新」竞态）。
+    ///
+    /// **变异探针**：把 `open` 里的 `self.generation += 1` 挪进 `reuse` ⇒ 第 3 条红；
+    /// 删掉 ⇒ 第 2 条红。
+    #[test]
+    fn generation_advances_only_on_new_windows() {
+        let mut s = PopupSession::new(RecordingTransport::default());
+        assert_eq!(s.generation(), 0, "未建窗的会话代次是 0");
+        s.open(UpdatePopupState::remind("v1.2.0", "v1.1.0"));
+        let first = s.generation();
+        assert_eq!(first, 1, "第一次建窗进到 1");
+        s.reuse(UpdatePopupState::progress(30, None, None)).unwrap();
+        s.send_state(UpdatePopupState::no_update(Some("v1.2.0".to_string())))
+            .unwrap();
+        assert_eq!(
+            s.generation(),
+            first,
+            "同一扇窗的状态流转（reuse/send_state）不得动代次 —— 动了会作废本窗的合法定时器"
+        );
+        s.open(UpdatePopupState::remind("v1.3.0", "v1.1.0"));
+        assert_eq!(
+            s.generation(),
+            first + 1,
+            "再次 open（新建窗口）必须 +1 —— 不加，旧窗的陈旧定时器会关掉新窗"
+        );
+    }
+
     /// 🟡 **不变量：一次弹窗会话邀请过的版本号，跨 phase 一直在。**
     ///
     /// `progress` / `error` / `done` 三个构造点都不填 `version`。不继承的话，会话一离开 remind 就
-    /// 忘了自己邀请过谁，而 `Error` 态恰恰挂着**两个**需要它的动作（[`PopupAction::is_valid_for`]：
-    /// `Retry` 与 `ManualDownload`）：
+    /// 忘了自己邀请过谁，而 `Error` 态恰恰挂着**两个**需要它的动作（[`PopupAction::is_valid_for`]
+    /// 白名单里的 `Retry` 与 `ManualDownload`）：
     ///  - `Retry`：宿主拿它与复查回来的版本对账。恒 `None` ⇒ 恒判「变了」⇒ 退回 remind、一个字节
     ///    都不下，「重试」退化成「返回」。
     ///  - `ManualDownload`：拿它拼该版本的 release tag 页；`None` 回落泛列表页（#311 修的就是这个）。
@@ -899,14 +943,33 @@ mod tests {
     /// 意义所在的反面：**新加的字段没有专属断言，全靠本门兜底**，兜漏了就是 `bytes_text` 躺一个
     /// 移植周期的形态原样复发。
     ///
-    /// 按花括号配对切之后，形参列表、`let` 绑定、`match` 臂一律不在取材面内 —— 收到形状上，
-    /// 而不是再加一个串去堵 `_file_path:`。
+    /// 按 `# 为什么取材面必须是字面量体` 收窄之后，形参列表、`let` 绑定、`match` 臂一律不在
+    /// 取材面内 —— 收到形状上，而不是再加一个串去堵 `_file_path:`。
+    ///
+    /// # ⚠️ `Self {` 的第一击可能不是字面量，是函数签名（confirm 轮 🔴#1 实证）
+    ///
+    /// `impl` 块里的构造函数签名长 `pub fn done(…) -> Self {`——`find("Self {")` **先命中它**，
+    /// 花括号配对切出来的是**整个函数体**，取材面悄悄宽回上一节刚否掉的那个形态：
+    /// `:902` 附近「形参不在取材面内」的旧登记与「没有跨行实参可混淆、认简写安全」的前提
+    /// 全部失效，且为消那个（本就不存在的）误红面放开的简写形态成了净回退。
+    /// 处置：命中 `Self {` 时若其前文本 `trim_end()` 以 `->` 结尾 ⇒ 是签名，跳过继续找下一个。
+    /// 收据（复审实跑）：删掉 `done` 的真写点 `file_path: Some(..)`、体内留一行折行实参 ⇒
+    /// 旧判据绿 / 本判据红；加零写点新字段后旁系结构体字面量在函数体内 ⇒ 旧判据全绿
+    /// （死字段静默过门）/ 本判据红（函数体不再入取材面）。
     fn self_literal_bodies() -> Vec<String> {
         let block = state_impl_block();
         let mut out = Vec::new();
         let mut from = 0usize;
         while let Some(rel) = block[from..].find("Self {") {
-            let open = from + rel + "Self {".len();
+            let at = from + rel;
+            // 函数签名的返回类型（`-> Self {`）不是字面量：跳过这一击，从它的下一个字符继续找。
+            // 判据咬 `->` 的裸形状而不解析语法——本 impl 内 `->` 只出现在签名位，够窄且响亮
+            // （写歪了会在下方的 `>= 4` 自检上炸，不会静默收窄）。
+            if block[..at].trim_end().ends_with("->") {
+                from = at + "Self {".len();
+                continue;
+            }
+            let open = at + "Self {".len();
             let mut depth = 1usize;
             let mut end = open;
             for (i, c) in block[open..].char_indices() {
@@ -928,7 +991,7 @@ mod tests {
         }
         assert!(
             out.len() >= 4,
-            "只切到 {} 个 `Self {{ … }}` 字面量 —— 构造函数写法变了，判据面塌了",
+            "只切到 {} 个 `Self {{ … }}` 字面量 —— 构造函数写法变了（或签名跳过判据失效），判据面塌了",
             out.len()
         );
         out
@@ -986,8 +1049,14 @@ mod tests {
         // `    file_path: impl Into<String>,` 就与字段写点同形，删掉真写点本门照样绿（复审实测
         // M4b）。收到字面量体之后，形参列表 / `let` 绑定 / `match` 臂一律不在取材面内。
         //
+        // ⚠️ **上一版这句话曾经是假的**（confirm 轮 🔴#1）：`find("Self {")` 先命中函数签名的
+        // `-> Self {`，配对切出来的是**整个函数体**，上面那段「不在取材面内」从未成立过——
+        // 取材器现在跳过 `->` 前缀的命中（见 [`self_literal_bodies`] 的 ⚠️ 段），本段才重新为真。
+        // 谁再动取材器，先重跑该段的变异收据，别让登记再次跑赢事实。
+        //
         // 字面量体内可以既认冒号形态又认简写形态（`Self { version, .. }`，`done` / `no_update`
-        // 里就有）：这里已经没有「跨行函数实参」可混淆了，认简写反而消掉一个误红面。
+        // 里就有）：字面量体内没有「跨行函数实参」可混淆，认简写消掉一个误红面
+        // （——这个前提同样依赖上面的签名跳过；签名混进来时「认简写」曾被折行实参喂饱过）。
         //
         // 失效方向（**登记修正**：上一版写成「两个方向都是误红」，那是错的，漏了下面第 2 条）：
         //  1. 误红 —— 某字段的写点整个消失。安全方向，正是本门要的。

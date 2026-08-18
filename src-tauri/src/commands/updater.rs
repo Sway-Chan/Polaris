@@ -2010,16 +2010,38 @@ pub async fn update_popup_action(
 /// 写死一个值就等于让后者一闪而过 —— 说了等于没说。
 ///
 /// 单独 spawn 而非在命令里 sleep：命令得立刻返回给渲染端，否则弹窗按钮多转这么久才复位。
+/// 读当前弹窗会话代次（无会话 / 锁不可得按 0；语义见 `PopupSession::generation`）。
+fn popup_generation(app: &AppHandle) -> u64 {
+    let Some(rt) = app.try_state::<AppRuntime>() else {
+        return 0;
+    };
+    let Ok(slot) = rt.updater().popup().lock() else {
+        return 0;
+    };
+    slot.as_ref().map_or(0, |s| s.generation())
+}
+
 fn schedule_popup_auto_close(app: &AppHandle, delay_ms: u64) {
+    // 🟡#4 代次守卫：捕获**调度时刻**的会话代次，fire 时核对。代次已前进 = 用户手动关掉本窗
+    // 后另一条腿开了新弹窗——陈旧定时器不得把新窗关掉（noupdate 窗口 3000ms 内这条竞态
+    // 现实可达）。核对放在 `close_update_popup` 之前，且本函数只读代次不持锁进入关闭路径。
+    let scheduled_gen = popup_generation(app);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
         let Some(rt) = app.try_state::<AppRuntime>() else {
             return;
         };
+        if popup_generation(&app) != scheduled_gen {
+            log::debug!(
+                "自动关窗跳过：会话代次已从 {scheduled_gen} 前进（旧窗的定时器不关新窗，见 🟡#4）"
+            );
+            return;
+        }
         // 延时期间用户若手动关了窗，`close_update_popup` 是幂等的（窗没了只清会话槽）。
         if let Err(e) = close_update_popup(&app, rt.updater().popup()) {
-            log::debug!("done 态自动关窗失败: {e}");
+            // 本函数同时服务 done 与 noupdate 两个终态（🟢#8），日志不写死「done 态」。
+            log::debug!("终态自动关窗失败: {e}");
         }
     });
 }
@@ -5025,16 +5047,28 @@ mod tests {
         // ── 区间的两个端点：先证明它们各自唯一，否则「落在区间内」可以被第二处锚点重新划定 ──
         const BRANCH_HEAD: &str = "let Some(info) = data.get(\"updateInfo\")";
         const BRANCH_EXIT: &str = "\"hasUpdate\": false";
-        for anchor in [BRANCH_HEAD, BRANCH_EXIT] {
-            let n = arm.matches(anchor).count();
-            assert_eq!(
-                n, 1,
-                "锚点 {anchor:?} 在本臂里出现 {n} 次（须恰好 1）—— 区间端点不唯一，\
-                 「落在分支内」这句话就不再指同一段代码"
-            );
-        }
+        // 🟡 #3（confirm 轮登记）：`BRANCH_EXIT` 曾要求**全臂恰 1**——正当的分支细分（把 no-update
+        // 拆成「平台不受支持」与「其它」，两边都各自 `hasUpdate:false` 早退）会误红。安全方向，
+        // 但留给后人的最省事修法就是把判据放宽跑 —— 这里先行改到**不随细分复制**的形态：
+        // 头锚保持恰 1（let-else 那一行不该重样）；尾锚取**最后一次**出现且至少一次，区间 =
+        // 头..最后一次。细分出的每一条子分支都被区间罩住，推送落在任一条里都判绿。
+        // ⚠️ 残余缺口如实登记（相对「恰 1」版弱了一格）：推送若被挪进 `updateInfo` **存在**的
+        // 路径、且位于所有 `hasUpdate:false` 之前，旧判据会红、新判据不红。补偿面：负向断言
+        // （全臂不得广播 Downloaded / 推 done）不变；且「挪进存在路径」意味着 no-update 分支
+        // 失去推送 ⇒ 弹窗永远转圈的缺陷形态，姊妹门与真机立即可见。
+        let head_n = arm.matches(BRANCH_HEAD).count();
+        assert_eq!(
+            head_n, 1,
+            "头锚 {BRANCH_HEAD:?} 在本臂里出现 {head_n} 次（须恰好 1）—— let-else 那一行被复制了，\
+             「落在分支内」这句话就不再指同一段代码"
+        );
+        let exit_n = arm.matches(BRANCH_EXIT).count();
+        assert!(
+            exit_n >= 1,
+            "尾锚 {BRANCH_EXIT:?} 在本臂里一次都没有 —— no-update 早退的形状变了，守卫失去判据"
+        );
         let head = arm.find(BRANCH_HEAD).expect("锚点消失：守卫已失去判据");
-        let exit = arm.find(BRANCH_EXIT).expect("锚点消失：守卫已失去判据");
+        let exit = arm.rfind(BRANCH_EXIT).expect("锚点消失：守卫已失去判据");
 
         // ── 那两发推送必须落在这条 `let-else` 的 else 体内 ──
         for (needle, why) in [
@@ -5047,7 +5081,36 @@ mod tests {
                 "`noupdate` 终态没有排自动关窗，或沿用了 done 的 800ms —— 后者一闪而过，等于没说",
             ),
         ] {
-            let at = arm.find(needle).unwrap_or_else(|| panic!("{why}（本臂里根本找不到）"));
+            // 🔴 唯一性断言（confirm 轮 #2 的修法）：`top_level_fn_body` 只剥**整行**注释
+            // （射程在 `commands.rs:47-50` 登记），**行尾注释携带同形串可以喂饱 `find`**。
+            // 剥行尾注释要先认字符串字面量（`commands.rs:51-53` 既有裁决：不划算），故两层兜：
+            //   ① `count == 1`：真调用 + 注释各一份 ⇒ 计数 2 ⇒ 红；
+            //   ② 行级拒绝：命中的那一行若 needle 之前就有 `//`（= needle 落在行尾注释里）不算数
+            //      ——「删掉真调用、只留一行注释」时计数仍 1，①抓不住，②让「找不到真调用」转红
+            //      （confirm 轮原始收据正是这个形态）。残余面：串字面量里带 `//` 又恰含同形串
+            //      ——登记不防（要认字符串就得 parser）。
+            let n = arm.matches(needle).count();
+            assert_eq!(
+                n, 1,
+                "needle {needle:?} 在本臂里出现 {n} 次（须恰好 1）—— 大概率是行尾注释携带了\
+                 同形串替真调用作证（`find` 命中哪一处全凭先后）：{why}"
+            );
+            // 命中行若在 needle 前就有 `//`，那是行尾注释不是代码——继续找代码行里的那一处。
+            let mut real_at = None;
+            let mut offset = 0usize;
+            for line in arm.lines() {
+                if line.contains(needle) {
+                    let before = line.split(needle).next().unwrap_or("");
+                    if !before.contains("//") {
+                        real_at = Some(offset + before.len());
+                        break;
+                    }
+                }
+                offset += line.len() + 1;
+            }
+            let at = real_at.unwrap_or_else(|| {
+                panic!("{why}（本臂里只剩行尾注释在携带这个串 —— 真调用没了，注释在替它作证）")
+            });
             assert!(
                 head < at && at < exit,
                 "{why}。实得 offset：分支头={head} / 本句={at} / 分支早退={exit} —— \
@@ -5980,5 +6043,38 @@ mod tests {
                 .into_owned();
             out.push((format!("{}/{}", root.trim_end_matches('/'), rel), n));
         }
+    }
+
+    /// 🟡 **调用点守卫（#4）：自动关窗定时器必须带代次核对。**
+    ///
+    /// `schedule_popup_auto_close` 服务 done（800ms）与 noupdate（3000ms）两个终态。窗口拉长后，
+    /// 「用户手动关掉 noupdate 卡 → 3s 内另一条腿开出新弹窗 → 陈旧定时器把新窗关掉」从理论
+    /// 竞态变成现实可达。解法 = 调度时捕获 `popup_generation`、fire 时核对不等即跳过。
+    /// 本守卫钉住这三件都在，删任何一件（= 退回无守卫形态）转红。
+    ///
+    /// **变异探针**：删 `let scheduled_gen = popup_generation(app);` ⇒ 第 1 条红；
+    /// 删 `if popup_generation(&app) != scheduled_gen` 那个分支 ⇒ 第 2 条红；
+    /// 把核对挪到 `close_update_popup` **之后**（先关再核对，守卫失效）⇒ 第 3 条红。
+    #[test]
+    fn auto_close_timer_is_generation_guarded() {
+        let body =
+            crate::commands::guard_scan::top_level_fn_body(SRC, "fn schedule_popup_auto_close(");
+        let capture_at = body
+            .find("let scheduled_gen = popup_generation(app);")
+            .expect("锚点消失：调度时的代次捕获没了 —— 定时器退回无守卫形态（🟡#4）");
+        let check_at = body
+            .find("if popup_generation(&app) != scheduled_gen {")
+            .expect("锚点消失：fire 时的代次核对没了 —— 陈旧定时器会关掉新窗");
+        let close_at = body
+            .find("close_update_popup(&app, rt.updater().popup())")
+            .expect("锚点消失：自动关窗的关闭调用没了");
+        assert!(
+            capture_at < check_at,
+            "代次捕获必须在 fire 核对之前（实得 capture={capture_at} / check={check_at}）"
+        );
+        assert!(
+            check_at < close_at,
+            "代次核对必须在关闭调用之前 —— 先关再核对等于没守（实得 check={check_at} / close={close_at}）"
+        );
     }
 }

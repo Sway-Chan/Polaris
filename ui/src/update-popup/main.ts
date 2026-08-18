@@ -133,8 +133,10 @@ function render(state: UpdatePopupState): void {
         </div>`;
       break;
 
-    // 「完成」得说得出**下的是哪一版、落在哪儿**：不带随行事实的 done 与「什么都没下」在屏幕上
-    // 长得一模一样 —— 后者此前正是借用本档收场的（见 `case 'noupdate'`）。
+    // 「完成」得说得出**下的是哪一版、是哪个包**（🟢#6：done 显示的是版本 + 文件名，不是
+    // 「落在哪儿」——完整路径放不下，取的是 `doneSubject` 的文件名，见 state-facts.ts）：
+    // 不带随行事实的 done 与「什么都没下」在屏幕上长得一模一样 —— 后者此前正是借用本档
+    // 收场的（见 `case 'noupdate'`）。
     case 'done': {
       const subject = doneSubject(state.version, state.filePath);
       root.innerHTML = `
