@@ -50,7 +50,7 @@ pub use core_build::{
 };
 pub use github::{
     check_app_update, find_suitable_singbox_asset, find_suitable_update_asset,
-    github_releases_api_url, parse_asset_digest, AppUpdateCheck, AppUpdateInfo, AssetArch,
+    github_releases_api_url, parse_asset_digest, strip_v, AppUpdateCheck, AppUpdateInfo, AssetArch,
     AssetPlatform, GithubAsset, GithubRelease, APP_UPDATE_REPO, CORE_UPDATE_REPO,
 };
 pub use manifest::{AssetSelector, ManifestError, VersionManifest, VersionManifestEntry};

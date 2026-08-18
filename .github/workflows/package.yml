@@ -277,19 +277,59 @@ jobs:
         with:
           node-version: '26'
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
+      # pnpm：不再经 pnpm/action-setup@v4（2026-08-17）。被替掉的 action 做的就是「按 version
+      # 装一份 pnpm 并加进 PATH」，`npm install -g` 等价 —— 少一次 action tarball 拉取，
+      # 顺手把版本钉成精确值，工具链才谈得上可复现。
+      # 放在 Setup Node **之后**：这样 npm 与全局 bin 目录都属于上一步装的 node 26，不跨版本。
+      #
+      # ── CI-2（2026-08-18）：9 → 10，与 ui.yml 统一 ──
+      # 此前这里 9 / ui.yml 10 的分歧不只是数字：pnpm 10 默认不跑依赖的生命周期脚本（ui gate
+      # 实测 `Ignored build scripts: esbuild@0.21.5`）⇒ 门腿与出包腿装出来的 node_modules 不是
+      # 一回事——「门验过的」不等于「出包用的」。统一到 10 的依据：
+      #   · 本地开发机就是 pnpm 10（10.33），tsc + 全量 vitest + vite build 恒绿 ⇒ 脚本被跳过
+      #     的安装语义对构建面无害（esbuild 的平台二进制走 optionalDependencies，不靠
+      #     postinstall；全树无 sharp/electron 这类真依赖编译脚本的包）；
+      #   · ui gate 用 10 已绿了很久，出包腿没有任何只属于 pnpm 9 的用法；
+      #   · 两个 workflow 的版本钉扎同时进了 parity 测试对拍，再分家会红。
+      # 收据：linux 打包腿 dispatch（run 见 SoT CI-2 条目）；windows/macos 打包腿的首验
+      # 留给下一次全矩阵（pnpm 10 在 win/mac 的行为与 linux 同源同配置，风险登记不动）。
+      - name: Setup pnpm (pinned)
+        shell: bash
+        env:
+          PNPM_VERSION: '10.34.5'
+        run: |
+          set -euo pipefail
+          npm install -g "pnpm@${PNPM_VERSION}"
+          got="$(pnpm --version)"
+          [ "$got" = "$PNPM_VERSION" ] || {
+            echo "::error::pnpm is '$got', expected '$PNPM_VERSION'"; exit 1; }
 
       - name: Install UI dependencies
         run: pnpm --dir ui install --frozen-lockfile
 
-      # ── Rust toolchain ──
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_targets_extra }}
+      # ── Rust toolchain（2026-08-17：不再经 dtolnay/rust-toolchain@stable，判据同 ci.yml 那段）──
+      # 三个 runner 镜像都自带 rustup 1.29。复刻被替掉那个 composite action 的全部副作用：
+      # `rustup toolchain install <tc> --profile minimal [--target …] --no-self-update`、
+      # `rustup default <tc>`、`CARGO_INCREMENTAL=0`、`CARGO_TERM_COLOR=always`、打印 `rustc -Vv`。
+      # ⚠️ 本腿**不传 components**（原样保留：打包腿不跑 fmt/clippy，那两条在 ci gate 上）。
+      # `--target` 的展开方式与被替掉的 action 逐字同构（逗号切成空格、空值就不出现这个 flag）；
+      # `$flags` 故意不加引号 —— 要的就是词分割，target triple 不含空格。用字符串而不是数组是
+      # 因为 macOS runner 的 /bin/bash 是 3.2，`set -u` 下空数组展开会直接报 unbound variable。
+      - name: Install Rust stable (preinstalled rustup)
+        shell: bash
+        env:
+          RUST_TARGETS_EXTRA: ${{ matrix.rust_targets_extra }}
+        run: |
+          set -euo pipefail
+          extra="${RUST_TARGETS_EXTRA:-}"
+          flags=''
+          for t in ${extra//,/ }; do flags="$flags --target $t"; done
+          # shellcheck disable=SC2086  # 词分割是本意：空值时这个 flag 整体消失，与被替掉的 action 同构
+          rustup toolchain install stable --profile minimal --no-self-update $flags
+          rustup default stable
+          [ -n "${CARGO_INCREMENTAL+set}" ] || echo 'CARGO_INCREMENTAL=0' >> "$GITHUB_ENV"
+          [ -n "${CARGO_TERM_COLOR+set}" ] || echo 'CARGO_TERM_COLOR=always' >> "$GITHUB_ENV"
+          rustc -Vv
 
       # rust-cache 默认键 = job_id + toolchain + 环境哈希，**不含 matrix**。两个 mac job 的 job_id
       # 同为 `package`、runner 与 toolchain 也相同 ⇒ 同键：互相 restore 对方的 target/ 并在 save 上
@@ -310,15 +350,57 @@ jobs:
             librsvg2-dev libglib2.0-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
             libdbus-1-dev pkg-config
 
-      # ── 原生构建前置：protoc（singbox-grpc build.rs 三平台都要）+ Windows NASM（boring-sys2/BoringSSL 汇编）──
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # ── 原生构建前置：protoc（singbox-grpc build.rs 三平台都要）+ Windows NASM（喂 btls-sys
+      # 的 BoringSSL 汇编；曾名 boring-sys2，grep "boring" 会扑空——2026-08-18 探针实测移除该步
+      # ⇒ Windows 腿 CMake configure 死在 btls-sys v0.5.6，**活步，勿删**，完整记录在 ci.yml）──
+      #
+      # protoc 自 2026-08-18（CI-4）起走 `scripts/fetch-protoc.mjs`：钉扎常量与版本依据的唯一
+      # 真值在脚本里（头注），本文件与 ci.yml 不再各持一份 —— 对拍测试的 protoc 部分已退休。
+      # NASM 仍是两处内联：判据与版本依据写在 `ci.yml` 同名步上方，**改 NASM 前先读那段**，
+      # 两个文件的 NASM 常量必须同时改，改一处就漂移（对拍照旧）。
+      - name: Install protoc (pinned URL + sha256)
+        run: node scripts/fetch-protoc.mjs
 
-      - name: Install NASM (Windows — boring-sys2/BoringSSL asm)
+      - name: Install NASM (Windows — pinned URL + sha256)
         if: runner.os == 'Windows'
-        uses: ilammy/setup-nasm@v1
+        shell: bash
+        env:
+          NASM_VERSION: '2.16.01'
+        run: |
+          set -euo pipefail
+          sha256='029eed31faf0d2c5f95783294432cbea6c15bf633430f254bb3c1f195c67ca3a'
+          tmp="$(cygpath -u "$RUNNER_TEMP")"
+          zip="${tmp}/nasm-${NASM_VERSION}-win64.zip"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 20 -o "$zip" \
+            "https://www.nasm.us/pub/nasm/releasebuilds/${NASM_VERSION}/win64/nasm-${NASM_VERSION}-win64.zip"
+          echo "${sha256}  ${zip}" | sha256sum -c -
+          rm -rf "${tmp}/nasm-${NASM_VERSION}"
+          # 本步 Windows-only，故校验器不写平台分支（写了另一条也是死代码）；解压器用 System32
+          # 的 bsdtar 绝对路径、不用 `7z`——理由（少押一个「7z 在 Git Bash 的 PATH 上」）写在
+          # `ci.yml` 同名步骤上方。落点是 RUNNER_TEMP（runner 保证存在），故无需 `mkdir -p`。
+          echo 'extractor: /c/Windows/System32/tar.exe (bsdtar)'
+          /c/Windows/System32/tar.exe -xf "$(cygpath -w "$zip")" -C "$(cygpath -w "$tmp")"
+          cygpath -w "${tmp}/nasm-${NASM_VERSION}" >> "$GITHUB_PATH"
+          echo "NASM_EXPECT=${NASM_VERSION}" >> "$GITHUB_ENV"
+
+      # 断言的理由与写法同 ci.yml 那步：静默 no-op 的安装步骤比没有更坏，且期望值来自上面两步
+      # 写进 $GITHUB_ENV 的变量 —— 哪一步没执行，这里就因 `set -u` 直接红，「没执行」自曝。
+      - name: Assert pinned tools resolve on PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "protoc → $(command -v protoc)"
+          got="$(protoc --version)"
+          [ "$got" = "$PROTOC_EXPECT" ] || {
+            echo "::error::protoc on PATH is '$got', expected '$PROTOC_EXPECT'"; exit 1; }
+          if [ "$RUNNER_OS" = 'Windows' ]; then
+            echo "nasm → $(command -v nasm)"
+            got="$(nasm -v)"
+            case "$got" in
+              "NASM version ${NASM_EXPECT} "*) ;;
+              *) echo "::error::nasm on PATH is '$got', expected NASM version ${NASM_EXPECT}"; exit 1 ;;
+            esac
+          fi
 
       # ── 资产拉取（SHA256 钉扎，供应链防护核心）──
       # 三平台一律全拉（不按 runner 过滤）——支持 Linux 上交叉构建。

@@ -193,7 +193,11 @@ pub fn parse_asset_digest(digest: &str) -> Option<String> {
 }
 
 /// 去 tag 的前导 `v`（= 上游 `tag_name.replace(/^v/, '')`——仅小写 `v`，仅前导一处）。
-fn strip_v(tag: &str) -> &str {
+///
+/// `pub` 不是给外部自由用：[`check_app_update`] 拿它算比较侧（`strip_v(tag)`），而「跳过此版本」
+/// 的**存储侧**必须用同一个函数归一化（W8）——两侧各自实现一份就是「v0.2.0 存进去、0.2.0 比
+/// 出来，永不相等」的原发病理。导出它是为了让写点复用同一真值。
+pub fn strip_v(tag: &str) -> &str {
     tag.strip_prefix('v').unwrap_or(tag)
 }
 
@@ -950,6 +954,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r, AppUpdateCheck::NoUpdate);
+
+        // W8 反例（同口径门的另一半）：存**原始 tag**（`v0.2.0`，修复前两个写点的实存形态）
+        // ⇒ 与比较侧 strip_v 后的值永不相等 ⇒ 照常报 Available。若有人把比较侧改回原始 tag
+        // 来「修」跳过，这半句转红——口径必须由写侧归一化（stored_skip_version），
+        // 不是把比侧改脏。
+        let raw = check_app_update(
+            &json,
+            "0.1.0",
+            false,
+            Some("v0.2.0"),
+            AssetPlatform::Macos,
+            AssetArch::Arm64,
+            false,
+        )
+        .unwrap();
+        assert!(
+            matches!(raw, AppUpdateCheck::Available(_)),
+            "原始 tag 不该命中跳过——命中了说明比较侧被改回原始 tag 口径"
+        );
     }
 
     #[test]
