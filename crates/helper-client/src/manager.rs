@@ -999,10 +999,16 @@ fn build_win_install_script(params: &InstallParams, token: &str) -> String {
     let bin_path = format!(
         "\"{helper_dst}\" --singbox \"{singbox}\" --confdir \"{conf_dir}\" --support \"{support}\""
     );
-    let sc = r"$env:SystemRoot\System32\sc.exe";
-    let icacls = r"$env:SystemRoot\System32\icacls.exe";
+    // 🔴 $env: 引用必须走「双引号变量赋值 + 裸变量调用」：PowerShell 单引号是字面量，
+    // `& '$env:SystemRoot\icacls.exe'` 不展开 → CommandNotFound + EAP=Stop → 脚本死在
+    // New-Item 之后第一条 icacls（目录建了、之后全没做）。2026-08-19 .207 提权重放首曝，
+    // 该病自 TS 移植起就存在、从未在任何 Windows 机器上成功执行过（E0 的深层前提）。
+    let sc = r#"$sc = "$env:SystemRoot\System32\sc.exe""#;
+    let icacls = r#"$icacls = "$env:SystemRoot\System32\icacls.exe""#;
     format!(
         "$ErrorActionPreference = 'Stop'\n\
+{sc}\n\
+{icacls}\n\
 $support = '{support_q}'\n\
 $tokenFile = '{token_file_q}'\n\
 $helperSrc = '{exe_q}'\n\
@@ -1010,13 +1016,13 @@ $helperDst = '{helper_dst_q}'\n\
 $bp = '{bin_path_q}'\n\
 New-Item -ItemType Directory -Force -Path $support | Out-Null\n\
 # 锁目录 ACL：去继承、仅 SYSTEM/Administrators 完全控制并 (OI)(CI) 下传 → token/exe 出生即 SYSTEM/Admin 私有。\n\
-& '{icacls}' $support /inheritance:r | Out-Null\n\
-& '{icacls}' $support /grant:r \"SYSTEM:(OI)(CI)(F)\" \"Administrators:(OI)(CI)(F)\" | Out-Null\n\
+& $icacls $support /inheritance:r | Out-Null\n\
+& $icacls $support /grant:r \"SYSTEM:(OI)(CI)(F)\" \"Administrators:(OI)(CI)(F)\" | Out-Null\n\
 # 先删残留旧 token 再写（旧 Admin 只读会拒 Set-Content 覆盖；经目录 FILE_DELETE_CHILD 删旧不受其自身 DACL 阻挡）。\n\
 Remove-Item -Force -Path $tokenFile -ErrorAction SilentlyContinue\n\
 Set-Content -Path $tokenFile -Value '{token_q}' -NoNewline -Encoding ascii\n\
-& '{sc}' stop {service} 2>$null | Out-Null\n\
-& '{sc}' delete {service} 2>$null | Out-Null\n\
+& $sc stop {service} 2>$null | Out-Null\n\
+& $sc delete {service} 2>$null | Out-Null\n\
 # sc delete 异步标记删除 → 轮询等服务真消失，否则 New-Service 撞 1072。\n\
 $deadline = (Get-Date).AddSeconds(15)\n\
 while ((Get-Service -Name {service} -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) {{ Start-Sleep -Milliseconds 300 }}\n\
@@ -1027,8 +1033,8 @@ for ($i = 0; $i -lt 10 -and -not $copied; $i++) {{\n\
   catch {{ Start-Sleep -Milliseconds 300 }}\n\
 }}\n\
 if (-not $copied) {{ throw \"复制 helper.exe 到 ProgramData 失败（旧服务二进制可能仍被占用，请稍后重试或重启后再装）\" }}\n\
-& '{icacls}' $helperDst /inheritance:r | Out-Null\n\
-& '{icacls}' $helperDst /grant:r \"SYSTEM:(F)\" \"Administrators:(F)\" | Out-Null\n\
+& $icacls $helperDst /inheritance:r | Out-Null\n\
+& $icacls $helperDst /grant:r \"SYSTEM:(F)\" \"Administrators:(F)\" | Out-Null\n\
 # New-Service 退避重试（1072 窗口）：BinaryPathName 单一字符串直达 CreateService；默认 LocalSystem；Automatic 开机自启。\n\
 $created = $false\n\
 $lastErr = $null\n\
@@ -1037,7 +1043,7 @@ for ($i = 0; $i -lt 10 -and -not $created; $i++) {{\n\
   catch {{ $lastErr = $_; Start-Sleep -Milliseconds 500 }}\n\
 }}\n\
 if (-not $created) {{ throw \"New-Service 失败（重试 10 次；多为 sc delete 标记删除态 1072 竞态，若持续请重启）：$($lastErr.Exception.Message)\" }}\n\
-& '{sc}' start {service} | Out-Null\n",
+& $sc start {service} | Out-Null\n",
         support_q = ps_quote(support),
         token_file_q = ps_quote(&token_file),
         exe_q = ps_quote(&exe),
@@ -1051,13 +1057,16 @@ if (-not $created) {{ throw \"New-Service 失败（重试 10 次；多为 sc del
 }
 
 /// win 卸载脚本（PowerShell）。忠实迁自 WindowsServiceHelper.ts:510-517。
+/// $env: 同 install 走双引号变量 + 裸调用（单引号字面量病 2026-08-19 一并修；本脚本
+/// EAP=SilentlyContinue，病发时静默什么都不卸——「卸载点了没反应」的隐性形态）。
 fn build_win_uninstall_script() -> String {
-    let sc = r"$env:SystemRoot\System32\sc.exe";
+    let sc = r#"$sc = "$env:SystemRoot\System32\sc.exe""#;
     format!(
         "$ErrorActionPreference = 'SilentlyContinue'\n\
-& '{sc}' stop {service} 2>$null | Out-Null\n\
+{sc}\n\
+& $sc stop {service} 2>$null | Out-Null\n\
 Start-Sleep -Milliseconds 300\n\
-& '{sc}' delete {service} 2>$null | Out-Null\n\
+& $sc delete {service} 2>$null | Out-Null\n\
 Remove-Item -Recurse -Force -Path '{support_q}' -ErrorAction SilentlyContinue\n",
         sc = sc,
         service = WIN_SERVICE_NAME,
@@ -1953,10 +1962,27 @@ mod tests {
             ),
             "缺 New-Service"
         );
-        assert!(s.contains("' start PolarisHelper"), "缺 sc start");
+        assert!(s.contains("& $sc start PolarisHelper"), "缺 sc start");
+        assert!(s.contains("& $icacls $support /inheritance:r"), "缺 icacls inheritance:r");
         assert!(
             s.contains("$ErrorActionPreference = 'Stop'"),
             "缺 fail-loud"
+        );
+        // 🔴 病根牙（2026-08-19 提权重放首曝）：`& '$env:...'` / `& '$sc'` 这类**单引号包任何
+        // $ 引用**都是字面量不展开 → CommandNotFound + EAP=Stop → 脚本必死。本脚本所有 `& `
+        // 调用位都应是裸变量/裸路径，出现 `& '$` 即病（评审实证：分句带冒号的禁令是永真死针，
+        // `& '$sc'` 穿透）。
+        assert!(
+            !s.contains("& '$"),
+            "win 安装脚本出现单引号包 $ 引用的调用——CommandNotFound 必死形态"
+        );
+        assert!(
+            s.contains(r#"$icacls = "$env:SystemRoot\System32\icacls.exe""#),
+            "缺 $env: 双引号变量赋值（icacls）"
+        );
+        assert!(
+            s.contains(r#"$sc = "$env:SystemRoot\System32\sc.exe""#),
+            "缺 $env: 双引号变量赋值（sc）"
         );
     }
 
@@ -1969,7 +1995,14 @@ mod tests {
         assert!(lin.contains("systemctl disable --now polaris-helper.service"));
         assert!(lin.contains("rm -rf '/usr/local/lib/polaris' '/var/lib/polaris' '/run/polaris'"));
         let win = build_win_uninstall_script();
-        assert!(win.contains("' delete PolarisHelper"));
+        assert!(win.contains("& $sc delete PolarisHelper"));
+        assert!(win.contains("& $sc stop PolarisHelper"));
+        // 同 install 的病根牙（最强形）：单引号包任何 $ 引用的调用即病；本脚本 EAP=
+        // SilentlyContinue，病发时静默什么都不卸——「卸载点了没反应」的隐性形态。
+        assert!(
+            !win.contains("& '$"),
+            "win 卸载脚本出现单引号包 $ 引用的调用——静默不卸的必死形态"
+        );
         assert!(win.contains(r"Remove-Item -Recurse -Force -Path 'C:\ProgramData\Polaris'"));
     }
 
