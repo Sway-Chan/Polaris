@@ -40,13 +40,22 @@ const UNINSTALL_RECHECK_INTERVAL: Duration = Duration::from_millis(500);
 /// 不决定「看门狗死不死」。
 const WATCHDOG_JOIN_BUDGET: Duration = Duration::from_secs(20);
 
-/// 上游 `HELPER_GET_STATUS`：helper 安装/就绪/版本状态（真探测 HelperManager.compute_status）。
+/// 上游 `HELPER_GET_STATUS`：helper 安装/就绪/版本状态（真探测，W20 后带恢复腿）。
+///
+/// **必须异步跑**：W20 恢复腿让「已装但停着」的探测先拉服务再复核（典型 3-5s，起即崩/管道不绑时
+/// 更久）。同步命令在主线程执行，这个量级会冻 UI——与 install/uninstall 同口径挂 spawn_blocking。
 #[tauri::command]
-pub fn helper_get_status(
+pub async fn helper_get_status(
     state: State<'_, AppRuntime>,
     _force: Option<bool>,
-) -> ApiResponse<HelperStatusSnapshot> {
-    ApiResponse::ok(state.helper().status())
+) -> Result<ApiResponse<HelperStatusSnapshot>, ()> {
+    let helper = state.helper.clone();
+    Ok(
+        match tokio::task::spawn_blocking(move || helper.status()).await {
+            Ok(s) => ApiResponse::ok(s),
+            Err(e) => ApiResponse::err(format!("helper 状态任务异常终止: {e}")),
+        },
+    )
 }
 
 /// 上游 `HELPER_INSTALL`：安装 helper（弹一次提权框）。
