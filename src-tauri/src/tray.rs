@@ -787,8 +787,9 @@ fn install_click_monitor(app: &AppHandle) {
 }
 
 /// 拆全局鼠标按下监听器（defect#3）。任一收起路径经 [`hide_overlay`] 调用。`removeMonitor:` 必须在**主
-/// 线程**，故经 `run_on_main_thread` 调度（`tray_*` command 在异步 runtime 线程跑；Focused(false)/
-/// toggle_overlay/monitor handler 在主线程跑——统一调度都安全）。`take()` 去重，保证同一 monitor 只 remove
+/// 线程**，故经 `run_on_main_thread` 调度（同步 command 在 WebView2 IPC 分发栈=主线程内直跑、
+/// `async fn` command 才被 spawn 到异步 runtime；Focused(false)/toggle_overlay/monitor handler 在
+/// 主线程跑——统一调度都安全）。`take()` 去重，保证同一 monitor 只 remove
 /// 一次。非 mac 不编译（无此函数）。
 #[cfg(target_os = "macos")]
 fn remove_click_monitor(app: &AppHandle) {
@@ -1093,9 +1094,32 @@ pub fn tray_quit(app: AppHandle) -> ApiResponse<()> {
     ok_void()
 }
 
-/// C16 进入轻量模式：**销毁主窗 webview 释放内存，保托盘 + 核活**（≠ 关窗到托盘的 `hide()`——那只隐藏、
-/// renderer 进程仍活=内存未释放）。两个入口共用：托盘浮层「进入轻量模式」项 + 主进程窗口驻留巡检。
+/// C16 进入轻量模式（command 壳）：**只做排队，不做转场**。
+///
+/// W18/F1（评审，2026-08-20）：本命令经托盘浮层按钮 invoke。**同步** command 由 tauri-macros 的
+/// Blocking 路生成，在 WebView2 `WebResourceRequested` 分发栈（主线程）内直跑——若帧内执行转场，
+/// 销毁的恰是**正在处理这条 IPC 的浮层自身**（deferral 未 Complete）+ 主窗，与 W18 真机证实的
+/// CloseRequested 帧内销毁死锁同构。`async fn` command 被 tauri spawn 到 tokio worker（帧外，
+/// tokio worker 恒非主线程），再经 `run_on_main_thread` 排回主线程**事件循环帧外**执行转场本体
+/// （注意：`run_on_main_thread` 从主线程调用是内联直执——async command 保证了调用点不在主线程）。
+#[tauri::command]
+pub async fn tray_enter_lightweight(app: AppHandle) -> ApiResponse<()> {
+    let h = app.clone();
+    let h2 = h.clone();
+    if let Err(e) = h.run_on_main_thread(move || enter_lightweight_transition(h2)) {
+        log::warn!("轻量转场排队失败（事件循环已关闭？主窗/浮层保持原状，托盘唤出可用）：{e}");
+    }
+    ok_void()
+}
+
+/// 轻量转场本体：**销毁主窗 webview 释放内存，保托盘 + 核活**（≠ 关窗到托盘的 `hide()`——那只隐藏、
+/// renderer 进程仍活=内存未释放）。三个入口共用：托盘浮层「进入轻量模式」command（排回腿）+
+/// 主进程窗口驻留巡检（idle 腿）+ `CloseRequested` 的轻量分流（延后腿）。
 /// 对齐 上游 `releaseWindowMemory` + `markLightweightModeTransition`。
+///
+/// **调用契约**：主线程、且不在任何窗口/WebView2 事件回调分发栈内（close 消息栈 / IPC
+/// WebResourceRequested 栈都不行——帧内销毁 = W18 死锁形态）。三个调用点各自负责跳帧后
+/// 再调本函数；本函数自身不再排队（主线程内再 `run_on_main_thread` 是内联直执，排了个寂寞）。
 ///
 /// 顺序（以 destroy 成功为事务提交点）：
 ///  1. 置 `LightweightState`：万一销毁末窗触发 `ExitRequested`，`main.rs` 守卫据此**保核 + 阻退**（轻量恒不停核）。
@@ -1106,8 +1130,7 @@ pub fn tray_quit(app: AppHandle) -> ApiResponse<()> {
 ///     原页面订阅。webview 销毁不触发 `on_page_load`，成功后不清账会让 gRPC/log emitter 永续工作。
 /// 用户经托盘浮层内明确入口、Linux 原生菜单或 Dock/任务栏唤出时，`show_main_window` 走
 /// `create_main_window` 重建。
-#[tauri::command]
-pub fn tray_enter_lightweight(app: AppHandle) -> ApiResponse<()> {
+pub(crate) fn enter_lightweight_transition(app: AppHandle) {
     app.state::<crate::LightweightState>()
         .0
         .store(true, Ordering::SeqCst);
@@ -1144,7 +1167,6 @@ pub fn tray_enter_lightweight(app: AppHandle) -> ApiResponse<()> {
         crate::commands::misc::clear_log_stream_window("main");
         crate::set_macos_dock_visible(&app, false);
     }
-    ok_void()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1366,7 +1388,7 @@ mod overlay_lifecycle_gate {
     fn main_window_destroy_is_a_transactional_lifecycle_boundary() {
         let body = crate::commands::guard_scan::top_level_fn_body(
             TRAY_RS,
-            "pub fn tray_enter_lightweight(",
+            "pub(crate) fn enter_lightweight_transition(",
         );
         let destroying = body
             .find("mark_main_window_destroying()")
@@ -1387,6 +1409,71 @@ mod overlay_lifecycle_gate {
                 && body.contains("store(false, Ordering::SeqCst)"),
             "destroy 失败必须同时回滚窗口生命周期与 LightweightState"
         );
+    }
+
+    /// W18（2026-08-19 真机）：CloseRequested 帧内不得同步调 `tray_enter_lightweight`（内含
+    /// 主窗+浮层两个 WebView 的 `destroy()`）——Windows 上在窗口自身 close 消息分发栈里销毁
+    /// WebView2 会楔死消息泵（首实例托盘全死、双击再起第二进程双图标）。帧内只许轻操作
+    /// （hide），转场必须「跳离主线程 → run_on_main_thread 排回帧外」。
+    ///
+    /// 次序即语义：`win.hide()`（帧内即时视觉关闭）→ `async_runtime::spawn`（跳离）→
+    /// `run_on_main_thread`（排回）→ `tray_enter_lightweight`（帧外销毁）。任何一步次序倒换
+    /// （尤其把 tray_enter_lightweight 挪回 spawn 之前 = 帧内直调）本条转红。
+    #[test]
+    fn lightweight_transition_is_deferred_out_of_close_frame() {
+        let arm = MAIN_RS
+            .split_once("CloseAction::EnterLightweight => {")
+            .and_then(|(_, rest)| rest.split_once("CloseAction::QuitApp => {"))
+            .map(|(arm, _)| arm)
+            .expect("必须能切出 CloseRequested 的 EnterLightweight 分支");
+        // 针带语法特征（限定路径/点调用/实参形态），避免命中写进 arm 注释里的裸词。
+        let hide_at = arm
+            .find("win.hide()")
+            .expect("帧内必须先隐藏（即时关闭视觉）");
+        let spawn_at = arm
+            .find("tauri::async_runtime::spawn")
+            .expect("必须跳离主线程（run_on_main_thread 从主线程调用是内联直执）");
+        let queue_at = arm
+            .find(".run_on_main_thread(")
+            .expect("必须经 run_on_main_thread 排回主线程");
+        let enter_at = arm
+            .find("enter_lightweight_transition(h2)")
+            .expect("转场入口必须在位（帧外闭包内，以 h2 实参形态）");
+        // F2（评审）：排回闭包内、销毁之前必须复核主窗未被重新唤出（排队饥饿时用户可能已唤回）。
+        let recheck_at = arm
+            .find("win.is_visible()")
+            .expect("销毁前必须复核主窗可见性（迟到销毁不得杀用户刚唤出的窗）");
+        assert!(
+            hide_at < spawn_at
+                && spawn_at < queue_at
+                && queue_at < recheck_at
+                && recheck_at < enter_at,
+            "轻量转场次序必须为 hide → spawn → run_on_main_thread → is_visible 复核 → enter（帧内直调即 W18 死锁形态）"
+        );
+    }
+
+    /// W18/F1（评审）：`tray_enter_lightweight` command 是托盘浮层按钮的 invoke 入口——
+    /// 同步 command 跑在 WebView2 IPC 分发栈（主线程）内，帧内销毁浮层自身即 W18 死锁
+    /// 同构形态。command 必须是 `async fn`（tauri spawn 到 tokio worker = 帧外）且体内
+    /// 只排队（`run_on_main_thread` → `enter_lightweight_transition`），不得直跑销毁。
+    /// 变异锁：改回同步直调 / 删排队直调本体 → 本条红。
+    #[test]
+    fn lightweight_command_defers_out_of_ipc_frame() {
+        let body = crate::commands::guard_scan::top_level_fn_body(
+            TRAY_RS,
+            "pub async fn tray_enter_lightweight(",
+        );
+        assert!(
+            !body.contains("win.destroy()"),
+            "command 体内不得直跑销毁（IPC 分发栈内）"
+        );
+        let queue_at = body
+            .find(".run_on_main_thread(")
+            .expect("command 必须经 run_on_main_thread 排回主线程帧外");
+        let enter_at = body
+            .find("enter_lightweight_transition(h")
+            .expect("转场必须经本体 fn（帧外闭包内）");
+        assert!(queue_at < enter_at, "次序必须是排队在先、转场在排回闭包内");
     }
 
     #[test]

@@ -1276,7 +1276,39 @@ fn create_main_window(
                     // 明确点“关闭”与最小化分流：前者进入轻量驻留，后者仍只 minimize。暂存层已经
                     // 持久化到 localStorage，可跨 WebView 重建恢复；正在编辑但尚未提交的弹窗草稿按
                     // 关闭窗口语义丢弃。自动轻量开关只控制 idle 触发，不控制本条显式关闭腿。
-                    let _ = crate::tray::tray_enter_lightweight(app_handle.clone());
+                    //
+                    // W18（2026-08-19 真机）：**不得在本回调帧内同步销毁 WebView2**。Windows 上
+                    // CloseRequested 跑在窗口自身 close 消息的分发栈里，帧内 `destroy()` 主窗 +
+                    // 托盘浮层两个 WebView 会把消息泵楔死——症状：首实例托盘全无响应，双击桌面
+                    // 再起一个进程、双托盘图标、主窗谁也弹不出，只能任务管理器全杀。帧内只做两件
+                    // 轻事：挡关闭 + 立即隐藏（视觉即时关闭）；转场销毁排到帧外——先跳 async
+                    // 线程再 `run_on_main_thread` 排回事件循环（注意：从主线程调
+                    // `run_on_main_thread` 是内联直执，不跳线程等于没排）。排队失败只 warn：主窗
+                    // 已隐藏、可经托盘唤出重建，不比不修差。
+                    if let Some(win) = app_handle.get_webview_window("main") {
+                        let _ = win.hide();
+                    }
+                    let h = app_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let h2 = h.clone();
+                        if let Err(e) = h.run_on_main_thread(move || {
+                            // F2 复核（评审）：排队期间（极端调度饥饿下）用户可能已把主窗唤回
+                            // （show_main_window 对未销毁的窗走 present）。此刻可见 = 用户意图
+                            // 已翻盘，放弃本轮销毁——LightweightState 由转场本体置位，跳过即
+                            // 无需回滚。idle 巡检腿对同一函数有同款复核，这里补齐对称。
+                            if let Some(win) = h2.get_webview_window("main") {
+                                if win.is_visible().unwrap_or(false) {
+                                    log::info!(
+                                        "轻量转场复核：主窗在排队期间被重新唤出，放弃本轮销毁"
+                                    );
+                                    return;
+                                }
+                            }
+                            crate::tray::enter_lightweight_transition(h2);
+                        }) {
+                            log::warn!("轻量转场排队失败（主窗已隐藏，可经托盘唤出重建）：{e}");
+                        }
+                    });
                 }
                 CloseAction::QuitApp => {
                     // 置 QuitState 再退：这条腿现在也会在**托盘在**时触发（用户选了「退出应用」），

@@ -97,7 +97,7 @@ fn enter_lightweight_if_still_hidden(app: &AppHandle) {
             }
         }
         log::info!("自动轻量模式：主窗口已隐藏或最小化 ≥{HIDDEN_RECLAIM_SECS}s，释放主 WebView");
-        let _ = crate::tray::tray_enter_lightweight(app_for_main.clone());
+        crate::tray::enter_lightweight_transition(app_for_main.clone());
     });
     if let Err(error) = post {
         log::warn!("自动轻量模式：投递主线程失败（{error}），本轮不回收");
