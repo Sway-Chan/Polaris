@@ -239,25 +239,27 @@ impl HelperManager {
     /// 全 false、连管道都不 ping，把可修复态误报成未安装态。
     #[must_use]
     pub fn is_installed(&self) -> bool {
-        // Windows（W17，2026-08-19 首次成功安装后暴露）：安装脚本把 support 目录 ACL 锁成
-        // SYSTEM/Administrators-only（token/exe 出生即私有，防窃取），而 Administrators 组在
-        // **UAC 过滤令牌**里是 deny-only ⇒ 未提权 app 连 stat 二进制都被拒（真机实测
-        // Test-Path=False，提权=True）→ 文件证据恒 false → 状态卡「未安装」。改用 **SCM 单证据**：
-        // 服务由安装脚本与二进制同事务创建（New-Service 在 Copy-Item 之后、任一失败整个脚本
-        // fail-loud 回滚不了但也不装服务），SCM 查询未提权可用（真机实测 sc query exit=0）。
-        #[cfg(target_os = "windows")]
-        {
-            self.sysops.service_exists(self.paths.service_label)
-        }
-        // mac/linux：support 目录无此 ACL 锁（plist/unit 可 stat），保持 binary+描述符双证据。
-        #[cfg(not(target_os = "windows"))]
-        {
-            if !self.sysops.exists(&self.paths.binary) {
-                return false;
-            }
-            match &self.paths.descriptor {
-                Some(desc) => self.sysops.exists(desc),
-                None => self.sysops.service_exists(self.paths.service_label),
+        // 证据集按 **Platform 枚举**分派（2026-08-20 订正：原先按编译目标 cfg 分叉——win 编译
+        // 目标上非 Win 平台的管理器也被拽进 SCM 分支，CI win 腿六测全红；而 push 只跑 ubuntu 腿，
+        // 全矩阵 dispatch 才暴露）。生产行为不变：真 Windows 上 Platform 恒为 Win。
+        match self.platform {
+            // Windows（W17，2026-08-19 首次成功安装后暴露）：安装脚本把 support 目录 ACL 锁成
+            // SYSTEM/Administrators-only（token/exe 出生即私有，防窃取），而 Administrators 组在
+            // **UAC 过滤令牌**里是 deny-only ⇒ 未提权 app 连 stat 二进制都被拒（真机实测
+            // Test-Path=False，提权=True）→ 文件证据恒 false → 状态卡「未安装」。故 **SCM 单证据**：
+            // 服务由安装脚本与二进制同事务创建（New-Service 在 Copy-Item 之后），SCM 查询未提权
+            // 可用（真机实测 sc query exit=0）。取舍：孤儿二进制（拷了没建成服务）判未装可重装；
+            // 服务在而二进制被手删判已装（ping 挂 → needs_repair 可修复，优于误报未装）。
+            Platform::Win => self.sysops.service_exists(self.paths.service_label),
+            // mac/linux：support 目录无此 ACL 锁（plist/unit 可 stat），binary+描述符双证据。
+            _ => {
+                if !self.sysops.exists(&self.paths.binary) {
+                    return false;
+                }
+                match &self.paths.descriptor {
+                    Some(desc) => self.sysops.exists(desc),
+                    None => self.sysops.service_exists(self.paths.service_label),
+                }
             }
         }
     }
@@ -1445,9 +1447,11 @@ mod tests {
         );
     }
 
-    /// W17 防回潮（源码级：win 分支 Linux 不编译，行为由真机验，编译由 CI win 腿兜）：
-    /// is_installed 的 win 形态必须「SCM 单证据早退」，不得回到文件 stat——安装脚本的
-    /// ACL 锁下未提权 app 恒 false（2026-08-19 .207 实测 Test-Path=False 而 sc query=0）。
+    /// W17 防回潮（2026-08-20 订正为 Platform 键控形态）：is_installed 的 **Win 平台**必须
+    /// 「SCM 单证据」，不得回到文件 stat——安装脚本的 ACL 锁下未提权 app 恒 false
+    /// （2026-08-19 .207 实测 Test-Path=False 而 sc query=0）。证据集按 Platform 枚举分派
+    /// 而非编译目标 cfg（cfg 形态曾让 CI win 腿六测全红：win 目标上 Mac 平台 mock 也被拽进
+    /// SCM 分支；push 只跑 ubuntu 腿不可见，全矩阵 dispatch 才暴露）。
     #[test]
     fn win_is_installed_uses_scm_evidence_not_the_acl_locked_file() {
         let src = include_str!("manager.rs");
@@ -1456,17 +1460,15 @@ mod tests {
         let end = src[at..].find("\n    /// ").map_or(src.len(), |i| at + i);
         let body = &src[at..end];
         let win_at = body
-            .find("#[cfg(target_os = \"windows\")]")
-            .expect("is_installed 缺 win cfg 分支");
-        let rest_at = body
-            .find("#[cfg(not(target_os = \"windows\"))]")
-            .expect("缺非 win 分支");
-        assert!(win_at < rest_at, "win 分支必须早退在文件证据分支之前");
-        let win_body = &body[win_at..rest_at];
-        assert!(win_body.contains("service_exists"), "win 分支不再查 SCM");
+            .find("Platform::Win => self.sysops.service_exists")
+            .expect("is_installed 缺 Win 平台 SCM 单证据臂");
         assert!(
-            !win_body.contains("sysops.exists"),
-            "win 分支回到了文件 stat（W17 复发：ACL 锁下未提权恒 false）"
+            !body[..win_at].contains("sysops.exists"),
+            "Win 臂早退之前不得有文件 stat（W17 复发：ACL 锁下未提权恒 false）"
+        );
+        assert!(
+            !body.contains("#[cfg("),
+            "证据分派不得再按编译目标 cfg（Platform 键控，测试须宿主无关）"
         );
     }
 
@@ -1518,7 +1520,6 @@ mod tests {
 
         // exe 在位 + 服务已注册 → 已安装
         let mut sysops = MockSysOps::default();
-        sysops.exists_paths.insert(paths.binary.clone());
         sysops
             .registered_services
             .insert(paths.service_label.to_owned());
@@ -1529,20 +1530,15 @@ mod tests {
         sysops.exists_paths.insert(paths.binary.clone());
         assert!(!manager(Platform::Win, sysops).is_installed());
 
-        // 服务在但 exe 没了 → 平台分歧（W17 改单证据后的显式取舍）：
-        // - win（编译目标即 win）：SCM 单证据 ⇒ 判已装。ping 随后挂 → needs_repair →
-        //   「点一下修复」而非「从未装过」——与 is_installed 头注「不得把可修复态误报成
-        //   未安装态」同一条设计原则；重装脚本 Copy-Item -Force 覆盖缺失文件。
-        // - 非 win 编译目标：本测试走双证据分支（mac/linux 语义），文件缺失即未装。
-        //   Platform::Win 只是 mock 字段，不改变 cfg 分支——这正是需要 cfg 拆分的原因。
+        // 服务在但 exe 没了 → Win 平台 SCM 单证据 ⇒ 判已装（宿主无关，2026-08-20 订正为
+        // Platform 键控后不再 cfg 拆分）。ping 随后挂 → needs_repair →「点一下修复」而非
+        // 「从未装过」——与 is_installed 头注「不得把可修复态误报成未安装态」同一条设计
+        // 原则；重装脚本 Copy-Item -Force 覆盖缺失文件。
         let mut sysops = MockSysOps::default();
         sysops
             .registered_services
             .insert(paths.service_label.to_owned());
-        #[cfg(target_os = "windows")]
         assert!(manager(Platform::Win, sysops).is_installed());
-        #[cfg(not(target_os = "windows"))]
-        assert!(!manager(Platform::Win, sysops).is_installed());
     }
 
     /// 「已注册」与「正在运行」正交：服务装了但停着，仍须判已安装。
@@ -1553,7 +1549,6 @@ mod tests {
     fn is_installed_on_windows_true_even_when_service_stopped() {
         let paths = InstallPaths::win();
         let mut sysops = MockSysOps::default();
-        sysops.exists_paths.insert(paths.binary.clone());
         sysops
             .registered_services
             .insert(paths.service_label.to_owned());
@@ -1729,15 +1724,13 @@ mod tests {
 
     /// Win 分身：注册 + 二进制在 + token 在 + 停着 + ping 挂 → 拉起一次 + 复核 ready。
     /// 变异锁：删恢复腿 / 删 is_loaded 分型 / 拉起后不复核，本条或下两条之一必转红。
-    /// （Linux 宿主上 is_installed 走双证据腿 + descriptor=None 的 service_exists 兜底——与生产
-    /// Windows 的 SCM 单证据分支由 `win_is_installed_uses_scm_evidence_not_the_acl_locked_file`
-    /// 源码钉死 + 真机兜；恢复逻辑本身平台无关，在此可完整驱动。）
+    /// （is_installed 2026-08-20 起按 Platform 键控证据集：Win 平台在任何宿主都走 SCM 单证据，
+    /// 故本组测试宿主无关地驱动完整恢复逻辑。）
     #[test]
     fn recovery_pulls_up_stopped_service_and_becomes_ready() {
         let paths = InstallPaths::win();
         let start_calls = Arc::new(Mutex::new(Vec::new()));
         let mut sysops = MockSysOps::default();
-        sysops.exists_paths.insert(paths.binary.clone());
         sysops
             .registered_services
             .insert(paths.service_label.to_owned());
@@ -1777,7 +1770,6 @@ mod tests {
         let paths = InstallPaths::win();
         let start_calls = Arc::new(Mutex::new(Vec::new()));
         let mut sysops = MockSysOps::default();
-        sysops.exists_paths.insert(paths.binary.clone());
         sysops
             .registered_services
             .insert(paths.service_label.to_owned());
@@ -1804,7 +1796,6 @@ mod tests {
         let paths = InstallPaths::win();
         let start_calls = Arc::new(Mutex::new(Vec::new()));
         let mut sysops = MockSysOps::default();
-        sysops.exists_paths.insert(paths.binary.clone());
         sysops
             .registered_services
             .insert(paths.service_label.to_owned());
@@ -1831,7 +1822,6 @@ mod tests {
         let paths = InstallPaths::win();
         let start_calls = Arc::new(Mutex::new(Vec::new()));
         let mut sysops = MockSysOps::default();
-        sysops.exists_paths.insert(paths.binary.clone());
         sysops
             .registered_services
             .insert(paths.service_label.to_owned());
@@ -1861,7 +1851,6 @@ mod tests {
     fn recovery_maintains_repair_when_service_never_binds() {
         let paths = InstallPaths::win();
         let mut sysops = MockSysOps::default();
-        sysops.exists_paths.insert(paths.binary.clone());
         sysops
             .registered_services
             .insert(paths.service_label.to_owned());
