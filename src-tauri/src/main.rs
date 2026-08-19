@@ -241,12 +241,21 @@ fn present_main_window(app: &tauri::AppHandle) {
 /// command 会从异步 IPC 线程进入；若直接在那条线程重建，macOS 会拒绝 vibrancy，而前端仍按“材质已开”
 /// 让侧栏透明，最终露出桌面。首建在 setup 主线程、重建在 IPC 线程的分叉必须在入口处消掉。
 fn show_main_window(app: &tauri::AppHandle) {
+    // W18 第二层（2026-08-20 真机翻案）：本函数的调用方会从**主线程的消息分发帧**进来——
+    // single-instance 插件的 WM_COPYDATA WndProc（跨进程 `SendMessageW` 同步栈内）、托盘
+    // 浮层 command 的 IPC 分发栈。`run_on_main_thread` 从主线程调用是**内联直执**——帧内
+    // 直接重建主窗（WebView2 创建）会把同步对端卡死（真机实证：关窗后双击 = 第二实例
+    // 永不退出 + 首实例重建卡在 WndProc 里）。故先跳 async 线程（脱离分发帧）再排回主
+    // 线程执行；从非主线程进来的调用方只多一跳（µs 级），行为不变。
     let app_for_main = app.clone();
-    if let Err(error) = app.run_on_main_thread(move || {
-        show_main_window_on_main_thread(&app_for_main);
-    }) {
-        log::error!("主窗唤出投递主线程失败：{error}");
-    }
+    tauri::async_runtime::spawn(async move {
+        let h = app_for_main.clone();
+        if let Err(error) = app_for_main.run_on_main_thread(move || {
+            show_main_window_on_main_thread(&h);
+        }) {
+            log::error!("主窗唤出投递主线程失败：{error}");
+        }
+    });
 }
 
 /// 主线程内完成“复用现有主窗或完整重建”的唯一实现。
@@ -2527,6 +2536,18 @@ mod tests {
         assert!(
             entry.contains("run_on_main_thread"),
             "主窗唤出入口必须先投主线程；托盘 IPC 线程不得直接重建原生窗口"
+        );
+        // W18 第二层：主线程帧内调用（WM_COPYDATA WndProc / IPC 分发栈）时 run_on_main_thread
+        // 是内联直执——必须先跳线程脱离分发帧再排回，否则重建把同步对端卡死在 SendMessageW 上。
+        let spawn_at = entry
+            .find("async_runtime::spawn")
+            .expect("主窗唤出必须先跳 async 线程脱离消息分发帧");
+        let queue_at = entry
+            .find("run_on_main_thread")
+            .expect("跳线程后必须排回主线程");
+        assert!(
+            spawn_at < queue_at,
+            "次序必须是 spawn 脱帧 → run_on_main_thread 排回 → 重建/呈现"
         );
         assert!(
             entry.contains("show_main_window_on_main_thread("),
