@@ -117,7 +117,8 @@ impl InstallPaths {
             // Windows 路径会得到 `C:\ProgramData\Polaris/polaris-helper.exe` 这种混合形态，
             // 与脚本里的 `format!(r"{support}\{WIN_HELPER_EXE}")` 对不上。
             binary: PathBuf::from(format!(r"{WIN_SUPPORT_DIR}\{WIN_HELPER_EXE}")),
-            // Windows 服务定义在 SCM，磁盘无描述符文件 → 第二条证据走 SysOps::service_exists。
+            // Windows 服务定义在 SCM，磁盘无描述符文件 → is_installed 走 SysOps::service_exists
+            // 单证据（W17：support 目录 ACL 锁拒未提权 stat，文件证据不可用；取舍见 is_installed 头注）。
             descriptor: None,
             socket: PathBuf::from(r"\\.\pipe\polaris-helper"),
             // win 不播种受管核（核走 app 侧，`InstallParams::bundled_core` 在 win 忽略）；
@@ -226,19 +227,38 @@ impl HelperManager {
     /// return fs.existsSync(HELPER_DEST) && fs.existsSync(PLIST_PATH);
     /// ```
     ///
-    /// 「服务已注册」这第二条证据按平台取形：mac/linux 有描述符**文件**（plist / systemd unit）
-    /// 可 stat；**Windows 没有**——服务定义在 SCM 里，故改查
-    /// [`SysOps::service_exists`]（`sc query`，只要服务存在即可，**不要求 RUNNING**——
-    /// 「装了但没跑」必须仍判已安装，否则 `compute_status_with_client` 会短路成全 false、
-    /// 连管道都不 ping，把可修复态误报成未安装态）。
+    /// 证据构成按平台（W17 后显式分歧）：
+    /// - **Windows：SCM 单证据**（[`SysOps::service_exists`]，`sc query` 退出码，不要求
+    ///   RUNNING）。不再 stat 二进制——安装脚本把 support 目录锁成 SYSTEM/Administrators-only，
+    ///   UAC 过滤令牌的未提权 app 连 stat 都被拒（2026-08-19 真机对照实测），文件证据恒 false。
+    ///   取舍：「拷贝成功 + New-Service 失败」的孤儿二进制态判未装（可重装，脚本 Force 覆盖）；
+    ///   「服务在 + 二进制被手删」判已装（ping 挂 → needs_repair 可修复，优于误报未装）。
+    /// - **mac/linux：binary + 描述符双证据**（plist/unit 可 stat，目录无 ACL 锁）。
+    ///
+    /// 共同底线：「装了但没跑」必须仍判已安装，否则 `compute_status_with_client` 短路成
+    /// 全 false、连管道都不 ping，把可修复态误报成未安装态。
     #[must_use]
     pub fn is_installed(&self) -> bool {
-        if !self.sysops.exists(&self.paths.binary) {
-            return false;
+        // Windows（W17，2026-08-19 首次成功安装后暴露）：安装脚本把 support 目录 ACL 锁成
+        // SYSTEM/Administrators-only（token/exe 出生即私有，防窃取），而 Administrators 组在
+        // **UAC 过滤令牌**里是 deny-only ⇒ 未提权 app 连 stat 二进制都被拒（真机实测
+        // Test-Path=False，提权=True）→ 文件证据恒 false → 状态卡「未安装」。改用 **SCM 单证据**：
+        // 服务由安装脚本与二进制同事务创建（New-Service 在 Copy-Item 之后、任一失败整个脚本
+        // fail-loud 回滚不了但也不装服务），SCM 查询未提权可用（真机实测 sc query exit=0）。
+        #[cfg(target_os = "windows")]
+        {
+            self.sysops.service_exists(self.paths.service_label)
         }
-        match &self.paths.descriptor {
-            Some(desc) => self.sysops.exists(desc),
-            None => self.sysops.service_exists(self.paths.service_label),
+        // mac/linux：support 目录无此 ACL 锁（plist/unit 可 stat），保持 binary+描述符双证据。
+        #[cfg(not(target_os = "windows"))]
+        {
+            if !self.sysops.exists(&self.paths.binary) {
+                return false;
+            }
+            match &self.paths.descriptor {
+                Some(desc) => self.sysops.exists(desc),
+                None => self.sysops.service_exists(self.paths.service_label),
+            }
         }
     }
 
@@ -372,10 +392,12 @@ const WIN_SUPPORT_DIR: &str = r"C:\ProgramData\Polaris";
 /// 而 `InstallPaths::win()` 另写死一个不同路径，两者分叉即 Windows 恒判「未安装」的成因。
 const WIN_HELPER_EXE: &str = "polaris-helper.exe";
 
-/// install 就绪轮询：装完等 daemon 起来绑 socket/pipe 的次数（移植 上游 `for i<10`，HelperManager.ts:519）。
-pub const READY_POLL_ATTEMPTS: u32 = 10;
-/// install 就绪轮询间隔（移植 上游 `setTimeout(300)`，HelperManager.ts:520）。
-pub const READY_POLL_DELAY: Duration = Duration::from_millis(300);
+/// install 就绪轮询：装完等 daemon 起来绑 socket/pipe 的次数。2026-08-19 真机实测从上游的
+/// `for i<10` 放宽：脚本侧 sc 删旧等待窗（≤15s）+ New-Service 重试后，服务起管道常超 3s，
+/// 旧窗口把响应快照定格在「未就绪」，卡片停在安装前旧态（W10 跟进项，.207 首装实测）。
+pub const READY_POLL_ATTEMPTS: u32 = 20;
+/// install 就绪轮询间隔（同上从 300ms 放宽：总窗 10s，覆盖 SCM 冷启动 + 管道监听）。
+pub const READY_POLL_DELAY: Duration = Duration::from_millis(500);
 
 /// 装卸流程错误（escalation 之前的失败：二进制缺失 / token 写失败 / 脚本落盘失败 / 平台不支持）。
 ///
@@ -1348,6 +1370,39 @@ mod tests {
         );
     }
 
+    /// W17 防回潮（源码级：win 分支 Linux 不编译，行为由真机验，编译由 CI win 腿兜）：
+    /// is_installed 的 win 形态必须「SCM 单证据早退」，不得回到文件 stat——安装脚本的
+    /// ACL 锁下未提权 app 恒 false（2026-08-19 .207 实测 Test-Path=False 而 sc query=0）。
+    #[test]
+    fn win_is_installed_uses_scm_evidence_not_the_acl_locked_file() {
+        let src = include_str!("manager.rs");
+        let at = src.find("pub fn is_installed(").expect("is_installed 消失");
+        // 从函数起点向后找**下一个兄弟文档注释**作切片终点（文件前部有同名文案，全局 find 会倒挂）
+        let end = src[at..].find("\n    /// ").map_or(src.len(), |i| at + i);
+        let body = &src[at..end];
+        let win_at = body
+            .find("#[cfg(target_os = \"windows\")]")
+            .expect("is_installed 缺 win cfg 分支");
+        let rest_at = body
+            .find("#[cfg(not(target_os = \"windows\"))]")
+            .expect("缺非 win 分支");
+        assert!(win_at < rest_at, "win 分支必须早退在文件证据分支之前");
+        let win_body = &body[win_at..rest_at];
+        assert!(win_body.contains("service_exists"), "win 分支不再查 SCM");
+        assert!(
+            !win_body.contains("sysops.exists"),
+            "win 分支回到了文件 stat（W17 复发：ACL 锁下未提权恒 false）"
+        );
+    }
+
+    /// W10 跟进项钉扎：装后就绪轮询窗 ≥ 10s（20×500ms）——.207 首装实测 3s 窗口
+    /// 把快照定格在未就绪、卡片停在安装前旧态。收紧需带新的真机计时依据。
+    #[test]
+    fn ready_poll_window_covers_scm_cold_start() {
+        assert_eq!(READY_POLL_ATTEMPTS, 20);
+        assert_eq!(READY_POLL_DELAY, Duration::from_millis(500));
+    }
+
     #[test]
     fn is_installed_requires_both_binary_and_descriptor() {
         // Polaris filesPresent: HELPER_DEST && PLIST_PATH（HelperManager.ts:202）
@@ -1399,11 +1454,19 @@ mod tests {
         sysops.exists_paths.insert(paths.binary.clone());
         assert!(!manager(Platform::Win, sysops).is_installed());
 
-        // 服务在但 exe 没了 → 未安装
+        // 服务在但 exe 没了 → 平台分歧（W17 改单证据后的显式取舍）：
+        // - win（编译目标即 win）：SCM 单证据 ⇒ 判已装。ping 随后挂 → needs_repair →
+        //   「点一下修复」而非「从未装过」——与 is_installed 头注「不得把可修复态误报成
+        //   未安装态」同一条设计原则；重装脚本 Copy-Item -Force 覆盖缺失文件。
+        // - 非 win 编译目标：本测试走双证据分支（mac/linux 语义），文件缺失即未装。
+        //   Platform::Win 只是 mock 字段，不改变 cfg 分支——这正是需要 cfg 拆分的原因。
         let mut sysops = MockSysOps::default();
         sysops
             .registered_services
             .insert(paths.service_label.to_owned());
+        #[cfg(target_os = "windows")]
+        assert!(manager(Platform::Win, sysops).is_installed());
+        #[cfg(not(target_os = "windows"))]
         assert!(!manager(Platform::Win, sysops).is_installed());
     }
 
