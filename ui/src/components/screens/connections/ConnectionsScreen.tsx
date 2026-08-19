@@ -46,6 +46,7 @@ import { fmtBytes, fmtDuration, fmtRate } from '../shared/format';
 import {
   applyActiveDetailUpdate,
   clearActiveDetailState,
+  stickyDisplay,
   type ActiveDetailSync,
 } from './active-detail';
 import { applyClosedHistoryUpdate } from './closed-history';
@@ -214,19 +215,17 @@ function staticProjection(
 function projectConnection(
   entry: ConnectionEntry,
   endedAt: number | null,
-  rates: { up: number; down: number },
+  volatile: { up: number; down: number; total: number },
   rateSequence: number,
   cache: Map<string, ConnStaticCacheEntry>,
 ): ConnRow {
-  const upload = entry.upload ?? 0;
-  const download = entry.download ?? 0;
   const { projection, startAt } = staticProjection(cache, entry);
   return {
     entry,
     ...projection,
-    total: upload + download,
-    upRate: rates.up,
-    dnRate: rates.down,
+    total: volatile.total,
+    upRate: volatile.up,
+    dnRate: volatile.down,
     startAt,
     rateSequence,
     endedAt,
@@ -272,6 +271,8 @@ export function ConnectionsScreen() {
   const activeIndexRef = useRef<Map<string, ConnectionEntry>>(new Map());
   const activeSyncRef = useRef<ActiveDetailSync>({ generation: null, sequence: 0 });
   const activeRowRef = useRef<Map<string, { source: ConnectionEntry; row: ConnRow }>>(new Map());
+  /** M8 显示迟滞缓存：id → 上次「显示」的 d/u/total（真值与显示值的粘滞差见 stickyDisplay 文档）。 */
+  const activeStickyRef = useRef<Map<string, { d: number; u: number; t: number }>>(new Map());
   const closedIndexRef = useRef<Map<string, ClosedConnectionEntry>>(new Map());
   const closedStaticRef = useRef<Map<string, ConnStaticCacheEntry>>(new Map());
   const closedRowRef = useRef<
@@ -320,11 +321,13 @@ export function ConnectionsScreen() {
       prev.clear();
       staticCache.clear();
       rowCache.clear();
+      activeStickyRef.current.clear();
     }
     for (const id of applied.removedIds) {
       prev.delete(id);
       staticCache.delete(id);
       rowCache.delete(id);
+      activeStickyRef.current.delete(id);
     }
 
     const closing = closingRef.current;
@@ -351,10 +354,18 @@ export function ConnectionsScreen() {
         dnRate = Math.max(0, (dn - p.dn) / dt);
       }
       prev.set(entry.id, { up, dn, at: now });
+      // M8 显示迟滞：rate.d/rate.u 用 6% 粘滞（压 Δt 浮点抖动换串），total 用 1.5%
+      // （对齐 fmtBytes 粒度）。串稳定 ⇒ 该格不产生 DOM 文本写 ⇒ WebKit 不为它新建表面。
+      const sticky = activeStickyRef.current;
+      const shown = sticky.get(entry.id);
+      const dVal = shown ? stickyDisplay(shown.d, dnRate) : dnRate;
+      const uVal = shown ? stickyDisplay(shown.u, upRate) : upRate;
+      const tVal = shown ? stickyDisplay(shown.t, up + dn, 64) : up + dn;
+      sticky.set(entry.id, { d: dVal, u: uVal, t: tVal });
       const row = projectConnection(
         entry,
         null,
-        { up: upRate, down: dnRate },
+        { up: uVal, down: dVal, total: tVal },
         update.sequence,
         staticCache,
       );
@@ -387,6 +398,7 @@ export function ConnectionsScreen() {
     prevRef.current.clear();
     activeStaticRef.current.clear();
     activeRowRef.current.clear();
+    activeStickyRef.current.clear();
     clearActiveDetailState(activeIndexRef.current, activeSyncRef.current);
     setRows([]);
     setActiveClock({ at: 0, sequence: 0 });
@@ -435,7 +447,7 @@ export function ConnectionsScreen() {
       const row = projectConnection(
         source.entry,
         endedAt,
-        { up: 0, down: 0 },
+        { up: 0, down: 0, total: (source.entry.upload ?? 0) + (source.entry.download ?? 0) },
         0,
         staticCache,
       );

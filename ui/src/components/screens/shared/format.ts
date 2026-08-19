@@ -59,10 +59,17 @@ export function fmtRate(bytesPerSec: number | null | undefined): string {
   return fmtBytes(bytesPerSec) + '/s';
 }
 
-/** 秒 → 时长（连接时长）。<60s 显秒，否则 m / h m。 */
+/**
+ * 秒 → 时长（连接时长）。<60s 显**整 5 秒档**（floor，不超前），否则 m / h m。
+ *
+ * M8（2026-08-20）：首档若显整秒，存活 <60s 的新生连接的时长格就每秒换串（"12s"→"13s"）——
+ * 连接表恰由新生短命连接主导，这是速率/累计迟滞后剩下的唯一每秒泵（WebKit 为高频重绘区域
+ * 持续新建 graphics surface 不回收，.152 归因）。5 秒档把该格写频压到 1/5，人眼对「连接
+ * 建立多久」的精度预期本就在十秒级。全仓仅连接表一处调用，无跨屏外溢。
+ */
 export function fmtDuration(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined || Number.isNaN(seconds)) return '—';
-  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 60) return `${Math.floor(seconds / 5) * 5}s`;
   const m = Math.floor(seconds / 60);
   if (m < 60) return `${m}m`;
   const h = Math.floor(m / 60);

@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { fmtBytes, fmtRate, latDotClass, latLevel } from './format';
+import { fmtBytes, fmtDuration, fmtRate, latDotClass, latLevel } from './format';
 
 describe('latDotClass', () => {
   it('未测（undefined）→ lat-none', () => {
@@ -93,5 +93,27 @@ describe('fmtBytes —— 单位由函数给出，调用点不得再拼一个', 
     };
     walk(srcRoot);
     expect(offenders).toEqual([]);
+  });
+});
+
+// ── M8：时长首档 5 秒量化（新生连接的时长格不再每秒换串）────────────────────────
+describe('M8 fmtDuration 首档 5 秒量化', () => {
+  it('<60s 显示整 5 秒档（floor 不超前）', () => {
+    expect(fmtDuration(0)).toBe('0s');
+    expect(fmtDuration(4)).toBe('0s');
+    expect(fmtDuration(7)).toBe('5s');
+    expect(fmtDuration(12)).toBe('10s');
+    expect(fmtDuration(59)).toBe('55s');
+  });
+
+  it('同档内文本稳定（7s/9s 同显 5s —— 每秒泵被压到 1/5）', () => {
+    expect(fmtDuration(7)).toBe(fmtDuration(9));
+    expect(fmtDuration(23)).toBe(fmtDuration(24));
+  });
+
+  it('≥60s 语义不变（分钟级）', () => {
+    expect(fmtDuration(60)).toBe('1m');
+    expect(fmtDuration(125)).toBe('2m');
+    expect(fmtDuration(3661)).toBe('1h 1m');
   });
 });

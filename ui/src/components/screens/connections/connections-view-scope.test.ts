@@ -205,3 +205,21 @@ describe('连接列表内存边界', () => {
     expect(SRC).not.toContain('snap.connections.map');
   });
 });
+
+describe('M8 显示迟滞接线（连接表每秒换串是 graphics 表面爆炸的直接驱动）', () => {
+  it('applyDetailUpdate 对 rate.d / rate.u / total 三值走 stickyDisplay', () => {
+    const at = SRC.indexOf('const applyDetailUpdate');
+    expect(at).toBeGreaterThan(0);
+    const body = SRC.slice(at, SRC.indexOf('setActiveLoaded(true);', at));
+    expect((body.match(/stickyDisplay\(/g) ?? []).length).toBe(3);
+    expect(body).toContain('sticky.get(entry.id)');
+    expect(body).toContain('sticky.set(entry.id,');
+    // total 用更紧的 1/64 迟滞（对齐 fmtBytes 粒度），rate 用默认 1/16。
+    expect(body).toContain('stickyDisplay(shown.t, up + dn, 64)');
+  });
+
+  it('迟滞缓存生命周期与行缓存同拍（reset / 移除 / 切走清理）', () => {
+    expect(SRC).toContain('activeStickyRef.current.clear()');
+    expect(SRC).toContain('activeStickyRef.current.delete(id)');
+  });
+});
