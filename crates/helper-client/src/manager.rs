@@ -1963,7 +1963,10 @@ mod tests {
             "缺 New-Service"
         );
         assert!(s.contains("& $sc start PolarisHelper"), "缺 sc start");
-        assert!(s.contains("& $icacls $support /inheritance:r"), "缺 icacls inheritance:r");
+        assert!(
+            s.contains("& $icacls $support /inheritance:r"),
+            "缺 icacls inheritance:r"
+        );
         assert!(
             s.contains("$ErrorActionPreference = 'Stop'"),
             "缺 fail-loud"
