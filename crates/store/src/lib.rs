@@ -216,7 +216,7 @@ mod store_tests {
         assert!(res.was_missing);
         assert!(res.error.is_none());
         // 默认配置有 expected 字段
-        assert_eq!(res.config["proxyMode"], serde_json::json!("global"));
+        assert_eq!(res.config["proxyMode"], serde_json::json!("smart"));
         assert_eq!(
             res.config["proxyModeType"],
             serde_json::json!("systemProxy")
@@ -267,7 +267,7 @@ mod store_tests {
         // 维度7 #7：坏字段（servers 非 array）被跳过，好字段（customRules）保留；
         // 磁盘原文件原样保留（sanitize 只改内存 Value，不落盘）。
         let original = r#"{
-            "proxyMode": "global",
+            "proxyMode": "smart",
             "proxyModeType": "systemProxy",
             "logLevel": "info",
             "mixedPort": 7890,
@@ -291,7 +291,7 @@ mod store_tests {
     fn load_bad_server_dropped_good_server_kept() {
         // 维度7 #7：逐节点 sanitize——坏节点剔除、好节点保留。
         let json = r#"{
-            "proxyMode": "global",
+            "proxyMode": "smart",
             "proxyModeType": "tun",
             "logLevel": "info",
             "mixedPort": 7890,
@@ -389,7 +389,7 @@ mod store_tests {
     fn load_validation_failure_returns_default_preserves_disk() {
         // validate 失败（缺 tunConfig）→ 回落默认，磁盘原文件保留。
         let bad = r#"{
-            "proxyMode": "global",
+            "proxyMode": "smart",
             "proxyModeType": "tun",
             "logLevel": "info",
             "mixedPort": 7890
@@ -401,7 +401,7 @@ mod store_tests {
         // 磁盘原文件保留
         assert_eq!(fs.snapshot(Path::new(CFG)).as_deref(), Some(bad));
         // 内存回落默认配置
-        assert_eq!(res.config["proxyMode"], serde_json::json!("global"));
+        assert_eq!(res.config["proxyMode"], serde_json::json!("smart"));
     }
 
     #[test]
@@ -433,7 +433,7 @@ mod store_tests {
     fn load_validation_failure_wires_backup_corrupt() {
         // validate 失败分支（缺 tunConfig）同样须备份（非仅 JSON 坏）。
         let bad =
-            r#"{"proxyMode":"global","proxyModeType":"tun","logLevel":"info","mixedPort":7890}"#;
+            r#"{"proxyMode":"smart","proxyModeType":"tun","logLevel":"info","mixedPort":7890}"#;
         let fs = MockFs::default().with(Path::new(CFG), bad);
         let res = ConfigStore::load(&fs, Path::new(CFG));
         assert!(!res.loaded_from_disk);
@@ -474,7 +474,7 @@ mod store_tests {
         // 该修（MED）：含旧 DomainRule 的配置 load 时须先落 .pre-rule-migration.bak（判据看原始 JSON，
         // 因 sanitize 会丢弃无 type 的旧规则；备份保原始供回滚）。
         let legacy = r#"{
-            "proxyMode":"global","proxyModeType":"systemProxy","logLevel":"info","mixedPort":7890,
+            "proxyMode":"smart","proxyModeType":"systemProxy","logLevel":"info","mixedPort":7890,
             "tunConfig":{"mtu":1350,"stack":"auto","autoRoute":true,"strictRoute":true},
             "customRules":[{"id":"a","domains":["x.com"],"action":"proxy","enabled":true}]
         }"#;
@@ -495,7 +495,7 @@ mod store_tests {
         // customRules==[] 静默全丢。变异牙：打断 `sanitize_custom_rules` 的旧规则放行（回归到「无 type 即丢弃」）→
         // migrate 阶段无旧规则可迁 → rules.len()==0，本测转红。
         let legacy = r#"{
-            "proxyMode":"global","proxyModeType":"systemProxy","logLevel":"info","mixedPort":7890,
+            "proxyMode":"smart","proxyModeType":"systemProxy","logLevel":"info","mixedPort":7890,
             "tunConfig":{"mtu":1350,"stack":"auto","autoRoute":true,"strictRoute":true},
             "customRules":[{"id":"legacy-1","domains":["example.com"],"action":"proxy","enabled":true}]
         }"#;
@@ -525,7 +525,7 @@ mod store_tests {
     fn load_no_rule_backup_for_modern_rules() {
         // 幂等/无误备：新 shape 规则（含 type）不触发 .pre-rule-migration.bak。
         let modern = r#"{
-            "proxyMode":"global","proxyModeType":"systemProxy","logLevel":"info","mixedPort":7890,
+            "proxyMode":"smart","proxyModeType":"systemProxy","logLevel":"info","mixedPort":7890,
             "tunConfig":{"mtu":1350,"stack":"auto","autoRoute":true,"strictRoute":true},
             "customRules":[{"id":"a","type":"domainSuffix","values":["x.com"],"action":"proxy","enabled":true}]
         }"#;

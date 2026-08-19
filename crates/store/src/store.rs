@@ -198,7 +198,7 @@ pub fn finalize_config(value: &mut Value) -> Result<(), StoreError> {
             return Err(StoreError::validation("config root must be an object"));
         };
         obj.entry("proxyMode")
-            .or_insert_with(|| Value::String("global".into()));
+            .or_insert_with(|| Value::String("smart".into()));
         obj.entry("proxyModeType")
             .or_insert_with(|| Value::String("systemProxy".into()));
         obj.entry("logLevel")
@@ -242,7 +242,10 @@ pub fn default_config() -> Value {
         "subscriptions": [],
         "servers": [],
         "selectedServerId": null,
-        "proxyMode": "global",
+        // 分流策略默认「智能」（D1，2026-08-19 陈先生拍板：rule-based 是大多数用户想要的
+        // 出厂态；global 会把全部流量压进单一出口，新装即全局易被读作异常）。validate 三值
+        // 均合法（global/smart/direct），此处只动出厂默认。
+        "proxyMode": "smart",
         "proxyModeType": "systemProxy",
         // mtu **刻意缺席** = 自动（按最终栈 × 平台派生，见 config-engine `tun_stack::default_mtu_for`）。
         // 新装写一个具体数会把「当时的默认」冻在磁盘上，此后默认值再变也追不上——那正是存量
