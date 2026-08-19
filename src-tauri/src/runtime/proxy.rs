@@ -9033,10 +9033,13 @@ fn core_platform_dirs(os: &str, arch: &str) -> Vec<&'static str> {
 
 /// bundled 资源二进制候选路径（sing-box 核 / polaris-helper 共用）。抽纯函数便于**钉 `_up_` 布局回归**。
 ///
-/// 布局兜底顺序：① exe 同级 `resources/`（Linux/Win bundle）② `exe/../Resources/resources/`（旧 mac 猜测）
-/// ③ **`exe/../Resources/_up_/resources/`（macOS .app 真实布局）**：tauri.conf 里 `../resources/` 的 `../`
-/// 段被 tauri-bundler 替成 `_up_`（防逃出包）→ 实际落 `Contents/Resources/_up_/resources/`。**漏 ③ →
-/// 打包态 mac 上核/helper 恒找不到、proxy 起不来。** ④ `CARGO_MANIFEST_DIR/../resources/`（开发态）。
+/// 布局兜底顺序：① exe 同级 `resources/`（legacy 探针：三平台 conf 资源项全带 `../`，tauri 产物
+/// 布局中不再出现，保守保留）② **`exe/_up_/resources/`（Windows NSIS 装机布局）**：tauri-utils 的
+/// `resource_relpath` 把 `../` 段改名 `_up_`，NSIS 装机后资源在 `<exe目录>\_up_\resources\`——W10 根因，
+/// 漏掉则装机态核/helper 解析双双落空（2026-08-19 真机 toast 首曝）③ `exe/../Resources/resources/`
+/// （旧 mac 猜测）④ **`exe/../Resources/_up_/resources/`（macOS .app 真实布局）**：同一 `_up_` 改名
+/// 机制在 .app 里的形态，实际落 `Contents/Resources/_up_/resources/`。漏 ④ → 打包态 mac 上核/helper
+/// 恒找不到、proxy 起不来。⑤ `CARGO_MANIFEST_DIR/../resources/`（开发态）。
 ///
 /// `exe_dir` = `current_exe().parent()`（None=取不到）；`manifest_dir` = `CARGO_MANIFEST_DIR`。
 pub(crate) fn bundle_resource_candidates(
@@ -9048,6 +9051,13 @@ pub(crate) fn bundle_resource_candidates(
     let mut prefixes: Vec<PathBuf> = Vec::new();
     if let Some(dir) = exe_dir {
         prefixes.push(dir.join("resources"));
+        // Windows NSIS 装机布局（W10 根因，2026-08-19 真机 toast 首曝）：tauri-utils 的
+        // `resource_relpath` 把 `../` 段改名 `_up_`（与 bundler 无关，NSIS 同样生效），装机后资源
+        // 在 `<exe目录>\_up_\resources\`——此前候选表只有 mac 的一种 `_up_` 形态（`../Resources/
+        // _up_/resources`），Windows 装机态的核 / helper 解析双双落空（helper 安装 toast「未找到
+        // polaris-helper 二进制」，核解析同函数同病）。放裸 `resources/` 之后：后者是 legacy 探针
+        // （本 app 三平台 conf 的资源项全带 `../`，tauri 产物布局里裸形态不再出现），排序保守无害。
+        prefixes.push(dir.join("_up_").join("resources"));
         prefixes.push(dir.join("..").join("Resources").join("resources"));
         prefixes.push(
             dir.join("..")
@@ -9863,13 +9873,16 @@ mod tests {
             &["mac-arm64", "mac-x64"],
             "sing-box",
         );
-        // 关键断言：`_up_` 布局候选必须在（删 proxy.rs 里那行 `_up_` push → 本测转红）。
+        // 关键断言：mac `_up_` 布局候选必须在，且必须**从 mac 前缀**来——单 contains 会被
+        // `<exe>/_up_/resources/`（Windows NSIS 形态，2026-08-19 加）喂成恒绿假钉（评审实证：
+        // 删 mac `_up_` push 后单条件版本 2/2 仍绿）。双条件合取恢复杀伤力。
         // Windows 上 Path::join 产生 `\` 分隔 → 归一成 `/` 再比子串（断言的是布局结构非分隔符）。
         assert!(
-            c.iter().any(|p| p
-                .to_string_lossy()
-                .replace('\\', "/")
-                .contains("_up_/resources/mac-arm64/sing-box")),
+            c.iter().any(|p| {
+                let n = p.to_string_lossy().replace('\\', "/");
+                n.contains("_up_/resources/mac-arm64/sing-box")
+                    && n.starts_with("/Applications/Polaris.app/Contents/MacOS/../Resources/_up_")
+            }),
             "缺 macOS `_up_` 布局候选 → 打包态核找不到；候选={c:?}"
         );
         // 开发态 CARGO_MANIFEST_DIR/../resources 兜底也在（`..` 不规范化，串里保留 `src-tauri/../`）。
@@ -9880,6 +9893,28 @@ mod tests {
         // exe_dir=None（取不到 exe）时只剩开发态候选，不 panic。
         let none = bundle_resource_candidates(None, manifest, &["linux"], "sing-box");
         assert_eq!(none.len(), 1);
+    }
+
+    /// **钉 Windows NSIS 装机布局回归（W10 根因）**：资源在 `<exe目录>\_up_\resources\`。
+    /// 候选缺 `<exe>/_up_/resources/<平台>/` 形态 → 装机态 helper 安装报「未找到二进制」不触发提权、
+    /// 核解析同函数同病（2026-08-19 真机 toast 首曝；候选表当时只有 mac 的两种 `_up_` 形态）。
+    #[test]
+    fn bundle_candidates_include_windows_nsis_up_layout() {
+        use std::path::Path;
+        let exe_dir = Path::new(r"C:\Users\doveh\AppData\Local\Polaris");
+        let manifest = Path::new("/dev/polaris/src-tauri");
+        let c = bundle_resource_candidates(Some(exe_dir), manifest, &["win"], "polaris-helper.exe");
+        // 关键断言：`<exe>/_up_/resources/win/` 必须在（删那行 push → 本测转红）。
+        assert!(
+            c.iter().any(|p| p
+                .to_string_lossy()
+                .replace('\\', "/")
+                .contains("/_up_/resources/win/polaris-helper.exe")
+                && p.to_string_lossy()
+                    .replace('\\', "/")
+                    .starts_with("C:/Users/doveh/AppData/Local/Polaris/_up_")),
+            "缺 Windows NSIS `_up_` 装机布局候选 → 装机态核/helper恒找不到；候选={c:?}"
+        );
     }
 
     /// sing-box 行级别映射：DEBUG/TRACE 须如实标级，不得混进 info。
