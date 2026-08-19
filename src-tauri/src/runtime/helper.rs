@@ -412,9 +412,9 @@ impl HelperRuntime {
         Err("当前平台无 helper connector".to_owned())
     }
 
-    /// 状态快照（上游 `helper:getStatus`）——真探测：`status_with_recovery`（内含 is_installed 短路
-    /// + ping proto + W20 恢复腿：「装了但停着」先拉起复核，不误报修复态）。未安装 → 不连 socket
-    /// 直接返未装态。恢复腿让所有 status 消费方共享同一自愈：设置页挂载 / 启动 7s 可升级探测 /
+    /// 状态快照（上游 `helper:getStatus`）——真探测：`status_with_recovery`（is_installed 短路、
+    /// ping proto、W20 恢复腿——「装了但停着」先拉起复核，不误报修复态）。未安装 → 不连 socket
+    /// 直接返未装态。恢复腿让所有 status 消费方共享同一自愈：设置页挂载、启动 7s 可升级探测、
     /// 手动重新检测。
     ///
     /// 已知取舍：卸载读门（`HelperUninstallOps::installed`）也走本方法——用户要卸载时若服务正停着，

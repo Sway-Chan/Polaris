@@ -36,7 +36,9 @@ describe('长期内存所有权接线', () => {
     const stats = source('../../src-tauri/src/runtime/stats.rs');
     const misc = source('../../src-tauri/src/commands/misc.rs');
 
-    expect(main).toContain('app.run_on_main_thread(move ||');
+    // W18b：唤出漏斗先 spawn 脱帧再排回主线程（接收者名会漂移，钉「点调用+实参」形态）。
+    expect(main).toContain('tauri::async_runtime::spawn(async move {');
+    expect(main).toContain('.run_on_main_thread(move ||');
     expect(main).toContain('rt.stats().mark_main_window_created()');
     expect(tray).toContain('rt.stats().mark_main_window_destroying()');
     expect(stats).toContain('window_alive: AtomicBool');

@@ -1128,6 +1128,7 @@ pub async fn tray_enter_lightweight(app: AppHandle) -> ApiResponse<()> {
 ///     显式状态挡住 Tauri registry 过渡期仍返回的失效 WebView，stats/logs 不再跨线程探测旧句柄。
 ///  4. destroy 成功才提交 main 的 stats + logs 订阅清理；失败则回滚生命周期与 LightweightState，保留
 ///     原页面订阅。webview 销毁不触发 `on_page_load`，成功后不清账会让 gRPC/log emitter 永续工作。
+///
 /// 用户经托盘浮层内明确入口、Linux 原生菜单或 Dock/任务栏唤出时，`show_main_window` 走
 /// `create_main_window` 重建。
 pub(crate) fn enter_lightweight_transition(app: AppHandle) {
