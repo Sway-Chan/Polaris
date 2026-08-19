@@ -20,7 +20,7 @@ fn missing_file_loads_default_and_marks_was_missing() {
     assert!(res.was_missing);
     assert!(!res.loaded_from_disk);
     assert!(res.error.is_none());
-    assert_eq!(res.config["proxyMode"], serde_json::json!("global"));
+    assert_eq!(res.config["proxyMode"], serde_json::json!("smart"));
 }
 
 #[test]
@@ -68,7 +68,7 @@ fn bad_field_sanitized_good_field_kept_on_disk_preserved() {
     let dir = TempDir::new().unwrap();
     let path = cfg_path(&dir);
     let original = r#"{
-        "proxyMode": "global",
+        "proxyMode": "smart",
         "proxyModeType": "systemProxy",
         "logLevel": "info",
         "mixedPort": 7890,
