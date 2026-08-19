@@ -412,8 +412,14 @@ impl HelperRuntime {
         Err("当前平台无 helper connector".to_owned())
     }
 
-    /// 状态快照（上游 `helper:getStatus`）——真探测：`compute_status_with_client`（内含 is_installed
-    /// 短路 + ping proto）。未安装 → 不连 socket 直接返未装态。
+    /// 状态快照（上游 `helper:getStatus`）——真探测：`status_with_recovery`（内含 is_installed 短路
+    /// + ping proto + W20 恢复腿：「装了但停着」先拉起复核，不误报修复态）。未安装 → 不连 socket
+    /// 直接返未装态。恢复腿让所有 status 消费方共享同一自愈：设置页挂载 / 启动 7s 可升级探测 /
+    /// 手动重新检测。
+    ///
+    /// 已知取舍：卸载读门（`HelperUninstallOps::installed`）也走本方法——用户要卸载时若服务正停着，
+    /// 读门会先把服务拉起、随后又被卸载流程停/删（无害但多付一次恢复耗时）。UI 读门一律异步
+    /// （`helper_get_status` spawn_blocking），不冻 UI。
     #[must_use]
     pub fn status(&self) -> HelperStatusSnapshot {
         let supported = self.supported();
@@ -425,7 +431,7 @@ impl HelperRuntime {
         }
         let manager = self.manager();
         match self.build_client() {
-            Ok(client) => snapshot_from(&manager.compute_status_with_client(&client), supported),
+            Ok(client) => snapshot_from(&manager.status_with_recovery(&client), supported),
             Err(e) => {
                 log::debug!("helper status：建 client 失败（{e}）→ 视作未就绪");
                 snapshot_from(&HelperStatus::default(), supported)
@@ -1021,5 +1027,26 @@ mod tests {
         let r = resolve_helper_binary();
         std::env::remove_var("POLARIS_HELPER_PATH");
         assert!(r.is_err());
+    }
+
+    /// W20 防回潮：`status()` 必须走带恢复腿的探测。直连 `compute_status_with_client` 会把
+    /// 「装了但停着」误报成修复态（UI 弹「修复助手」），而那只是 `sc start` 一把的事。
+    /// 行为已在 helper-client 单测覆盖（recovery_* 五条），这里源码级钉住接线不被回退——
+    /// 本机 Linux gate 走不到 win 分身，编译器拦不住这行被改回去。
+    ///
+    /// 钉法（W17 先例）：从 `pub fn status(` 切片到下一个兄弟文档注释，只断言生产函数体；
+    /// 断言串再经 `concat!` 打断——否则测试自身的字符串字面量就是 include_str 里的一个
+    /// 命中点，改回生产代码后测试照样绿（评审 F1 实证过的假绿形态）。
+    #[test]
+    fn status_wiring_uses_recovery_probe() {
+        let src = include_str!("helper.rs");
+        let start = src.find("pub fn status(").expect("status 消失");
+        let rest = &src[start..];
+        let end = rest.find("\n    /// ").unwrap_or(rest.len());
+        let body = &rest[..end];
+        assert!(
+            body.contains(concat!("status_with_recovery", "(&client)")),
+            "HelperRuntime::status 必须调 status_with_recovery（W20 恢复腿）"
+        );
     }
 }

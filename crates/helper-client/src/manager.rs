@@ -356,6 +356,57 @@ impl HelperManager {
             needs_repair: !ready,
         }
     }
+
+    /// W20（2026-08-20）：带恢复腿的状态探测——「装了但停着」不再直接判 needs_repair，先拉起复核。
+    ///
+    /// 背景：Windows 手动结束 helper 进程（或服务停着）时，[`compute_status_with_client`](Self::compute_status_with_client)
+    /// 的 ping 挂 → needs_repair → UI 引导「修复助手」；但此时结构完好，把服务拉起来即可恢复。
+    /// 三平台自愈对齐：mac=plist `KeepAlive`、linux=unit `Restart=on-failure`、win=安装脚本配
+    /// SCM 失败恢复（`sc failure ... restart/5000`，覆盖异常终止）+ 本腿（覆盖干净 stop / 恢复窗
+    /// 耗尽等残余态）。win 端未提权拉起的可行性由安装脚本 `sdset` 授 IU `SERVICE_START` 保证
+    /// （默认 DACL 无此权，.207 实测 IU 只有查询权）。
+    ///
+    /// 分型（哪些 needs_repair 值得试拉起；拉错场景要么白拉、要么误动服务）：
+    /// - token 为空：拉起也过不了鉴权，与「停着」无关 → 维持修复流；
+    /// - 服务正在跑（is_loaded）仍 ping 不通：结构性问题（proto 过旧 / 管道损坏）→ 维持修复流；
+    /// - 服务停着：拉起（start）→ 复用 [`wait_until_ready`](Self::wait_until_ready) 轮询复核。
+    ///   拉不起（如二进制被删）或复核仍不 ready → 维持 needs_repair（真坏该修，不粉饰）。
+    ///
+    /// 每次调用至多拉一次。接线点：`HelperRuntime::status`（设置页 / 启动 7s 探测 / 重新检测共用）；
+    /// 仅停着态付出 start + 轮询的耗时（轮询窗 5s，管道未绑时连接即刻失败不占 ping 超时，挂起连接
+    /// 最坏 1.5s/次），正常路径零额外成本——故 status 消费方须在非主线程跑（见 helper_get_status）。
+    #[must_use]
+    pub fn status_with_recovery(&self, client: &HelperClient) -> HelperStatus {
+        self.status_with_recovery_poll(client, RECOVERY_POLL_ATTEMPTS, RECOVERY_POLL_DELAY)
+    }
+
+    /// [`status_with_recovery`](Self::status_with_recovery) 的参数化形态（轮询次数/间隔透传，
+    /// 与 [`wait_until_ready`](Self::wait_until_ready) 同一套测试缝隙）。
+    #[must_use]
+    pub fn status_with_recovery_poll(
+        &self,
+        client: &HelperClient,
+        attempts: u32,
+        delay: Duration,
+    ) -> HelperStatus {
+        let status = self.compute_status_with_client(client);
+        if !status.needs_repair {
+            return status;
+        }
+        // token 缺失的 needs_repair 不是「停着」能解释的（拉起也过不了鉴权）。
+        if self.token().is_empty() {
+            return status;
+        }
+        // 跑着仍 ping 不通 → 结构性问题，交回修复流。
+        if self.is_loaded() {
+            return status;
+        }
+        if let Err(e) = self.start() {
+            log::warn!("helper 恢复腿：拉起停着的服务失败（{e}）→ 维持 needs_repair");
+            return status;
+        }
+        self.wait_until_ready(client, attempts, delay)
+    }
 }
 
 // ============================================================================
@@ -398,6 +449,12 @@ const WIN_HELPER_EXE: &str = "polaris-helper.exe";
 pub const READY_POLL_ATTEMPTS: u32 = 20;
 /// install 就绪轮询间隔（同上从 300ms 放宽：总窗 10s，覆盖 SCM 冷启动 + 管道监听）。
 pub const READY_POLL_DELAY: Duration = Duration::from_millis(500);
+
+/// W20 恢复腿轮询次数：拉起已装服务后等管道绑定。较 install 的 20 次减半——恢复拉的是已装好的
+/// 服务（无脚本侧删旧/拷贝/建服务竞态），要等的只有「服务起 → 管道监听」这一段（真机实测可 >3s）。
+const RECOVERY_POLL_ATTEMPTS: u32 = 10;
+/// W20 恢复腿轮询间隔（总窗 5s，依据同上）。
+const RECOVERY_POLL_DELAY: Duration = Duration::from_millis(500);
 
 /// 装卸流程错误（escalation 之前的失败：二进制缺失 / token 写失败 / 脚本落盘失败 / 平台不支持）。
 ///
@@ -1065,6 +1122,19 @@ for ($i = 0; $i -lt 10 -and -not $created; $i++) {{\n\
   catch {{ $lastErr = $_; Start-Sleep -Milliseconds 500 }}\n\
 }}\n\
 if (-not $created) {{ throw \"New-Service 失败（重试 10 次；多为 sc delete 标记删除态 1072 竞态，若持续请重启）：$($lastErr.Exception.Message)\" }}\n\
+# W20 自愈（对齐 mac plist KeepAlive=true / linux unit Restart=on-failure——Windows 此前是唯一没配自愈的平台）：\n\
+# ① IU 启动权：默认服务 DACL 只给交互用户查询权（.207 实测 CCLCSWLOCRRC，无 RP=SERVICE_START），\n\
+#    未提权 app 拉不起停着的服务（app 侧恢复腿的硬前提）→ 显式补授 RP（仅 start，不授 stop/改配置；\n\
+#    其余 ACE 与默认逐字一致，SACL 保留）。与管道 SDDL 授 IU 读写同一威胁模型：多给的只是「让默认\n\
+#    本就开机自启的服务提前起来」，无任何新能力。\n\
+& $sc sdset {service} \"D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)(A;;RP;;;IU)S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)\" | Out-Null\n\
+# 🔴 EAP=Stop 拦不住外部程序非零退出（PS 5.1 无 PSNativeCommandUseErrorActionPreference），\n\
+# 这两步是 W20 双层自愈的硬前提，静默失败 = 装完看着成功、自愈却全没配上 → 必须显式查退出码。\n\
+if ($LASTEXITCODE -ne 0) {{ throw \"sc sdset 授 IU 启动权失败（退出码 $LASTEXITCODE）\" }}\n\
+# ② SCM 失败恢复：进程被任务管理器结束/异常退出 → SCM 5s 后自动重启；reset= 86400=失败计数 24h\n\
+#    归零，三段 restart 覆盖连续误杀。sc 语法注意：等号后必须带一个空格。\n\
+& $sc failure {service} reset= 86400 actions= restart/5000/restart/5000/restart/5000 | Out-Null\n\
+if ($LASTEXITCODE -ne 0) {{ throw \"sc failure 自愈配置失败（退出码 $LASTEXITCODE）\" }}\n\
 & $sc start {service} | Out-Null\n",
         support_q = ps_quote(support),
         token_file_q = ps_quote(&token_file),
@@ -1272,6 +1342,8 @@ mod tests {
         /// SCM/launchd/systemd 里**已注册**的服务标识（可停着）。与 `loaded`（正在运行）正交：
         /// Windows 的 `is_installed` 判的是注册而非运行。
         registered_services: HashSet<String>,
+        /// W20：拉起是否失败（模拟二进制被删 / DACL 无 SERVICE_START）。
+        start_fails: bool,
         start_calls: Arc<Mutex<Vec<String>>>,
         stop_calls: Arc<Mutex<Vec<String>>>,
         /// `is_loaded` 收到的 label —— **必须记**：早先它只返 `self.loaded`、丢掉 label，
@@ -1286,6 +1358,9 @@ mod tests {
         }
         fn start_service(&self, label: &str) -> Result<(), String> {
             self.start_calls.lock().unwrap().push(label.to_owned());
+            if self.start_fails {
+                return Err("mock: 拉起失败（模拟二进制被删 / 无 SERVICE_START）".to_owned());
+            }
             Ok(())
         }
         fn stop_service(&self, label: &str) -> Result<(), String> {
@@ -1508,6 +1583,7 @@ mod tests {
                 exists_paths: HashSet::new(),
                 loaded: true,
                 registered_services: HashSet::new(),
+                start_fails: false,
                 start_calls: start_calls.clone(),
                 stop_calls: stop_calls.clone(),
                 loaded_calls: loaded_calls.clone(),
@@ -1647,6 +1723,159 @@ mod tests {
         assert!(status.installed);
         assert!(!status.ready);
         assert!(status.needs_repair);
+    }
+
+    // ── W20：status_with_recovery（「装了但停着」分型拉起，Windows 手杀 helper 的自愈腿）──
+
+    /// Win 分身：注册 + 二进制在 + token 在 + 停着 + ping 挂 → 拉起一次 + 复核 ready。
+    /// 变异锁：删恢复腿 / 删 is_loaded 分型 / 拉起后不复核，本条或下两条之一必转红。
+    /// （Linux 宿主上 is_installed 走双证据腿 + descriptor=None 的 service_exists 兜底——与生产
+    /// Windows 的 SCM 单证据分支由 `win_is_installed_uses_scm_evidence_not_the_acl_locked_file`
+    /// 源码钉死 + 真机兜；恢复逻辑本身平台无关，在此可完整驱动。）
+    #[test]
+    fn recovery_pulls_up_stopped_service_and_becomes_ready() {
+        let paths = InstallPaths::win();
+        let start_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut sysops = MockSysOps::default();
+        sysops.exists_paths.insert(paths.binary.clone());
+        sysops
+            .registered_services
+            .insert(paths.service_label.to_owned());
+        sysops.start_calls = start_calls.clone();
+        let (m, _dir) = manager_with_token(Platform::Win, sysops);
+        // 第一次 ping 挂（broken 流）→ 拉起后复核 ping 通（pong 流）。
+        let connector = MockConnector {
+            streams: Arc::new(Mutex::new(vec![
+                MockStream::broken(std::io::ErrorKind::ConnectionAborted),
+                MockStream::with_response(
+                    format!(
+                        "OK pong uid=0 v{}\n",
+                        polaris_helper_proto::proto_version::CURRENT
+                    )
+                    .into_bytes(),
+                ),
+            ])),
+        };
+        let client = HelperClient::new(Box::new(connector), Platform::Win, "TOK");
+        let status = m.status_with_recovery_poll(&client, 3, Duration::from_millis(1));
+        assert_eq!(
+            *start_calls.lock().unwrap(),
+            vec![paths.service_label.to_owned()]
+        );
+        assert!(status.installed);
+        assert!(status.ready, "拉起后复核应就绪");
+        assert!(!status.needs_repair);
+        assert_eq!(
+            status.version,
+            Some(polaris_helper_proto::proto_version::CURRENT)
+        );
+    }
+
+    /// 分型：跑着（is_loaded）仍 ping 不通 = 结构性问题 → 不拉服务，交回修复流。
+    #[test]
+    fn recovery_skips_start_when_running_but_unreachable() {
+        let paths = InstallPaths::win();
+        let start_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut sysops = MockSysOps::default();
+        sysops.exists_paths.insert(paths.binary.clone());
+        sysops
+            .registered_services
+            .insert(paths.service_label.to_owned());
+        sysops.loaded = true;
+        sysops.start_calls = start_calls.clone();
+        let (m, _dir) = manager_with_token(Platform::Win, sysops);
+        let connector = MockConnector {
+            streams: Arc::new(Mutex::new(vec![MockStream::broken(
+                std::io::ErrorKind::ConnectionAborted,
+            )])),
+        };
+        let client = HelperClient::new(Box::new(connector), Platform::Win, "TOK");
+        let status = m.status_with_recovery_poll(&client, 2, Duration::from_millis(1));
+        assert!(
+            start_calls.lock().unwrap().is_empty(),
+            "跑着仍不通是结构问题，拉服务是误动作"
+        );
+        assert!(status.needs_repair);
+    }
+
+    /// 分型：token 缺失 → 拉起也过不了鉴权，不白拉。
+    #[test]
+    fn recovery_skips_start_when_token_missing() {
+        let paths = InstallPaths::win();
+        let start_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut sysops = MockSysOps::default();
+        sysops.exists_paths.insert(paths.binary.clone());
+        sysops
+            .registered_services
+            .insert(paths.service_label.to_owned());
+        sysops.start_calls = start_calls.clone();
+        let m = manager(Platform::Win, sysops); // 不写 token
+        let connector = MockConnector {
+            streams: Arc::new(Mutex::new(vec![MockStream::broken(
+                std::io::ErrorKind::ConnectionAborted,
+            )])),
+        };
+        let client = HelperClient::new(Box::new(connector), Platform::Win, "");
+        let status = m.status_with_recovery_poll(&client, 2, Duration::from_millis(1));
+        assert!(start_calls.lock().unwrap().is_empty(), "无 token 不白拉");
+        assert!(status.needs_repair);
+    }
+
+    /// 拉起失败（二进制被删 / DACL 无 SERVICE_START）→ 如实维持 needs_repair，不粉饰。
+    ///
+    /// 预置一条 pong 流作「诱饵」：正确的失败路径**不该消费它**（start Err 即返，不轮询）；
+    /// 若有人把 start 失败吞成 Ok（或删掉 MockSysOps 的失败旋钮），轮询会吃到 pong 变 ready，
+    /// 本条转红——否则它会退化成与 never_binds 用例不可区分的弱断言（变异电池 M9 实证）。
+    #[test]
+    fn recovery_maintains_repair_when_start_fails() {
+        let paths = InstallPaths::win();
+        let start_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut sysops = MockSysOps::default();
+        sysops.exists_paths.insert(paths.binary.clone());
+        sysops
+            .registered_services
+            .insert(paths.service_label.to_owned());
+        sysops.start_fails = true;
+        sysops.start_calls = start_calls.clone();
+        let (m, _dir) = manager_with_token(Platform::Win, sysops);
+        let connector = MockConnector {
+            streams: Arc::new(Mutex::new(vec![
+                MockStream::broken(std::io::ErrorKind::ConnectionAborted),
+                MockStream::with_response(
+                    format!(
+                        "OK pong uid=0 v{}\n",
+                        polaris_helper_proto::proto_version::CURRENT
+                    )
+                    .into_bytes(),
+                ),
+            ])),
+        };
+        let client = HelperClient::new(Box::new(connector), Platform::Win, "TOK");
+        let status = m.status_with_recovery_poll(&client, 2, Duration::from_millis(1));
+        assert_eq!(start_calls.lock().unwrap().len(), 1, "确实试拉了一次");
+        assert!(status.needs_repair, "拉不起 = 真坏，该修不该粉饰");
+    }
+
+    /// 拉起成功但管道始终不绑（如起即崩）→ 轮询耗尽后维持 needs_repair。
+    #[test]
+    fn recovery_maintains_repair_when_service_never_binds() {
+        let paths = InstallPaths::win();
+        let mut sysops = MockSysOps::default();
+        sysops.exists_paths.insert(paths.binary.clone());
+        sysops
+            .registered_services
+            .insert(paths.service_label.to_owned());
+        let (m, _dir) = manager_with_token(Platform::Win, sysops);
+        let connector = MockConnector {
+            streams: Arc::new(Mutex::new(vec![
+                MockStream::broken(std::io::ErrorKind::ConnectionAborted),
+                MockStream::broken(std::io::ErrorKind::ConnectionAborted),
+                MockStream::broken(std::io::ErrorKind::ConnectionAborted),
+            ])),
+        };
+        let client = HelperClient::new(Box::new(connector), Platform::Win, "TOK");
+        let status = m.status_with_recovery_poll(&client, 2, Duration::from_millis(1));
+        assert!(status.needs_repair, "复核仍不通 → 维持修复态");
     }
 
     #[test]
@@ -2049,6 +2278,47 @@ mod tests {
         assert!(
             s.contains(r#"$sc = "$env:SystemRoot\System32\sc.exe""#),
             "缺 $env: 双引号变量赋值（sc）"
+        );
+    }
+
+    /// W20：安装脚本必须配好两层自愈——① `sdset` 授 IU `SERVICE_START`（默认服务 DACL 只给交互
+    /// 用户查询权，.207 实测无 RP；不补授则未提权 app 永远拉不起停着的服务）；② `sc failure`
+    /// 失败恢复（任务管理器手杀/崩溃 → SCM 5s 自动重启，对齐 mac KeepAlive / linux Restart）。
+    /// 两者都必须在首次 `sc start` 之前，且各带 `$LASTEXITCODE` 守卫——PS 5.1 的 EAP=Stop 拦不住
+    /// 外部程序非零退出（评审 F3），静默失败会让安装「看着成功」而自愈全没配上。
+    /// 变异锁：删任一行 / 删守卫 / 挪到 start 之后 → 转红。
+    #[test]
+    fn win_install_script_self_heals_and_grants_iu_start_before_first_start() {
+        let script = build_win_install_script(
+            &install_params(
+                PathBuf::from("/x"),
+                PathBuf::from(r"C:\app\polaris-helper.exe"),
+            ),
+            "WTOKEN",
+        );
+        // ① IU 启动权：逐字钉死 sdset 行——IU 的第二段 ACE 恰好只有 RP（只授 start，不授
+        // stop/改配置）；改任何一段（尤其给 IU 加权）都该过 review 而不是悄悄过。
+        assert!(
+            script.contains(
+                "& $sc sdset PolarisHelper \"D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)(A;;RP;;;IU)S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)\""
+            ),
+            "缺 sdset 授 IU SERVICE_START（W20 恢复腿的硬前提）"
+        );
+        // ② 失败恢复 + ③ 两道退出码守卫 + ④ 次序：sdset → failure → 首次 start（配置先于首启）。
+        let sdset_at = script.find("sdset PolarisHelper").expect("缺 sdset");
+        let failure_line = "& $sc failure PolarisHelper reset= 86400 actions= restart/5000/restart/5000/restart/5000 | Out-Null";
+        let failure_at = script.find(failure_line).expect("缺 sc failure 自愈配置");
+        let start_at = script
+            .find("& $sc start PolarisHelper")
+            .expect("缺 sc start");
+        assert!(
+            sdset_at < failure_at && failure_at < start_at,
+            "自愈配置必须在首次 start 之前（首启即被覆盖）"
+        );
+        assert_eq!(
+            script.matches("if ($LASTEXITCODE -ne 0)").count(),
+            2,
+            "sdset/failure 两步必须各带退出码守卫（EAP=Stop 拦不住外部程序非零退出）"
         );
     }
 
