@@ -446,10 +446,10 @@ fn spawn_core_baseline_warning(app: AppHandle) {
     });
 }
 
-/// 纯决策：是否发 `event:helperUpgradeable`（提权 helper proto 落后于本 build 期望）。
+/// 纯决策：是否发 `event:helperUpgradeable`（proto 落后，或同 proto 的 helper build 与随包不一致）。
 ///
 /// `installed && upgradeable`。`ready` **刻意不再查一遍** —— `helper-client` 的
-/// `compute_status` 里 `upgradeable = ready && proto < expected`，`ready` 已是它的合取项；
+/// `compute_status` 里 `upgradeable` 已经合取 `ready`；
 /// 在这里重复只会制造「两处判据、改一处漏一处」。留 `installed` 是给它变异牙齿：
 /// 未装的机器上 `upgradeable` 恒 false，但把判据写成恒真的形态（如直接 `true`）时这条会转红。
 ///
@@ -478,14 +478,19 @@ fn spawn_helper_upgradeable_probe(app: AppHandle) {
             return;
         }
         log::info!(
-            "提权 helper 可升级（当前 proto {:?}）：已通知渲染端引导升级",
-            status.version
+            "提权 helper 可升级（当前 proto {:?}, helper build {:?}, expected build {}）：已通知渲染端引导升级",
+            status.version,
+            status.helper_build_id,
+            status.expected_build_id,
         );
         crate::events::broadcast(
             &app,
             EVENT_HELPER_UPGRADEABLE,
             json!({
                 "version": status.version,
+                "expectedProtocolVersion": status.expected_protocol_version,
+                "helperBuildId": status.helper_build_id,
+                "expectedBuildId": status.expected_build_id,
                 "installed": status.installed,
                 "ready": status.ready,
             }),

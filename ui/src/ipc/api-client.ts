@@ -1486,7 +1486,14 @@ export const helperApi = {
   },
 
   /** 监听「helper 可升级」事件。 */
-  onUpgradeable(listener: (data: { version: string }) => void): () => void {
+  onUpgradeable(
+    listener: (data: {
+      version: number | null;
+      expectedProtocolVersion: number;
+      helperBuildId?: string | null;
+      expectedBuildId: string;
+    }) => void
+  ): () => void {
     return listen(IPC_CHANNELS.EVENT_HELPER_UPGRADEABLE, listener);
   },
 };

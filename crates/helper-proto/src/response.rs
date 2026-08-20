@@ -26,14 +26,28 @@ pub(crate) fn parse_first_token(s: &str) -> (&str, &str) {
     }
 }
 
-/// `ping` 响应载荷 `OK pong uid=<n> v<ver>`（三平台，`helper.go:423` / `helper-win/helper.go:180` /
-/// `helper-linux/helper.go:347`）。Windows 的 uid 恒为 0（`helper-win/helper.go:179` 注释）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `ping` 响应载荷 `OK pong uid=<n> v<ver> [build=<id>]`。前三项兼容 Polaris Go helper；Rust
+/// helper 追加可选 build token。Windows 的 uid 恒为 0（`helper-win/helper.go:179` 注释）。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pong {
     /// helper 进程的 uid（mac/linux 真实值；win 固定 0）。
     pub uid: i64,
     /// helper 报告的 protoVersion。
     pub proto_version: u32,
+    /// helper 构建身份。旧 helper 的 pong 没有该字段，解析为 `None`，供新 app 识别同 protocol 旧构建。
+    pub build_identity: Option<String>,
+}
+
+impl Pong {
+    /// 构造当前 helper 的握手响应。协议版本与构建身份都取 shared crate 的单一真值。
+    #[must_use]
+    pub fn current(uid: i64) -> Self {
+        Self {
+            uid,
+            proto_version: crate::proto_version::CURRENT,
+            build_identity: Some(crate::build_identity::current().to_owned()),
+        }
+    }
 }
 
 /// `status` 响应载荷（三平台，`helper.go:427-430` 等）：running <pid> 或 stopped。
@@ -96,7 +110,7 @@ pub enum FlushDns {
 /// [`ResponseKind::OkRaw`]（保留原文）——保证解析永不丢消息，便于协议演进期的诊断。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResponseKind {
-    /// `OK pong uid=<n> v<ver>`（ping）。
+    /// `OK pong uid=<n> v<ver> [build=<id>]`（ping）。
     Pong(Pong),
     /// `OK <ver>`（version）。
     Version { proto_version: u32 },
@@ -186,7 +200,12 @@ impl Response {
 /// 把 [`ResponseKind`] 序列化为 `OK ...` wire 行（[`parse_ok`] 的反方向）。
 fn ok_kind_to_wire(kind: &ResponseKind) -> String {
     match kind {
-        ResponseKind::Pong(p) => format!("OK pong uid={} v{}", p.uid, p.proto_version),
+        ResponseKind::Pong(p) => {
+            let base = format!("OK pong uid={} v{}", p.uid, p.proto_version);
+            p.build_identity
+                .as_ref()
+                .map_or(base.clone(), |build| format!("{base} build={build}"))
+        }
         ResponseKind::Version { proto_version } => format!("OK {proto_version}"),
         ResponseKind::Status(Status::Running { pid }) => format!("OK running {pid}"),
         ResponseKind::Status(Status::Stopped) => "OK stopped".to_owned(),
@@ -319,17 +338,23 @@ fn parse_ok(rest: &str) -> ResponseKind {
 fn parse_pong(tail: &str) -> Pong {
     let mut uid: i64 = 0;
     let mut ver: u32 = 0;
+    let mut build_identity = None;
     for field in tail.split_whitespace() {
         if let Some(v) = field.strip_prefix("uid=") {
             uid = v.parse().unwrap_or(0);
         } else if let Some(v) = field.strip_prefix('v') {
             // `v9` 形态：v 后直接跟版本号数字（无 `=`）
             ver = v.parse().unwrap_or(0);
+        } else if let Some(v) = field.strip_prefix("build=") {
+            if crate::build_identity::is_wire_safe(v) {
+                build_identity = Some(v.to_owned());
+            }
         }
     }
     Pong {
         uid,
         proto_version: ver,
+        build_identity,
     }
 }
 
@@ -370,7 +395,8 @@ mod tests {
             p,
             Pong {
                 uid: 0,
-                proto_version: 9
+                proto_version: 9,
+                build_identity: None,
             }
         );
     }
@@ -384,6 +410,20 @@ mod tests {
         };
         assert_eq!(p.uid, 0);
         assert_eq!(p.proto_version, 5);
+        assert_eq!(p.build_identity, None);
+    }
+
+    #[test]
+    fn parse_pong_with_build_identity() {
+        let r = Response::parse("OK pong uid=0 v1 build=0123456789abcdef");
+        let Response::Ok(ResponseKind::Pong(p)) = r else {
+            panic!("{r:?}");
+        };
+        assert_eq!(p.build_identity.as_deref(), Some("0123456789abcdef"));
+        assert_eq!(
+            Response::Ok(ResponseKind::Pong(p)).to_wire_line(),
+            "OK pong uid=0 v1 build=0123456789abcdef"
+        );
     }
 
     #[test]
@@ -567,6 +607,7 @@ mod tests {
                 Response::Ok(ResponseKind::Pong(Pong {
                     uid: 501,
                     proto_version: 9,
+                    build_identity: None,
                 })),
                 "OK pong uid=501 v9",
             ),
@@ -650,6 +691,7 @@ mod tests {
             Response::Ok(ResponseKind::Pong(Pong {
                 uid: 0,
                 proto_version: 3,
+                build_identity: None,
             })),
             Response::Ok(ResponseKind::Status(Status::Running { pid: 999 })),
             Response::Ok(ResponseKind::Status(Status::Stopped)),

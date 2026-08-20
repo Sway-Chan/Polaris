@@ -235,6 +235,11 @@ jobs:
       && needs.setup.result == 'success'
       && needs.ci.result != 'failure'
       && needs.ui.result != 'failure'
+    # W24：helper 与 app 分两次 cargo build，但必须共享同一份构建身份。放 job 级而非某一步，
+    # 让 helper staging 与后面的 tauri-action 都继承当前 checkout commit；同 protocol 的旧 helper
+    # 才能被新 app 识别为 upgradeable。github.sha 在 tag/dispatch 两条出包路径都指向被检出的 commit。
+    env:
+      POLARIS_BUILD_ID: ${{ github.sha }}
     runs-on: ${{ matrix.os }}
     strategy:
       # fail-fast: false 保留（2026-07-31 复核，判据同 ci.yml 那条，别单独优化掉一个）：

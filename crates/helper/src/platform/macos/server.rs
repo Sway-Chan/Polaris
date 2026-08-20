@@ -1041,7 +1041,11 @@ mod tests {
         let resp = String::from_utf8(output).unwrap();
         assert_eq!(
             resp,
-            format!("OK pong uid=0 v{}\n", crate::platform::macos::PROTO_VERSION)
+            format!(
+                "OK pong uid=0 v{} build={}\n",
+                crate::platform::macos::PROTO_VERSION,
+                polaris_helper_proto::build_identity::current()
+            )
         );
     }
 

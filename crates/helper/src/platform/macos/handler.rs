@@ -220,10 +220,9 @@ pub fn dispatch(
     match req {
         Request::Ping => {
             // helper.go:422-423: OK pong uid=<n> v<ver>
-            Response::Ok(ResponseKind::Pong(polaris_helper_proto::response::Pong {
-                uid: services.uid(),
-                proto_version: crate::platform::macos::PROTO_VERSION,
-            }))
+            Response::Ok(ResponseKind::Pong(polaris_helper_proto::Pong::current(
+                services.uid(),
+            )))
         }
         Request::Version => {
             // helper.go:424-425: OK <ver>
@@ -607,14 +606,18 @@ mod tests {
 
     #[test]
     fn ping_response_format() {
-        // wire 形态 `OK pong uid=<n> v<ver>`；版本走统一的 PROTO_VERSION（不再是 上游 mac=9）。
+        // wire 形态追加 shared build identity；旧 app 忽略，新 app 用它识别同 proto 旧 helper。
         let svc = TestServices::new("t");
         let cfg = test_config();
         let resp = dispatch(&svc, &cfg, "t", &Request::Ping);
         let line = resp.to_wire_line();
         assert_eq!(
             line,
-            format!("OK pong uid=0 v{}", crate::platform::macos::PROTO_VERSION)
+            format!(
+                "OK pong uid=0 v{} build={}",
+                crate::platform::macos::PROTO_VERSION,
+                polaris_helper_proto::build_identity::current()
+            )
         );
     }
 

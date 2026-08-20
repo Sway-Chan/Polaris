@@ -769,6 +769,7 @@ mod tests {
             wire(ResponseKind::Pong(Pong {
                 uid: 0,
                 proto_version: 5,
+                build_identity: None,
             })),
             "OK pong uid=0 v5"
         );

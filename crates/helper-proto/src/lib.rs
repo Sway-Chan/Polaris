@@ -65,6 +65,41 @@ pub mod proto_version {
     pub const CURRENT: u32 = 1;
 }
 
+/// 当前安装包内 app/helper 的共同构建身份。
+///
+/// 发布流水线把同一份 `github.sha` 通过 `POLARIS_BUILD_ID` 注入 helper 与 app 的所有 Cargo
+/// 编译步骤；两侧都链接本 crate，因而不会再各自维护版本字符串。开发/源码包未注入时退回 workspace
+/// package version，保证本地分别编译 app/helper 仍能互认。
+pub mod build_identity {
+    /// wire token 的最大长度。Git SHA-1 为 40 字节；留出算法升级和带前缀身份的余量。
+    pub const MAX_BYTES: usize = 96;
+
+    const CONFIGURED: &str = match option_env!("POLARIS_BUILD_ID") {
+        Some(value) => value,
+        None => env!("CARGO_PKG_VERSION"),
+    };
+
+    /// 当前构建身份；若构建环境误注入了会破坏行协议的值，安全退回 package version。
+    #[must_use]
+    pub fn current() -> &'static str {
+        if is_wire_safe(CONFIGURED) {
+            CONFIGURED
+        } else {
+            env!("CARGO_PKG_VERSION")
+        }
+    }
+
+    /// 构建身份必须是单个、可审计的 ASCII token，不能注入空白或换行。
+    #[must_use]
+    pub fn is_wire_safe(value: &str) -> bool {
+        !value.is_empty()
+            && value.len() <= MAX_BYTES
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'+'))
+    }
+}
+
 /// 平台标识（helper 协议谱系选择，运行期由编译 target 决定）。
 ///
 /// 单一真值：全 workspace 仅此处定义，其余 crate（system-integration / mesh / config-engine）
@@ -155,7 +190,7 @@ mod tests {
     }
 
     // 曾有一条 `proto_version_does_not_vary_by_platform`：遍历四个 `Platform` 反复断言
-    // `Response::Ok(Pong{ proto_version: CURRENT }).to_wire_line() == "OK pong uid=0 v1"`。**已删** ——
+    // `Response::Ok(Pong{ proto_version: CURRENT, .. }).to_wire_line()` 的版本段。**已删** ——
     // 循环变量只出现在断言消息里，`advertised` 由常量 `CURRENT` 算出、与平台无关 ⇒ 四次迭代是同一
     // 个断言的四份副本，语义等价于 `CURRENT == 1`（上面那条已覆盖）；它自称能拦「有人按 Platform
     // match 返不同值」，可新增的那个函数**根本不会被它调用**，拦不住。
@@ -164,7 +199,7 @@ mod tests {
     // 常量（cfg 门控模块，helper-proto 这层遍历不到），每处一条字面量断言：
     //   · `platform::macos::mod.rs`   `proto_version_is_unified_current`
     //   · `platform::windows::mod.rs` `proto_version_is_unified_current`
-    //   · `platform::linux::handler.rs` `wire_forms_match_go_source`（钉死 "OK pong uid=0 v1"）
+    //   · `platform::linux::handler.rs` `wire_forms_match_go_source`（钉死 protocol v1）
     // `to_wire_line` 的 Pong 形态另由 `response.rs::to_wire_line_matches_go_source_literals` 覆盖。
 
     #[test]
@@ -177,6 +212,14 @@ mod tests {
         assert_eq!(mac, "TOK\nping\n", "mac 带 token 行");
         assert_eq!(linux, "ping\n", "linux 走 SO_PEERCRED，无 token 行");
         assert_ne!(mac, linux, "平台差异体现在帧结构上");
+    }
+
+    #[test]
+    fn build_identity_is_a_single_safe_wire_token() {
+        assert!(build_identity::is_wire_safe(build_identity::current()));
+        assert!(!build_identity::is_wire_safe(""));
+        assert!(!build_identity::is_wire_safe("sha with spaces"));
+        assert!(!build_identity::is_wire_safe("sha\nsecond-line"));
     }
 
     #[test]

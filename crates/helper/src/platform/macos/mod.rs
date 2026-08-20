@@ -84,7 +84,7 @@ mod tests {
     ///
     /// 缺了它 mac 侧对本常量零覆盖：`handler.rs:562/578/588` 与 `server.rs:983/1008` 的断言两侧都从
     /// `PROTO_VERSION` 派生 ⇒ 全是恒真式，把本常量改回 上游的 9，151 条 macOS 用例无一转红。
-    /// Linux 有 `linux/handler.rs` 的 `wire_forms_match_go_source` 钉死 "OK pong uid=0 v1"、
+    /// Linux 有 `linux/handler.rs` 的 `wire_forms_match_go_source` 钉死 protocol v1、
     /// Windows 有 `windows/mod.rs` 钉死 1，唯独 mac 没有 —— 补上，三平台覆盖对称。
     ///
     /// 功能后果当前为零（`MIN_USABLE=1`、`expected=1` ⇒ 广告 v9 仍判 ready），故这是覆盖洞而非缺陷；

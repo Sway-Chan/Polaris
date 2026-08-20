@@ -135,10 +135,8 @@ where
         // 鉴权通过 → 进 switch（持锁分派）
         match req {
             Request::Ping => HandleOutcome::Respond(Response::Ok(ResponseKind::Pong(
-                polaris_helper_proto::Pong {
-                    uid: 0, // Go helper.go:179: Windows Getuid()=-1 破坏正则，固定发 0
-                    proto_version: crate::platform::windows::PROTO_VERSION,
-                },
+                // Go helper.go:179: Windows Getuid()=-1 破坏正则，固定发 0。
+                polaris_helper_proto::Pong::current(0),
             ))),
             Request::Version => HandleOutcome::Respond(Response::Ok(ResponseKind::Version {
                 proto_version: crate::platform::windows::PROTO_VERSION,
