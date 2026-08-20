@@ -57,14 +57,12 @@ impl ProxyEnableRequest {
 /// Windows Internet Settings 注册表路径。
 pub const WIN_REG_PATH: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
 
-/// Windows 设代理命令序列（reg add ProxyServer / ProxyEnable / ProxyOverride + netsh 清 QUIC 残留）。
+/// Windows 设代理命令序列（reg add ProxyServer / ProxyEnable / ProxyOverride）。
 /// 关键：只设 http/https，不设 socks=（Chromium 内核会把 WebSocket 经 SOCKS5 本地解析 DNS 被污染）。
-/// 上游 `WindowsSystemProxy.enableProxy` retry 块。
-pub fn windows_enable_commands(
-    reg_exe: &str,
-    netsh_exe: &str,
-    req: &ProxyEnableRequest,
-) -> Vec<Command> {
+///
+/// QUIC 旧规则清理由 [`windows_clear_quic_command`] 单独构造并 best-effort 执行：规则本来就不存在时
+/// `netsh delete rule` 也会以 exit=1 退出，不能把这个幂等成功态混进代理注册表事务。
+pub fn windows_enable_commands(reg_exe: &str, req: &ProxyEnableRequest) -> Vec<Command> {
     let proxy_server = format!(
         "http={addr}:{http};https={addr}:{http}",
         addr = req.address,
@@ -112,16 +110,6 @@ pub fn windows_enable_commands(
                 "/d".into(),
                 proxy_override,
                 "/f".into(),
-            ],
-        },
-        Command {
-            program: netsh_exe.to_string(),
-            args: vec![
-                "advfirewall".into(),
-                "firewall".into(),
-                "delete".into(),
-                "rule".into(),
-                "name=Polaris_Block_QUIC".into(),
             ],
         },
     ]
@@ -1280,11 +1268,16 @@ impl<R: CommandRunner> SystemProxyOps for SystemProxyOpsImpl<R> {
             Platform::Win => retry_op(
                 &WIN_ENABLE_RETRY,
                 || {
-                    self.run_all(&windows_enable_commands(
-                        &self.reg_exe,
-                        &self.netsh_exe,
-                        req,
-                    ))
+                    // 三条注册表写是系统代理成立条件，任一失败都让本 attempt 失败并由 retry/上层
+                    // rollback 处理。QUIC 规则只是旧版本可能留下的可选清理：不存在时 netsh 本身也
+                    // 返回 exit=1（doveh 真机已证），故与 clear/restore 两腿保持同一 best-effort 语义。
+                    self.run_all(&windows_enable_commands(&self.reg_exe, req))?;
+                    if let Err(err) = self.run(&windows_clear_quic_command(&self.netsh_exe)) {
+                        log::warn!(
+                            "Windows QUIC legacy firewall-rule cleanup skipped after proxy enable: {err}"
+                        );
+                    }
+                    Ok(())
                 },
                 self.sleeper,
             ),
@@ -2113,7 +2106,7 @@ mod tests {
 
     #[test]
     fn windows_enable_commands_no_socks_in_proxyserver() {
-        let cmds = windows_enable_commands("reg.exe", "netsh.exe", &req());
+        let cmds = windows_enable_commands("reg.exe", &req());
         // ProxyServer 行：只 http/https，无 socks（Chromium SOCKS5 DNS 污染防护）。
         let proxy_server = cmds
             .iter()
@@ -2132,10 +2125,13 @@ mod tests {
             .find(|c| c.args.get(3) == Some(&"ProxyEnable".to_string()))
             .unwrap();
         assert_eq!(reg_value(enable), "1");
-        // QUIC 清理
-        assert!(cmds
-            .iter()
-            .any(|c| c.args.contains(&"name=Polaris_Block_QUIC".to_string())));
+        assert_eq!(cmds.len(), 3, "代理事务只包含三条必要的注册表写");
+        assert!(
+            !cmds
+                .iter()
+                .any(|c| c.args.contains(&"name=Polaris_Block_QUIC".to_string())),
+            "可选 QUIC 清理不得混进必要事务"
+        );
     }
 
     #[test]
@@ -2483,6 +2479,50 @@ mod tests {
             .snapshot()
             .iter()
             .any(|c| c.program.ends_with("reg.exe")));
+    }
+
+    #[test]
+    fn impl_win_set_proxy_survives_quic_cleanup_failure() {
+        // `netsh delete rule` 在规则本来就不存在时返回 exit=1；这已经是目标状态，不能让三条
+        // 注册表写成功后的系统代理事务被反判失败。真实注册表写失败仍由 run_all/retry 返回 Err。
+        let runner = MockRunner {
+            fail_args: vec!["Polaris_Block_QUIC".into()],
+            ..Default::default()
+        };
+        let ops = ops_for(Platform::Win, runner);
+        ops.set_proxy(&req())
+            .expect("可选 QUIC 清理失败不得阻断系统代理启用");
+        assert!(ops.runner.ran_arg("Polaris_Block_QUIC"));
+        assert!(ops.runner.ran_arg("ProxyServer"));
+        assert!(ops.runner.ran_arg("ProxyEnable"));
+        assert!(ops.runner.ran_arg("ProxyOverride"));
+    }
+
+    #[test]
+    fn impl_win_set_proxy_still_fails_on_required_registry_write_failure() {
+        // best-effort 只放宽 QUIC 清理；任何必要注册表写失败仍须让整个 attempt 失败并走既有重试。
+        let runner = MockRunner {
+            fail_args: vec!["ProxyEnable".into()],
+            ..Default::default()
+        };
+        let ops = ops_for(Platform::Win, runner).with_noop_sleeper();
+        assert!(
+            ops.set_proxy(&req()).is_err(),
+            "必要注册表写失败必须继续向上报错"
+        );
+        assert_eq!(
+            ops.runner.count_arg("ProxyEnable"),
+            3,
+            "首次 + 两次 retry 都应在必要写失败处中止"
+        );
+        assert!(
+            !ops.runner.ran_arg("ProxyOverride"),
+            "失败后的必要写不得继续"
+        );
+        assert!(
+            !ops.runner.ran_arg("Polaris_Block_QUIC"),
+            "必要事务未完成时不得提前做可选清理"
+        );
     }
 
     #[test]
