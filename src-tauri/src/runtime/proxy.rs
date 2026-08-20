@@ -88,12 +88,15 @@ use polaris_switch_engine::{
     decide, DebouncedOutcome, DebouncedRestart, DecisionInput, HotSwitchOutcome, ManagementApi,
     SwitchDecision, SwitchExecutor,
 };
+use polaris_system_integration::error::SystemIntegrationError;
 use polaris_system_integration::proxy::MarkerFs;
 use polaris_system_integration::proxy_ops::{
     ProxyEnableRequest, SystemProxyController, SystemProxyOps,
 };
+#[cfg(not(target_os = "windows"))]
+use polaris_system_integration::route_ops::SystemRouteOps;
 use polaris_system_integration::route_ops::{
-    verify_exit_captured, ExitCaptureOutcome, SystemRouteOps, PROBE_IP as ROUTE_PROBE_IP,
+    verify_exit_captured, ExitCaptureOutcome, PROBE_IP as ROUTE_PROBE_IP,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -382,6 +385,29 @@ const TUN_ROUTE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_m
 /// 成立，设闸必误判（假阳性拦掉正常起核）。故这两类列 caveat 不闸（设计 §4.7 分流行）。
 fn tun_route_gate_applies(mode: ProxyModeType) -> bool {
     mode.is_tun()
+}
+
+/// 查询 TUN 接管判据使用的当前出口接口身份。
+///
+/// macOS/Linux 沿用 [`polaris_system_integration::route_ops::SystemRouteOps`] 的 `route`/`ip` 查询；
+/// Windows 复用 helper crate 已有的 `windows-sys` + IP Helper API，直接取 best-interface index。
+/// 旧实现每次都冷启 PowerShell `Find-NetRoute`，真机单次约 1.3–1.7s，而 TUN 健康启动必查起核前/后
+/// 两次，单这条诊断链就占约 3s。接口索引是内核稳定身份，且本判据只比较前后是否变化，比本地化的
+/// `InterfaceAlias` 更窄、更可靠。
+fn tun_exit_interface_for_probe() -> Result<Option<String>, SystemIntegrationError> {
+    #[cfg(target_os = "windows")]
+    {
+        let ip = ROUTE_PROBE_IP
+            .parse::<std::net::Ipv4Addr>()
+            .map_err(|e| SystemIntegrationError::route(e.to_string()))?;
+        return polaris_helper::platform::windows::wintun::best_route_interface_index(ip)
+            .map(|index| Some(format!("ifindex:{index}")))
+            .map_err(|e| SystemIntegrationError::route(e.to_string()));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        polaris_system_integration::production_route_ops().exit_interface_for(ROUTE_PROBE_IP)
+    }
 }
 
 /// 起核/重启失败的**类型化错误**：用户可见消息 + 本次失败**自己的**结构化码（[`code`] 常量之一）。
@@ -4184,21 +4210,16 @@ impl ProxyRuntime {
     /// C-tun-conflict：起核**前**快照「应走代理的公网目的」出口接口（post-flight 差分锚点）。
     ///
     /// 非 TUN 模式 → `None`（不设闸，见 [`tun_route_gate_applies`]）。TUN 模式经 `spawn_blocking` 跑
-    /// `route -n get 1.1.1.1`（同步 [`SystemRouteOps`] 不阻塞 async runtime）；读失败 → `None`
+    /// [`tun_exit_interface_for_probe`]（同步系统查询不阻塞 async runtime）；读失败 → `None`
     /// （判定层按「不可断言」不闸，避免假阳性）。**必须在任何 spawn 之前**：此刻我方 utun 尚未上线，
     /// 查到的是「Polaris 起核前」的出口（物理网卡或他方 VPN 的 utun）——差分的基准。
     async fn capture_tun_route_baseline(&self, mode: ProxyModeType) -> Option<String> {
         if !tun_route_gate_applies(mode) {
             return None;
         }
-        let iface = tokio::task::spawn_blocking(|| {
-            polaris_system_integration::production_route_ops()
-                .exit_interface_for(ROUTE_PROBE_IP)
-                .ok()
-                .flatten()
-        })
-        .await
-        .unwrap_or(None);
+        let iface = tokio::task::spawn_blocking(|| tun_exit_interface_for_probe().ok().flatten())
+            .await
+            .unwrap_or(None);
         log::info!("TUN 出口 baseline（起核前 {ROUTE_PROBE_IP} 出口）= {iface:?}");
         iface
     }
@@ -4222,11 +4243,10 @@ impl ProxyRuntime {
             return Ok(());
         }
         let outcome = tokio::task::spawn_blocking(move || {
-            let ops = polaris_system_integration::production_route_ops();
             verify_exit_captured(
                 baseline,
                 TUN_ROUTE_GRACE_POLLS,
-                || ops.exit_interface_for(ROUTE_PROBE_IP),
+                tun_exit_interface_for_probe,
                 || std::thread::sleep(TUN_ROUTE_POLL_INTERVAL),
             )
         })

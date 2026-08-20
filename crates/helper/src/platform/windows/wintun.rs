@@ -41,6 +41,16 @@
 
 use std::time::{Duration, Instant};
 
+/// 把 [`std::net::Ipv4Addr`] 写成 WinSock `IN_ADDR.S_addr` 的内存序。
+///
+/// `S_addr` 虽然在 Rust 侧是 `u32`，WinSock 读的是这 4 个字节的**网络序**。用 `from_ne_bytes`
+/// 保证字段在大小端机器上的内存字节都逐字等于 IPv4 octets；直接 `u32::from_be_bytes` 在 Windows
+/// 小端机上会把 `1.2.3.4` 写成 `4.3.2.1`。
+#[must_use]
+fn ipv4_s_addr(ip: std::net::Ipv4Addr) -> u32 {
+    u32::from_ne_bytes(ip.octets())
+}
+
 /// 探测的目标适配器名前缀（Polaris 命名谱系）。
 ///
 /// - `polaris-`：Polaris 自身命名谱系（`polaris-tun0` 等）。
@@ -196,14 +206,51 @@ impl ThreadSleep for StdSleep {
 #[allow(unsafe_code)] // windows-sys FFI（GetAdaptersAddresses/解引用 widestring）必须 unsafe；每处附 SAFETY。
 mod win_impl {
     use super::super::netinfo::u64_cells_for;
-    use super::{adapter_name_is_probeable, AdapterProbe};
+    use super::{adapter_name_is_probeable, ipv4_s_addr, AdapterProbe};
     use core::ffi::c_void;
     use windows_sys::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, NO_ERROR};
-    use windows_sys::Win32::NetworkManagement::IpHelper::GetAdaptersAddresses;
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GetAdaptersAddresses, GetBestInterfaceEx,
+    };
     use windows_sys::Win32::NetworkManagement::IpHelper::{
         GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_FRIENDLY_NAME,
         GAA_FLAG_SKIP_MULTICAST, GAA_FLAG_SKIP_UNICAST, IP_ADAPTER_ADDRESSES_LH,
     };
+    use windows_sys::Win32::Networking::WinSock::{
+        AF_INET, IN_ADDR, IN_ADDR_0, SOCKADDR, SOCKADDR_IN,
+    };
+
+    /// 查询 Windows 路由表对目标 IPv4 选出的最佳接口索引。
+    ///
+    /// 与 PowerShell `Find-NetRoute -RemoteIPAddress ...` 回答同一个问题，但直接调用 IP Helper API：
+    /// 不创建 PowerShell/.NET 进程，也不解析本地化文本。调用者只比较起核前后的索引是否变化，故无需
+    /// 再把索引反查成可变、可本地化的 FriendlyName。
+    pub fn best_route_interface_index(ip: std::net::Ipv4Addr) -> std::io::Result<u32> {
+        let address = SOCKADDR_IN {
+            sin_family: AF_INET,
+            sin_port: 0,
+            sin_addr: IN_ADDR {
+                S_un: IN_ADDR_0 {
+                    S_addr: ipv4_s_addr(ip),
+                },
+            },
+            sin_zero: [0; 8],
+        };
+        let mut index = 0u32;
+        // SAFETY: `address` 是本栈帧内完整初始化的 IPv4 SOCKADDR，指针仅在同步调用期间借用；
+        // `index` 是有效可写的 u32。GetBestInterfaceEx 不保留二者指针。
+        let rc =
+            unsafe { GetBestInterfaceEx((&raw const address).cast::<SOCKADDR>(), &raw mut index) };
+        if rc != NO_ERROR {
+            return Err(std::io::Error::from_raw_os_error(rc as i32));
+        }
+        if index == 0 {
+            return Err(std::io::Error::other(
+                "GetBestInterfaceEx returned interface index 0",
+            ));
+        }
+        Ok(index)
+    }
 
     /// 承载缓冲区用 `Vec<u64>` 的**前提**：目标结构体的 align 不得超过 u64 的 align。
     /// 与 [`super::super::netinfo`] 同款断言、同款承载类型（两处对称，别一处 u8 一处 u64）。
@@ -320,7 +367,7 @@ mod win_impl {
 }
 
 #[cfg(windows)]
-pub use win_impl::WinAdapterProbe;
+pub use win_impl::{best_route_interface_index, WinAdapterProbe};
 
 // ===== 测试 mock =====
 
@@ -371,6 +418,12 @@ impl ThreadSleep for FakeSleep {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ipv4_s_addr_preserves_network_octets_in_memory() {
+        let encoded = ipv4_s_addr(std::net::Ipv4Addr::new(1, 2, 3, 4));
+        assert_eq!(encoded.to_ne_bytes(), [1, 2, 3, 4]);
+    }
 
     #[test]
     fn prefixes_cover_polaris() {

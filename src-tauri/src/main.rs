@@ -26,6 +26,8 @@ mod tray;
 mod window_health;
 
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(target_os = "macos"))]
+use std::sync::Arc;
 
 use polaris_helper_proto::Platform;
 use tauri::{Manager, WebviewWindowBuilder};
@@ -142,6 +144,12 @@ fn config_remember_window_size(raw: Option<&str>) -> bool {
                 .and_then(serde_json::Value::as_bool)
         })
         .unwrap_or(true)
+}
+
+/// 提交一次原生窗口最大化观测；仅状态真变化时返回 `true`，普通 resize 不产生事件风暴。
+#[cfg(not(target_os = "macos"))]
+fn commit_maximized_observation(state: &AtomicBool, current: bool) -> bool {
+    state.swap(current, Ordering::SeqCst) != current
 }
 
 /// 关主窗时该做什么（#10）。
@@ -1276,6 +1284,12 @@ fn create_main_window(
     window_health::dispatch(app, MountGateEvent::PageStarted);
 
     // 窗口可见性 → stats relay 门控（stats-worker 据此降流）+ 关窗语义（放行退出 / 收托盘 / 真退出）。
+    // Win/Linux 另桥接原生 maximize 变化：双击拖动带 / 系统菜单 / 拖顶不会经过自绘按钮 command，
+    // 只能从 WindowEvent::Resized 回读真值；AtomicBool 只在值变化时发事件，普通 resize 零噪音。
+    #[cfg(not(target_os = "macos"))]
+    let maximized_state = Arc::new(AtomicBool::new(window.is_maximized().unwrap_or(false)));
+    #[cfg(not(target_os = "macos"))]
+    let event_window = window.clone();
     let app_handle = app.clone();
     window.on_window_event(move |event| match event {
         tauri::WindowEvent::Focused(_) => {
@@ -1286,6 +1300,15 @@ fn create_main_window(
             // 不发 Focused 的显隐（如托盘在窗口本就失焦时隐藏它）由 poller 每拍的实况回读兜底。
             refresh_stats_visibility(&app_handle);
         }
+        #[cfg(not(target_os = "macos"))]
+        tauri::WindowEvent::Resized(_) => match event_window.is_maximized() {
+            Ok(maximized) => {
+                if commit_maximized_observation(&maximized_state, maximized) {
+                    commands::window::emit_window_maximize_changed(&app_handle, maximized);
+                }
+            }
+            Err(e) => log::warn!("回读主窗最大化状态失败，标题栏图标可能暂时不同步：{e}"),
+        },
         // 关闭主窗语义：判定收在纯函数 [`resolve_close_action`]（含 #10 的 `config.minimizeToTray`
         // 门控），此处只执行。托盘存在与否 + minimizeToTray **都动态查**：本闭包在托盘 setup 前也可能
         // 装上（首建），且设置改完须即时生效——不捕获任何陈旧快照。
@@ -2059,6 +2082,36 @@ fn mark_clean_exit(app: &tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn maximize_observation_only_commits_real_transitions() {
+        let state = AtomicBool::new(false);
+        assert!(!commit_maximized_observation(&state, false));
+        assert!(commit_maximized_observation(&state, true));
+        assert!(!commit_maximized_observation(&state, true));
+        assert!(commit_maximized_observation(&state, false));
+    }
+
+    /// 双击拖动层 / 系统菜单最大化不经过 `window_maximize_toggle`，必须由原生 resize 事件回读并广播。
+    #[test]
+    fn main_window_native_maximize_is_bridged_to_renderer() {
+        let body = crate::commands::guard_scan::top_level_fn_body(
+            include_str!("main.rs"),
+            "fn create_main_window(",
+        );
+        for required in [
+            "tauri::WindowEvent::Resized(_)",
+            "event_window.is_maximized()",
+            "commit_maximized_observation(&maximized_state, maximized)",
+            "emit_window_maximize_changed(&app_handle, maximized)",
+        ] {
+            assert!(
+                body.contains(required),
+                "主窗原生最大化同步链缺少 `{required}`"
+            );
+        }
+    }
 
     /// W13：托盘图标黑/白变体的探测链（Win/Linux）。前两格是纯函数语义；后两格是源扫描守卫
     /// （探测窗必须先于主窗被探、且 setup 必须真建它）——顺序翻回去 = 显式 uiTheme 下的

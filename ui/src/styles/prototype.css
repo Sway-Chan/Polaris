@@ -114,7 +114,7 @@ button{ font:inherit; cursor:pointer; color:inherit; border:0; background:none; 
 .tl i{ width:12px; height:12px; border-radius:50%; display:block; }
 .tl .r{ background:#ff5f57; } .tl .y{ background:#febc2e; } .tl .g{ background:#28c840; }
 /* Windows / Linux window controls — float over main top-right, no dedicated row */
-.winctl{ position:absolute; top:7px; right:9px; z-index:75; display:none; gap:2px;
+.winctl{ position:absolute; top:3px; right:9px; z-index:75; display:none; gap:2px;
   background:hsl(var(--surface)/0.72); backdrop-filter:blur(9px); border-radius:var(--r-sm); padding:2px; }
 :root[data-os="win"] .winctl, :root[data-os="lin"] .winctl{ display:flex; }
 .winctl button{ width:32px; height:26px; border-radius:var(--r-xs); display:grid; place-items:center;
@@ -134,15 +134,14 @@ button{ font:inherit; cursor:pointer; color:inherit; border:0; background:none; 
 .side[hidden]{ display:none; }
 /* macOS: transparent sidebar so the system vibrancy + traffic-light titlebar read as one surface */
 :root[data-os="mac"] .side{ background:transparent; }
-/* drag-region chrome header (holds mac traffic lights) — mac needs ~36px vertical clearance.
+/* drag-region chrome header — mac needs ~36px vertical clearance; Win/Linux use a compact 32px band.
    实际拖动能力来自 HTML `data-tauri-drag-region`（见 Sidebar.tsx），不是 CSS。
    `app-region:drag` 仅在 Windows 生效（wry 开了 WebView2 SetIsNonClientRegionSupportEnabled(true)，
    wry-0.55.1/src/webview2/mod.rs:601），补 Windows 触控/手写笔拖动；mac WKWebView / Linux WebKitGTK 无效。 */
 .side-chrome{ height:36px; flex:none; display:flex; align-items:center; padding:0 5px; app-region:drag; }
 :root:not([data-os="mac"]) .side-chrome{ height:12px; }
-/* Windows 自绘控制高 30px、落在 y=7..37；40px 专用标题带完整包住控制，并把可拖面扩到全窗顶部。
-   Linux 保留原 12px 紧凑槽，mac 仍由上方 36px Overlay 槽管理。 */
-:root[data-os="win"] .side-chrome{ height:40px; }
+/* 26px 自绘控制落在 y=3..29，上下各留 3px；真实 drag 元素不覆盖页面交互。 */
+:root[data-os="win"] .side-chrome, :root[data-os="lin"] .side-chrome{ height:32px; }
 .brand{ display:flex; align-items:center; gap:10px; padding:4px 6px; margin-bottom:2px; border-radius:var(--r-sm);
   cursor:pointer; transition:background .14s; }
 .brand:hover{ background:hsl(var(--surface-3)/0.55); }
@@ -255,7 +254,7 @@ button{ font:inherit; cursor:pointer; color:inherit; border:0; background:none; 
    拖动能力来自 HTML `data-tauri-drag-region`（AppShell.tsx），非 CSS；`app-region` 仅 Windows 生效。 */
 .main-chrome{ height:0; flex:none; app-region:drag; }
 :root[data-os="mac"] .main-chrome{ height:36px; }
-:root[data-os="win"] .main-chrome{ height:40px; }
+:root[data-os="win"] .main-chrome, :root[data-os="lin"] .main-chrome{ height:32px; }
 .main-scroll{ flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; display:flex; flex-direction:column; }
 /* 24px page gutter (--sp-6); bottom 28px keeps the last row off the docked pending bar (§1-⑥) */
 .screen{ padding:var(--sp-5) var(--sp-6) 13px; flex:1 0 auto; display:block; }   /* §CG2 tighter gap between content and the bottom status bar (all screens synced) */

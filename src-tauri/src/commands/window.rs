@@ -19,11 +19,20 @@
 use std::sync::atomic::Ordering;
 
 use serde_json::json;
-use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
+use tauri::{AppHandle, Manager, WebviewWindow};
 
 use crate::events::channel::EVENT_WINDOW_MAXIMIZE_CHANGED;
 use crate::response::{ok_void, ApiResponse};
 use crate::window_health::MountGateEvent;
+
+/// 广播主窗最大化真值。按钮命令与原生窗口事件桥共用这一处，避免 payload/channel 漂移。
+pub(crate) fn emit_window_maximize_changed(app: &AppHandle, maximized: bool) {
+    crate::events::broadcast(
+        app,
+        EVENT_WINDOW_MAXIMIZE_CHANGED,
+        json!({ "maximized": maximized }),
+    );
+}
 
 /// 上游 `WINDOW_MINIMIZE`：最小化主窗口。
 #[tauri::command]
@@ -43,10 +52,7 @@ pub fn window_maximize_toggle(app: AppHandle, window: WebviewWindow) -> ApiRespo
     }
     // 广播新最大化态（标题栏图标跟随）。
     let new_max = !maximized;
-    let _ = app.emit(
-        EVENT_WINDOW_MAXIMIZE_CHANGED,
-        json!({ "maximized": new_max }),
-    );
+    emit_window_maximize_changed(&app, new_max);
     ok_void()
 }
 

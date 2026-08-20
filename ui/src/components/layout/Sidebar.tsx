@@ -3,7 +3,7 @@
  *
  * 结构对齐原型（语义类走 components.css，per-os 宽度/透明由 :root[data-os] 驱动）：
  *  .side(.collapsed)
- *    .side-chrome（mac 顶部净空 36px 拖动槽；非 mac 12px 顶部可拖条 —— HTML data-tauri-drag-region）
+ *    .side-chrome（mac 顶部净空 36px；Win/Linux 32px 紧凑拖动槽 —— HTML data-tauri-drag-region）
  *    .brand（logo 磁贴 + "Polaris" wm + .brand-chev；点击 = 折叠/展开，即折叠开关本体，CSS no-drag）
  *    nav-item home / nodes
  *    nav-group "分流" → rules / apppolicy / resources

@@ -10,8 +10,9 @@
  * 显隐 —— mac 下 display:none）。
  *
  * WinCtl 按钮接 window_minimize / window_maximize_toggle / window_close。最大化态经
- * window_is_maximized 水合 + event:windowMaximizeChanged 订阅跟随（后端按钮 / WM 双击标题栏 / 拖顶
- * 均走同一广播，故不在点击处本地乐观更新，保单一真值源）。
+ * window_is_maximized 水合 + event:windowMaximizeChanged 订阅跟随：自绘按钮由 command 广播，
+ * WM 双击标题栏 / 拖顶 / 系统菜单则由后端 WindowEvent::Resized 回读实际状态后广播；前端不做
+ * 本地乐观更新，保留原生窗口状态这个单一真值源。
  */
 
 import { useEffect, useState } from 'react';
