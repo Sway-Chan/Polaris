@@ -64,9 +64,9 @@ export const useNodeSortStore = create<NodeSortState>((set, get) => ({
  * # 为什么非要有它（上面那段"天然共享"只对了一半）
  *
  * localStorage 的**存储**确实跨窗共享，但每个 webview 各有一份 zustand store 实例，而 store 只在
- * **创建时**读一次 `loadNodeSortByLatency()`。托盘浮层由 `tray.rs::build_overlay` 在 setup 期建成后
- * 常驻不重载 ⇒ 它那份 store 的初值定格在**开机那一刻**。用户之后在主窗把「按延迟排序」打开，
- * 主窗立刻生效、localStorage 也是新值，托盘列表却仍按名称排 —— 直到重启 App。
+ * **创建时**读一次 `loadNodeSortByLatency()`。托盘浮层按需创建，隐藏后仍会保留至 120s 回收；在这一代
+ * warm WebView 存活期间，用户若在主窗切换「按延迟排序」，主窗和 localStorage 已是新值，但浮层这份
+ * store 不会自行重读。回收重建能碰巧刷新，却不能让正确性依赖等待 120s 或重启 App。
  *
  * `storage` 事件恰好只在**别的 document**写入时派发（写入方自己不收到），语义正是我们要的"别处改了"，
  * 且无需任何 IPC 通道。

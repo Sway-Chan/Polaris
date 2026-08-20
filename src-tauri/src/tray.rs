@@ -16,14 +16,16 @@
 //!
 //! # 生命周期
 //!
-//! 首次托盘点击时 [`build_overlay`] 按需创建 → [`toggle_overlay`] 定位+显示+聚焦（再点=隐藏）→
+//! 首次托盘点击只登记展示意图并跳出事件帧，随后 [`build_overlay`] 按需创建 → renderer-ready 后
+//! 定位+显示+聚焦（再点=隐藏）→
 //! 点窗外/切他 app 收起：Rust `Focused(false)` + DOM `window.blur`→`tray_hide` **双路** dismiss（后者
 //! 经 `initialization_script` 注入，兜 mac 上次级窗 Focused 递送不可靠，见 [`TRAY_BLUR_DISMISS_JS`]）。
 //! 隐藏超过 [`TRAY_IDLE_RECLAIM_SECS`] 后自动销毁 WebView；再次点击透明重建。它不承载编辑草稿，
 //! 生命周期与主窗口的轻量模式设置完全解耦。
 //!
-//! # 与主进程的契约（新增 4 个 command，均薄封装，供浮层 React 端 invoke）
+//! # 与主进程的契约（专用 command 均薄封装，供浮层 React 端 invoke）
 //!
+//! - [`tray_renderer_ready`]：React 首次 commit 后携冷建代次回执，只有当前代 renderer 可触发展示。
 //! - [`tray_resize`]：浮层量出内容高度后回报 → 主进程设窗高（宽固定）并重定位（自适应高）。
 //! - [`tray_hide`]：连接/断开/切节点后收起浮层（原生菜单选项即关的等价）。
 //! - [`tray_show_main`]：显示主窗（打开主窗口/在主窗口管理）——复用 `crate::show_main_window`。
@@ -422,12 +424,94 @@ const REOPEN_DEBOUNCE_MS: u128 = 300;
 /// 也避免用户为了理解一个实现细节再承担一枚开关。主窗轻量模式仍走自己的用户配置与 idle 判据。
 const TRAY_IDLE_RECLAIM_SECS: u64 = 120;
 
+/// 冷建后 renderer 最晚应回报 ready 的时间。超时不把空壳漏给用户，而是回收这次坏实例；下一次点击
+/// 可重新创建。正常真机冷建约 237ms，这里留出数量级余量只兜白屏/IPC 断路，不参与日常体验时序。
+const TRAY_READY_TIMEOUT_SECS: u64 = 5;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OverlayOpenAction {
+    ShowNow,
+    AwaitReady,
+    QueueBuild { generation: u64 },
+}
+
+/// 托盘浮层的冷建状态机。所有字段都在同一把锁下迁移，避免「窗口已建」与「renderer 已就绪」分别用
+/// 原子量表示时读到撕裂组合。`generation` 隔离被销毁旧 WebView 的迟到 ready 回执。
+#[derive(Default)]
+struct OverlayLifecycle {
+    generation: u64,
+    build_queued: bool,
+    renderer_ready: bool,
+    show_requested: bool,
+}
+
+impl OverlayLifecycle {
+    fn request_open(&mut self, window_exists: bool) -> OverlayOpenAction {
+        self.show_requested = true;
+        if window_exists && self.renderer_ready {
+            OverlayOpenAction::ShowNow
+        } else if window_exists || self.build_queued {
+            OverlayOpenAction::AwaitReady
+        } else {
+            self.generation = self.generation.wrapping_add(1);
+            self.build_queued = true;
+            self.renderer_ready = false;
+            OverlayOpenAction::QueueBuild {
+                generation: self.generation,
+            }
+        }
+    }
+
+    fn build_finished(&mut self, generation: u64, success: bool) {
+        if self.generation != generation {
+            return;
+        }
+        self.build_queued = false;
+        if !success {
+            self.show_requested = false;
+        }
+    }
+
+    fn mark_ready(&mut self, generation: u64) -> bool {
+        if self.generation != generation {
+            return false;
+        }
+        self.renderer_ready = true;
+        self.show_requested
+    }
+
+    fn should_show(&self, generation: u64) -> bool {
+        self.generation == generation && self.renderer_ready && self.show_requested
+    }
+
+    fn hide(&mut self) {
+        self.show_requested = false;
+    }
+
+    fn reset(&mut self) {
+        // 让旧 renderer 的迟到 ready 回执失效；新冷建再递增一次不影响语义。
+        self.generation = self.generation.wrapping_add(1);
+        self.build_queued = false;
+        self.renderer_ready = false;
+        self.show_requested = false;
+    }
+}
+
+#[derive(Clone, Copy)]
+struct OverlayOpenProbe {
+    started: Instant,
+    cold: bool,
+}
+
 /// 浮层运行期状态（app-managed）：记录最近一次隐藏时刻（供 [`toggle_overlay`] 去抖）+ 最近一次
 /// 托盘图标屏幕矩形（供 [`reposition`] 对齐图标；[`tray_resize`] 改高后重定位也复用它）。
 #[derive(Default)]
 pub struct TrayOverlay {
     last_hidden: Mutex<Option<Instant>>,
     anchor: Mutex<Option<PhysicalRect>>,
+    lifecycle: Mutex<OverlayLifecycle>,
+    /// 点击到 renderer-ready / show 的真机时延探针。只记录运行期指标，不参与状态机判定。
+    open_probe: Mutex<Option<OverlayOpenProbe>>,
     /// A1「打开设置」的**首帧种子腿**：主窗已被 C16 轻量模式销毁时，目标屏存在这里，等
     /// `create_main_window` 重建时注入首帧脚本（事件腿此刻必丢，见 [`tray_show_main`]）。
     /// `'static` 串 = [`normalize_tray_screen`] 的白名单产物。
@@ -487,15 +571,64 @@ fn recently_hidden(app: &AppHandle) -> bool {
         .is_some_and(|t| t.elapsed().as_millis() < REOPEN_DEBOUNCE_MS)
 }
 
+fn begin_open_probe(app: &AppHandle, cold: bool) {
+    if let Some(state) = app.try_state::<TrayOverlay>() {
+        if let Ok(mut probe) = state.open_probe.lock() {
+            probe.get_or_insert(OverlayOpenProbe {
+                started: Instant::now(),
+                cold,
+            });
+        }
+    }
+}
+
+fn clear_open_probe(app: &AppHandle) {
+    if let Some(state) = app.try_state::<TrayOverlay>() {
+        if let Ok(mut probe) = state.open_probe.lock() {
+            *probe = None;
+        }
+    }
+}
+
+fn log_open_probe(app: &AppHandle, stage: &str, take: bool) {
+    let probe = app.try_state::<TrayOverlay>().and_then(|state| {
+        state
+            .open_probe
+            .lock()
+            .ok()
+            .and_then(|mut probe| if take { probe.take() } else { *probe })
+    });
+    if let Some(probe) = probe {
+        log::info!(
+            "托盘浮层时延: stage={stage}, cold={}, elapsed_ms={}",
+            probe.cold,
+            probe.started.elapsed().as_millis()
+        );
+    }
+}
+
 /// 统一收起浮层：隐藏窗口 + 记隐藏时刻（去抖）+（mac）拆掉全局点击监听器。所有「收起」入口
 /// （Focused(false) / 点图标 toggle / tray_hide / tray_show_main / tray_enter_lightweight / 全局 monitor
 /// handler）都走此函数，保证 monitor 与浮层可见性同生命周期（show 装、任一 hide 拆），不泄漏。
 fn hide_overlay(app: &AppHandle) {
     let should_reclaim = app.get_webview_window(TRAY_LABEL).is_some_and(|w| {
         let was_visible = w.is_visible().unwrap_or(false);
-        let _ = w.hide();
+        if was_visible {
+            let _ = w.hide();
+        }
         was_visible
     });
+    // 冷建阶段的 Focused(false)/DOM blur 属于宿主装配噪声：窗口从未显示，不能据此取消首击请求，
+    // 更不能写 last_hidden 让随后真正的托盘点击落入 300ms 去抖。只有可见→隐藏才是一次菜单 dismiss。
+    if !should_reclaim {
+        return;
+    }
+    if let Some(state) = app.try_state::<TrayOverlay>() {
+        if let Ok(mut lifecycle) = state.lifecycle.lock() {
+            lifecycle.hide();
+        }
+    }
+    clear_open_probe(app);
     mark_hidden(app);
     #[cfg(target_os = "macos")]
     remove_click_monitor(app);
@@ -504,17 +637,19 @@ fn hide_overlay(app: &AppHandle) {
     }
 }
 
-/// 按需取得浮层窗：已有则复用，否则在首次托盘点击时创建。**非致命**：失败返回 `None`，
-/// 不自作主张唤出主窗；用户仍可从 Dock/任务栏进入主窗。
-fn build_overlay(app: &AppHandle) -> Option<tauri::WebviewWindow> {
+/// 创建一代浮层窗。调用方保证它已跳出托盘点击分发帧；`generation` 同时注入 renderer，ready 回执
+/// 必须携带同一代次才有资格上屏。**非致命**：失败返回 `None`，不自作主张唤出主窗。
+fn build_overlay(app: &AppHandle, generation: u64) -> Option<tauri::WebviewWindow> {
     if let Some(win) = app.get_webview_window(TRAY_LABEL) {
         return Some(win); // 已建（幂等）
     }
 
+    let initialization_script =
+        format!("window.__POLARIS_TRAY_GENERATION__ = {generation};\n{TRAY_BLUR_DISMISS_JS}");
     let mut builder = WebviewWindowBuilder::new(app, TRAY_LABEL, WebviewUrl::App(TRAY_PAGE.into()))
         .title("Polaris")
         // DOM `blur` → tray_hide 的替代 dismiss（defect#3a，mac Rust 侧 Focused 递送不可靠时兜底）。
-        .initialization_script(TRAY_BLUR_DISMISS_JS)
+        .initialization_script(initialization_script)
         .inner_size(TRAY_WIDTH, 420.0)
         .resizable(false)
         .minimizable(false)
@@ -535,8 +670,8 @@ fn build_overlay(app: &AppHandle) -> Option<tauri::WebviewWindow> {
     }
     // Linux 恒不透明（透明窗在无合成器/部分 WM 下=黑块或穿透）：卡片 surface 同色实底兜底。
     // 底色按 `config.uiTheme` 折算（B）——此前硬编码深色 surface，浅色用户每次弹浮层都先闪一格深色底
-    // （浮层窗常驻、show 即上屏，webview 重绘在其后）。运行期改主题由 [`toggle_overlay`] 的
-    // `set_background_color` 跟进（浮层不重建，建窗时这一次只管首次）。
+    // （浮层 WebView 在 120s 保温期内复用、show 即上屏，webview 重绘在其后）。运行期改主题由
+    // [`toggle_overlay`] 的 `set_background_color` 跟进（同一代窗口不重建，建窗时这一次只管首次）。
     #[cfg(target_os = "linux")]
     {
         builder = builder
@@ -552,6 +687,15 @@ fn build_overlay(app: &AppHandle) -> Option<tauri::WebviewWindow> {
         }
     };
 
+    #[cfg(target_os = "macos")]
+    if let Err(e) = configure_nonactivating_overlay(&win) {
+        log::warn!("托盘浮层 non-activating 宿主配置失败，本代窗口不展示：{e}");
+        if let Err(destroy_err) = destroy_overlay_preserving_tray_residency(app, &win) {
+            log::warn!("托盘浮层宿主配置失败后的回收也失败：{destroy_err}");
+        }
+        return None;
+    }
+
     // 失焦即收起（点窗外 / 切到别的 app）：菜单语义。走 hide_overlay 统一拆 mac 全局监听器（defect#3）。
     // （W13 的明暗信号源不挂这里：本窗限时存活——轻量转场与 120s 空闲回收都会销毁它；
     // Win 直读注册表真值、Linux 留窗口探测链，均见 main.rs 的 system_dark_bg。）
@@ -564,25 +708,109 @@ fn build_overlay(app: &AppHandle) -> Option<tauri::WebviewWindow> {
     Some(win)
 }
 
+/// 把冷建排到托盘点击回调返回之后：W18 已证实 WebView 建/销不能跑在 OS 消息分发栈内；同一纪律
+/// 适用于托盘 `Click` 回调。renderer 未 ready 前窗口保持 hidden，避免空壳和加载期 blur 竞态。
+fn queue_overlay_build(app: &AppHandle, generation: u64, rect: Option<tauri::Rect>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let callback_app = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let still_current = callback_app
+                .try_state::<TrayOverlay>()
+                .is_some_and(|state| {
+                    state.lifecycle.lock().ok().is_some_and(|lifecycle| {
+                        lifecycle.generation == generation && lifecycle.build_queued
+                    })
+                });
+            if !still_current {
+                return;
+            }
+
+            let win = build_overlay(&callback_app, generation);
+            if let Some(state) = callback_app.try_state::<TrayOverlay>() {
+                if let Ok(mut lifecycle) = state.lifecycle.lock() {
+                    lifecycle.build_finished(generation, win.is_some());
+                }
+            }
+            let Some(win) = win else {
+                clear_open_probe(&callback_app);
+                return;
+            };
+            if let Some(r) = rect {
+                let scale = win
+                    .current_monitor()
+                    .ok()
+                    .flatten()
+                    .map(|m| m.scale_factor())
+                    .unwrap_or(1.0);
+                store_anchor(&callback_app, r, scale);
+            }
+            schedule_overlay_ready_timeout(&callback_app, generation);
+        });
+    });
+}
+
+fn schedule_overlay_ready_timeout(app: &AppHandle, generation: u64) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(TRAY_READY_TIMEOUT_SECS)).await;
+        let callback_app = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let timed_out = callback_app
+                .try_state::<TrayOverlay>()
+                .is_some_and(|state| {
+                    state.lifecycle.lock().ok().is_some_and(|lifecycle| {
+                        lifecycle.generation == generation && !lifecycle.renderer_ready
+                    })
+                });
+            if timed_out {
+                log::warn!(
+                    "托盘浮层 renderer 在 {TRAY_READY_TIMEOUT_SECS}s 内未就绪，回收本代 WebView"
+                );
+                destroy_overlay(&callback_app);
+            }
+        });
+    });
+}
+
+fn show_ready_overlay(app: &AppHandle, win: &tauri::WebviewWindow) {
+    invalidate_overlay_reclaim(app);
+    #[cfg(target_os = "linux")]
+    {
+        let _ = win.set_background_color(Some(surface_color(native_dark(app))));
+    }
+    reposition(win);
+    if let Err(e) = win.show() {
+        log::warn!("托盘浮层显示失败：{e}");
+        return;
+    }
+    reposition(win);
+    focus_overlay(win);
+    log_open_probe(app, "shown", true);
+}
+
 /// macOS/Windows 托盘左/右键入口（由 `main.rs` 的 `on_tray_icon_event` 调）。
 ///
 /// 可见 → 隐藏（toggle off）；不可见 → 定位到托盘所在屏角 + 显示 + 聚焦。
 /// 浮层创建失败 → 本次点击 no-op；不把「托盘菜单」意图突然放大成主窗。
 pub fn toggle_overlay(app: &AppHandle, rect: Option<tauri::Rect>) {
-    let Some(win) = build_overlay(app) else {
-        return;
-    };
-    // 先记锚点（图标屏幕矩形）：即便本次是「点击关闭」，下次开也有最新锚点；tray_resize 改高后重定位同样复用。
-    if let Some(r) = rect {
-        let scale = win
-            .current_monitor()
-            .ok()
-            .flatten()
-            .map(|m| m.scale_factor())
-            .unwrap_or(1.0);
-        store_anchor(app, r, scale);
+    let existing = app.get_webview_window(TRAY_LABEL);
+    if let Some(win) = &existing {
+        // 先记锚点（即便本次是点击关闭，下次开也有最新位置；tray_resize 改高后同样复用）。
+        if let Some(r) = rect {
+            let scale = win
+                .current_monitor()
+                .ok()
+                .flatten()
+                .map(|m| m.scale_factor())
+                .unwrap_or(1.0);
+            store_anchor(app, r, scale);
+        }
     }
-    if win.is_visible().unwrap_or(false) {
+    if existing
+        .as_ref()
+        .is_some_and(|win| win.is_visible().unwrap_or(false))
+    {
         hide_overlay(app);
         return;
     }
@@ -590,23 +818,29 @@ pub fn toggle_overlay(app: &AppHandle, rect: Option<tauri::Rect>) {
     if recently_hidden(app) {
         return;
     }
+    let action = app.try_state::<TrayOverlay>().and_then(|state| {
+        state
+            .lifecycle
+            .lock()
+            .ok()
+            .map(|mut lifecycle| lifecycle.request_open(existing.is_some()))
+    });
+    let Some(action) = action else {
+        return;
+    };
+    begin_open_probe(app, !matches!(action, OverlayOpenAction::ShowNow));
     invalidate_overlay_reclaim(app);
-    // ── 定位顺序（修「弹窗贴屏幕最左 x≈0、离菜单栏很远」）──
-    // `reposition` 依赖 `current_monitor()`/`outer_size()`，而这些对**尚未 realize（从未 show 过）的
-    // 隐藏窗**可能返 None/失效，且 `set_position` 对隐藏窗在部分平台不生效 → 弹窗落在 OS 默认位置
-    // （屏幕左上，正是用户截图的症状）。故：先粗定位一次（隐藏态生效的平台直接到位、减少闪烁）→ show
-    // realize 窗口 → 再精定位一次兜底（此时 monitor/size 查询与 set_position 都生效）。二次调用幂等
-    // （同锚点算同位置），Linux 隐藏态本就生效时是 no-op。
-    // Linux 实底窗：show 之前把底色校正到当前主题（B）。浮层窗常驻不重建 ⇒ 建窗那次定的底色会在用户
-    // 改主题后一直陈旧，show 时先闪一格旧色。mac/win 是透明窗，无实底可校正（故 cfg 门控）。
-    #[cfg(target_os = "linux")]
-    {
-        let _ = win.set_background_color(Some(surface_color(native_dark(app))));
+    match action {
+        OverlayOpenAction::ShowNow => {
+            if let Some(win) = existing {
+                show_ready_overlay(app, &win);
+            }
+        }
+        OverlayOpenAction::AwaitReady => {}
+        OverlayOpenAction::QueueBuild { generation } => {
+            queue_overlay_build(app, generation, rect);
+        }
     }
-    reposition(&win);
-    let _ = win.show();
-    reposition(&win);
-    focus_overlay(&win);
 }
 
 /// 使所有已排队的隐藏回收任务失效。Relaxed 足够：代次只承担去重，不承载其他内存可见性。
@@ -642,9 +876,8 @@ fn schedule_overlay_reclaim(app: &AppHandle) {
             if win.is_visible().unwrap_or(false) {
                 return;
             }
-            match destroy_overlay_preserving_tray_residency(&callback_app, &win) {
-                Ok(()) => log::debug!("托盘浮层隐藏超时，已回收 WebView"),
-                Err(e) => log::warn!("托盘浮层 WebView 回收失败：{e}"),
+            if destroy_overlay(&callback_app) {
+                log::debug!("托盘浮层隐藏超时，已回收 WebView");
             }
         });
     });
@@ -690,46 +923,69 @@ fn should_arm_last_overlay_exit_guard(window_count: usize, tray_present: bool) -
 
 /// 立即销毁浮层（目前仅轻量转场用于提前回收）。它不是托盘回收的 gate；普通隐藏即使从不进入
 /// 轻量模式，也会由 [`schedule_overlay_reclaim`] 独立回收。
-fn destroy_overlay(app: &AppHandle) {
+fn destroy_overlay(app: &AppHandle) -> bool {
     invalidate_overlay_reclaim(app);
     #[cfg(target_os = "macos")]
     remove_click_monitor(app);
-    if let Some(win) = app.get_webview_window(TRAY_LABEL) {
-        if let Err(e) = destroy_overlay_preserving_tray_residency(app, &win) {
-            log::warn!("托盘浮层 WebView 提前回收失败：{e}");
+    let destroyed = if let Some(win) = app.get_webview_window(TRAY_LABEL) {
+        match destroy_overlay_preserving_tray_residency(app, &win) {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!("托盘浮层 WebView 提前回收失败：{e}");
+                false
+            }
         }
+    } else {
+        true
+    };
+    if destroyed {
+        if let Some(state) = app.try_state::<TrayOverlay>() {
+            if let Ok(mut lifecycle) = state.lifecycle.lock() {
+                lifecycle.reset();
+            }
+        }
+        clear_open_probe(app);
     }
+    destroyed
 }
 
-/// 让浮层窗真正成为 **key window**，使「点窗外 → resignKey → `WindowEvent::Focused(false)`」可靠触发（收起）。
+/// 把 Tauri 创建的 borderless NSWindow 切成 AppKit 的 non-activating panel 语义。
 ///
-/// # 根因（mac）
-/// 浮层是 `decorations:false`（borderless）+ `always_on_top` 的辅助窗。托盘图标点击来自系统状态栏、本
-/// **app 此刻通常不是 active**；此时 `set_focus`（`makeKeyAndOrderFront`）只把窗记成「非活动 app 的 key
-/// 窗」，并未建立真正的 key 状态 → 之后点其它 app/桌面**没有** resignActive/resignKey 迁移 →
-/// `Focused(false)` 永不触发 → 点窗外不收（DOM `window.blur` 兜底同样依赖 resignKey，一并失效）。
+/// 无需另建/重挂 WKWebView：`NSWindowStyleMaskNonactivatingPanel` 可在宿主创建后补入。macOS 26.6.2
+/// 真机探针验证了“先 borderless 建窗、再 setStyleMask”这一精确序列：首个按钮点击可交互，同时前台
+/// app 保持不变。若配置失败，本代窗口宁可不展示，也不退回会抢焦点的旧语义。
+#[cfg(target_os = "macos")]
+fn configure_nonactivating_overlay(win: &tauri::WebviewWindow) -> Result<(), String> {
+    use objc2_app_kit::{NSWindow, NSWindowStyleMask};
+
+    let raw = win.ns_window().map_err(|e| e.to_string())?;
+    if raw.is_null() {
+        return Err("NSWindow handle is null".to_string());
+    }
+    // SAFETY: Tauri 的 `ns_window()` 返回该 WebviewWindow 持有、且当前主线程有效的 NSWindow 指针；
+    // 本函数只在 build() 紧接着的主线程调用，不越过窗口生命周期保存引用。
+    let ns_window = unsafe { &*raw.cast::<NSWindow>() };
+    ns_window.setStyleMask(ns_window.styleMask() | NSWindowStyleMask::NonactivatingPanel);
+    Ok(())
+}
+
+/// 让 non-activating 浮层取得键盘焦点，但不激活整个 Polaris app。
 ///
-/// # 修法（documented 状态栏 popover 激活式）
-/// show 后**先激活本 app**（`NSApplication activateIgnoringOtherApps:`）再 `set_focus`：app 变 active +
-/// 窗成 key。此后点其它 app/桌面 → app resignActive → 窗 resignKey → `Focused(false)` → 现有 handler
-/// `hide()`。`always_on_top` 使浮层始终压在主窗之上，激活即便令主窗前移也不遮挡浮层。
-///
-/// ⚠️ 本机（Linux）无法验证；标记为待真机（mac）确认项。非 mac 平台仅 `set_focus`（Win/Linux 的
-/// 辅助窗 `Focused(false)` 递送与本坑无关）。
+/// Tauri/tao 的 macOS `set_focus()` 在 `makeKeyAndOrderFront:` 后还会无条件调用
+/// `activateIgnoringOtherApps:YES`，正是 W25 的抢焦点源。这里绕开那层封装，直接调用原生方法；
+/// 全局鼠标 monitor 继续负责窗外收起，无需在 hide 时猜测并恢复旧 app（那会与用户点击第三个 app 竞态）。
 #[cfg(target_os = "macos")]
 fn focus_overlay(win: &tauri::WebviewWindow) {
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::NSApplication;
+    use objc2_app_kit::NSWindow;
 
-    // 事件循环回调在主线程；取不到 marker（非主线程）则跳过激活、仅 set_focus（保守降级）。
-    if let Some(mtm) = MainThreadMarker::new() {
-        let ns_app = NSApplication::sharedApplication(mtm);
-        // activateIgnoringOtherApps 在 macOS 14 起被标记 deprecated，但仍是状态栏辅助窗「无主窗上下文
-        // 也要成 active」的可靠手段（替代 API activate() 要求已有可激活窗上下文，辅助窗场景不满足）。
-        #[allow(deprecated)]
-        ns_app.activateIgnoringOtherApps(true);
+    if let Ok(raw) = win.ns_window() {
+        if !raw.is_null() {
+            // SAFETY: 与 configure_nonactivating_overlay 同一宿主指针；本函数由主线程 show 路径调用，
+            // 引用不逃逸。直接调原生方法是为了绕开 tao `set_focus()` 内附带的 app activation。
+            let ns_window = unsafe { &*raw.cast::<NSWindow>() };
+            ns_window.makeKeyAndOrderFront(None);
+        }
     }
-    let _ = win.set_focus();
     // show 后装全局点击监听器：点其它菜单栏状态项 / 桌面 / 别的窗即收起浮层（defect#3）。
     install_click_monitor(win.app_handle());
 }
@@ -745,7 +1001,7 @@ fn focus_overlay(win: &tauri::WebviewWindow) {
 /// # 根因
 /// borderless/辅助浮层在 mac 上，点另一个菜单栏状态项是**系统状态栏**的点击、不切本 app 的 active 态 →
 /// 浮层宿主 NSWindow 不 resignKey → `WindowEvent::Focused(false)` 与 DOM `blur` 都不触发 → 浮层赖着不走。
-/// 既有 `activateIgnoringOtherApps` + `Focused(false)` 兜的是「切到别的 app 窗」，兜不住「点另一状态项」。
+/// non-activating 宿主的 `Focused(false)`/DOM blur 兜的是键窗迁移，兜不住所有状态栏宿主事件。
 ///
 /// # 修法（Apple 文档的状态栏 popover 标准式）
 /// show 时装 `NSEvent addGlobalMonitorForEventsMatchingMask:handler:`（Left/Right/OtherMouseDown）——
@@ -887,7 +1143,7 @@ fn reposition(win: &tauri::WebviewWindow) {
     let _ = win.set_position(PhysicalPosition::new(x, y));
 }
 
-// ── 浮层 React 端 → 主进程的 4 个薄 command ─────────────────────────────────────
+// ── 浮层 React 端 → 主进程的专用薄 command ─────────────────────────────────────
 
 /// 浮层量出内容高度后回报 → 设窗高（宽固定 [`TRAY_WIDTH`]）并重定位（自适应高）。
 #[tauri::command]
@@ -897,6 +1153,42 @@ pub fn tray_resize(app: AppHandle, height: f64) -> ApiResponse<()> {
         let _ = win.set_size(LogicalSize::new(TRAY_WIDTH, h));
         reposition(&win);
     }
+    ok_void()
+}
+
+/// 托盘 renderer 完成 React commit 后的代次化 ready 回执。冷建窗口在此之前始终 hidden；命令声明为
+/// async，使兑现腿不在 WebKit IPC 分发栈内直接 show，而是排回下一轮主线程事件循环。
+#[tauri::command]
+pub async fn tray_renderer_ready(app: AppHandle, generation: u64) -> ApiResponse<()> {
+    let should_show = app.try_state::<TrayOverlay>().is_some_and(|state| {
+        state
+            .lifecycle
+            .lock()
+            .ok()
+            .is_some_and(|mut lifecycle| lifecycle.mark_ready(generation))
+    });
+    if !should_show {
+        return ok_void();
+    }
+    log_open_probe(&app, "renderer-ready", false);
+    let callback_app = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let still_requested = callback_app
+            .try_state::<TrayOverlay>()
+            .is_some_and(|state| {
+                state
+                    .lifecycle
+                    .lock()
+                    .ok()
+                    .is_some_and(|lifecycle| lifecycle.should_show(generation))
+            });
+        if !still_requested {
+            return;
+        }
+        if let Some(win) = callback_app.get_webview_window(TRAY_LABEL) {
+            show_ready_overlay(&callback_app, &win);
+        }
+    });
     ok_void()
 }
 
@@ -1322,7 +1614,7 @@ mod autosave_name_gate {
         );
     }
 
-    /// 🔴 `objc2-app-kit` 必须开 `NSStatusItem` feature。
+    /// 🔴 `objc2-app-kit` 必须开 `NSStatusItem` 与 `NSWindow` feature。
     ///
     /// 这条门的存在理由很具体：漏了它 **mac 腿编不过，而本机（Linux）完全看不到** ——
     /// 要等 CI 的 macOS 矩阵跑完才暴露，而那条腿是 10x 计费里最慢的一档。
@@ -1333,8 +1625,8 @@ mod autosave_name_gate {
             .find(|l| l.trim_start().starts_with("objc2-app-kit"))
             .expect("Cargo.toml 里找不到 objc2-app-kit");
         assert!(
-            line.contains("\"NSStatusItem\""),
-            "objc2-app-kit 没开 NSStatusItem feature —— `setAutosaveName` 那条腿在 mac 上编不过，\
+            line.contains("\"NSStatusItem\"") && line.contains("\"NSWindow\""),
+            "objc2-app-kit 没开 NSStatusItem/NSWindow feature —— 托盘位置或 non-activating 宿主在 mac 上编不过，\
              而本机看不到。当前行：{line}"
         );
     }
@@ -1342,10 +1634,10 @@ mod autosave_name_gate {
 
 #[cfg(test)]
 mod overlay_lifecycle_gate {
-    //! 托盘浮层的内存边界是结构性契约：启动期懒创建、普通隐藏独立定时回收、轻量转场提前回收。
-    //! 三条缺一条都会让那块独立 WebContent 在用户从未用过或早已收起后继续常驻。
+    //! 托盘浮层的结构性契约：启动期懒创建、跳出点击帧冷建、renderer-ready 后才展示、普通隐藏独立
+    //! 定时回收、轻量转场提前回收。任一条漂移都会重新引入首击失效、空壳或独立 WebContent 常驻。
 
-    use super::should_arm_last_overlay_exit_guard;
+    use super::{should_arm_last_overlay_exit_guard, OverlayLifecycle, OverlayOpenAction};
 
     const TRAY_RS: &str = include_str!("tray.rs");
     const MAIN_RS: &str = include_str!("main.rs");
@@ -1354,11 +1646,7 @@ mod overlay_lifecycle_gate {
     fn overlay_is_lazy_not_built_during_setup() {
         assert!(
             !MAIN_RS.contains("tray::build_overlay("),
-            "启动 setup 不得预建托盘 WebView；首次托盘点击由 toggle_overlay 按需创建"
-        );
-        assert!(
-            TRAY_RS.contains("let Some(win) = build_overlay(app) else"),
-            "toggle_overlay 必须承担按需创建，创建失败时不得突然唤出主窗"
+            "启动 setup 不得预建托盘 WebView；首次托盘点击只能按需排队创建"
         );
         let toggle_body = TRAY_RS
             .split_once("pub fn toggle_overlay")
@@ -1368,6 +1656,107 @@ mod overlay_lifecycle_gate {
         assert!(
             !toggle_body.contains("show_main_window"),
             "托盘浮层创建失败时应保持 no-op，不得回退打开主窗"
+        );
+        assert!(
+            toggle_body.contains("queue_overlay_build(app, generation, rect)")
+                && !toggle_body.contains("build_overlay("),
+            "托盘 Click 帧只许排冷建任务，不能同步 build WebView"
+        );
+        let queue_body =
+            crate::commands::guard_scan::top_level_fn_body(TRAY_RS, "fn queue_overlay_build(");
+        let spawn = queue_body
+            .find("tauri::async_runtime::spawn")
+            .expect("冷建必须先跳离托盘点击线程");
+        let main = queue_body
+            .find("run_on_main_thread")
+            .expect("WebView build 必须排回主线程");
+        let build = queue_body
+            .find("build_overlay(&callback_app, generation)")
+            .expect("排回主线程后必须执行按需 build");
+        assert!(
+            spawn < main && main < build,
+            "冷建次序必须是 spawn → 排回主线程 → build"
+        );
+    }
+
+    #[test]
+    fn cold_overlay_waits_for_matching_renderer_generation() {
+        let mut lifecycle = OverlayLifecycle::default();
+        assert_eq!(
+            lifecycle.request_open(false),
+            OverlayOpenAction::QueueBuild { generation: 1 }
+        );
+        // 加载期间的重复点击合并成同一次打开意图，不让“用户因迟疑再点一下”反向取消首开。
+        assert_eq!(lifecycle.request_open(false), OverlayOpenAction::AwaitReady);
+        lifecycle.build_finished(1, true);
+        assert!(lifecycle.mark_ready(1));
+        assert!(lifecycle.should_show(1));
+
+        lifecycle.hide();
+        assert!(!lifecycle.should_show(1));
+        assert_eq!(lifecycle.request_open(true), OverlayOpenAction::ShowNow);
+    }
+
+    #[test]
+    fn destroyed_overlay_rejects_stale_renderer_ready() {
+        let mut lifecycle = OverlayLifecycle::default();
+        let OverlayOpenAction::QueueBuild { generation } = lifecycle.request_open(false) else {
+            panic!("首次冷开必须排 build");
+        };
+        lifecycle.build_finished(generation, true);
+        lifecycle.reset();
+        let OverlayOpenAction::QueueBuild {
+            generation: next_generation,
+        } = lifecycle.request_open(false)
+        else {
+            panic!("销毁后的下一次打开必须创建新一代");
+        };
+        lifecycle.build_finished(next_generation, true);
+        assert!(!lifecycle.mark_ready(generation));
+        assert!(!lifecycle.should_show(generation));
+        assert_eq!(
+            lifecycle.request_open(true),
+            OverlayOpenAction::AwaitReady,
+            "旧 ready 不得把当前新窗污染成 ready"
+        );
+    }
+
+    #[test]
+    fn mac_overlay_contract_is_nonactivating_and_never_uses_tauri_focus() {
+        let configure = crate::commands::guard_scan::top_level_fn_body(
+            TRAY_RS,
+            "fn configure_nonactivating_overlay(",
+        );
+        assert!(
+            configure.contains("NSWindowStyleMask::NonactivatingPanel")
+                && configure.contains("setStyleMask("),
+            "mac 托盘宿主必须在展示前补 AppKit non-activating mask"
+        );
+        let focus = crate::commands::guard_scan::top_level_fn_body(TRAY_RS, "fn focus_overlay(");
+        assert!(
+            focus.contains("makeKeyAndOrderFront(None)")
+                && !focus.contains("activateIgnoringOtherApps")
+                && !focus.contains("win.set_focus()"),
+            "mac focus 腿必须绕开 tao 附带 app activation 的 set_focus 封装"
+        );
+    }
+
+    #[test]
+    fn renderer_ready_is_the_only_cold_show_commit_point() {
+        let build = crate::commands::guard_scan::top_level_fn_body(TRAY_RS, "fn build_overlay(");
+        assert!(
+            !build.contains(".show()"),
+            "冷建函数不得在 renderer ready 前展示窗口"
+        );
+        let ready = crate::commands::guard_scan::top_level_fn_body(
+            TRAY_RS,
+            "pub async fn tray_renderer_ready(",
+        );
+        assert!(
+            ready.contains("lifecycle.mark_ready(generation)")
+                && ready.contains("run_on_main_thread")
+                && ready.contains("show_ready_overlay"),
+            "renderer ready 必须代次校验后、跳出 IPC 帧排回主线程再 show"
         );
     }
 

@@ -3,7 +3,7 @@
  *
  * 为什么必须是源码结构守卫：这一批修的缺陷全都不在算法里，而在**调用点**。
  *  - A3：`labels.ts` 曾是模块级 `const LANG = resolveLang()`，解析逻辑一直是对的，
- *    但浮层窗常驻不重载 ⇒ 那个 const 的生命周期 = 整个进程 ⇒ 改语言必须重启。
+ *    但浮层 warm WebView 隐藏后仍可保留 120s ⇒ 改语言不能靠等待回收重建才生效。
  *    逻辑单测无论怎么写都全绿，缺陷照旧。
  *  - A5：`speedTestableIds` 一直存在且有单测，浮层就是不调它，自己只测 `selectedId` 一个节点。
  *  - A6：`notifyDesktop` 存在、`desktopNotifications` 开关存在，浮层就是不同步、不发。
@@ -119,7 +119,7 @@ describe('A1：托盘缺的两项入口真实存在且真实接线', () => {
   });
 });
 
-describe('A3：浮层语言必须 live（浮层窗常驻不重载）', () => {
+describe('A3：浮层语言必须 live（warm WebView 存活期间不重载）', () => {
   it('labels 导出刷新出口，且语言是可刷新的模块状态、不是模块级 const', () => {
     expect(LABELS).toMatch(/export\s+(?:const|function)\s+refreshTrayLang\b/);
     // 被修掉的原形态：一次求值、终生不变。

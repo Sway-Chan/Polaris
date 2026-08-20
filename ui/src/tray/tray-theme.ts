@@ -3,7 +3,7 @@
  *
  * 抽成共享模块的原因：首帧（main.tsx）、hydrate、系统主题变化监听、窗口 focus 四处都要用**同一口径**
  * 折算，各写一份易漂移。此前正是分裂的：main.tsx 首帧只认 matchMedia、hydrate 认 config.uiTheme——用户
- * 切了系统主题后再点托盘，浮层窗常驻、DOM 还挂着上次的 data-theme，show 首帧就「闪一下旧主题」。
+ * 切了系统主题后再点托盘，保温期内复用的浮层 DOM 还挂着上次的 data-theme，show 首帧就「闪一下旧主题」。
  * tokens 默认深色（无显式/系统信号时偏深）。
  */
 

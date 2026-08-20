@@ -49,8 +49,8 @@ export type AuxBundle = Readonly<Record<string, string>>;
 /**
  * 解析辅助窗当前应显示的语言。**每次调用都重读 localStorage**。
  *
- * 浮层/弹窗 webview 建成后常驻不重载（隐藏≠销毁），模块级 `const` 求值一次就会被钉死在启动时的语言上
- * ——用户在主窗改语言后浮层再也跟不上，必须重启 App。故解析必须是函数，且在
+ * 浮层/弹窗 webview 在各自一代生命周期内不会重载（托盘隐藏后可 warm 保留至 120s），模块级 `const`
+ * 求值一次就会被钉死在该代创建时的语言上。故解析必须是函数，且在
  * 「`configChanged` / 窗口获焦」等时刻重新调用（见 `TrayMenu.tsx`）。
  */
 export function resolveAuxLanguage(): SupportedLanguage {

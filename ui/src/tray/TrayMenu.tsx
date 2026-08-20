@@ -92,6 +92,13 @@ const TAKEOVERS: ReadonlyArray<{ v: ProxyModeType; k: TrayKey }> = [
   { v: 'manual', k: 'tray.takeoverManual' },
 ];
 
+declare global {
+  interface Window {
+    /** 主进程冷建浮层时注入；ready 回执必须携同一代次，旧 WebView 的迟到消息才不能展示新窗。 */
+    __POLARIS_TRAY_GENERATION__?: number;
+  }
+}
+
 export default function TrayMenu() {
   const [config, setConfig] = useState<UserConfig | null>(null);
   const [servers, setServers] = useState<ServerConfig[]>([]);
@@ -147,8 +154,16 @@ export default function TrayMenu() {
   // 直接读 config state 会捕获到过期值 → 用 ref 拿最新 uiTheme，主题折算才跟得上配置变更。
   const uiThemeRef = useRef<UserConfig['uiTheme']>(undefined);
 
+  // React 已完成本窗首个 commit 后回执 ready。ResizeObserver 的 useLayoutEffect 先于本 effect 运行，
+  // 因而冷窗不会在内容高尚未上报时提前露出 420px 初始壳；代次缺失则宁可保持 hidden。
+  useEffect(() => {
+    const generation = window.__POLARIS_TRAY_GENERATION__;
+    if (!Number.isSafeInteger(generation) || generation === undefined || generation < 0) return;
+    void invoke(IPC_CHANNELS.TRAY_RENDERER_READY, { generation }).catch(() => {});
+  }, []);
+
   // 弹出/切视图时把焦点落到菜单**容器本身**（`role=menu` + `tabindex=-1`），而非首个按钮（defect#2）。
-  // 根因：鼠标点托盘弹出走 `win.set_focus()`（+ 旧代码 querySelector('button').focus()）会给首个可点按钮
+  // 根因：旧实现鼠标点托盘弹出走 `win.set_focus()`（+ querySelector('button').focus()）会给首个可点按钮
   // （设备上是「连接代理」，harness 里因 hydrate 前 Connect 置灰而落到「智能分流」）打上 :focus-visible
   // 焦点环——原生菜单鼠标打开时不高亮任何项。改为聚焦非交互容器：任何按钮都不获焦 → 无焦点环；键盘
   // 方向键仍可用（document keydown 处理器按 activeElement 计算，容器不在 items 中→ArrowDown 落首项，
@@ -187,7 +202,7 @@ export default function TrayMenu() {
       // A6：把桌面通知总开关同步进**本窗**的 JS 堆。托盘窗与主窗不共享模块实例 ⇒ `App.tsx` 里那次
       // `setDesktopNotificationsEnabled` 只作用于主窗；缺这行，浮层发的通知会无视用户的关闭设置。
       setDesktopNotificationsEnabled(cfg.desktopNotifications);
-      // A3：语言可能在主窗被改过（浮层常驻、模块不重载 → 必须显式重解析）。
+      // A3：语言可能在主窗被改过（保温期内浮层模块不重载 → 必须显式重解析）。
       setLang(refreshTrayLang());
       // 主题按 config.uiTheme 精确校正（显式浅/深直接定；'system' 跟系统偏好）。记 ref 供
       // 系统主题变化监听 / focus 同步校正复用同一 uiTheme（见下方两处 effect）。
@@ -223,7 +238,7 @@ export default function TrayMenu() {
     // `config_changed_payload_tests` 把本文件 include_str! 进测试判据锁住这条形态，改成读参数的
     // 形态会让 `cargo test -p polaris` 转红。
     const offConfig = api.config.onChanged(() => void hydrate());
-    // 浮层每次弹出（获焦）先**同步**按已知 uiTheme 校正主题：浮层窗常驻，隐藏期间系统可能切了明暗，
+    // 浮层每次弹出（获焦）先**同步**按已知 uiTheme 校正主题：保温期内 WebView 复用，隐藏期间系统可能切了明暗，
     // show 首帧 DOM 还挂着旧 data-theme 会「闪一下旧主题」；同步先校正、再异步 hydrate 拉真值。
     // 顺带把焦点落到第一个可操作项——像原生菜单一样「打开即可方向键导航」。
     const onFocus = () => {
@@ -232,7 +247,7 @@ export default function TrayMenu() {
       // 每次弹出获焦时同步重解析一次 —— 与主题校正同款「同步先校正、再异步 hydrate 拉真值」。
       setLang(refreshTrayLang());
       setNotice(''); // 上次弹出留下的提示不该跨次显示
-      // 复位到主视图（原型 `openTray:4009` 的 `trayView(false)`）：托盘窗是**常驻不重建**的，
+      // 复位到主视图（原型 `openTray:4009` 的 `trayView(false)`）：同一代托盘窗在保温期内**复用不重建**，
       // 上次停在「全部节点」二级视图，下次点托盘图标仍停在那里 —— 用户点图标要的是主视图。
       setView('main');
       focusMenu();
@@ -285,7 +300,7 @@ export default function TrayMenu() {
     focusMenu();
   }, [view]);
 
-  // 系统主题实时跟随：浮层窗常驻（隐藏也活着），系统明暗切换时 matchMedia 'change' 触发——即便浮层
+  // 系统主题实时跟随：浮层在保温期内隐藏仍存活，系统明暗切换时 matchMedia 'change' 触发——即便浮层
   // 此刻隐藏也更新 data-theme，故下次弹出时 DOM 已是新主题、从根上消除「点托盘闪旧主题」（onFocus
   // 的同步校正是兜底：万一隐藏态收不到 change 事件，弹出获焦时仍会校正）。仅 uiTheme 为 'system'/未设
   // 时真正跟随（折算在 applyTrayTheme 内部判定）；显式 light/dark 时该回调等价重设同值 = no-op。
@@ -657,7 +672,7 @@ export default function TrayMenu() {
     g.isManual ? t('tray.groupManual') : g.isMesh ? t('tray.groupMesh') : g.name;
 
   /**
-   * 进入「全部节点」：**每次进入都重算展开集**（不是挂载时算一次）。托盘窗常驻不重建，
+   * 进入「全部节点」：**每次进入都重算展开集**（不是挂载时算一次）。同一代托盘窗在保温期内不重建，
    * 选中节点会在浮层关着的期间被主窗/规则/自动切换改掉 —— 沿用上次的展开集就会展开错组。
    * 判据委托 domain 单一真值（与应用分流策略菜单、规则弹窗目标出站同一条线）。
    */

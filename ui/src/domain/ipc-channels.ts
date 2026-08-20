@@ -130,6 +130,7 @@ export const IPC_CHANNELS = {
 
   // 托盘独立窗（tray webview -> Rust 主进程）。窗体显隐与尺寸由主进程持有（浮层要贴托盘图标定位、
   // 失焦即隐），故这几条都是「渲染端请求、主进程执行」的单向命令，没有对应的 api-client 封装。
+  TRAY_RENDERER_READY: 'tray_renderer_ready', // React commit 后携冷建代次回执；后端只展示当前代窗口
   TRAY_HIDE: 'tray_hide',
   TRAY_RESIZE: 'tray_resize', // 内容高度变化后请求主进程调窗高（浮层自适应，避免留白/截断）
   TRAY_SHOW_MAIN: 'tray_show_main', // 唤出主窗；可选 screen 参数经 EVENT_TRAY_OPEN_SCREEN 落到目标屏

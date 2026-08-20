@@ -78,7 +78,7 @@ nix = { version = "0.31.3", features = ["net", "process", "signal"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSEvent", "NSResponder", "NSStatusItem", "block2"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSEvent", "NSResponder", "NSStatusItem", "NSWindow", "block2"] }
 # objc2-foundation = **唯一**消费点：`app_language::write_apple_languages` 把应用内语言写进本应用
 # UserDefaults 域的 `AppleLanguages`，让 NSOpenPanel 等原生 UI 跟随应用内语言而非系统语言。
 #

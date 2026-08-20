@@ -1945,6 +1945,7 @@ fn main() {
             app_startup_config_flags,
             app_take_clean_exit_flag,
             // ── 托盘自绘浮层（独立窗口生命周期 + 显示主窗 + 退出）──
+            tray::tray_renderer_ready,
             tray::tray_resize,
             tray::tray_hide,
             tray::tray_show_main,
