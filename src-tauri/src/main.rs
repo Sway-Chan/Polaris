@@ -223,11 +223,20 @@ fn present_main_window(app: &tauri::AppHandle) {
     // macOS 收托盘时会隐藏 Dock 图标；先恢复再上屏，避免窗口已出现而 Dock 仍缺席的一帧错位。
     set_macos_dock_visible(app, true);
     let _ = w.unminimize();
-    let _ = w.show();
+    let show_result = w.show();
     let _ = w.set_focus();
     // 显隐写入点：主窗刚变可见 → 立刻刷 stats 降流门（park 中的三条 poller 由此即刻恢复，
     // 不必等它们各自的 1s 兜底拍）。`Focused` 事件在部分平台/路径上不保证跟着 show 发。
     refresh_stats_visibility(app);
+    window_health::log_show_probe(
+        app,
+        if show_result.is_ok() {
+            "shown"
+        } else {
+            "show-failed"
+        },
+        true,
+    );
 }
 
 /// 唤出主窗（托盘浮层的明确入口 / Linux 托盘「显示」菜单 / macOS dock 重开 共用）。
@@ -247,13 +256,16 @@ fn show_main_window(app: &tauri::AppHandle) {
     // 直接重建主窗（WebView2 创建）会把同步对端卡死（真机实证：关窗后双击 = 第二实例
     // 永不退出 + 首实例重建卡在 WndProc 里）。故先跳 async 线程（脱离分发帧）再排回主
     // 线程执行；从非主线程进来的调用方只多一跳（µs 级），行为不变。
+    window_health::begin_show_probe(app, app.get_webview_window("main").is_none());
     let app_for_main = app.clone();
     tauri::async_runtime::spawn(async move {
         let h = app_for_main.clone();
         if let Err(error) = app_for_main.run_on_main_thread(move || {
+            window_health::log_show_probe(&h, "main-thread", false);
             show_main_window_on_main_thread(&h);
         }) {
             log::error!("主窗唤出投递主线程失败：{error}");
+            window_health::log_show_probe(&app_for_main, "dispatch-failed", true);
         }
     });
 }
@@ -269,8 +281,10 @@ fn show_main_window_on_main_thread(app: &tauri::AppHandle) {
         // C16 轻量模式已**销毁**主窗 webview（`get_webview_window` 返 None）→ 重建（可见）。所有 per-window
         // 装配（特效 / 白屏自愈门 / 关闭进轻量事件）都在 `create_main_window` 一处，故重建与首建等价。
         // 失败仅记日志（托盘 / 核仍在，用户可重试唤出）；`start_hidden=false`——用户显式唤出即要可见。
+        window_health::log_show_probe(app, "build-start", false);
         if let Err(e) = create_main_window(app, false) {
             log::error!("主窗重建失败（轻量模式返回）：{e}");
+            window_health::log_show_probe(app, "build-failed", true);
         }
     }
 }
@@ -1182,6 +1196,7 @@ fn create_main_window(
         builder = builder.visible(false);
     }
     let window = builder.build()?;
+    window_health::log_show_probe(app, "window-built", false);
     // Tauri 的窗口 registry 在 destroy/create 过渡期不等同于“可用 WebView”。把建窗成功作为明确的
     // 生命周期提交点，供 stats/logs 的非阻塞可见性门共享；窗口此刻仍隐藏，renderer ready 后再翻可见。
     if let Some(rt) = app.try_state::<AppRuntime>() {
@@ -2552,6 +2567,13 @@ mod tests {
             spawn_at < queue_at,
             "次序必须是 spawn 脱帧 → run_on_main_thread 排回 → 重建/呈现"
         );
+        let probe_at = entry
+            .find("window_health::begin_show_probe")
+            .expect("帧外调度前必须先登记唤出起点，否则真机时延漏掉排队段");
+        assert!(
+            probe_at < spawn_at,
+            "主窗时延起点必须早于 spawn，不能把消息帧逃逸/线程排队从数据里剪掉"
+        );
         assert!(
             entry.contains("show_main_window_on_main_thread("),
             "主线程闭包必须调用唯一的建窗/呈现实现"
@@ -2568,6 +2590,18 @@ mod tests {
         assert!(
             create.contains("rt.stats().mark_main_window_created()"),
             "builder 成功后必须提交主窗口生命周期，供三平台 stats/logs 可见性门共享"
+        );
+        assert!(
+            create.contains("window_health::log_show_probe(app, \"window-built\", false)"),
+            "builder 成功点必须记录 window-built，B9 才能区分原生建窗与 renderer 加载耗时"
+        );
+        let present =
+            crate::commands::guard_scan::top_level_fn_body(src, "fn present_main_window(");
+        assert!(
+            present.contains("window_health::log_show_probe(")
+                && present.contains("\"shown\"")
+                && present.contains("\"show-failed\""),
+            "唯一呈现漏斗必须消费 shown/show-failed 终态探针"
         );
     }
 

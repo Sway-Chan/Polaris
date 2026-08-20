@@ -15,6 +15,7 @@
 import { Component } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { reportRendererReady } from '@/lib/renderer-ready';
 
 interface Props {
   children: ReactNode;
@@ -53,7 +54,7 @@ export default class ErrorBoundary extends Component<Props, State> {
     // 终局升级：用户已有兜底页 + 「重新加载」按钮，再叠一层终局页是冗余覆盖。
     // 注：门此前可能已自动 reload 过一次（可能治瞬态），本信号只阻断终局升级，不回滚已发生的 reload。
     if (!prevState.error && this.state.error) {
-      reportSafely('renderer_ready');
+      reportRendererReady();
     }
   }
 

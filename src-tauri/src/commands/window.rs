@@ -141,9 +141,10 @@ pub fn app_take_clean_exit_flag(app: AppHandle) -> ApiResponse<bool> {
 
 /// 上游 `RENDERER_READY`：renderer 成功 mount 信号（主进程 mount 健康门）。
 ///
-/// 经此确认 renderer 进程活着且 DOM 真的挂上 —— C 类白屏（进程活着但 DOM 空）不发任何平台事件，
-/// 「约定回发 ready + 主进程超时」是唯一侦测手段。发出点见 `ui/src/App.tsx`（最先注册的 effect）
-/// 与 `ui/src/components/ErrorBoundary.tsx`（根 fallback 挂上时也发，抑制终局升级）。
+/// 经此确认 renderer 进程活着且当前真实页面已越过 Suspense fallback、DOM 真的挂上 —— C 类白屏
+/// （进程活着但 DOM 空）不发任何平台事件，「约定回发 ready + 主进程超时」是唯一侦测手段。正常发出点
+/// 见 `ui/src/components/screens/ScreenRouter.tsx` 的内容提交边界；根 ErrorBoundary / 同步静态 fallback
+/// 各自也会回报可交互兜底已挂上，抑制无谓的 3s 上屏等待与终局升级。
 #[tauri::command]
 pub fn renderer_ready(app: AppHandle) -> ApiResponse<()> {
     crate::window_health::dispatch(&app, MountGateEvent::RendererReady);

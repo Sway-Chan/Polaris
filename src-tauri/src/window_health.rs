@@ -60,7 +60,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager, Url};
 
@@ -118,7 +118,7 @@ pub enum MountGateAction {
 /// 门状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MountGateState {
-    /// `renderer:ready` 已收到（App 成功 render+commit）。
+    /// `renderer:ready` 已收到（当前真实页面已越过 Suspense fallback 并完成 commit）。
     pub ready: bool,
     /// 已因 mount 超时 reload 过一次（首次 vs 终局的区分位）。
     pub reloaded: bool,
@@ -347,6 +347,9 @@ pub struct WindowHealth {
     /// `pending_show` 兜底计时器的代次（与 mount 门的 `epoch` 各管各的：两者作废条件不同）。
     /// 到点的计时器代次不符即自行作废 —— 与 `epoch` 同一套手法，不引入新机制。
     show_epoch: AtomicU64,
+    /// 一次显式主窗唤出的阶段探针。与 mount/show 状态机共处一个 managed state，避免另造一套生命周期
+    /// 真值；只写结构化日志供真机汇总 p50/p95，不参与上屏决策。
+    show_probe: Mutex<Option<MainWindowShowProbe>>,
     /// mount 门是否武装。dev 下关闭（vite overlay + devtools 已足够，且 HMR 会频繁触发页面事件）；
     /// 可经 `POLARIS_MOUNT_GATE=1` 强制打开以便 dev 态真机验证。
     gate_enabled: bool,
@@ -368,6 +371,7 @@ impl WindowHealth {
             gate_enabled,
             pending_show: AtomicBool::new(false),
             show_epoch: AtomicU64::new(0),
+            show_probe: Mutex::new(None),
         }
     }
 
@@ -404,6 +408,73 @@ impl WindowHealth {
     /// 应用 URL（`fatal_retry` / reload 用）。
     fn app_url(&self) -> Option<Url> {
         self.app_url.lock().ok().and_then(|u| u.clone())
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MainWindowShowProbe {
+    started: Instant,
+    cold: bool,
+    requests: u32,
+}
+
+impl MainWindowShowProbe {
+    fn new(cold: bool) -> Self {
+        Self {
+            started: Instant::now(),
+            cold,
+            requests: 1,
+        }
+    }
+
+    fn register_request(&mut self, cold: bool) {
+        self.cold |= cold;
+        self.requests = self.requests.saturating_add(1);
+    }
+}
+
+/// 登记一次显式唤出请求。等待 renderer 期间的重复双击合并到同一条探针，`requests` 仍保留用户重试
+/// 次数；`cold` 只要任一请求命中过无主窗态就保持为真。
+pub fn begin_show_probe(app: &AppHandle, cold: bool) {
+    let Some(health) = app.try_state::<WindowHealth>() else {
+        return;
+    };
+    let snapshot = health.show_probe.lock().ok().map(|mut slot| {
+        let probe = match slot.as_mut() {
+            Some(probe) => {
+                probe.register_request(cold);
+                probe
+            }
+            None => slot.insert(MainWindowShowProbe::new(cold)),
+        };
+        *probe
+    });
+    if let Some(probe) = snapshot {
+        log::info!(
+            "主窗唤出时延: stage=request, cold={}, elapsed_ms={}, requests={}",
+            probe.cold,
+            probe.started.elapsed().as_millis(),
+            probe.requests
+        );
+    }
+}
+
+/// 记录当前唤出探针的一段。`finish=true` 同时消费探针，保证一次唤出只有一个终态（shown / failed）。
+pub fn log_show_probe(app: &AppHandle, stage: &str, finish: bool) {
+    let probe = app.try_state::<WindowHealth>().and_then(|health| {
+        health
+            .show_probe
+            .lock()
+            .ok()
+            .and_then(|mut slot| if finish { slot.take() } else { *slot })
+    });
+    if let Some(probe) = probe {
+        log::info!(
+            "主窗唤出时延: stage={stage}, cold={}, elapsed_ms={}, requests={}",
+            probe.cold,
+            probe.started.elapsed().as_millis(),
+            probe.requests
+        );
     }
 }
 
@@ -450,6 +521,7 @@ pub fn defer_show(app: &AppHandle) {
             return;
         }
         if health.take_pending_show() {
+            log_show_probe(&app, "show-deadline", false);
             log::warn!(
                 "首帧上屏兜底：{MOUNT_SHOW_DEADLINE_MS}ms 未收到 renderer:ready → 先显示主窗（内容可能仍在加载）"
             );
@@ -484,6 +556,7 @@ fn apply(app: &AppHandle, health: &WindowHealth, action: MountGateAction) {
         MountGateAction::Clear => {
             health.epoch.fetch_add(1, Ordering::SeqCst);
             log::debug!("mount 健康门：renderer:ready 已收到，门满足");
+            log_show_probe(app, "renderer-ready", false);
             // 首帧可绘 → 兑现建窗/唤出时刻登记的「等就绪再上屏」。窗口是在这一刻**第一次**出现在用户
             // 眼前，因此它出现即有内容——不再有 build() 到 mount 之间那段空白窗。
             if health.take_pending_show() {
@@ -629,6 +702,15 @@ mod tests {
     #[test]
     fn visible_window_is_never_pulled_back() {
         assert_eq!(resolve_show_timing(true, false, true), ShowTiming::Now);
+    }
+
+    #[test]
+    fn show_probe_coalesces_repeated_requests_without_losing_cold_attribution() {
+        let mut probe = MainWindowShowProbe::new(false);
+        probe.register_request(true);
+        probe.register_request(false);
+        assert!(probe.cold, "任一次命中无主窗态，整轮都必须归为 cold");
+        assert_eq!(probe.requests, 3, "加载期重复双击须保留在同一轮计数里");
     }
 
     #[test]

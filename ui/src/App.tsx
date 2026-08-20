@@ -16,8 +16,6 @@
 
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { invoke } from '@tauri-apps/api/core';
-import { IPC_CHANNELS } from './domain/ipc-channels';
 import { useAppStore, useEffectiveConfig } from './store/app-store';
 import type { UnlockDisplayState } from './store/app-store';
 import { subscribeLatencyEvents, useLatencyStore } from './store/use-latency-store';
@@ -270,15 +268,6 @@ export default function App() {
     if (languageChoice === undefined) return;
     syncLanguageChoice(languageChoice);
   }, [languageChoice]);
-
-  // ── mount 健康门：**必须是最先注册的 effect** ──
-  // 回发 renderer:ready = 「renderer 进程活着且 DOM 真的挂上了」。effect 跑到这里意味着 React 已完成
-  // 首次 commit —— C 类白屏（进程活着但 DOM 空）恰恰是走不到这一步，主进程超时未收到即判 mount 失败。
-  // 直接用 @tauri-apps/api 的 invoke 而非 ./ipc 封装：这条信号是逃生门，依赖面越小越好，不该跟着
-  // 业务 IPC 层的演进一起坏。上报失败一律吞掉 —— 宁可门误判超时 reload，也不能让它把 App 搭进去。
-  useEffect(() => {
-    void invoke(IPC_CHANNELS.RENDERER_READY).catch(() => {});
-  }, []);
 
   // 首帧水合：config + 连接态各拉一次（事件只推增量，初值得自己取）。
   useEffect(() => {

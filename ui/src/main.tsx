@@ -22,6 +22,7 @@ import { IPC_CHANNELS } from './domain/ipc-channels';
 import App from './App';
 import ErrorBoundary from './components/ErrorBoundary';
 import { disableNativeContextMenu } from './lib/native-context-menu';
+import { reportRendererReady } from './lib/renderer-ready';
 import './styles/index.css';
 import { i18nReady } from './i18n';
 
@@ -85,6 +86,8 @@ function injectStaticFailureDom(root: HTMLElement, err: unknown): void {
     '<p style="font-size:13px;line-height:1.6;color:#9DA7B3;margin:0 0 20px">界面加载遇到问题，请尝试重新加载。网络代理不受影响。<br>The interface failed to load. Please try reloading. Your proxy connection is unaffected.</p>' +
     '<button type="button" onclick="location.reload()" style="font-size:13px;color:#fff;background:#2F81F7;border:0;border-radius:8px;padding:9px 20px;cursor:pointer">重新加载 / Reload</button>' +
     '</div></div>';
+  // 静态兜底 DOM 已提交且按钮可交互；立即兑现上屏，不能再让用户额外等 3s show deadline。
+  reportRendererReady();
 }
 
 installErrorForwarding();
