@@ -75,7 +75,7 @@ pub fn promote_names(entries: &[String], core_filename: &str) -> Vec<String> {
     names
 }
 
-/// 提升决策（**纯函数**）：源与受保护核的 sha256 对账。
+/// 提升决策（**纯函数**）：源与受保护核的 sha256 + sidecar 对账。
 ///
 /// `dest_hash = None` = 受保护核不存在/读不到 ⇒ 必须提升（首装后被 `[ ! -x ]` 跳过播种的机器亦然）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,15 +86,54 @@ pub enum PromoteDecision {
     Promote,
 }
 
-/// 决策：内容相同即跳过（**大小写不敏感比 hex**，对齐 helper 侧 `EqualFold` 口径）。
+/// 决策：核心与 sidecar 全部相同才跳过（核心 hash **大小写不敏感**，对齐 helper 侧
+/// `EqualFold` 口径）。
+///
+/// 不能只比较核心：Linux 旧安装可能已有同版 `sing-box`、却从未播种 `libcronet.so`。只看核心会把
+/// 这种机器误判为 `UpToDate`，随后 helper 从 root 受保护目录起核，Naive/H3 仍报缺库。
 #[must_use]
-pub fn decide_promote(src_hash: &str, dest_hash: Option<&str>) -> PromoteDecision {
+pub fn decide_promote(
+    src_hash: &str,
+    dest_hash: Option<&str>,
+    sidecars_match: bool,
+) -> PromoteDecision {
     match dest_hash {
-        Some(d) if d.eq_ignore_ascii_case(src_hash) && !src_hash.is_empty() => {
+        Some(d) if d.eq_ignore_ascii_case(src_hash) && !src_hash.is_empty() && sidecars_match => {
             PromoteDecision::UpToDate
         }
         _ => PromoteDecision::Promote,
     }
+}
+
+/// 两个核目录的 Cronet sidecar 是否逐文件同形同内容。
+///
+/// 比较**文件名集合 + SHA256**：源有而目标缺、目标残留源没有的旧库、同名但内容不同，三种都必须
+/// 触发一次 `install-core`。两边都没有 sidecar（macOS 静态集成）则相等、稳态零动作。
+#[must_use]
+pub fn sidecar_payload_matches(src_dir: &Path, dest_dir: &Path) -> bool {
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = list_file_names(dir)
+            .into_iter()
+            .filter(|name| name.starts_with(CORE_SIDECAR_PREFIX))
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    let src_names = names(src_dir);
+    if src_names != names(dest_dir) {
+        return false;
+    }
+    src_names.iter().all(|name| {
+        let Ok(src_hash) = sha256_file(&src_dir.join(name)) else {
+            return false;
+        };
+        let Ok(dest_hash) = sha256_file(&dest_dir.join(name)) else {
+            return false;
+        };
+        src_hash.eq_ignore_ascii_case(&dest_hash)
+    })
 }
 
 /// 本平台是否有「受保护核目录」这个概念（= `install-core` 是否可用）。
@@ -404,7 +443,7 @@ mod tests {
     fn decide_promote_skips_when_hash_equal() {
         let h = "a".repeat(64);
         assert_eq!(
-            decide_promote(&h, Some(&h.to_uppercase())),
+            decide_promote(&h, Some(&h.to_uppercase()), true),
             PromoteDecision::UpToDate,
             "hex 比对须大小写不敏感（对齐 helper 侧 EqualFold）"
         );
@@ -413,17 +452,59 @@ mod tests {
     #[test]
     fn decide_promote_when_dest_absent_or_differs() {
         let h = "a".repeat(64);
-        assert_eq!(decide_promote(&h, None), PromoteDecision::Promote);
+        assert_eq!(decide_promote(&h, None, true), PromoteDecision::Promote);
         assert_eq!(
-            decide_promote(&h, Some(&"b".repeat(64))),
+            decide_promote(&h, Some(&"b".repeat(64)), true),
             PromoteDecision::Promote
+        );
+    }
+
+    #[test]
+    fn decide_promote_when_core_matches_but_sidecar_does_not() {
+        let h = "a".repeat(64);
+        assert_eq!(
+            decide_promote(&h, Some(&h), false),
+            PromoteDecision::Promote,
+            "Linux 旧安装的同版核心缺 libcronet.so 时必须重推 payload"
         );
     }
 
     /// 空源 hash 绝不能判「已最新」（否则读不出源就静默跳过提升 = 又一条静默失效路径）。
     #[test]
     fn decide_promote_empty_src_hash_never_up_to_date() {
-        assert_eq!(decide_promote("", Some("")), PromoteDecision::Promote);
+        assert_eq!(decide_promote("", Some(""), true), PromoteDecision::Promote);
+    }
+
+    #[test]
+    fn sidecar_payload_match_requires_the_same_names_and_bytes() {
+        let src = TmpDir::new();
+        let dest = TmpDir::new();
+        assert!(
+            sidecar_payload_matches(src.path(), dest.path()),
+            "macOS 两边均无动态库是合法稳态"
+        );
+
+        std::fs::write(src.path().join("libcronet.so"), b"CRONET-A").unwrap();
+        assert!(
+            !sidecar_payload_matches(src.path(), dest.path()),
+            "源有而受保护目录缺失必须判漂移"
+        );
+
+        std::fs::write(dest.path().join("libcronet.so"), b"CRONET-A").unwrap();
+        assert!(sidecar_payload_matches(src.path(), dest.path()));
+
+        std::fs::write(dest.path().join("libcronet.so"), b"CRONET-B").unwrap();
+        assert!(
+            !sidecar_payload_matches(src.path(), dest.path()),
+            "同名不同 ABI/内容必须判漂移"
+        );
+
+        std::fs::write(dest.path().join("libcronet.so"), b"CRONET-A").unwrap();
+        std::fs::write(dest.path().join("libcronet.legacy"), b"STALE").unwrap();
+        assert!(
+            !sidecar_payload_matches(src.path(), dest.path()),
+            "受保护目录多出旧 sidecar 也要经 helper prune"
+        );
     }
 
     #[test]

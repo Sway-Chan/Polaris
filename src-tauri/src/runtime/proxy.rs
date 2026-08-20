@@ -3712,6 +3712,7 @@ impl ProxyRuntime {
         };
         let core_dir = self.helper.protected_core_dir_path();
         let dest = promote::protected_core_path_in(&core_dir, std::env::consts::OS);
+        let protected_payload_dir = core_dir.clone();
         let staged_dir = self.config.join(promote::CORE_PROMOTE_DIR_NAME);
         let helper = Arc::clone(&self.helper);
         let active_core = active_core.to_path_buf();
@@ -3721,7 +3722,10 @@ impl ProxyRuntime {
             let src_hash = promote::sha256_file(&active_core)?;
             // 受保护核读不到（不存在 / 无权限）→ None ⇒ 判「要推」。**不吞成"已最新"**。
             let dest_hash = promote::sha256_file(&dest).ok();
-            if promote::decide_promote(&src_hash, dest_hash.as_deref())
+            // 核同版但 Cronet 缺失/漂移也必须推：Linux helper 真正执行的是 root 受保护目录，
+            // 只比 sing-box hash 会让旧安装永久缺 libcronet.so，Naive/H3 继续报依赖缺失。
+            let sidecars_match = promote::sidecar_payload_matches(&src_dir, &protected_payload_dir);
+            if promote::decide_promote(&src_hash, dest_hash.as_deref(), sidecars_match)
                 == promote::PromoteDecision::UpToDate
             {
                 return Ok(None);

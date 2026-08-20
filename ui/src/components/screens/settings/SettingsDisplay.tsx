@@ -3,7 +3,7 @@
  *
  * 三块：
  *  1. 外观：语言（system / zh / en）+ 主题（system / dark / light）
- *  2. 窗口与通知：关闭主窗口行为（收进托盘 / 退出应用）+ 记忆窗口大小 + 桌面通知 + 自动轻量模式
+ *  2. 窗口与通知：关闭主窗口行为 + 记忆窗口大小 + 桌面通知 + 自动轻量模式 + 托盘菜单 warm
  *  3. 图形兼容：硬件加速（D 类合成层白屏的用户自救逃生门；仅 Linux/Windows 渲染，见下）
  */
 
@@ -134,6 +134,15 @@ export default function SettingsDisplay({ config, update }: SettingsDisplayProps
           <Switch
             checked={!!config.autoLightweightMode}
             onChange={(v) => void update({ autoLightweightMode: v })}
+          />
+        </SetRow>
+        <SetRow
+          label={t('settings.general.keepTrayMenuWarm')}
+          tip={t('settings.general.keepTrayMenuWarmDesc')}
+        >
+          <Switch
+            checked={!!config.keepTrayMenuWarm}
+            onChange={(v) => void update({ keepTrayMenuWarm: v })}
           />
         </SetRow>
       </SetBlock>

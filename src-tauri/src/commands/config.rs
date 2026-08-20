@@ -1404,9 +1404,11 @@ mod config_changed_payload_tests {
             main_body.contains("wire_tray_icon_sync("),
             "扫到的不是 main() 的函数体 —— 守卫已失去判据"
         );
+        // 回调现有两项工作（同步 warm 偏好 + reconcile tray），不能再把整条闭包钉成单表达式；
+        // 真正的契约只有形参必须是 `_`，这样闭包体结构扩展也不会误红，同时 payload 仍结构性不可读。
         assert!(
-            main_body.contains("handle.listen_any(ev, move |_| reconcile_tray(&h));"),
-            "托盘汇流的事件回调不再是丢弃形态 —— configChanged 已无载荷，读它只会拿到空对象"
+            main_body.contains("handle.listen_any(ev, move |_| {"),
+            "托盘汇流的事件回调不再以 `_` 丢弃 payload —— configChanged 已无载荷，读它只会拿到空对象"
         );
     }
 

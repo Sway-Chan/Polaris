@@ -20,8 +20,9 @@
 //! 定位+显示+聚焦（再点=隐藏）→
 //! 点窗外/切他 app 收起：Rust `Focused(false)` + DOM `window.blur`→`tray_hide` **双路** dismiss（后者
 //! 经 `initialization_script` 注入，兜 mac 上次级窗 Focused 递送不可靠，见 [`TRAY_BLUR_DISMISS_JS`]）。
-//! 隐藏超过 [`TRAY_IDLE_RECLAIM_SECS`] 后自动销毁 WebView；再次点击透明重建。它不承载编辑草稿，
-//! 生命周期与主窗口的轻量模式设置完全解耦。
+//! 默认在隐藏超过 [`TRAY_IDLE_RECLAIM_SECS`] 后自动销毁 WebView；用户开启 `keepTrayMenuWarm` 后，
+//! 日常隐藏只收起、不再自动回收，换取后续点击热开。显式/自动进入主窗口轻量模式仍会销毁它，保证
+//! 「轻量模式」确实释放界面内存。
 //!
 //! # 与主进程的契约（专用 command 均薄封装，供浮层 React 端 invoke）
 //!
@@ -31,7 +32,7 @@
 //! - [`tray_show_main`]：显示主窗（打开主窗口/在主窗口管理）——复用 `crate::show_main_window`。
 //! - [`tray_quit`]：置 `QuitState` + `app.exit(0)`——与 `main.rs` 托盘/菜单「退出」路径逐字节相同。
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -420,9 +421,12 @@ const TRAY_WIDTH: f64 = 268.0;
 /// 若紧接着的 Click 事件在此窗口内到达，视为「点击图标关闭」，不再重开（否则闪一下又弹回）。
 const REOPEN_DEBOUNCE_MS: u128 = 300;
 
-/// 托盘浮层隐藏后的自动回收时限。浮层无编辑草稿，属于可重建缓存；固定策略比暴露设置项更可靠，
-/// 也避免用户为了理解一个实现细节再承担一枚开关。主窗轻量模式仍走自己的用户配置与 idle 判据。
+/// 托盘浮层隐藏后的默认自动回收时限。`keepTrayMenuWarm=true` 时日常隐藏跳过该回收；主窗轻量模式
+/// 仍可显式销毁浮层，二者的用户承诺不会互相覆盖。
 const TRAY_IDLE_RECLAIM_SECS: u64 = 120;
+
+/// 应用级偏好键：false/缺失 = 冷态回收（默认）；true = 日常隐藏后保持 WebView warm。
+const KEEP_TRAY_MENU_WARM_KEY: &str = "keepTrayMenuWarm";
 
 /// 冷建后 renderer 最晚应回报 ready 的时间。超时不把空壳漏给用户，而是回收这次坏实例；下一次点击
 /// 可重新创建。正常真机冷建约 237ms，这里留出数量级余量只兜白屏/IPC 断路，不参与日常体验时序。
@@ -518,6 +522,9 @@ pub struct TrayOverlay {
     pending_screen: Mutex<Option<&'static str>>,
     /// 隐藏回收任务代次：每次 show/hide/destroy 都递增，过期任务只在代次仍匹配时销毁窗口。
     reclaim_generation: AtomicU64,
+    /// `config.keepTrayMenuWarm` 的运行期镜像。只由启动同步与 CONFIG_CHANGED 事件更新；hide 热路径
+    /// 直接读原子值，不为一次菜单收起克隆整份配置。
+    keep_warm: AtomicBool,
     /// mac 全局鼠标按下监听器（NSEvent global monitor）句柄的**原始指针地址**（defect#3）。存 `usize`
     /// 而非 `Retained<AnyObject>`：后者 `!Send`，进不了 Tauri app-managed state（要求 `Send + Sync`）；
     /// monitor 仅在主线程 add/remove，跨线程只传指针地址是安全的。`None` = 未装。
@@ -692,7 +699,7 @@ fn hide_overlay(app: &AppHandle) {
     mark_hidden(app);
     #[cfg(target_os = "macos")]
     remove_click_monitor(app);
-    if should_reclaim {
+    if should_reclaim && !overlay_keeps_warm(app) {
         schedule_overlay_reclaim(app);
     }
 }
@@ -899,6 +906,79 @@ fn invalidate_overlay_reclaim(app: &AppHandle) -> u64 {
         .unwrap_or(0)
 }
 
+/// 当前托盘浮层是否按用户偏好保持 warm。状态尚未 manage 时安全回落默认 false。
+fn overlay_keeps_warm(app: &AppHandle) -> bool {
+    app.try_state::<TrayOverlay>()
+        .is_some_and(|state| state.keep_warm.load(Ordering::Relaxed))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OverlayRetentionAction {
+    None,
+    CancelReclaim,
+    ScheduleReclaim,
+}
+
+/// 配置切换时该怎样处理已存在的浮层计时器。
+///
+/// case 矩阵：
+/// - 值没变：不动（否则任意配置保存都会把 120s 计时器无限续期）；
+/// - 关→开：使已有回收任务失效；
+/// - 开→关：若浮层已隐藏则立即重新挂 120s 回收，若仍可见则等本次 hide 再挂。
+#[must_use]
+fn overlay_retention_action(
+    previous: bool,
+    next: bool,
+    overlay_hidden: bool,
+) -> OverlayRetentionAction {
+    if previous == next {
+        OverlayRetentionAction::None
+    } else if next {
+        OverlayRetentionAction::CancelReclaim
+    } else if overlay_hidden {
+        OverlayRetentionAction::ScheduleReclaim
+    } else {
+        OverlayRetentionAction::None
+    }
+}
+
+/// 从 ConfigManager 的原始配置缓存同步 `keepTrayMenuWarm`，并即时兑现开关变化。
+///
+/// 复用 `event:configChanged` 的 Rust 监听，不新增 IPC/第二份持久化状态。调用点只有启动初始化与配置变更
+/// 事件；不能挂进 30s 托盘自愈轮询，否则 warm=false 时会不断重排计时器、WebView 永不回收。
+pub(crate) fn reconcile_overlay_retention(app: &AppHandle) {
+    let next = app
+        .try_state::<crate::runtime::AppRuntime>()
+        .and_then(|rt| {
+            rt.config()
+                .with_current(|cfg| {
+                    cfg.get(KEEP_TRAY_MENU_WARM_KEY)
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                })
+                .ok()
+        })
+        .unwrap_or(false);
+    let Some(state) = app.try_state::<TrayOverlay>() else {
+        return;
+    };
+    let previous = state.keep_warm.swap(next, Ordering::Relaxed);
+    let overlay_hidden = app
+        .get_webview_window(TRAY_LABEL)
+        .is_some_and(|win| !win.is_visible().unwrap_or(false));
+    match overlay_retention_action(previous, next, overlay_hidden) {
+        OverlayRetentionAction::None => {}
+        OverlayRetentionAction::CancelReclaim => {
+            invalidate_overlay_reclaim(app);
+            log::debug!("托盘浮层保持 warm：已取消隐藏回收任务");
+        }
+        OverlayRetentionAction::ScheduleReclaim => {
+            schedule_overlay_reclaim(app);
+            log::debug!("托盘浮层关闭 warm：已恢复隐藏回收任务");
+        }
+    }
+}
+
 /// 隐藏后延迟回收托盘 WebView。任务到点后回主线程复核「代次未变化 + 仍隐藏」才销毁；期间任何
 /// reopen/hide/destroy 都会换代，因此不会出现旧计时器把刚打开的菜单关掉。
 fn schedule_overlay_reclaim(app: &AppHandle) {
@@ -917,6 +997,11 @@ fn schedule_overlay_reclaim(app: &AppHandle) {
                     state.reclaim_generation.load(Ordering::Relaxed) == generation
                 });
             if !is_current {
+                return;
+            }
+            // 配置事件正常会使 generation 失效；这里再读一次运行期镜像，兜事件递送失败/竞态，
+            // 绝不在用户已开启 warm 后销毁浮层。
+            if overlay_keeps_warm(&callback_app) {
                 return;
             }
             let Some(win) = callback_app.get_webview_window(TRAY_LABEL) else {
@@ -2047,6 +2132,21 @@ mod tests {
     };
     const WIN: (u32, u32) = (536, 700);
     const GAP: i32 = 4;
+
+    #[test]
+    fn overlay_retention_switch_only_changes_the_active_timer_when_needed() {
+        use OverlayRetentionAction::{CancelReclaim, None, ScheduleReclaim};
+
+        // 任意无关配置保存都不能续期现有回收计时器。
+        assert_eq!(overlay_retention_action(false, false, true), None);
+        assert_eq!(overlay_retention_action(true, true, true), None);
+        // 开启 warm 必须取消在飞回收，无论浮层当前是否存在/可见。
+        assert_eq!(overlay_retention_action(false, true, false), CancelReclaim);
+        assert_eq!(overlay_retention_action(false, true, true), CancelReclaim);
+        // 关闭 warm：隐藏态立即恢复计时，可见态交给下一次 hide 挂计时。
+        assert_eq!(overlay_retention_action(true, false, true), ScheduleReclaim);
+        assert_eq!(overlay_retention_action(true, false, false), None);
+    }
 
     #[test]
     fn tray_event_rect_is_already_physical() {

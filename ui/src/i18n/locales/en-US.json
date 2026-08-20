@@ -417,6 +417,8 @@
       "autoConnect": "Auto-connect on Startup",
       "autoLightweightMode": "Auto lightweight mode",
       "autoLightweightModeDesc": "Release the interface after it has been hidden or minimized for 10 minutes; the tray and proxy keep running",
+      "keepTrayMenuWarm": "Keep tray menu warm",
+      "keepTrayMenuWarmDesc": "Keep the hidden tray menu renderer ready for faster reopening. This typically uses about 30–40 MB more memory, depending on the system. Lightweight mode still releases it.",
       "desktopNotifications": "Desktop notifications",
       "desktopNotificationsDesc": "Raises a system notification when the proxy hits a serious error",
       "autoCheckUpdate": "Check for updates at startup",

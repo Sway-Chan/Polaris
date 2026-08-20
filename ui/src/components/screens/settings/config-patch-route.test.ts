@@ -20,6 +20,7 @@ const MIXED = {
   controlPort: 9090, // Class A —— 与上一行同出一个调用点（SettingsNetwork 的 update({[key]:next})）
   allowLan: true, // Class B
   autoStart: false, // Class A
+  keepTrayMenuWarm: true, // Class A —— 生命周期偏好应即时落盘，不触发内核暂存/重启
   dnsConfig: { enableFakeIp: true }, // Class B（整对象替换）
   uiTheme: 'dark', // Class A
 } as unknown as Partial<UserConfig>;
@@ -49,7 +50,12 @@ describe('T2：开关开时按键分流 —— 一个调用点跨两个 class �
   it('Class B 进 staged、Class A 留 direct', () => {
     const { staged, direct } = splitPatchByRoute(MIXED, true);
     expect(staged.map(([k]) => k)).toEqual(['mixedPort', 'allowLan', 'dnsConfig']);
-    expect(direct).toEqual({ controlPort: 9090, autoStart: false, uiTheme: 'dark' });
+    expect(direct).toEqual({
+      controlPort: 9090,
+      autoStart: false,
+      keepTrayMenuWarm: true,
+      uiTheme: 'dark',
+    });
   });
 
   it('两半互斥且并起来等于入参（既不吞键也不重复写）', () => {

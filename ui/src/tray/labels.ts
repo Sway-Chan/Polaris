@@ -46,8 +46,9 @@ export const trayLang = i18n.lang;
 /**
  * 重解析并返回当前语言（`configChanged` / 浮层获焦时调）。
  *
- * 浮层 webview 按需创建，隐藏后仍以 warm 实例保留至 120s 回收；模块级常量在**这一代 WebView**内
- * 不会自行重算。没有这条重解析腿，用户在主窗改语言后只能等回收重建，当前浮层会继续显示旧语言。
+ * 浮层 webview 按需创建，隐藏后会保留至 120s 回收，或按 `keepTrayMenuWarm` 长期保温；模块级常量在
+ * **这一代 WebView**内不会自行重算。没有这条重解析腿，用户在主窗改语言后只能等回收重建，当前浮层
+ * 会继续显示旧语言。
  */
 export const refreshTrayLang = i18n.refresh;
 

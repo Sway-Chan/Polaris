@@ -534,6 +534,9 @@ export interface UserConfig {
   language?: string;
   autoCheckUpdate: boolean;
   autoLightweightMode: boolean;
+  // 托盘菜单保持 warm：默认 false。开启后日常隐藏不回收托盘 WebView，换取后续热开；
+  // 显式/自动进入轻量模式仍会释放它，保证轻量模式的内存承诺。
+  keepTrayMenuWarm?: boolean;
   // 图形兼容逃生门（正向语义：**默认开**=true，关闭是 opt-in 用户自救；均需重启生效）。
   // 消费一律用 `!== false`（undefined=未设/旧配置=默认开），对齐本仓 autoCheckUpdate 惯例。
   // hardwareAcceleration：false → 改用软件渲染，规避 GPU 进程反复崩溃/白屏/花屏。

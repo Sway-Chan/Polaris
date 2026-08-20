@@ -88,6 +88,7 @@ fn sanitize_value_in_place(value: &mut Value) {
         "minimizeToTray",
         "autoCheckUpdate",
         "autoLightweightMode",
+        "keepTrayMenuWarm",
         "rememberWindowSize",
         "restartOnNodeChange",
         "disableLogFile",
@@ -602,12 +603,14 @@ mod tests {
             "proxyModeType": "manual",
             "appRoutingEnabled": "yes",
             "singboxDashboard": 1,
+            "keepTrayMenuWarm": "yes",
             "hardwareAcceleration": true
         }"#;
         let v = sanitize_config(json).unwrap();
         let obj = v.as_object().unwrap();
         assert!(!obj.contains_key("appRoutingEnabled"));
         assert!(!obj.contains_key("singboxDashboard"));
+        assert!(!obj.contains_key("keepTrayMenuWarm"));
         assert_eq!(obj["hardwareAcceleration"], Value::Bool(true));
     }
 

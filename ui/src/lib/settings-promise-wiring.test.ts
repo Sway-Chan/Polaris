@@ -264,6 +264,12 @@ const REGISTRY: readonly PromiseRow[] = [
     timer: { lang: 'rs', name: 'HIDDEN_RECLAIM_SECS' },
   },
   {
+    snippet: '托盘菜单隐藏时不再自动释放',
+    // 配置消费方在 Rust 托盘生命周期：打开 warm 取消在飞回收，关闭时隐藏窗恢复 120s 计时；
+    // `config-key` 门会要求设置屏之外存在真实读取，避免只长出一个无效开关。
+    evidence: { kind: 'config-key', key: 'keepTrayMenuWarm' },
+  },
+  {
     snippet: '崩溃或断电后自动恢复原系统 DNS',
     evidence: {
       kind: 'anchor',

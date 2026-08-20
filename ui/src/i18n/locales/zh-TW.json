@@ -417,6 +417,8 @@
       "autoConnect": "啟動時自動連線",
       "autoLightweightMode": "自動輕量模式",
       "autoLightweightModeDesc": "介面隱藏或最小化 10 分鐘後釋放記憶體；系統匣與代理繼續運作",
+      "keepTrayMenuWarm": "系統匣選單保持預熱",
+      "keepTrayMenuWarmDesc": "開啟後，系統匣選單隱藏時不再自動釋放，之後開啟更快；通常會額外占用約 30–40 MB 記憶體，實際依系統而異。進入輕量模式時仍會釋放。",
       "desktopNotifications": "桌面通知",
       "desktopNotificationsDesc": "代理出現嚴重錯誤時跳出系統通知",
       "autoCheckUpdate": "啟動時檢查更新",

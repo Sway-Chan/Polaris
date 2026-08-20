@@ -1603,6 +1603,8 @@ fn main() {
             app.manage(RestartState(AtomicBool::new(false)));
             // 托盘运行期状态（自绘浮层去抖 + 轻量重建时的待导航目标；Linux 虽不建浮层仍要后者）。
             app.manage(tray::TrayOverlay::default());
+            // 同步托盘 warm 偏好。必须在 TrayOverlay manage 后执行；缺省 false 保持按需冷建 + 120s 回收。
+            tray::reconcile_overlay_retention(app.handle());
 
             // ── 订阅自动更新调度器（启动补更 8s + 周期巡检 30min + 代理就绪补更）──
             // 装在 AppRuntime manage 之后（运行期经 State 取 config/proxy/http）。managed 保活；
@@ -1817,7 +1819,14 @@ fn main() {
                         // `listen_any` 捕获 `emit` 广播（不限 target），任何发射点都触发。
                         |ev| {
                             let h = handle.clone();
-                            handle.listen_any(ev, move |_| reconcile_tray(&h));
+                            handle.listen_any(ev, move |_| {
+                                // 只在配置变更事件同步 warm 偏好；不能放进下面 30s 自愈轮询，否则会不断
+                                // 重排隐藏回收计时器。其它托盘视觉/菜单仍统一走 reconcile_tray。
+                                if ev == crate::events::channel::EVENT_CONFIG_CHANGED {
+                                    crate::tray::reconcile_overlay_retention(&h);
+                                }
+                                reconcile_tray(&h);
+                            });
                         },
                         |every| {
                             let h = handle.clone();
@@ -1839,9 +1848,9 @@ fn main() {
                 false
             };
 
-            // 自绘浮层不在启动期预建：首次托盘点击由 `toggle_overlay` 按需创建，隐藏 2 分钟后自行回收。
-            // Linux 的点击归原生菜单所有，不会创建这块 WebView；macOS/Windows 因而也不再为一个尚未
-            // 用过的菜单常驻 renderer 内存。建窗失败只记日志，不曲解用户意图为显示主窗。
+            // 自绘浮层不在启动期预建：首次托盘点击由 `toggle_overlay` 按需创建。默认隐藏 2 分钟后回收；
+            // `keepTrayMenuWarm=true` 时隐藏后保留 renderer，换取后续热开。Linux 的点击归原生菜单所有，
+            // 不会创建这块 WebView。建窗失败只记日志，不曲解用户意图为显示主窗。
 
             // C15：start_hidden 但托盘缺失（Linux 无 StatusNotifier）→ 无唤出锚点，**必须**显示主窗，否则
             // 窗口永远隐藏且无处唤起 = 死界面。托盘在则保持隐藏（靠主激活/原生菜单/dock 唤出）。窗口可见性 → stats

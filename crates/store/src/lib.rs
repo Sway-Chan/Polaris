@@ -556,6 +556,11 @@ mod store_tests {
         // 新装同时置迁移标记：否则首次启动会对一份本就正确的配置再跑一次迁移（无害但 changed=true，
         // 会白写一次盘 + 白发一次 configChanged）。
         assert_eq!(cfg["tunMtuMigrated"], serde_json::json!(true));
+        assert_eq!(
+            cfg["keepTrayMenuWarm"],
+            serde_json::json!(false),
+            "托盘 warm 必须默认关闭，避免新装静默多占 renderer 内存"
+        );
     }
 
     #[test]

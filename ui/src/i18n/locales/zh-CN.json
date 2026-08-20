@@ -417,6 +417,8 @@
       "autoConnect": "启动时自动连接",
       "autoLightweightMode": "自动轻量模式",
       "autoLightweightModeDesc": "界面隐藏或最小化 10 分钟后释放内存；托盘与代理继续运行",
+      "keepTrayMenuWarm": "托盘菜单保持预热",
+      "keepTrayMenuWarmDesc": "开启后，托盘菜单隐藏时不再自动释放，后续打开更快；通常会额外占用约 30–40 MB 内存，实际因系统而异。进入轻量模式时仍会释放。",
       "desktopNotifications": "桌面通知",
       "desktopNotificationsDesc": "代理出现严重错误时弹系统通知",
       "autoCheckUpdate": "启动时检查更新",

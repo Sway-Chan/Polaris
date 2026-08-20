@@ -638,6 +638,13 @@ const PAYLOAD_FAMILIES = [
       '用户机器上 resolve_helper_binary → Err ⇒ 特权 helper 装不上（TUN / 路由 / DNS 接管整条不可用），' +
       'app 仍能启动，故不装 TUN 试一次发现不了',
   },
+  {
+    what: 'Cronet sidecar',
+    names: new Set(['libcronet.so', 'libcronet.dll']),
+    requiredLabels: new Set(['linux', 'windows']),
+    consequence:
+      'Naive/H3 初始化时报 library not found；macOS 的 Cronet 已静态集成，故不要求动态库',
+  },
 ];
 
 // ── ELF Build ID（PKG-1）：仅作 appimage 腿「体积失配」时的豁免证据——linuxdeploy 对动态
@@ -828,6 +835,9 @@ function checkPayload(label, root) {
     trees.length > 0
       ? trees.map((t) => ({ name: `bundle/${t}`, dir: join(rootDir, t), artifact: true }))
       : [{ name: root, dir: rootDir, artifact: false }];
+  const payloadFamilies = PAYLOAD_FAMILIES.filter(
+    (family) => !family.requiredLabels || family.requiredLabels.has(label)
+  );
 
   for (const scope of scopes) {
     if (!existsSync(scope.dir)) {
@@ -840,77 +850,77 @@ function checkPayload(label, root) {
       continue;
     }
 
-    for (const family of PAYLOAD_FAMILIES) {
-    const all = walk(scope.dir, family.names);
-    const seen = new Map();
-    for (const p of all) {
-      // 取**最后**一处 `<...>/resources/<平台>/`：路径里可能先出现 resources/dashboard/ 之类的
-      // 非平台段，用首个匹配会误判成「不是平台核」而漏掉。
-      const segs = p.replace(/\\/g, '/').split('/');
-      let core = null;
-      for (let i = 0; i < segs.length - 1; i++) {
-        if (segs[i] === 'resources' && platforms.includes(segs[i + 1])) core = segs[i + 1];
+    for (const family of payloadFamilies) {
+      const all = walk(scope.dir, family.names);
+      const seen = new Map();
+      for (const p of all) {
+        // 取**最后**一处 `<...>/resources/<平台>/`：路径里可能先出现 resources/dashboard/ 之类的
+        // 非平台段，用首个匹配会误判成「不是平台核」而漏掉。
+        const segs = p.replace(/\\/g, '/').split('/');
+        let core = null;
+        for (let i = 0; i < segs.length - 1; i++) {
+          if (segs[i] === 'resources' && platforms.includes(segs[i + 1])) core = segs[i + 1];
+        }
+        if (!core) continue;
+        if (!seen.has(core)) seen.set(core, []);
+        seen.get(core).push(p);
       }
-      if (!core) continue;
-      if (!seen.has(core)) seen.set(core, []);
-      seen.get(core).push(p);
-    }
 
-    const hits = [...seen.values()].flat();
-    if (hits.length === 0) {
-      fail(
-        `${scope.name} 里找不到任何 \`resources/<平台>/${family.what}*\` —— ` +
-          `${scope.artifact ? `该产物装出来没有 ${family.what}` : `本平台 staging 里没有 ${family.what}`}` +
-          `（${family.consequence}）。\n` +
-          `  已扫描：${scope.dir}\n` +
-          `  期望平台目录：${expected}（合法平台：${platforms.join(', ')}）\n` +
-          `  该目录下找到的 ${family.what} 文件：${JSON.stringify(all.slice(0, 20))}\n` +
-          `  实际布局样本（前 40 条，标注类型与软链）：\n${layoutSample(scope.dir)}`
-      );
-      continue;
-    }
-
-    const dirs = [...seen.keys()].sort();
-    if (dirs.length !== 1 || dirs[0] !== expected) {
-      fail(
-        `${scope.name} 的 ${family.what} 平台应恰为 ['${expected}']，实为 ${JSON.stringify(dirs)} —— ` +
-          `混进了别平台产物（§10.2 死重回潮）或缺本平台那份`
-      );
-    }
-
-    // 完整性断言不用魔数：与源 resources/<平台>/ 里那份**先比体积**。源缺失 = 判红，不跳过。
-    // ⚠️ 体积不等 ≠ 坏包（PKG-1，复审 F1 修正为 B 案）：appimage 腿的**动态链接 ELF** 会被
-    // linuxdeploy 合法改写 rpath（本机 1-alpha-20251107-1 实测：helper 1222440B → 1230912B，
-    // sha 变，**GNU Build ID 前后同值**）。故体积失配时，appimage 侧用 Build ID 作「合法改写」
-    // 的豁免证据（同 ⇒ 绿）；任一侧读不出 Build ID 或不同 ⇒ 红。**不把 Build ID 当普适判据**：
-    // 真内核 sing-box 是 Go 剥离产物，整个 ELF 无 note 段（readelf -n 输出为空、非失败）——
-    // 它在 appimage 里体积与源一致（run 32063794443：只有 helper 失配），走体积分支即绿；
-    // 若哪天它也开始失配且无 Build ID 可证 ⇒ 红（fail-loud，来龙去脉当场可查）。
-    // deb / staging / mac 腿：tauri-bundler 是纯 fs::copy（fs_utils.rs），恒比体积。
-    for (const p of seen.get(expected) ?? []) {
-      const src = join(srcDir, basename(p));
-      if (!existsSync(src)) {
-        fail(`${scope.name}: 产物里有 ${p}，但源 ${src} 不存在 —— 完整性无从比对（前置缺失判红，不跳过）`);
+      const hits = [...seen.values()].flat();
+      if (hits.length === 0) {
+        fail(
+          `${scope.name} 里找不到任何 \`resources/<平台>/${family.what}*\` —— ` +
+            `${scope.artifact ? `该产物装出来没有 ${family.what}` : `本平台 staging 里没有 ${family.what}`}` +
+            `（${family.consequence}）。\n` +
+            `  已扫描：${scope.dir}\n` +
+            `  期望平台目录：${expected}（合法平台：${platforms.join(', ')}）\n` +
+            `  该目录下找到的 ${family.what} 文件：${JSON.stringify(all.slice(0, 20))}\n` +
+            `  实际布局样本（前 40 条，标注类型与软链）：\n${layoutSample(scope.dir)}`
+        );
         continue;
       }
-      const got = statSync(p).size;
-      const want = statSync(src).size;
-      if (got === want) continue;
-      if (scope.name === 'bundle/appimage' && isElf(p) && isElf(src)) {
-        const gid = elfBuildId(p);
-        const wid = elfBuildId(src);
-        if (gid !== null && wid !== null && gid === wid) continue; // 合法 rpath 改写的豁免
-        fail(
-          `${scope.name}: 产物 ${family.what} 体积不符（${p} = ${got}B，源 ${src} = ${want}B）且` +
-            ` Build ID 无法证明其为 linuxdeploy 的合法 rpath 改写（产物 ${gid ?? '无 note 段/读取失败'}，` +
-            `源 ${wid ?? '无 note 段/读取失败'}）—— 装进去的可能不是同一次构建的产物`
-        );
-      } else {
-        fail(`${scope.name}: 产物 ${family.what} 体积不符：${p} = ${got}B，源 ${src} = ${want}B`);
-      }
-    }
 
-    for (const p of hits) console.log(`     ${p.replace(ROOT + '/', '')}`);
+      const dirs = [...seen.keys()].sort();
+      if (dirs.length !== 1 || dirs[0] !== expected) {
+        fail(
+          `${scope.name} 的 ${family.what} 平台应恰为 ['${expected}']，实为 ${JSON.stringify(dirs)} —— ` +
+            `混进了别平台产物（§10.2 死重回潮）或缺本平台那份`
+        );
+      }
+
+      // 完整性断言不用魔数：与源 resources/<平台>/ 里那份**先比体积**。源缺失 = 判红，不跳过。
+      // ⚠️ 体积不等 ≠ 坏包（PKG-1，复审 F1 修正为 B 案）：appimage 腿的**动态链接 ELF** 会被
+      // linuxdeploy 合法改写 rpath（本机 1-alpha-20251107-1 实测：helper 1222440B → 1230912B，
+      // sha 变，**GNU Build ID 前后同值**）。故体积失配时，appimage 侧用 Build ID 作「合法改写」
+      // 的豁免证据（同 ⇒ 绿）；任一侧读不出 Build ID 或不同 ⇒ 红。**不把 Build ID 当普适判据**：
+      // 真内核 sing-box 是 Go 剥离产物，整个 ELF 无 note 段（readelf -n 输出为空、非失败）——
+      // 它在 appimage 里体积与源一致（run 32063794443：只有 helper 失配），走体积分支即绿；
+      // 若哪天它也开始失配且无 Build ID 可证 ⇒ 红（fail-loud，来龙去脉当场可查）。
+      // deb / staging / mac 腿：tauri-bundler 是纯 fs::copy（fs_utils.rs），恒比体积。
+      for (const p of seen.get(expected) ?? []) {
+        const src = join(srcDir, basename(p));
+        if (!existsSync(src)) {
+          fail(`${scope.name}: 产物里有 ${p}，但源 ${src} 不存在 —— 完整性无从比对（前置缺失判红，不跳过）`);
+          continue;
+        }
+        const got = statSync(p).size;
+        const want = statSync(src).size;
+        if (got === want) continue;
+        if (scope.name === 'bundle/appimage' && isElf(p) && isElf(src)) {
+          const gid = elfBuildId(p);
+          const wid = elfBuildId(src);
+          if (gid !== null && wid !== null && gid === wid) continue; // 合法 rpath 改写的豁免
+          fail(
+            `${scope.name}: 产物 ${family.what} 体积不符（${p} = ${got}B，源 ${src} = ${want}B）且` +
+              ` Build ID 无法证明其为 linuxdeploy 的合法 rpath 改写（产物 ${gid ?? '无 note 段/读取失败'}，` +
+              `源 ${wid ?? '无 note 段/读取失败'}）—— 装进去的可能不是同一次构建的产物`
+          );
+        } else {
+          fail(`${scope.name}: 产物 ${family.what} 体积不符：${p} = ${got}B，源 ${src} = ${want}B`);
+        }
+      }
+
+      for (const p of hits) console.log(`     ${p.replace(ROOT + '/', '')}`);
     }
   }
 
@@ -919,14 +929,14 @@ function checkPayload(label, root) {
   if (trees.length > 0) {
     note(
       `payload：${label} → 产物验证，${scopes.map((s) => s.name).join(' + ')} 各自命中 ${expected} 的 ` +
-        `${PAYLOAD_FAMILIES.map((f) => f.what).join(' + ')}（体积与源一致；appimage 内被 linuxdeploy 改写 rpath 的 ELF 以 Build ID 豁免）`
+        `${payloadFamilies.map((f) => f.what).join(' + ')}（体积与源一致；appimage 内被 linuxdeploy 改写 rpath 的 ELF 以 Build ID 豁免）`
     );
   } else {
     // 如实标注，不冒充产物验证：NSIS 把资源从**源路径**直接编进 .exe，bundle 侧没有可扫的副本，
     // 故这条腿只能证明「cargo 侧 staging 恰好只有本平台那几份且体积对」，证明不了安装器内容。
     note(
       `payload：${label} → **staging 检查**（不是产物验证）：扫的是 cargo build 铺的 ${root}/_up_/resources/，` +
-        `恰含 ${expected} 的 ${PAYLOAD_FAMILIES.map((f) => f.what).join(' + ')} 且体积与源一致。` +
+        `恰含 ${expected} 的 ${payloadFamilies.map((f) => f.what).join(' + ')} 且体积与源一致。` +
         `NSIS 从源路径直接编译资源进 .exe，bundle 侧无副本可扫 ⇒ ` +
         `「安装器内容是否含这些二进制」在本仓无自动门，由 Windows 真机安装验证覆盖。`
     );
