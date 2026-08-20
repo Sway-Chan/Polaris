@@ -339,7 +339,14 @@ mod tests {
 
     // ── StdCommandRunner：只验「执行器」本身（不碰网络/代理/DNS，仅无害的 true/false/sleep）──
     //
-    // cfg!() 宏而非 #[cfg]：所有分支全平台编译（审计 §M2 口径），Linux CI 上跑 unix 分支。
+    // 真进程 smoke 按宿主用 `#[cfg]` 选择可执行文件；紧邻的 system32 纯函数仍保持全平台可测。
+
+    // Windows hosted runner 在整仓并行 test 的峰值期，PowerShell 冷启动实测可越过 5s；这里验证的是
+    // stdout/stderr/exit-code 契约，不是启动时延。把平台差异收在一个测试常量，避免两条烟测各漂一份。
+    #[cfg(unix)]
+    const COMMAND_SMOKE_TIMEOUT: Duration = Duration::from_secs(5);
+    #[cfg(windows)]
+    const COMMAND_SMOKE_TIMEOUT: Duration = Duration::from_secs(15);
 
     // ── system32（纯函数，Linux 上得 Windows 路径 —— 零 cfg 可测性的样板）──
 
@@ -385,7 +392,7 @@ mod tests {
                 "[Console]::Out.Write('out'); [Console]::Error.Write('err')",
             ],
         );
-        let out = StdCommandRunner.run(&cmd, Duration::from_secs(5));
+        let out = StdCommandRunner.run(&cmd, COMMAND_SMOKE_TIMEOUT);
         let out = out.expect("zero exit → Ok");
         assert_eq!(out.stdout, "out");
         assert_eq!(out.stderr, "err");
@@ -405,7 +412,7 @@ mod tests {
             ],
         );
         let e = StdCommandRunner
-            .run(&cmd, Duration::from_secs(5))
+            .run(&cmd, COMMAND_SMOKE_TIMEOUT)
             .expect_err("非零退出 → Err（对齐 execFileAsync reject）");
         assert!(e.contains('3'), "错误须带退出码: {e}");
         assert!(e.contains("boom"), "错误须带 stderr: {e}");
