@@ -240,7 +240,13 @@ export interface HelperStatus {
   /** 可用但有新版 helper（v5 install-core）：proto ≥ 最低可用但 < 期望 → 温和提示可升级（非故障，不强制重装） */
   upgradeable: boolean;
   /** 协议版本（ping/version 返回），未就绪为 null */
-  version: string | null;
+  version: number | null;
+  /** 当前 app 期望的 shared protocol 版本；由后端单一真值下发 */
+  expectedProtocolVersion: number;
+  /** 已安装 helper 自报的构建身份；旧 helper 不带该字段，并会被判为可升级 */
+  helperBuildId?: string | null;
+  /** 当前 app 随包 helper 的期望构建身份，用于 app/helper 同包对账 */
+  expectedBuildId: string;
   /** daemon 是否被 launchd 加载（launchctl print 退出码）；非 macOS / 未安装为 null */
   loaded: boolean | null;
   /** 已安装但无法就绪、协议版本不符、或烧录路径与当前 app 不符 → 建议重装修复 */

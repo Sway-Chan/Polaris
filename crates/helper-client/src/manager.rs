@@ -29,7 +29,7 @@ use crate::client::HelperClient;
 #[cfg(test)]
 use crate::client::{ClientError, Connector};
 use crate::token;
-use polaris_helper_proto::response::ResponseKind;
+use polaris_helper_proto::response::{Pong, ResponseKind};
 use polaris_helper_proto::{Platform, Request, Response};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -148,7 +148,9 @@ pub struct HelperStatus {
     pub ready: bool,
     /// 报告的 protoVersion（ping 回）。
     pub version: Option<u32>,
-    /// 是否可升级（ready ∧ proto < EXPECTED）。
+    /// helper 自报构建身份；旧 helper 的 pong 不带该字段。
+    pub build_id: Option<String>,
+    /// 是否可升级（ready ∧（proto 落后，或同 proto 的构建身份与随包 helper 不一致））。
     pub upgradeable: bool,
     /// 是否需修复（installed 但 !ready，如 token 丢失 / proto 过旧）。
     pub needs_repair: bool,
@@ -308,15 +310,15 @@ fn expected_proto() -> u32 {
     polaris_helper_proto::proto_version::CURRENT
 }
 
-/// ping helper 取 protoVersion（移植自 上游 `sendCommand(['ping'], 1500)` + 正则提取）。
+/// ping helper 取 protoVersion + build identity（移植自 上游 `sendCommand(['ping'], 1500)` + 正则提取）。
 ///
 /// 返回 None 当 ping 失败或响应非 Pong。
-fn ping_for_version(client: &HelperClient) -> Option<u32> {
+fn ping_for_handshake(client: &HelperClient) -> Option<Pong> {
     let resp = client
         .send_with_timeout(&Request::Ping, Duration::from_millis(1500))
         .ok()?;
     match resp {
-        Response::Ok(ResponseKind::Pong(p)) => Some(p.proto_version),
+        Response::Ok(ResponseKind::Pong(p)) => Some(p),
         _ => None,
     }
 }
@@ -338,7 +340,7 @@ impl HelperManager {
                 ..Default::default()
             };
         }
-        let proto_version = match ping_for_version(client) {
+        let handshake = match ping_for_handshake(client) {
             Some(v) => v,
             None => {
                 return HelperStatus {
@@ -348,12 +350,18 @@ impl HelperManager {
                 };
             }
         };
+        let proto_version = handshake.proto_version;
         let ready = proto_version >= MIN_USABLE_PROTO;
-        let upgradeable = ready && proto_version < expected_proto();
+        let expected_proto = expected_proto();
+        let expected_build_id = polaris_helper_proto::build_identity::current();
+        let same_proto_build_mismatch = proto_version == expected_proto
+            && handshake.build_identity.as_deref() != Some(expected_build_id);
+        let upgradeable = ready && (proto_version < expected_proto || same_proto_build_mismatch);
         HelperStatus {
             installed: true,
             ready,
             version: Some(proto_version),
+            build_id: handshake.build_identity,
             upgradeable,
             needs_repair: !ready,
         }
@@ -1060,7 +1068,8 @@ echo polaris-helper-uninstall-ok\n",
 /// win 安装脚本（PowerShell，经 UAC 提权跑）。忠实迁自 WindowsServiceHelper.ts:429-506。
 ///
 /// 关键步骤：外置 helper.exe 到 `ProgramData\Polaris`（与 app 生命周期解耦）；锁目录/文件 ACL
-/// （SYSTEM/Admin 私有）；幂等停删旧服务并轮询消失；`Copy-Item`/`New-Service` 退避重试（1072 标记删除竞态）。
+/// （SYSTEM/Admin 私有）；升级前快照旧服务并备份 helper/token；幂等停删与重建。任一步失败时恢复
+/// 旧文件、旧 binPath/start mode 与原运行态，避免覆盖升级把可用 helper 留成半安装态。
 /// `$ErrorActionPreference = Stop` 让失败以非零退出透出（提权 executor 归类 Failed；privilege.rs 的
 /// uac_escalation 无 上游的 flag-file 错误回写协议 —— 见报告 DESIGN-REVIEW）。
 fn build_win_install_script(params: &InstallParams, token: &str) -> String {
@@ -1074,6 +1083,8 @@ fn build_win_install_script(params: &InstallParams, token: &str) -> String {
     // `win_basename(src_binary)` 现算，与状态探测那侧的写死路径分叉 → Windows 恒判未安装）。
     let helper_dst = format!(r"{support}\{WIN_HELPER_EXE}");
     let token_file = format!(r"{support}\helper.token");
+    let helper_backup = format!(r"{support}\{WIN_HELPER_EXE}.rollback");
+    let token_backup = format!(r"{support}\helper.token.rollback");
     let singbox = params.singbox_path.to_string_lossy();
     let conf_dir = params.conf_dir.to_string_lossy();
     // BinaryPathName：各含空格路径用真双引号包裹，经 New-Service 单一字符串直达 CreateService。
@@ -1094,11 +1105,25 @@ $support = '{support_q}'\n\
 $tokenFile = '{token_file_q}'\n\
 $helperSrc = '{exe_q}'\n\
 $helperDst = '{helper_dst_q}'\n\
+$helperBackup = '{helper_backup_q}'\n\
+$tokenBackup = '{token_backup_q}'\n\
 $bp = '{bin_path_q}'\n\
 New-Item -ItemType Directory -Force -Path $support | Out-Null\n\
 # 锁目录 ACL：去继承、仅 SYSTEM/Administrators 完全控制并 (OI)(CI) 下传 → token/exe 出生即 SYSTEM/Admin 私有。\n\
 & $icacls $support /inheritance:r | Out-Null\n\
 & $icacls $support /grant:r \"SYSTEM:(OI)(CI)(F)\" \"Administrators:(OI)(CI)(F)\" | Out-Null\n\
+# 升级事务快照：属性来自 Win32_Service，不解析受系统显示语言影响的 sc qc 文本。\n\
+$oldService = Get-CimInstance -ClassName Win32_Service -Filter \"Name='{service}'\" -ErrorAction SilentlyContinue\n\
+$serviceExisted = $null -ne $oldService\n\
+$oldBinPath = if ($serviceExisted) {{ $oldService.PathName }} else {{ $null }}\n\
+$oldStartMode = if ($serviceExisted) {{ $oldService.StartMode }} else {{ $null }}\n\
+$oldWasRunning = $serviceExisted -and $oldService.State -eq 'Running'\n\
+$hadHelper = Test-Path -LiteralPath $helperDst\n\
+$hadToken = Test-Path -LiteralPath $tokenFile\n\
+Remove-Item -Force -Path $helperBackup,$tokenBackup -ErrorAction SilentlyContinue\n\
+if ($hadHelper) {{ Copy-Item -LiteralPath $helperDst -Destination $helperBackup -Force }}\n\
+if ($hadToken) {{ Copy-Item -LiteralPath $tokenFile -Destination $tokenBackup -Force }}\n\
+try {{\n\
 # 先删残留旧 token 再写（旧 Admin 只读会拒 Set-Content 覆盖；经目录 FILE_DELETE_CHILD 删旧不受其自身 DACL 阻挡）。\n\
 Remove-Item -Force -Path $tokenFile -ErrorAction SilentlyContinue\n\
 Set-Content -Path $tokenFile -Value '{token_q}' -NoNewline -Encoding ascii\n\
@@ -1137,11 +1162,44 @@ if ($LASTEXITCODE -ne 0) {{ throw \"sc sdset 授 IU 启动权失败（退出码 
 #    归零，三段 restart 覆盖连续误杀。sc 语法注意：等号后必须带一个空格。\n\
 & $sc failure {service} reset= 86400 actions= restart/5000/restart/5000/restart/5000 | Out-Null\n\
 if ($LASTEXITCODE -ne 0) {{ throw \"sc failure 自愈配置失败（退出码 $LASTEXITCODE）\" }}\n\
-& $sc start {service} | Out-Null\n",
+& $sc start {service} | Out-Null\n\
+if ($LASTEXITCODE -ne 0) {{ throw \"sc start helper service failed\" }}\n\
+# commit：新服务已成功首启，旧文件才失去回滚价值。\n\
+Remove-Item -Force -Path $helperBackup,$tokenBackup -ErrorAction SilentlyContinue\n\
+}} catch {{\n\
+  $installError = $_\n\
+  $ErrorActionPreference = 'SilentlyContinue'\n\
+  & $sc stop {service} 2>$null | Out-Null\n\
+  & $sc delete {service} 2>$null | Out-Null\n\
+  $rollbackDeadline = (Get-Date).AddSeconds(15)\n\
+  while ((Get-Service -Name {service} -ErrorAction SilentlyContinue) -and (Get-Date) -lt $rollbackDeadline) {{ Start-Sleep -Milliseconds 300 }}\n\
+  if ($hadHelper -and (Test-Path -LiteralPath $helperBackup)) {{\n\
+    Copy-Item -LiteralPath $helperBackup -Destination $helperDst -Force\n\
+  }} elseif (-not $hadHelper) {{\n\
+    Remove-Item -Force -Path $helperDst -ErrorAction SilentlyContinue\n\
+  }}\n\
+  if ($hadToken -and (Test-Path -LiteralPath $tokenBackup)) {{\n\
+    Copy-Item -LiteralPath $tokenBackup -Destination $tokenFile -Force\n\
+  }} elseif (-not $hadToken) {{\n\
+    Remove-Item -Force -Path $tokenFile -ErrorAction SilentlyContinue\n\
+  }}\n\
+  if ($serviceExisted) {{\n\
+    $oldStartType = switch ($oldStartMode) {{ 'Disabled' {{ 'Disabled' }} 'Manual' {{ 'Manual' }} default {{ 'Automatic' }} }}\n\
+    New-Service -Name {service} -BinaryPathName $oldBinPath -StartupType $oldStartType | Out-Null\n\
+    & $sc sdset {service} \"D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)(A;;RP;;;IU)S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)\" | Out-Null\n\
+    & $sc failure {service} reset= 86400 actions= restart/5000/restart/5000/restart/5000 | Out-Null\n\
+    if ($oldWasRunning) {{ & $sc start {service} | Out-Null }}\n\
+  }}\n\
+  # 失败时保留 .rollback：自动恢复若被外部文件锁阻断，管理员仍有可恢复副本。\n\
+  $ErrorActionPreference = 'Stop'\n\
+  throw $installError\n\
+}}\n",
         support_q = ps_quote(support),
         token_file_q = ps_quote(&token_file),
         exe_q = ps_quote(&exe),
         helper_dst_q = ps_quote(&helper_dst),
+        helper_backup_q = ps_quote(&helper_backup),
+        token_backup_q = ps_quote(&token_backup),
         bin_path_q = ps_quote(&bin_path),
         token_q = ps_quote(token),
         icacls = icacls,
@@ -1414,6 +1472,15 @@ mod tests {
         (m, dir)
     }
 
+    /// 当前源码 helper 的真实 pong wire；测试不要再手拼一份漏掉 build identity 的“半握手”。
+    fn current_pong_wire() -> Vec<u8> {
+        format!(
+            "{}\n",
+            Response::Ok(ResponseKind::Pong(Pong::current(0))).to_wire_line()
+        )
+        .into_bytes()
+    }
+
     #[test]
     fn install_paths_mac_match_polaris() {
         // Polaris HelperManager.ts:30,33-35
@@ -1665,11 +1732,7 @@ mod tests {
         let m = HelperManager::new(Platform::Mac, token_path, Box::new(sysops));
         let connector = MockConnector {
             streams: Arc::new(Mutex::new(vec![MockStream::with_response(
-                format!(
-                    "OK pong uid=0 v{}\n",
-                    polaris_helper_proto::proto_version::CURRENT
-                )
-                .into_bytes(),
+                current_pong_wire(),
             )])),
         };
         let client = HelperClient::new(Box::new(connector), Platform::Mac, "TOK");
@@ -1682,6 +1745,66 @@ mod tests {
         );
         // 自家 helper == 本 build 期望版本 → 不 upgradeable、不 needs_repair。
         assert!(!status.upgradeable);
+        assert!(!status.needs_repair);
+    }
+
+    #[test]
+    fn status_same_proto_without_build_identity_is_ready_but_upgradeable() {
+        // .207 现场旧 helper：protocol v1 与随包 helper 相同，但 pong 没 build 字段。它仍可用，
+        // 不能误报 needsRepair；同时必须进入既有五语种升级流，否则部署漂移会永久滞留。
+        let paths = InstallPaths::mac();
+        let mut sysops = MockSysOps::default();
+        sysops.exists_paths.insert(paths.binary.clone());
+        sysops
+            .exists_paths
+            .insert(paths.descriptor.expect("mac 有描述符文件"));
+        let (m, _dir) = manager_with_token(Platform::Mac, sysops);
+        let connector = MockConnector {
+            streams: Arc::new(Mutex::new(vec![MockStream::with_response(
+                format!(
+                    "OK pong uid=0 v{}\n",
+                    polaris_helper_proto::proto_version::CURRENT
+                )
+                .into_bytes(),
+            )])),
+        };
+        let status = m.compute_status_with_client(&HelperClient::new(
+            Box::new(connector),
+            Platform::Mac,
+            "TOK",
+        ));
+        assert!(status.ready, "同 proto 旧 helper 仍可用");
+        assert!(status.upgradeable, "缺 build identity 必须识别为旧 helper");
+        assert!(!status.needs_repair, "升级态不是损坏态");
+        assert_eq!(status.build_id, None);
+    }
+
+    #[test]
+    fn status_same_proto_with_different_build_identity_is_upgradeable() {
+        let paths = InstallPaths::mac();
+        let mut sysops = MockSysOps::default();
+        sysops.exists_paths.insert(paths.binary.clone());
+        sysops
+            .exists_paths
+            .insert(paths.descriptor.expect("mac 有描述符文件"));
+        let (m, _dir) = manager_with_token(Platform::Mac, sysops);
+        let connector = MockConnector {
+            streams: Arc::new(Mutex::new(vec![MockStream::with_response(
+                format!(
+                    "OK pong uid=0 v{} build=older-package\n",
+                    polaris_helper_proto::proto_version::CURRENT
+                )
+                .into_bytes(),
+            )])),
+        };
+        let status = m.compute_status_with_client(&HelperClient::new(
+            Box::new(connector),
+            Platform::Mac,
+            "TOK",
+        ));
+        assert!(status.ready);
+        assert!(status.upgradeable);
+        assert_eq!(status.build_id.as_deref(), Some("older-package"));
         assert!(!status.needs_repair);
     }
 
@@ -1740,13 +1863,7 @@ mod tests {
         let connector = MockConnector {
             streams: Arc::new(Mutex::new(vec![
                 MockStream::broken(std::io::ErrorKind::ConnectionAborted),
-                MockStream::with_response(
-                    format!(
-                        "OK pong uid=0 v{}\n",
-                        polaris_helper_proto::proto_version::CURRENT
-                    )
-                    .into_bytes(),
-                ),
+                MockStream::with_response(current_pong_wire()),
             ])),
         };
         let client = HelperClient::new(Box::new(connector), Platform::Win, "TOK");
@@ -1831,13 +1948,7 @@ mod tests {
         let connector = MockConnector {
             streams: Arc::new(Mutex::new(vec![
                 MockStream::broken(std::io::ErrorKind::ConnectionAborted),
-                MockStream::with_response(
-                    format!(
-                        "OK pong uid=0 v{}\n",
-                        polaris_helper_proto::proto_version::CURRENT
-                    )
-                    .into_bytes(),
-                ),
+                MockStream::with_response(current_pong_wire()),
             ])),
         };
         let client = HelperClient::new(Box::new(connector), Platform::Win, "TOK");
@@ -2293,7 +2404,7 @@ mod tests {
             ),
             "缺 sdset 授 IU SERVICE_START（W20 恢复腿的硬前提）"
         );
-        // ② 失败恢复 + ③ 两道退出码守卫 + ④ 次序：sdset → failure → 首次 start（配置先于首启）。
+        // ② 失败恢复 + ③ 三道退出码守卫（sdset/failure/start）+ ④ 次序：配置先于首启。
         let sdset_at = script.find("sdset PolarisHelper").expect("缺 sdset");
         let failure_line = "& $sc failure PolarisHelper reset= 86400 actions= restart/5000/restart/5000/restart/5000 | Out-Null";
         let failure_at = script.find(failure_line).expect("缺 sc failure 自愈配置");
@@ -2306,9 +2417,64 @@ mod tests {
         );
         assert_eq!(
             script.matches("if ($LASTEXITCODE -ne 0)").count(),
-            2,
-            "sdset/failure 两步必须各带退出码守卫（EAP=Stop 拦不住外部程序非零退出）"
+            3,
+            "sdset/failure/start 三步必须各带退出码守卫（EAP=Stop 拦不住外部程序非零退出）"
         );
+    }
+
+    /// W24：覆盖升级不是“删旧 → 祈祷新服务能起”。旧 helper/token/SCM 快照必须先于第一处
+    /// 破坏性写入；只有新服务首启成功才删备份；catch 必须恢复两份文件和原服务运行态。
+    #[test]
+    fn win_helper_upgrade_is_transactional_and_keeps_recovery_copies_on_failure() {
+        let script = build_win_install_script(
+            &install_params(
+                PathBuf::from("/x"),
+                PathBuf::from(r"C:\app\polaris-helper.exe"),
+            ),
+            "WTOKEN",
+        );
+        let snapshot = script
+            .find("$oldService = Get-CimInstance")
+            .expect("缺旧 SCM 快照");
+        let backup_helper = script
+            .find("Copy-Item -LiteralPath $helperDst -Destination $helperBackup")
+            .expect("缺旧 helper 备份");
+        let backup_token = script
+            .find("Copy-Item -LiteralPath $tokenFile -Destination $tokenBackup")
+            .expect("缺旧 token 备份");
+        let transaction = script.find("try {\n").expect("缺升级事务边界");
+        let destructive = script
+            .find("Remove-Item -Force -Path $tokenFile")
+            .expect("缺 token 替换腿");
+        let first_start = script
+            .find("& $sc start PolarisHelper")
+            .expect("缺新服务首启");
+        let commit = first_start
+            + script[first_start..]
+                .find("Remove-Item -Force -Path $helperBackup,$tokenBackup")
+                .expect("缺成功 commit 清备份");
+        let rollback = script.find("} catch {\n").expect("缺失败回滚腿");
+
+        assert!(
+            snapshot < backup_helper
+                && backup_helper < backup_token
+                && backup_token < transaction
+                && transaction < destructive,
+            "SCM/helper/token 快照必须完整发生在首个破坏性写入之前"
+        );
+        assert!(
+            first_start < commit && commit < rollback,
+            "首启成功后才能 commit"
+        );
+        for needle in [
+            "Copy-Item -LiteralPath $helperBackup -Destination $helperDst -Force",
+            "Copy-Item -LiteralPath $tokenBackup -Destination $tokenFile -Force",
+            "New-Service -Name PolarisHelper -BinaryPathName $oldBinPath",
+            "if ($oldWasRunning) { & $sc start PolarisHelper",
+            "失败时保留 .rollback",
+        ] {
+            assert!(script[rollback..].contains(needle), "回滚腿缺：{needle}");
+        }
     }
 
     #[test]

@@ -294,7 +294,12 @@ export default function SettingsHelper() {
                 <Dot variant="err" style={{ background: 'hsl(var(--warn))' }} />
                 <b style={{ color: 'hsl(var(--warn))' }}>{t('helper.statusUpgradeable')}</b>
                 <Pill variant="warn" style={{ marginLeft: 'auto' }}>
-                  {t('helper.protocolVersionBelow', { version: status?.version ?? 2, required: 3 })}
+                  {status?.version != null && status.version < status.expectedProtocolVersion
+                    ? t('helper.protocolVersionBelow', {
+                        version: status.version,
+                        required: status.expectedProtocolVersion,
+                      })
+                    : t('helper.buildVersionMismatch')}
                 </Pill>
               </div>
               <div className="card-sub">{t('helper.upgradeDescCard')}</div>

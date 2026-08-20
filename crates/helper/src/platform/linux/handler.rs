@@ -125,8 +125,11 @@ pub fn handle<P, S, D, SD>(
     // 3. ping / version 在鉴权前（任何持 socket 者可探活，:345-352）。
     match command.as_str() {
         cmd::PING => {
-            // OK pong uid=<n> v<ver>（Go: fmt.Fprintf(conn, "OK pong uid=%d v%s\n", os.Getuid(), protoVersion)）。
-            let _ = conn.write_line(&format!("OK pong uid={} v{}", cred.uid, PROTO_VERSION));
+            // shared Pong 统一追加 build identity；旧 app 会忽略该字段，新 app 可识别同 protocol 旧 helper。
+            let response = Response::Ok(ResponseKind::Pong(polaris_helper_proto::Pong::current(
+                i64::from(cred.uid),
+            )));
+            let _ = conn.write_line(&response.to_wire_line());
             return;
         }
         cmd::VERSION => {
@@ -614,7 +617,10 @@ mod tests {
         handle(&state, &deps, &mut conn);
         assert_eq!(
             conn.writes(),
-            vec![format!("OK pong uid=9999 v{PROTO_VERSION}")]
+            vec![format!(
+                "OK pong uid=9999 v{PROTO_VERSION} build={}",
+                polaris_helper_proto::build_identity::current()
+            )]
         );
     }
 
@@ -1353,10 +1359,14 @@ mod tests {
 
     #[test]
     fn wire_forms_match_go_source() {
-        // 锁住关键 wire 响应形态（改名/改格式 = 与已部署客户端断协议）。
+        // v1 是 wire 断代真值；build 字段是尾部向后兼容扩展（旧 app 忽略）。
+        assert_eq!(PROTO_VERSION, 1);
         assert_eq!(
-            format!("OK pong uid={} v{}", 0, PROTO_VERSION),
-            "OK pong uid=0 v1"
+            Response::Ok(ResponseKind::Pong(polaris_helper_proto::Pong::current(0))).to_wire_line(),
+            format!(
+                "OK pong uid=0 v1 build={}",
+                polaris_helper_proto::build_identity::current()
+            )
         );
         assert_eq!(format!("OK {PROTO_VERSION}"), "OK 1");
         assert_eq!("OK stopped", "OK stopped");

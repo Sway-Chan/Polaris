@@ -15,7 +15,7 @@
 ///   freeport/route-add/route-del（注意 win 的 route-add/del 在 mac 后追加，proto v2）。
 /// - linux `helper-linux/helper.go:345-482`：ping/version/start/stop/status/cleanup/freeport/install-core。
 pub mod common {
-    /// `OK pong uid=<n> v<ver>`（mac/win/linux，握手探活 + 取协议版本）。
+    /// `OK pong uid=<n> v<ver> [build=<id>]`（三平台握手；build 为 Polaris 向后兼容扩展）。
     pub const PING: &str = "ping";
     /// `OK <ver>`（mac/win/linux，纯协议版本查询）。
     pub const VERSION: &str = "version";

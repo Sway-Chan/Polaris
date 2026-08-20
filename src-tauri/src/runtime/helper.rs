@@ -67,6 +67,13 @@ pub struct HelperStatusSnapshot {
     /// 协议版本（ping/version 返回），未就绪为缺省。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<u32>,
+    /// 当前 app 期望的 shared protocol 版本；前端不得再硬编码版本数字。
+    pub expected_protocol_version: u32,
+    /// 已安装 helper 自报的构建身份；旧 helper 缺省（这本身就是可升级证据）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub helper_build_id: Option<String>,
+    /// 当前 app 随包 helper 的期望构建身份，供诊断与 app/helper 同包对账。
+    pub expected_build_id: String,
     /// daemon 是否被 launchd/systemd/SCM 加载；本层不主动探（避免每次 status spawn 进程）→ 恒 None（真机门）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub loaded: Option<bool>,
@@ -102,6 +109,9 @@ fn snapshot_from(status: &HelperStatus, supported: bool) -> HelperStatusSnapshot
         ready: status.ready,
         upgradeable: status.upgradeable,
         version: status.version,
+        expected_protocol_version: polaris_helper_proto::proto_version::CURRENT,
+        helper_build_id: status.build_id.clone(),
+        expected_build_id: polaris_helper_proto::build_identity::current().to_owned(),
         loaded: None,
         needs_repair: status.needs_repair,
         background_disabled: false,
@@ -914,6 +924,8 @@ mod tests {
             "installed",
             "ready",
             "upgradeable",
+            "expectedProtocolVersion",
+            "expectedBuildId",
             "needsRepair",
             "backgroundDisabled",
             "pathMismatch",
