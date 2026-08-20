@@ -1024,8 +1024,10 @@ mod tests {
         assert_eq!(spec.bytes[3], 0x00);
         // 解回文本验证内容。
         let units: Vec<u16> = spec.bytes[2..]
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
             .collect();
         let text = String::from_utf16(&units).unwrap();
         assert!(
@@ -1046,8 +1048,10 @@ mod tests {
             &InstallTexts::default(),
         );
         let units: Vec<u16> = spec.bytes[2..]
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
             .collect();
         let text = String::from_utf16(&units).unwrap();
         // `/UPDATE` 不可省：Tauri NSIS 模板的 `$UpdateMode` 靠它，缺了会让应用内更新静默降级成
@@ -1216,8 +1220,10 @@ mod tests {
         let bytes = utf16le_with_bom("中文A");
         assert_eq!(&bytes[..2], &[0xFF, 0xFE]);
         let units: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
             .collect();
         assert_eq!(String::from_utf16(&units).unwrap(), "中文A");
     }

@@ -745,7 +745,7 @@ mod tests {
         let cs_len = u16::from_be_bytes([*buf.get(i)?, *buf.get(i + 1)?]) as usize;
         i += 2;
         let mut ciphers = Vec::new();
-        for c in buf.get(i..i + cs_len)?.chunks_exact(2) {
+        for c in buf.get(i..i + cs_len)?.as_chunks::<2>().0 {
             ciphers.push(u16::from_be_bytes([c[0], c[1]]));
         }
         i += cs_len;
