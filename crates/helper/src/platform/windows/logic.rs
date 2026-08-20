@@ -518,6 +518,30 @@ mod tests {
         assert!(body.contains("STOP_REQUESTED"), "窗口没盖住 accept 循环");
     }
 
+    /// 响应必须在断开命名管道前刷到 client。
+    ///
+    /// Windows 的同步 `WriteFile` 只把响应放进内核缓冲；紧跟 `DisconnectNamedPipe` 会丢弃 client
+    /// 尚未读走的字节，表现为同包 app/helper 仍稳定报 ERROR_PIPE_NOT_CONNECTED(233)。服务模块仅在
+    /// Windows 编译，这里用源码契约让 Linux 本地门也能守住 `write → flush → disconnect` 次序。
+    #[test]
+    fn response_is_flushed_before_pipe_disconnect() {
+        let src = include_str!("service/win.rs");
+        let write = src
+            .find("let ok = WriteFile(")
+            .expect("响应 WriteFile 消失");
+        let flush = src[write..]
+            .find("FlushFileBuffers(h)")
+            .map(|offset| write + offset)
+            .expect("响应未 FlushFileBuffers，disconnect 会丢未读字节");
+        let disconnect = src[flush..]
+            .find("DisconnectNamedPipe(h)")
+            .map(|offset| flush + offset)
+            .expect("命名管道清理出口消失");
+
+        assert!(write < flush, "必须先写响应再 flush");
+        assert!(flush < disconnect, "必须先 flush 再断开管道");
+    }
+
     /// SCM STOP 必须能**打断**阻塞中的 `ConnectNamedPipe`，而不只是置个标志。
     ///
     /// 与 [`the_accept_loop_only_claims_the_name_once`] 同款：`service/win.rs` 整模块

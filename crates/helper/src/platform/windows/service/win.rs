@@ -28,8 +28,8 @@ use windows_sys::Win32::Foundation::{CloseHandle, FALSE, HANDLE, INVALID_HANDLE_
 use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
 use windows_sys::Win32::Security::{SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR};
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
+    CreateFileW, FlushFileBuffers, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
 };
 use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
 use windows_sys::Win32::System::Pipes::{
@@ -408,15 +408,22 @@ impl Drop for ReadTimeoutGuard {
 /// 写响应到管道。
 fn write_response(h: HANDLE, data: &[u8]) {
     let mut written: u32 = 0;
-    // SAFETY: WriteFile 写响应。lpOverlapped=NULL → 同步阻塞。
+    // SAFETY: WriteFile 写响应。lpOverlapped=NULL → 同步阻塞。命名管道服务端在
+    // DisconnectNamedPipe 前必须 FlushFileBuffers：同步 WriteFile 只保证字节进内核缓冲，若随即
+    // disconnect，尚未被 client 读走的响应会被丢弃，client 稳定收到 ERROR_PIPE_NOT_CONNECTED(233)。
+    // FlushFileBuffers 会等 client 取走这条很短的单行响应；生产 client 写完即同步读，协议本就要求
+    // 一请求一连接。真机 A/B：同包 app/helper、token/pipe 均一致时，缺 flush 的 ping 仍 0 bytes/233。
     unsafe {
-        let _ = WriteFile(
+        let ok = WriteFile(
             h,
             data.as_ptr(),
             data.len() as u32,
             &mut written,
             std::ptr::null_mut(),
         );
+        if ok != 0 && written == data.len() as u32 {
+            let _ = FlushFileBuffers(h);
+        }
     }
 }
 
