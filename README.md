@@ -60,7 +60,7 @@ SmartScreen 提示时选择「更多信息」→「仍要运行」。
 
 ## 构建
 
-需要 Rust stable、Node 20+、[Tauri CLI 2](https://v2.tauri.app/)。
+需要 Rust stable、Node.js 24+（CI 当前使用 Node 26）、[Tauri CLI 2](https://v2.tauri.app/)。
 
 ```bash
 node scripts/fetch-core.mjs        # 拉 sing-box 内核（SHA256 钉扎）
@@ -116,7 +116,27 @@ resources/   sing-box 内核 + libcronet（构建期拉取，不入库）
 各组件版权归其作者。以子进程 / 二进制形式集成的组件见 `NOTICE`；链进产物的源码级依赖
 （Tauri / React / 数百个 Rust crate）逐包登记在 `THIRD-PARTY-LICENSES.md`。
 
+## 适用范围与免责声明
+
+Polaris 是通用网络代理客户端与诊断工具，不提供、销售或维护代理节点、订阅及网络服务。请仅在遵守
+所在地法律法规、服务条款与所在网络管理制度，并已取得必要授权的场景中使用；不得用于未经授权的访问、
+侵害他人权益或其它违法滥用。使用者应自行评估配置、节点和第三方资源的可信度，并对使用行为及其后果负责。
+
+本软件按“现状”提供，不承诺网络可用性、匿名性、安全性、特定服务可访问性或数据完整性。TUN、系统代理、
+DNS 与路由修改可能暂时影响网络连接；进行重要操作前请备份配置。除适用法律另有强制规定外，维护者与贡献者
+不对因使用或无法使用本软件产生的直接或间接损失承担责任。本说明不构成法律或其它专业意见。
+
 ## 许可
 
 MIT（见 `LICENSE`）。sing-box（GPLv3）以 sidecar 子进程形式集成（mere aggregation），
 不影响本项目许可；第三方组件见 `NOTICE`。
+
+## Star 趋势
+
+<a href="https://www.star-history.com/?repos=Sway-Chan%2FPolaris&amp;type=date&amp;legend=top-left">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Sway-Chan/Polaris&amp;type=date&amp;theme=dark&amp;legend=top-left">
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Sway-Chan/Polaris&amp;type=date&amp;legend=top-left">
+    <img alt="Polaris Star History Chart" src="https://api.star-history.com/chart?repos=Sway-Chan/Polaris&amp;type=date&amp;legend=top-left">
+  </picture>
+</a>

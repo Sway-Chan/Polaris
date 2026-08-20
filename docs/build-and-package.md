@@ -12,7 +12,7 @@ README 只留「怎么装、怎么用」。
 | 工具 | 版本 | 用途 |
 |---|---|---|
 | Rust | stable（edition 2021） | 后端 + 17 crate |
-| Node.js | 20+ | 前端构建 + fetch 脚本 |
+| Node.js | 24+（CI 钉 26） | 前端构建 + fetch 脚本 |
 | pnpm | 9+ | 前端包管理（`ui/`） |
 | [Tauri CLI 2](https://v2.tauri.app/) | 2.x | `cargo tauri build` 打包（随 `ui/` devDep 装） |
 

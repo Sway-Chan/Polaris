@@ -259,7 +259,7 @@ jobs:
         include: ${{ fromJSON(needs.setup.outputs.include) }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 产物标识：tag 用 tag 名（ref_name，如 v0.1.0），否则用 run_id（数字，无 / 等非法字符）。
       # GitHub artifact 名 / 文件名禁含 /，分支名 feature/x 会破坏路径，故非 tag 一律回退 run_id。
@@ -278,7 +278,7 @@ jobs:
       # ⇒ **测试环境与产物环境不是同一个**，26 上绿不保证 20 上构建出的产物一致。
       # 且 20 正是 GitHub 正在下线的那一版（Node 20 已弃用，见 runner 的 deprecation 警告）。
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '26'
 
@@ -918,11 +918,11 @@ jobs:
       # Windows 三件交付物一律从 dist-win/ 取（两个安装器已带 win / offline 标记且互不覆盖，
       # 便携 zip 自 2026-08-17 起也打进该目录，好让本 job 的 assets 门量得到它的体积）；
       # **不再上传 nsis/ 下的裸 `*-setup.exe`** —— 它是第二次 build 的残留，与 offline 版字节相同。
-      # 副作用（无害，如实记）：windows 腿命中的文件从此全在 dist-win/ 下，upload-artifact v4 按
+      # 副作用（无害，如实记）：windows 腿命中的文件从此全在 dist-win/ 下，upload-artifact v7 按
       # **实际命中文件的最近公共祖先**建树 ⇒ 该 artifact 由「保留 dist-win/ 一层」变成平铺。
       # 下游只用 `find -type f` + basename，不假设层级（见 release job 的 Download 注释）。
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: polaris-${{ matrix.label }}-${{ env.BUILD_LABEL }}
           path: |
@@ -980,17 +980,17 @@ jobs:
       contents: write
     steps:
       # 只为拿 scripts/verify-packaging.mjs（断言脚本），不构建。
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 四个 artifact 合并落进 dist-release/。
-      # upload-artifact v4 的基准是**实际命中文件**的最近公共祖先（不是所列 path 的公共祖先，
+      # upload-artifact v7 的基准是**实际命中文件**的最近公共祖先（不是所列 path 的公共祖先，
       # 也不是仓库根）：mac 两条腿各自只命中一个 dmg ⇒ 那个 artifact 里是**平铺的裸 dmg**；
       # linux 命中 deb + AppImage 两个不同目录下的文件 ⇒ 保留 target/... 的嵌套目录；
       # windows **自 2026-08-17 起也是平铺**（便携 zip 挪进 dist-win/ 后，该腿命中的文件全在
       # 同一个目录下 ⇒ 公共祖先就是它，见 package job 上传步的注释）。
       # 故 dist-release/ 下平铺与嵌套并存——下面一律用 `find -type f` 取文件，不假设层级。
       - name: Download all package artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist-release
           pattern: polaris-*
@@ -1031,7 +1031,7 @@ jobs:
           sums="$(mktemp)"
           find . -type f ! -name SHA256SUMS | sort | while IFS= read -r f; do
             # 条目名取 **basename**：release 里的资产是平铺的，而 dist-release 下平铺与嵌套并存
-            # （upload-artifact v4 按实际命中文件的最近公共祖先建树）。判据侧同口径。
+            # （upload-artifact v7 按实际命中文件的最近公共祖先建树）。判据侧同口径。
             printf '%s  %s\n' "$(sha256sum "$f" | cut -d' ' -f1)" "$(basename "$f")"
           done > "$sums"
           [ -s "$sums" ] || { echo "::error::dist-release/ 下没有可摘要的文件 —— 生成步骤等于没跑"; exit 1; }

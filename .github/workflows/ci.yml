@@ -99,7 +99,14 @@ jobs:
                   || fromJSON('["ubuntu-22.04","windows-2022","macos-14"]')) }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+
+      # 仓库脚本的最低运行时是 Node 24；CI 与 UI/Package 的实际构建口径统一钉在 Node 26。
+      # 显式安装后，三平台不再依赖 runner 镜像里随时可能漂移的预装 node。
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '26'
 
       # ── 核 ↔ cronet 版本耦合（2026-08-10 新增）──
       # 只 curl 一次 go.mod（~10KB）比对 manifest 的 cronetModuleVersion，不下载任何库。
@@ -156,10 +163,7 @@ jobs:
       # 版本为什么是 35.1、为什么升版本零行为差、sha256 从哪来、被替掉的 arduino/setup-protoc@v3
       # 两个外部失效点 —— 全部在脚本头注，改版本先读它。sha 校验走 node createHash、解压走
       # lib/extract-zip.mjs（三平台 CI 已绿），与 shell 是 bash 还是 pwsh 彻底解耦。
-      # （node 依赖：runner 镜像三平台均预装 nodejs 且在 PATH（runner-images 软件清单）——本步
-      #   是 ci.yml 的 win/mac 腿**首次**跑 node（此前 ci.yml 只有 ubuntu 腿的 fetch-cronet
-      #   --check-only）。ci 侧 node 版本随镜像浮动、package.yml 侧有 setup-node 钉 26；脚本
-      #   只用 ≥14 稳定 API，失败模式是 command not found 当场红，不会静默。）
+      # （node 依赖：前置 Setup Node 已在三平台统一钉 26；不再借 runner 镜像的浮动预装版本。）
       - name: Install protoc (pinned URL + sha256)
         run: node scripts/fetch-protoc.mjs
 

@@ -34,6 +34,7 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 
 const WORKFLOWS = ['ci.yml', 'package.yml'] as const;
+const ALL_WORKFLOWS = ['ci.yml', 'ui.yml', 'package.yml'] as const;
 
 /** protoc 官方 release 覆盖的平台数（`process.platform-process.arch` → 资产名）。 */
 const PROTOC_PLATFORM_ROWS = 4;
@@ -59,6 +60,34 @@ describe('CI 工具链钉扎守门', () => {
   >;
   // CI-4 后 protoc 常量的唯一真值点；断言读的是源码文本（与其它 workflow 断言同款手法）。
   const fetchProtoc = readFileSync(join(REPO_ROOT, 'scripts/fetch-protoc.mjs'), 'utf8');
+
+  it('Node 最低基线、实际构建版本与 Action 运行时同属 24+ 口径', () => {
+    const all = ALL_WORKFLOWS.map(read).join('\n');
+    const nodeVersions = [...all.matchAll(/node-version:\s*['"]?(\d+)/g)]
+      .map((m) => m[1])
+      .sort();
+    expect(nodeVersions, 'CI / UI / Package 三条腿都必须显式钉 Node 26').toEqual([
+      '26',
+      '26',
+      '26',
+    ]);
+    expect(readFileSync(join(REPO_ROOT, '.nvmrc'), 'utf8').trim()).toBe('26');
+    const packageJson = JSON.parse(readFileSync(join(REPO_ROOT, 'ui/package.json'), 'utf8')) as {
+      engines?: { node?: string };
+    };
+    expect(packageJson.engines?.node).toBe('>=24');
+
+    expect(all.match(/actions\/checkout@v7/g) ?? []).toHaveLength(4);
+    expect(all.match(/actions\/setup-node@v7/g) ?? []).toHaveLength(3);
+    expect(all).not.toMatch(/actions\/(?:checkout|setup-node)@v[1-6]\b/);
+    expect(read('package.yml')).toContain('actions/upload-artifact@v7');
+    expect(read('package.yml')).toContain('actions/download-artifact@v8');
+
+    const readme = readFileSync(join(REPO_ROOT, 'README.md'), 'utf8');
+    const buildDoc = readFileSync(join(REPO_ROOT, 'docs/build-and-package.md'), 'utf8');
+    expect(readme).toContain('Node.js 24+');
+    expect(buildDoc).toContain('| Node.js | 24+（CI 钉 26） |');
+  });
 
   it.each(WORKFLOWS)('%s 通过 scripts/fetch-protoc.mjs 装 protoc', (workflow) => {
     expect(

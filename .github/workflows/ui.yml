@@ -48,7 +48,7 @@ jobs:
         working-directory: ui
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # pnpm：不再经 pnpm/action-setup@v4（2026-08-17）。被替掉的 action 做的就是「按 version
       # 装一份 pnpm 并加进 PATH」，`npm install -g` 等价 —— 少一次 action tarball 拉取
@@ -77,7 +77,7 @@ jobs:
 
       # 与本地开发机同一 major（node 26）：这道门的价值在于「与本地 gate 口径一致」，
       # 不在于多版本覆盖；版本漂移只会制造本地绿/CI 红的伪信号。
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 26
           cache: pnpm

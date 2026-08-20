@@ -4,6 +4,9 @@
   "version": "1.0.0",
   "type": "module",
   "description": "Polaris 前端（React + Zustand + Vite + Tailwind，Conduit/Aurora 设计系统）",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "dev": "vite",
     "check:ipc": "node scripts/check-ipc-args.mjs",
