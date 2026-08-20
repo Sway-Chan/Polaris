@@ -726,6 +726,8 @@
    `app-region:drag` 仅 Windows WebView2 生效（wry-0.55.1/src/webview2/mod.rs:601 开了非客户区支持）。 */
 .side-chrome{ height:36px; flex:none; display:flex; align-items:center; padding:0 5px; app-region:drag; }
 :root:not([data-os="mac"]) .side-chrome{ height:12px; }
+/* Windows 主区与侧栏共用 40px 专用标题带；窗口按钮浮在其上方，页面交互从带下方开始。 */
+:root[data-os="win"] .side-chrome{ height:40px; }
 
 .brand{ display:flex; align-items:center; gap:10px; padding:4px 6px; margin-bottom:2px; border-radius:var(--r-sm);
   cursor:pointer; transition:background .14s; }
@@ -788,6 +790,7 @@
    约定、Tauri 不认，从未生效（详见 prototype.css 同规注释与 ~/docs/polaris/design/polaris-window-drag.md）。 */
 .main-chrome{ height:0; flex:none; app-region:drag; }
 :root[data-os="mac"] .main-chrome{ height:36px; }
+:root[data-os="win"] .main-chrome{ height:40px; }
 .main-scroll{ flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; display:flex; flex-direction:column; }
 
 /* ── status bar（原型 L556-568；窄宽 sb-fold-* 容器查询在 index.css）── */
