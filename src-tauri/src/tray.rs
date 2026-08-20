@@ -20,9 +20,9 @@
 //! 定位+显示+聚焦（再点=隐藏）→
 //! 点窗外/切他 app 收起：Rust `Focused(false)` + DOM `window.blur`→`tray_hide` **双路** dismiss（后者
 //! 经 `initialization_script` 注入，兜 mac 上次级窗 Focused 递送不可靠，见 [`TRAY_BLUR_DISMISS_JS`]）。
-//! 默认在隐藏超过 [`TRAY_IDLE_RECLAIM_SECS`] 后自动销毁 WebView；用户开启 `keepTrayMenuWarm` 后，
-//! 日常隐藏只收起、不再自动回收，换取后续点击热开。显式/自动进入主窗口轻量模式仍会销毁它，保证
-//! 「轻量模式」确实释放界面内存。
+//! `keepTrayMenuWarm` 默认开启：日常隐藏只收起、不自动回收，换取后续点击热开；用户关闭后，隐藏超过
+//! [`TRAY_IDLE_RECLAIM_SECS`] 才销毁 WebView。此偏好与主窗口 `autoLightweightMode` 完全独立：主窗进入
+//! 轻量态只释放主 WebView，不替用户改变托盘 renderer 的驻留选择。
 //!
 //! # 与主进程的契约（专用 command 均薄封装，供浮层 React 端 invoke）
 //!
@@ -421,11 +421,10 @@ const TRAY_WIDTH: f64 = 268.0;
 /// 若紧接着的 Click 事件在此窗口内到达，视为「点击图标关闭」，不再重开（否则闪一下又弹回）。
 const REOPEN_DEBOUNCE_MS: u128 = 300;
 
-/// 托盘浮层隐藏后的默认自动回收时限。`keepTrayMenuWarm=true` 时日常隐藏跳过该回收；主窗轻量模式
-/// 仍可显式销毁浮层，二者的用户承诺不会互相覆盖。
+/// 用户关闭 `keepTrayMenuWarm` 后，托盘浮层隐藏至此时限才自动回收。
 const TRAY_IDLE_RECLAIM_SECS: u64 = 120;
 
-/// 应用级偏好键：false/缺失 = 冷态回收（默认）；true = 日常隐藏后保持 WebView warm。
+/// 应用级偏好键：true/缺失 = 日常隐藏后保持 WebView warm（默认）；false = 120s 后冷态回收。
 const KEEP_TRAY_MENU_WARM_KEY: &str = "keepTrayMenuWarm";
 
 /// 冷建后 renderer 最晚应回报 ready 的时间。超时不把空壳漏给用户，而是回收这次坏实例；下一次点击
@@ -509,7 +508,6 @@ struct OverlayOpenProbe {
 
 /// 浮层运行期状态（app-managed）：记录最近一次隐藏时刻（供 [`toggle_overlay`] 去抖）+ 最近一次
 /// 托盘图标屏幕矩形（供 [`reposition`] 对齐图标；[`tray_resize`] 改高后重定位也复用它）。
-#[derive(Default)]
 pub struct TrayOverlay {
     last_hidden: Mutex<Option<Instant>>,
     anchor: Mutex<Option<PhysicalRect>>,
@@ -531,6 +529,23 @@ pub struct TrayOverlay {
     /// 见 [`install_click_monitor`] / [`remove_click_monitor`]。
     #[cfg(target_os = "macos")]
     click_monitor: Mutex<Option<usize>>,
+}
+
+impl Default for TrayOverlay {
+    fn default() -> Self {
+        Self {
+            last_hidden: Mutex::default(),
+            anchor: Mutex::default(),
+            lifecycle: Mutex::default(),
+            open_probe: Mutex::default(),
+            pending_screen: Mutex::default(),
+            reclaim_generation: AtomicU64::default(),
+            // 与 store 的缺省值同口径；启动同步尚未执行时也不能短暂排下一条冷态回收任务。
+            keep_warm: AtomicBool::new(true),
+            #[cfg(target_os = "macos")]
+            click_monitor: Mutex::default(),
+        }
+    }
 }
 
 /// 托盘图标的屏幕物理矩形（左上角 + 尺寸）。`TrayIconEvent::Click` 的 `rect` 原样存这里。
@@ -906,10 +921,10 @@ fn invalidate_overlay_reclaim(app: &AppHandle) -> u64 {
         .unwrap_or(0)
 }
 
-/// 当前托盘浮层是否按用户偏好保持 warm。状态尚未 manage 时安全回落默认 false。
+/// 当前托盘浮层是否按用户偏好保持 warm。状态尚未 manage 时回落出厂默认 true。
 fn overlay_keeps_warm(app: &AppHandle) -> bool {
     app.try_state::<TrayOverlay>()
-        .is_some_and(|state| state.keep_warm.load(Ordering::Relaxed))
+        .is_none_or(|state| state.keep_warm.load(Ordering::Relaxed))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -954,11 +969,11 @@ pub(crate) fn reconcile_overlay_retention(app: &AppHandle) {
                 .with_current(|cfg| {
                     cfg.get(KEEP_TRAY_MENU_WARM_KEY)
                         .and_then(Value::as_bool)
-                        .unwrap_or(false)
+                        .unwrap_or(true)
                 })
                 .ok()
         })
-        .unwrap_or(false);
+        .unwrap_or(true);
     let Some(state) = app.try_state::<TrayOverlay>() else {
         return;
     };
@@ -1055,8 +1070,8 @@ fn should_arm_last_overlay_exit_guard(window_count: usize, tray_present: bool) -
     window_count == 1 && tray_present
 }
 
-/// 立即销毁浮层（目前仅轻量转场用于提前回收）。它不是托盘回收的 gate；普通隐藏即使从不进入
-/// 轻量模式，也会由 [`schedule_overlay_reclaim`] 独立回收。
+/// 立即销毁浮层。仅 renderer-ready 超时与关闭 warm 后的隐藏超时调用；主窗口轻量转场不得调用，
+/// 否则 `keepTrayMenuWarm=true` 会被另一个无关开关静默覆盖。
 fn destroy_overlay(app: &AppHandle) -> bool {
     invalidate_overlay_reclaim(app);
     #[cfg(target_os = "macos")]
@@ -1656,7 +1671,7 @@ pub async fn tray_enter_lightweight(app: AppHandle) -> ApiResponse<()> {
 ///
 /// 顺序（以 destroy 成功为事务提交点）：
 ///  1. 置 `LightweightState`：万一销毁末窗触发 `ExitRequested`，`main.rs` 守卫据此**保核 + 阻退**（轻量恒不停核）。
-///  2. 收起并提前销毁浮层；它本身另有独立隐藏回收计时，这里只是轻量转场顺手立即释放。
+///  2. 只收起浮层；是否常驻完全由 `keepTrayMenuWarm` 决定，主窗口轻量态不得替它做主。
 ///  3. 先把主窗生命周期标成“销毁中”，再 `destroy()`（**force**：绕过 `CloseRequested` 的拦截）。这道
 ///     显式状态挡住 Tauri registry 过渡期仍返回的失效 WebView，stats/logs 不再跨线程探测旧句柄。
 ///  4. destroy 成功才提交 main 的 stats + logs 订阅清理；失败则回滚生命周期与 LightweightState，保留
@@ -1669,7 +1684,6 @@ pub(crate) fn enter_lightweight_transition(app: AppHandle) {
         .0
         .store(true, Ordering::SeqCst);
     hide_overlay(&app);
-    destroy_overlay(&app);
     if let Some(rt) = app.try_state::<crate::runtime::AppRuntime>() {
         rt.stats().mark_main_window_destroying();
     }
@@ -2002,16 +2016,19 @@ mod overlay_lifecycle_gate {
     }
 
     #[test]
-    fn hidden_reclaim_is_independent_from_main_lightweight_setting() {
+    fn tray_retention_is_independent_from_main_lightweight_setting() {
         assert!(
             TRAY_RS.contains("schedule_overlay_reclaim(app);")
                 && TRAY_RS.contains("TRAY_IDLE_RECLAIM_SECS"),
             "普通 hide 必须自行排程回收，不能只靠主窗轻量模式顺带清理"
         );
+        let body = crate::commands::guard_scan::top_level_fn_body(
+            TRAY_RS,
+            "pub(crate) fn enter_lightweight_transition(",
+        );
         assert!(
-            TRAY_RS.contains("destroy_overlay(&app);")
-                && TRAY_RS.contains("tray_enter_lightweight"),
-            "轻量转场应提前回收已存在的托盘浮层，但不得成为唯一回收入口"
+            body.contains("hide_overlay(&app);") && !body.contains("destroy_overlay(&app);"),
+            "主窗口轻量转场只能收起托盘；销毁与否必须继续服从独立 warm 偏好"
         );
     }
 

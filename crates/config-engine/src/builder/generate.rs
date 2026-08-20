@@ -1655,7 +1655,6 @@ mod tests {
         let wrappers: Vec<S> = old.servers.iter().map(S).collect();
         let deps = HotSwitchDeps {
             current_id_to_tag_map: Some(build_id_to_tag_map(&wrappers)),
-            platform: "linux".into(),
             ..Default::default()
         };
 

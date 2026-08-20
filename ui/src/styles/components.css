@@ -720,14 +720,14 @@
 :root[data-os="mac"] .side{ background:transparent; }
 /* win：半透明透出 Mica（需 alpha 才显色；原型未建模 win，此为真机语义补齐） */
 :root[data-os="win"] .side{ background:hsl(var(--surface-2)/0.20); }
-/* drag-region chrome header（mac 顶部净空 ~36px；Win/Linux 32px 紧凑拖动槽）。
+/* drag-region chrome header（mac 顶部净空 ~36px；Win/Linux 28px 紧凑拖动槽）。
    拖动来自 HTML `data-tauri-drag-region`（Sidebar.tsx / SettingsSidebar.tsx），不是 CSS——
    `-webkit-app-region` 是 Electron 约定，Tauri 栈零处理（已从本规则移除，它从未生效过）。
    `app-region:drag` 仅 Windows WebView2 生效（wry-0.55.1/src/webview2/mod.rs:601 开了非客户区支持）。 */
 .side-chrome{ height:36px; flex:none; display:flex; align-items:center; padding:0 5px; app-region:drag; }
 :root:not([data-os="mac"]) .side-chrome{ height:12px; }
-/* 26px 控制按钮置于 y=3..29，上下各留 3px；两列内容从带下方开始，按钮不覆盖页面交互。 */
-:root[data-os="win"] .side-chrome, :root[data-os="lin"] .side-chrome{ height:32px; }
+/* 26px 控制按钮保持原点击面积；拖动带本身收到 28px，浮动控制的投影可越过边缘但不参与文档流。 */
+:root[data-os="win"] .side-chrome, :root[data-os="lin"] .side-chrome{ height:28px; }
 
 .brand{ display:flex; align-items:center; gap:10px; padding:4px 6px; margin-bottom:2px; border-radius:var(--r-sm);
   cursor:pointer; transition:background .14s; }
@@ -790,7 +790,7 @@
    约定、Tauri 不认，从未生效（详见 prototype.css 同规注释与 ~/docs/polaris/design/polaris-window-drag.md）。 */
 .main-chrome{ height:0; flex:none; app-region:drag; }
 :root[data-os="mac"] .main-chrome{ height:36px; }
-:root[data-os="win"] .main-chrome, :root[data-os="lin"] .main-chrome{ height:32px; }
+:root[data-os="win"] .main-chrome, :root[data-os="lin"] .main-chrome{ height:28px; }
 .main-scroll{ flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; display:flex; flex-direction:column; }
 
 /* ── status bar（原型 L556-568；窄宽 sb-fold-* 容器查询在 index.css）── */

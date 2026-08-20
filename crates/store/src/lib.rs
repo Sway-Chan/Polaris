@@ -558,8 +558,8 @@ mod store_tests {
         assert_eq!(cfg["tunMtuMigrated"], serde_json::json!(true));
         assert_eq!(
             cfg["keepTrayMenuWarm"],
-            serde_json::json!(false),
-            "托盘 warm 必须默认关闭，避免新装静默多占 renderer 内存"
+            serde_json::json!(true),
+            "托盘 warm 默认开启，以约 30–40MB renderer 常驻换取无冷启滞后的托盘交互"
         );
     }
 

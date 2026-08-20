@@ -28,7 +28,7 @@ describe('W26 bounded core-log wiring', () => {
     }
   });
 
-  it('legacy log is surfaced and archived transactionally instead of auto-deleted', () => {
+  it('legacy log is surfaced and only archived/deleted after an explicit user action', () => {
     const commands = read('src-tauri/src/commands/misc.rs');
     const archive = commands.indexOf('fn archive_legacy_log(');
     const copy = commands.indexOf('std::fs::copy(source, &temporary)', archive);
@@ -44,8 +44,18 @@ describe('W26 bounded core-log wiring', () => {
     const screen = read('ui/src/components/screens/logs/LogsScreen.tsx');
     expect(screen).toContain('.legacyInfo()');
     expect(screen).toContain('.archiveLegacy()');
+    expect(screen).toContain('.deleteLegacy()');
+    expect(screen).toContain("confirmTwice(DELETE_LEGACY_KEY");
     expect(screen).toContain("t('logs.legacyBody'");
     expect(screen).toContain("t('logs.archiveLegacy')");
+    expect(screen).toContain("t('logs.deleteLegacy')");
     expect(commands).toContain('key::NATIVE_LOG_FILE_TYPE');
+
+    const deleteCommand = commands.slice(
+      commands.indexOf('pub fn logs_delete_legacy('),
+      commands.indexOf('fn delete_legacy_log('),
+    );
+    expect(deleteCommand).toContain('state.config().dir().join(LEGACY_SINGBOX_LOG)');
+    expect(deleteCommand).not.toMatch(/(?:path|source)\s*:\s*(?:String|PathBuf)/);
   });
 });

@@ -611,6 +611,11 @@ export const logsApi = {
     return invoke(IPC_CHANNELS.LOGS_ARCHIVE_LEGACY);
   },
 
+  /** 用户二次确认后删除固定配置目录中的旧日志；路径只在后端解析。 */
+  async deleteLegacy(): Promise<{ deleted: boolean; bytes: number }> {
+    return invoke(IPC_CHANNELS.LOGS_DELETE_LEGACY);
+  },
+
   /**
    * 读回核**此刻实际**在用的日志级别（管理 API `GetDefaultLogLevel`）。
    *

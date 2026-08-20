@@ -59,17 +59,17 @@ describe('守卫自检：扫到的确实是源码（防读空文件恒绿）', (
 });
 
 describe('托盘卡片随系统栏边缘贴合', () => {
-  it('四边共享 data-tray-edge 契约，近侧恒为 2px 且总外边距不变', () => {
+  it('四边共享 data-tray-edge 契约，Windows 常见的底/左右近侧为 0 且总外边距不变', () => {
     expect(OVERLAY_RAW).toMatch(
-      /:root\[data-tray-edge="bottom"\]\s+\.tray-menu\s*{[^}]*margin-top:\s*10px;[^}]*margin-bottom:\s*2px;/s,
+      /:root\[data-tray-edge="bottom"\]\s+\.tray-menu\s*{[^}]*margin-top:\s*12px;[^}]*margin-bottom:\s*0;/s,
     );
     expect(OVERLAY_RAW).toMatch(
-      /:root\[data-tray-edge="left"\]\s+\.tray-menu\s*{[^}]*margin-left:\s*2px;[^}]*margin-right:\s*20px;/s,
+      /:root\[data-tray-edge="left"\]\s+\.tray-menu\s*{[^}]*margin-left:\s*0;[^}]*margin-right:\s*22px;/s,
     );
     expect(OVERLAY_RAW).toMatch(
-      /:root\[data-tray-edge="right"\]\s+\.tray-menu\s*{[^}]*margin-left:\s*20px;[^}]*margin-right:\s*2px;/s,
+      /:root\[data-tray-edge="right"\]\s+\.tray-menu\s*{[^}]*margin-left:\s*22px;[^}]*margin-right:\s*0;/s,
     );
-    // 顶边沿用基础 2/10；底边改成 10/2，横向两组仍都是 22px，避免 tray_resize/固定窗宽抖动。
+    // 顶边沿用基础 2/10；底边改成 12/0，横向两组仍都是 22px，避免 tray_resize/固定窗宽抖动。
     expect(OVERLAY_RAW).toMatch(/\.tray-menu\s*{[^}]*margin:\s*2px 11px 10px;/s);
   });
 });

@@ -2101,3 +2101,39 @@ describe('规则资源表：列边界不得随「这一行有几颗按钮」漂�
     ).toBeGreaterThan(narrowOf(protoCss).bp);
   });
 });
+
+describe('浅色解锁状态点使用独立高饱和色，不把正文语义 token 一并抬亮', () => {
+  const indexCss = stripComments(read('./index.css'));
+  const values = {
+    ok: readVar(indexCss, '--unlock-dot-ok-light'),
+    partial: readVar(indexCss, '--unlock-dot-warn-light'),
+    blocked: readVar(indexCss, '--unlock-dot-err-light'),
+  };
+  const base = {
+    ok: readVar(indexCss, '--ok'),
+    partial: readVar(indexCss, '--warn'),
+    blocked: readVar(indexCss, '--err'),
+  };
+
+  it('三色对白底均过非文本 3:1，且比全局正文色更饱和、更明亮', () => {
+    for (const key of Object.keys(values) as (keyof typeof values)[]) {
+      const value = values[key];
+      const original = base[key];
+      expect(value, `${key} 专用色缺失`).toBeTruthy();
+      expect(original, `${key} 全局色缺失`).toBeTruthy();
+      expect(contrast(hslToRgb(value!), [255, 255, 255]), `${key} 色点对白底`).toBeGreaterThanOrEqual(3);
+      const [, saturation, lightness] = value!.split(/\s+/).map((x) => parseFloat(x));
+      const [, baseSaturation, baseLightness] = original!.split(/\s+/).map((x) => parseFloat(x));
+      expect(saturation, `${key} 饱和度没有提升`).toBeGreaterThan(baseSaturation);
+      expect(lightness, `${key} 明度没有提升`).toBeGreaterThan(baseLightness);
+    }
+  });
+
+  it('显式浅色与系统浅色都覆盖 ok/partial/blocked，深色不命中专用色', () => {
+    for (const status of ['ok', 'partial', 'blocked']) {
+      expect(indexCss).toMatch(new RegExp(`:root\\[data-theme="light"\\] \\.ub\\.${status} \\.dot`));
+      expect(indexCss).toMatch(new RegExp(`:root:not\\(\\[data-theme="dark"\\]\\) \\.ub\\.${status} \\.dot`));
+      expect(indexCss).not.toMatch(new RegExp(`data-theme="dark"[^{}]*\\.ub\\.${status}[^{}]*unlock-dot`));
+    }
+  });
+});

@@ -720,6 +720,43 @@ pub async fn logs_archive_legacy(
     })
 }
 
+/// 删除 W26 前遗留的无界 `singbox.log`。
+///
+/// 路径只由后端配置目录拼出，前端不能传任意文件路径；旧日志是用户资产，因此只在用户通过 UI
+/// 二次确认后显式调用，不参与启动期/升级期自动清理。
+#[tauri::command]
+pub fn logs_delete_legacy(state: State<'_, AppRuntime>) -> ApiResponse<Value> {
+    let source = state.config().dir().join(LEGACY_SINGBOX_LOG);
+    match delete_legacy_log(&source) {
+        Ok(Some(bytes)) => ApiResponse::ok(json!({
+            "deleted": true,
+            "bytes": bytes,
+        })),
+        Ok(None) => ApiResponse::ok(json!({
+            "deleted": false,
+            "bytes": 0,
+        })),
+        Err(e) => ApiResponse::err(e),
+    }
+}
+
+fn delete_legacy_log(source: &Path) -> Result<Option<u64>, String> {
+    let metadata = match std::fs::symlink_metadata(source) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("legacy log metadata: {e}")),
+    };
+    if !metadata.file_type().is_file() {
+        return Err("legacy log is not a regular file".to_string());
+    }
+    match std::fs::remove_file(source) {
+        Ok(()) => Ok(Some(metadata.len())),
+        // 用户可能在二次确认期间已从文件管理器删掉；目标状态已经达成，按幂等成功处理。
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("delete legacy log: {e}")),
+    }
+}
+
 fn archive_legacy_log(source: &Path, destination: &Path) -> Result<u64, String> {
     if source == destination {
         return Err("archive destination must differ from legacy log".to_string());
@@ -2237,6 +2274,23 @@ mod tests {
         std::fs::write(&source, b"keep me too").unwrap();
         assert!(archive_legacy_log(&source, &destination).is_err());
         assert_eq!(std::fs::read(&source).unwrap(), b"keep me too");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_delete_is_explicit_regular_file_only_and_idempotent() {
+        let dir = temp_log_dir("delete");
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join(LEGACY_SINGBOX_LOG);
+        std::fs::write(&source, b"obsolete evidence").unwrap();
+
+        assert_eq!(delete_legacy_log(&source).unwrap(), Some(17));
+        assert!(!source.exists());
+        assert_eq!(delete_legacy_log(&source).unwrap(), None);
+
+        std::fs::create_dir(&source).unwrap();
+        assert!(delete_legacy_log(&source).is_err());
+        assert!(source.is_dir(), "非普通文件不得被删除");
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -48,7 +48,7 @@ import {
 } from '@/domain/endpoint-routes';
 import { sortServersByLatency } from '@/domain/server-latency-sort';
 import { refreshSubscriptionWithToast } from '@/domain/subscription-refresh';
-import { useSubscriptionProgress } from '@/store/use-subscription-progress-store';
+import { useSubscriptionProgressStore } from '@/store/use-subscription-progress-store';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { NodeCard } from './NodeCard';
@@ -343,8 +343,10 @@ export function NodesScreen() {
       : undefined;
   // 原型 syncNodeToolbar：isSub = tab id 以 'sub-' 开头；本应用订阅 tab 的 id 就是订阅 id（非 manual/mesh）。
   const isSubTab = !!activeSub;
-  // 当前订阅的更新进度（hook 不可条件调用，故非订阅 tab 时以空串取，恒 null）。
-  const activeSubProgress = useSubscriptionProgress(activeSub?.id ?? '');
+  // 全量订阅进度只订阅一次：当前 tab 的信息栏和顶部全部订阅 tab 共用这一份会话态，失败因而不会只在
+  // 用户恰好打开的那条订阅上可见。done/unchanged 的清除、fetching 的重试覆盖仍由 store reducer 单点负责。
+  const subscriptionProgress = useSubscriptionProgressStore((s) => s.progress);
+  const activeSubProgress = activeSub ? (subscriptionProgress[activeSub.id] ?? null) : null;
 
   // 工具栏态。视图档（卡片/列表）是**持久偏好**，不是组件私有 state：ScreenRouter 切屏即卸载重挂，
   // 局部 state 会把用户选的列表视图悄悄改回卡片（见 use-node-view-store 头注）。
@@ -1365,6 +1367,11 @@ export function NodesScreen() {
               : g.isMesh
                 ? t('nodes.tab.mesh')
                 : g.name;
+            const progress = subscriptionProgress[g.id];
+            const failureDetail =
+              progress?.phase === 'failed'
+                ? progress.error?.trim() || t('nodes.subRefreshFail')
+                : null;
             return (
               <button
                 key={g.id}
@@ -1372,9 +1379,13 @@ export function NodesScreen() {
                 className={cn(activeTab === g.id && 'on')}
                 data-act="sub-tab"
                 data-v={g.id}
+                data-tip={failureDetail ?? undefined}
                 onClick={() => setActiveTab(g.id)}
               >
                 <span>{label}</span>
+                {failureDetail && (
+                  <span className="pill err sub-tab-failure">{t('nodes.subUpdateFailed')}</span>
+                )}
                 {g.servers.length > 0 && <span className="cnt">{g.servers.length}</span>}
               </button>
             );

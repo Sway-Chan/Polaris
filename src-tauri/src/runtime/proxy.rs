@@ -3539,9 +3539,11 @@ impl ProxyRuntime {
         // 出口自证纯静态（意图 vs 意图），本条只吃事实（内核记账 + 真跑一次 version）——
         // 因为「app 请求 bin=A / helper 实跑 bin=B」这类分叉，静态对账天然看不见（见方法文档血证）。
         self.attest_running_core_binary(pid, &binary).await;
-        // TUN 起来了 → 查一次「别人设的系统代理」并提示（只读不动手，见下方方法文档）。
-        // 放在**核已就绪之后**：起核失败/让位腿提示它毫无意义（那时该管的是失败本身）。
-        self.maybe_warn_system_proxy_residual(&user_config).await;
+        // TUN 起来了 → 后台查一次「别人设的系统代理」并提示（只读不动手，见下方方法文档）。
+        // 这只是 advisory、不是起核成立条件；Windows 真机首次 `reg query` 曾因系统冷态/安全软件扫描
+        // 阻塞约 12s，把它 await 在主链会让网卡与路由早已就绪却仍显示「连接中」。后台腿带世代 +
+        // running 守卫，停核/重连后不会补发陈旧提示。
+        self.spawn_system_proxy_residual_warning(user_config.proxy_mode_type, my_gen);
         // C5：核就绪后对齐 mesh 出口路由。契约 #37「绝不抢 sing-box 路由」的让位判定在 crate 内建
         // （仅 TS System + 承载全隧道出口才装单条 ifscope default，其余 None=让位）。**OS 路由操作已全链
         // 接线**（`HelperExitRouteOp`：mac/win 经 helper `route -ifscope`、Linux `ip rule/route` 表 7732）
@@ -3962,15 +3964,15 @@ impl ProxyRuntime {
     ///
     /// **为什么每会话只发一次**：这是 advisory 不是告警，且状态在一次会话内基本不变；每次起核
     /// （含崩溃自愈重启）都弹 = 噪音。`residual_warned` 门闩同 `stale_sweep_disabled` 范式。
-    async fn maybe_warn_system_proxy_residual(&self, user_config: &UserConfig) {
-        if !matches!(
-            user_config.proxy_mode_type,
-            polaris_config_engine::user_config::ProxyModeType::Tun
-        ) {
+    ///
+    /// `my_gen=Some(..)` 是起核后台腿：探测完成时须复核仍是同一代、核仍在跑，防止慢 `reg query` /
+    /// `networksetup` 在 stop 或下一轮 start 之后补发陈旧提示。`None` 只供不拉真核的决策单测使用。
+    async fn maybe_warn_system_proxy_residual(&self, mode: ProxyModeType, my_gen: Option<u64>) {
+        if !mode.is_tun() {
             return;
         }
-        if self.residual_warned.swap(true, Ordering::SeqCst) {
-            return; // 本会话已提示过
+        if self.residual_warned.load(Ordering::SeqCst) {
+            return; // 本会话已有一条有效探测消费过门闩
         }
         let clearer = Arc::clone(&self.proxy_clearer);
         // detect_foreign_proxy 是**同步**只读 API，但会 exec `networksetup`/`gsettings`/`reg`
@@ -3985,6 +3987,16 @@ impl ProxyRuntime {
                 })
         })
         .await;
+        if my_gen.is_some_and(|gen| self.gate.generation() != gen || !self.status().running) {
+            log::debug!("系统代理残留检测完成时起核世代已失效或核已停止 → 丢弃陈旧结果");
+            return;
+        }
+        // 到这里才消费「本会话已检查」门闩：若慢探测跨过 stop/restart 变成陈旧结果，不能让旧世代
+        // 抢先置位，导致新一代永远失去残留代理提示。正常每代只 spawn 一次；swap 仍兜住极端并发，
+        // 只有第一条有效结果可以 emit。
+        if self.residual_warned.swap(true, Ordering::SeqCst) {
+            return;
+        }
         match found {
             Ok(Some(proxy)) => {
                 log::info!("TUN 模式下检测到非 Polaris 设置的系统代理（{proxy}）→ 提示用户");
@@ -3996,6 +4008,24 @@ impl ProxyRuntime {
             Ok(None) => {}
             Err(e) => log::error!("系统代理残留检测 spawn_blocking join 失败: {e}"),
         }
+    }
+
+    /// 把 advisory 探测移出起核关键路径。Windows 真机冷态的两个 `reg query` 曾耗约 12s；
+    /// 连接正确性不依赖这份只读结果，故不能让它延迟 `proxy_start` 的成功回包。
+    fn spawn_system_proxy_residual_warning(self: &Arc<Self>, mode: ProxyModeType, my_gen: u64) {
+        if !mode.is_tun() {
+            return;
+        }
+        let me = Arc::clone(self);
+        tokio::spawn(async move {
+            let started = std::time::Instant::now();
+            me.maybe_warn_system_proxy_residual(mode, Some(my_gen))
+                .await;
+            log::info!(
+                "后台系统代理残留检测耗时={}ms（不阻塞起核）",
+                started.elapsed().as_millis()
+            );
+        });
     }
 
     /// 起核时刻建热切换基准快照（上游 在 generateSingBoxConfig / startInternal 内回填三个 `this.*`）。
@@ -5335,7 +5365,6 @@ impl ProxyRuntime {
             // 保守方向正确：false 时旧成员 tag 按 config 选中节点解析，最坏是精准断连漏关几条旧连接
             // （它们会自然结束），绝不影响 PUT 正确性。
             bootstrap_fallback_engaged: false,
-            platform: platform_tag().to_string(),
         };
         let plan = plan_hot_switch(&old_cfg, &new_cfg, &deps);
 
@@ -18535,7 +18564,7 @@ mod tests {
     // 注：**start_inner 内的调用点**（wait_ready 成功后）无法在本机验证——它须真核就绪，而本机
     // 硬禁起核。故此处覆盖 `maybe_warn_system_proxy_residual` 的**全部决策逻辑**（TUN 门控 / 每会话
     // 门闩 / detect→emit 路由），detect 侧的判定逻辑另在 `system-integration::detect_foreign_proxy`
-    // 单测 + 双变异验证。start_inner 的单行调用点靠代码审查背书（诚实披露，见报告）。
+    // 单测 + 双变异验证；另用源码不变式锁住 start_inner 只能 spawn、不得 await advisory。
     // ══════════════════════════════════════════════════════════════════════════════
 
     /// TUN + 检测到别人的系统代理 → 发一条 residual（payload=proxy 串）。
@@ -18547,7 +18576,8 @@ mod tests {
         });
         let (rt, dir, _f, residual) = test_runtime_recording_full(clearer);
         let cfg = tun_user_config();
-        rt.maybe_warn_system_proxy_residual(&cfg).await;
+        rt.maybe_warn_system_proxy_residual(cfg.proxy_mode_type, None)
+            .await;
         assert_eq!(
             residual.lock().unwrap().clone(),
             vec!["192.168.1.2:7890".to_string()],
@@ -18557,7 +18587,7 @@ mod tests {
     }
 
     /// 每会话只发一次（门闩）：连调两次仅一条事件。
-    /// 变异锁：删 `if self.residual_warned.swap(..) { return; }` → 两条 → 转红。
+    /// 变异锁：删有效探测后的 `residual_warned.swap(..)` 门闩 → 两条 → 转红。
     #[tokio::test]
     async fn residual_warned_only_once_per_session() {
         let clearer: Box<dyn SystemProxyClearer> = Box::new(ResidualClearer {
@@ -18565,9 +18595,34 @@ mod tests {
         });
         let (rt, dir, _f, residual) = test_runtime_recording_full(clearer);
         let cfg = tun_user_config();
-        rt.maybe_warn_system_proxy_residual(&cfg).await;
-        rt.maybe_warn_system_proxy_residual(&cfg).await;
+        rt.maybe_warn_system_proxy_residual(cfg.proxy_mode_type, None)
+            .await;
+        rt.maybe_warn_system_proxy_residual(cfg.proxy_mode_type, None)
+            .await;
         assert_eq!(residual.lock().unwrap().len(), 1, "门闩：每会话仅一次");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 旧起核世代的慢探测只丢结果，不得消费本会话门闩；否则随后的有效世代不会再提示。
+    #[tokio::test]
+    async fn stale_residual_probe_does_not_consume_session_latch() {
+        let clearer: Box<dyn SystemProxyClearer> = Box::new(ResidualClearer {
+            found: Some("10.0.0.1:1080".into()),
+        });
+        let (rt, dir, _f, residual) = test_runtime_recording_full(clearer);
+        let mode = tun_user_config().proxy_mode_type;
+        let stale_generation = rt.gate.generation().wrapping_add(1);
+
+        rt.maybe_warn_system_proxy_residual(mode, Some(stale_generation))
+            .await;
+        assert!(residual.lock().unwrap().is_empty(), "陈旧世代不得发提示");
+
+        rt.maybe_warn_system_proxy_residual(mode, None).await;
+        assert_eq!(
+            residual.lock().unwrap().as_slice(),
+            ["10.0.0.1:1080"],
+            "陈旧世代不得抢占本会话门闩"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -18581,7 +18636,8 @@ mod tests {
         let (rt, dir, _f, residual) = test_runtime_recording_full(clearer);
         let mut cfg = tun_user_config();
         cfg.proxy_mode_type = polaris_config_engine::user_config::ProxyModeType::SystemProxy;
-        rt.maybe_warn_system_proxy_residual(&cfg).await;
+        rt.maybe_warn_system_proxy_residual(cfg.proxy_mode_type, None)
+            .await;
         assert!(residual.lock().unwrap().is_empty(), "非 TUN 不提示");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -18591,7 +18647,7 @@ mod tests {
     async fn residual_none_when_no_foreign_proxy() {
         let clearer: Box<dyn SystemProxyClearer> = Box::new(ResidualClearer { found: None });
         let (rt, dir, _f, residual) = test_runtime_recording_full(clearer);
-        rt.maybe_warn_system_proxy_residual(&tun_user_config())
+        rt.maybe_warn_system_proxy_residual(tun_user_config().proxy_mode_type, None)
             .await;
         assert!(residual.lock().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
@@ -18606,6 +18662,23 @@ mod tests {
             "proxyModeType": "tun"
         }))
         .expect("最小 TUN 配置应可解析")
+    }
+
+    /// advisory 必须只 spawn，不能再次 await 回起核主链。行为测试无法在无真核环境量墙钟，
+    /// 因此用源码不变式锁住这条性能边界。
+    #[test]
+    fn system_proxy_residual_probe_never_blocks_start_inner() {
+        let body = method_body(include_str!("proxy.rs"), "    async fn start_inner(");
+        assert_eq!(
+            body.matches("self.spawn_system_proxy_residual_warning(")
+                .count(),
+            1,
+            "起核成功段必须恰好 spawn 一次残留探测"
+        );
+        assert!(
+            !body.contains("self.maybe_warn_system_proxy_residual("),
+            "残留提示只是 advisory，不得 await 回起核关键路径"
+        );
     }
 
     /// 最小 systemProxy UserConfig（供 A1 启用侧决策测试）。

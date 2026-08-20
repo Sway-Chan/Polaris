@@ -37,6 +37,7 @@ vi.mock('react-i18next', () => ({
 };
 
 const { useAppStore } = await import('@/store/app-store');
+const { useSubscriptionProgressStore } = await import('@/store/use-subscription-progress-store');
 
 /** 与 `app-store.loadConfig` 的 config→state 投影同形。 */
 const SEED = {
@@ -77,5 +78,23 @@ describe('节点屏首帧就落在选中节点所在的组', () => {
   it('首帧就带订阅信息栏（订阅组独有），不是挂载后才补上', () => {
     // `.nd-subinfo` 只在 activeSub 存在时渲染 ⇒ 它在首帧出现，等价于「首帧已在订阅组上」。
     expect(firstFrame()).toContain('nd-subinfo');
+  });
+
+  it('任一订阅失败后，对应 tab 持续显示失败标识并携带完整错误 tooltip', () => {
+    const progress = {
+      sub1: {
+        subscriptionId: 'sub1',
+        phase: 'failed' as const,
+        error: 'TLS handshake timeout',
+      },
+    };
+    useSubscriptionProgressStore.setState({ progress });
+    // Zustand 的 SSR 快照与运行态分离；首帧门两边都播种，避免只改 setState 产生假绿。
+    Object.assign(useSubscriptionProgressStore.getInitialState(), { progress });
+
+    const html = firstFrame();
+    expect(html).toContain('data-tip="TLS handshake timeout"');
+    expect(html).toContain('class="pill err sub-tab-failure"');
+    expect(html).toContain('nodes.subUpdateFailed');
   });
 });

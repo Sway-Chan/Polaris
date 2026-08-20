@@ -1848,8 +1848,8 @@ fn main() {
                 false
             };
 
-            // 自绘浮层不在启动期预建：首次托盘点击由 `toggle_overlay` 按需创建。默认隐藏 2 分钟后回收；
-            // `keepTrayMenuWarm=true` 时隐藏后保留 renderer，换取后续热开。Linux 的点击归原生菜单所有，
+            // 自绘浮层不在启动期预建：首次托盘点击由 `toggle_overlay` 按需创建。默认 warm：隐藏后保留
+            // renderer，换取后续热开；用户关掉 `keepTrayMenuWarm` 才在隐藏 2 分钟后回收。Linux 的点击归原生菜单所有，
             // 不会创建这块 WebView。建窗失败只记日志，不曲解用户意图为显示主窗。
 
             // C15：start_hidden 但托盘缺失（Linux 无 StatusNotifier）→ 无唤出锚点，**必须**显示主窗，否则
@@ -2014,6 +2014,7 @@ fn main() {
             logs_open_dir,
             logs_legacy_info,
             logs_archive_legacy,
+            logs_delete_legacy,
             shell_open_external,
             open_singbox_dashboard,
             refresh_singbox_dashboard,

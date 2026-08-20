@@ -645,6 +645,27 @@ h1[tabindex='-1']:focus-visible { outline: none; }
 .app-ico,
 .ub-ico{ border:1px solid hsl(var(--line)); box-shadow:0 1px 2px hsl(var(--shadow)/0.14); }
 
+/* 解锁检测的三颗语义状态点在浅色档不能直接复用正文 token：`--ok/--warn/--err` 为满足 10–12px
+ * 文字的 4.5:1 被整体压暗，落到 7px 实心点后虽过最低非文本对比度，却在真机上显得发黑、低饱和。
+ * 给**色点载体**单独恢复更明快的高饱和色，不抬全局正文 token；三色对白底仍分别 ≥3:1。
+ * 数值只在这里声明一次，显式浅色与跟随系统浅色两条腿共用，深色继续走原有语义 token。 */
+:root{
+  --unlock-dot-ok-light:152 75% 36%;
+  --unlock-dot-warn-light:32 92% 42%;
+  --unlock-dot-err-light:356 82% 52%;
+}
+@media (prefers-color-scheme:light){
+  :root:not([data-theme="dark"]) .ub.ok .dot{ background:hsl(var(--unlock-dot-ok-light)); box-shadow:0 0 0 2px hsl(var(--unlock-dot-ok-light)/0.14); }
+  :root:not([data-theme="dark"]) .ub.partial .dot{ background:hsl(var(--unlock-dot-warn-light)); box-shadow:0 0 0 2px hsl(var(--unlock-dot-warn-light)/0.14); }
+  :root:not([data-theme="dark"]) .ub.blocked .dot{ background:hsl(var(--unlock-dot-err-light)); box-shadow:0 0 0 2px hsl(var(--unlock-dot-err-light)/0.14); }
+}
+:root[data-theme="light"] .ub.ok .dot{ background:hsl(var(--unlock-dot-ok-light)); box-shadow:0 0 0 2px hsl(var(--unlock-dot-ok-light)/0.14); }
+:root[data-theme="light"] .ub.partial .dot{ background:hsl(var(--unlock-dot-warn-light)); box-shadow:0 0 0 2px hsl(var(--unlock-dot-warn-light)/0.14); }
+:root[data-theme="light"] .ub.blocked .dot{ background:hsl(var(--unlock-dot-err-light)); box-shadow:0 0 0 2px hsl(var(--unlock-dot-err-light)/0.14); }
+
+/* 旧日志提示的动作成组：正文可换行，归档/删除保持在右侧同一行；窄宽时由 mode-warn 自身换行。 */
+.legacy-log-actions{ margin-inline-start:auto; display:flex; align-items:center; gap:8px; flex:none; }
+
 /* 应用分流卡分组 + 卡片浅色主题区分度修复（真机截图确认：分组头与卡面、卡片与页面背景在浅色下
  * 发灰糊成一片；深色本已有明显层次差，不受影响，只加浅色覆盖）。
  * 浅色下 --surface(100%L)/--bg(96%L)/--surface-2(94%L) 彼此仅差 2-6 个百分点，--line(87%L) 边框

@@ -17,8 +17,8 @@
  *
  * # 两条腿
  *
- *  - **腿 A（定量承诺，全自动）**：文案里写了「N 分钟 / N 秒」，就必须在前端源码里找得到一个**数值相等**
- *    的毫秒常量，且该常量真被引用、其模块真被别的模块 import。改文案的数字而不改常量 ⇒ 转红。
+ *  - **腿 A（定量承诺，全自动）**：文案里写了「N 分钟 / N 秒」，就必须在前端或 Rust 源码里找得到
+ *    一个**数值相等且真被引用**的计时常量。改文案的数字而不改常量 ⇒ 转红。
  *  - **腿 B（登记表）**：每条承诺登记它的兑现证据 —— `config-key`（机器自查该键在设置屏之外有没有消费方）
  *    或 `anchor`（指定文件里必须出现的源码片段）。**表外命中 → 转红**（新写一句承诺文案必须一起登记）。
  *
@@ -198,6 +198,14 @@ function timerFor(ms: number): { rel: string; name: string } | null {
     );
     if (uses >= 2 && importedElsewhere) return c;
   }
+  // renderer 被回收后前端计时器会停，窗口/托盘生命周期阈值因此住在 Rust。这里把 Rust 常量纳入
+  // 宽口径存在性门；下方 REGISTRY 仍按名字逐条绑定，防同值常量互相顶绿。
+  for (const m of ALL_RS.matchAll(/const\s+([A-Z][A-Z0-9_]*)\s*:\s*[A-Za-z0-9_]+\s*=\s*([\d\s*+]+)\s*;/g)) {
+    const name = m[1];
+    const value = constantValueMs('rs', name);
+    const uses = ALL_RS.match(new RegExp(`\\b${name}\\b`, 'g'))?.length ?? 0;
+    if (value === ms && uses >= 2) return { rel: '<rust>', name };
+  }
   return null;
 }
 
@@ -264,10 +272,11 @@ const REGISTRY: readonly PromiseRow[] = [
     timer: { lang: 'rs', name: 'HIDDEN_RECLAIM_SECS' },
   },
   {
-    snippet: '托盘菜单隐藏时不再自动释放',
+    snippet: '关闭后，隐藏 2 分钟会自动释放',
     // 配置消费方在 Rust 托盘生命周期：打开 warm 取消在飞回收，关闭时隐藏窗恢复 120s 计时；
     // `config-key` 门会要求设置屏之外存在真实读取，避免只长出一个无效开关。
     evidence: { kind: 'config-key', key: 'keepTrayMenuWarm' },
+    timer: { lang: 'rs', name: 'TRAY_IDLE_RECLAIM_SECS' },
   },
   {
     snippet: '崩溃或断电后自动恢复原系统 DNS',

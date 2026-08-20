@@ -1,6 +1,6 @@
 //! 热切换判定纯逻辑（上游 `ProxyManager.ts` planHotSwitch / planRuleHotSwitch /
-//! canSkipRestartForAddedUnreferenced / isServerDirty / winTunBlocksHotSwitch /
-//! resolveGlobalExitTag 1:1 移植）。
+//! canSkipRestartForAddedUnreferenced / isServerDirty / resolveGlobalExitTag 移植，并按真机收据修正
+//! Windows TUN 的过时禁用条件）。
 //!
 //! 所有运行态（currentConfig / currentIdToTagMap / bootstrapFallbackEngaged /
 //! currentRuleTargetMap / runningServersFingerprint）经 [`HotSwitchDeps`] 注入 ——
@@ -23,7 +23,6 @@ use crate::user_config::dns_constants::{
     is_block_selection, is_direct_selection, DIRECT_TAG, PROXY_SELECTOR_TAG,
 };
 use crate::user_config::server_config::{is_mesh_node, ServerConfig};
-use crate::user_config::tun_stack::{resolve_tun_stack, ConcreteTunStack};
 
 // ============================================================================
 // 类型
@@ -44,8 +43,6 @@ pub struct HotSwitchDeps {
     /// 登录期出口让位态：proxy-selector 实际指 direct（非 config 选中节点 tag）。
     /// 上游 `this.bootstrapFallbackEngaged`。
     pub bootstrap_fallback_engaged: bool,
-    /// 平台标识（process.platform 字面：win32/darwin/linux）。winTunBlocksHotSwitch 用。
-    pub platform: String,
 }
 
 /// currentRuleTargetMap 的条目：生成时 rule-sel 的 selectorTag + memberTag(default)。
@@ -61,7 +58,7 @@ pub struct RuleTargetEntry {
 /// 热切换规划结果四态分类。上游 `kind: 'none'|'global'|'rules'|'both'`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HotSwitchKind {
-    /// 无热切换可行（结构变更/目标不在 selector/Win gvisor guard）→ 退回去抖重启或正常分流。
+    /// 无热切换可行（结构变更/目标不在 selector）→ 退回去抖重启或正常分流。
     #[default]
     None,
     /// 仅 selectedServerId 变 → PUT proxy-selector。
@@ -96,7 +93,7 @@ pub struct HotSwitchPlan {
 }
 
 impl HotSwitchPlan {
-    /// 构造 kind=None 的空规划（norm 前提失败/结构变更/Win guard 等正常退回路径）。
+    /// 构造 kind=None 的空规划（norm 前提失败/结构变更等正常退回路径）。
     fn none() -> Self {
         HotSwitchPlan {
             kind: HotSwitchKind::None,
@@ -132,10 +129,6 @@ impl HotSwitchPlan {
 pub fn plan_hot_switch(old: &UserConfig, new: &UserConfig, deps: &HotSwitchDeps) -> HotSwitchPlan {
     // norm 前提：结构等价（targetServerId/selectedServerId 均已移出 norm → 仅这俩值变不翻转 norm）。
     if config_generation_norm(old, None) != config_generation_norm(new, None) {
-        return HotSwitchPlan::none();
-    }
-    // Windows TUN guard：非 system 栈（gvisor/mixed）保守退回重启（实测零环路仅 system）。
-    if win_tun_blocks_hot_switch(new, &deps.platform) {
         return HotSwitchPlan::none();
     }
     // 进出阻断一律整核重启（2026-08-13）。
@@ -489,34 +482,6 @@ pub fn is_server_dirty(id: &str, config: &UserConfig, deps: &HotSwitchDeps) -> b
 }
 
 // ============================================================================
-// winTunBlocksHotSwitch（Polaris L1909-1913）
-// ============================================================================
-
-/// Windows TUN 热切换 guard：system 栈放行（实测零环路），非 system（gvisor/mixed）未实测保守退回重启。
-///
-/// 全局节点热切换与规则目标热切换共用（rule-sel selector 切换同理可能触发 Wintun 回捕）。
-/// 必须用 resolve_tun_stack 把 'auto' 解析成具体栈再判，不能按裸 'auto'!=='system' 字面比较。
-///
-/// # ⚠ 与 Windows 新默认栈的耦合（2026-08-05，未决）
-///
-/// Windows 的 auto 已解析为 **gvisor**（`tun_stack::platform_default_stack`），故本 guard 现在
-/// **默认拦住所有 Windows TUN 用户** ⇒ 每次切节点退回重启核。guard 的原始依据（「非 system 未实测」）
-/// 已被 vault 的 win-tun MTU 基准记录 §0.7 的三栈 21/21 实测推翻，但同文档钉了翻转前置门：
-/// 需用**本体**（含 FakeIP / DNS 劫持 / 规则集 / helper 路径）在 Windows 上跑一遍 gvisor 换节点回归。
-/// 门未过，故此处保持原样，由 `win_tun_win32_auto_now_blocks_pending_gvisor_regression` 锚住。
-///
-/// 上游 `ProxyManager.winTunBlocksHotSwitch`（process.platform 经 deps.platform 注入）。
-pub fn win_tun_blocks_hot_switch(config: &UserConfig, platform: &str) -> bool {
-    // 非 win32 或 非 tun 模式 → false（放行）。
-    if !platform.eq_ignore_ascii_case("win32") || !config.proxy_mode_type.is_tun() {
-        return false;
-    }
-    // win32 + tun：resolveTunStack('auto'→system(Win))，非 system 一律拦。
-    let user_stack = config.tun_config.as_ref().map(|c| c.stack);
-    resolve_tun_stack(user_stack, platform) != ConcreteTunStack::System
-}
-
-// ============================================================================
 // resolveGlobalExitTag（Polaris shared/direct-selection.ts L22-28）
 // ============================================================================
 
@@ -611,7 +576,7 @@ mod tests {
         }
     }
 
-    /// 基础 smart config：两节点(A/B) + selectedServerId=A + systemProxy（非 tun，winTun guard 不拦）。
+    /// 基础 smart config：两节点(A/B) + selectedServerId=A + systemProxy。
     fn base_config() -> UserConfig {
         UserConfig {
             servers: vec![ss(NODE_A, "1.1.1.1"), ss(NODE_B, "2.2.2.2")],
@@ -630,7 +595,6 @@ mod tests {
         map.insert(NODE_B.into(), "tagB".into());
         HotSwitchDeps {
             current_id_to_tag_map: Some(map),
-            platform: "linux".into(),
             ..Default::default()
         }
     }
@@ -720,94 +684,6 @@ mod tests {
         assert_eq!(resolve_global_exit_tag(None, None), None);
     }
 
-    // === winTunBlocksHotSwitch（平台 × 模式 × stack 矩阵）===
-
-    #[test]
-    fn win_tun_win32_gvisor_blocks() {
-        let mut cfg = base_config();
-        cfg.proxy_mode_type = ProxyModeType::Tun;
-        cfg.tun_config = Some(TunModeConfig {
-            stack: TunStack::Gvisor,
-            ..Default::default()
-        });
-        assert!(win_tun_blocks_hot_switch(&cfg, "win32"));
-    }
-
-    #[test]
-    fn win_tun_win32_system_passes() {
-        let mut cfg = base_config();
-        cfg.proxy_mode_type = ProxyModeType::Tun;
-        cfg.tun_config = Some(TunModeConfig {
-            stack: TunStack::System,
-            ..Default::default()
-        });
-        assert!(!win_tun_blocks_hot_switch(&cfg, "win32"));
-    }
-
-    /// 🔴 **本条记录一个已知的功能耦合，不是在为它背书**（2026-08-05）。
-    ///
-    /// Windows 的 auto 默认栈已从 system 改为 gvisor（实测依据见 `tun_stack::platform_default_stack`），
-    /// 而本 guard 拦一切非 system 栈 ⇒ **Windows TUN 用户默认落进「禁热切换、每次切节点重启核」**。
-    ///
-    /// guard 的原始依据是「非 system **未实测**」（不是实测有环）。该依据现已被
-    /// vault `design/networking/` 下的 win-tun MTU 基准记录 §0.7 推翻：三栈各 21/21 成功、
-    /// 3 次切换、切后 0 失败、selector 终态正确。**但那轮是裸 sing-box 最小配置**，缺 FakeIP / DNS 劫持 /
-    /// route 规则集 / auto_detect_interface 交互 / helper 提权路径，故同文档写死了翻转前置条件：
-    /// 「必须用本体在 207 上跑一遍 gvisor 下的换节点回归」。那道门尚未过，故此处**不擅自翻转**。
-    ///
-    /// 本用例因此断言的是当前真实行为（拦），并把它标成待决口——回归跑完放开 guard 时，
-    /// 这条会转红，那正是提醒同步改它的锚点。
-    #[test]
-    fn win_tun_win32_auto_now_blocks_pending_gvisor_regression() {
-        // guard 仍必须 resolve_tun_stack 后再判（不能按裸 'auto' 字面比较）——这一半没变。
-        let mut cfg = base_config();
-        cfg.proxy_mode_type = ProxyModeType::Tun;
-        cfg.tun_config = Some(TunModeConfig {
-            stack: TunStack::Auto,
-            ..Default::default()
-        });
-        assert!(win_tun_blocks_hot_switch(&cfg, "win32"));
-    }
-
-    #[test]
-    fn win_tun_win32_mixed_blocks() {
-        let mut cfg = base_config();
-        cfg.proxy_mode_type = ProxyModeType::Tun;
-        cfg.tun_config = Some(TunModeConfig {
-            stack: TunStack::Mixed,
-            ..Default::default()
-        });
-        assert!(win_tun_blocks_hot_switch(&cfg, "win32"));
-    }
-
-    #[test]
-    fn win_tun_non_tun_mode_passes() {
-        let cfg = base_config(); // systemProxy
-        assert!(!win_tun_blocks_hot_switch(&cfg, "win32"));
-    }
-
-    #[test]
-    fn win_tun_darwin_never_blocks() {
-        let mut cfg = base_config();
-        cfg.proxy_mode_type = ProxyModeType::Tun;
-        cfg.tun_config = Some(TunModeConfig {
-            stack: TunStack::Gvisor,
-            ..Default::default()
-        });
-        assert!(!win_tun_blocks_hot_switch(&cfg, "darwin"));
-    }
-
-    #[test]
-    fn win_tun_linux_never_blocks() {
-        let mut cfg = base_config();
-        cfg.proxy_mode_type = ProxyModeType::Tun;
-        cfg.tun_config = Some(TunModeConfig {
-            stack: TunStack::Gvisor,
-            ..Default::default()
-        });
-        assert!(!win_tun_blocks_hot_switch(&cfg, "linux"));
-    }
-
     // === planHotSwitch 全局节点切换 ===
 
     #[test]
@@ -884,7 +760,6 @@ mod tests {
         map.insert(NODE_A.into(), "tagA".into());
         let deps = HotSwitchDeps {
             current_id_to_tag_map: Some(map),
-            platform: "linux".into(),
             ..Default::default()
         };
         let plan = plan_hot_switch(&old, &new_cfg, &deps);
@@ -915,39 +790,32 @@ mod tests {
         assert!(!plan.must_restart);
     }
 
-    // === planHotSwitch Win TUN 端到端 ===
+    // === planHotSwitch TUN 端到端 ===
 
+    /// Windows 192.168.10.207 真机（2026-08-21）：本体 TUN + auto（实际 gVisor）下直接执行
+    /// `SelectOutbound`，Hk01-L7 → Hk01 → Hk01-L7 两次读回正确，sing-box PID 恒为 10684。
+    /// selector 切换属于管理面操作，不依赖 TUN stack；四种配置值都不得再触发平台式重启。
     #[test]
-    fn plan_win_tun_gvisor_blocks_global_switch() {
-        let mut old = base_config();
-        old.proxy_mode_type = ProxyModeType::Tun;
-        old.tun_config = Some(TunModeConfig {
-            stack: TunStack::Gvisor,
-            ..Default::default()
-        });
-        let mut new_cfg = old.clone();
-        new_cfg.selected_server_id = Some(NODE_B.into());
-        let mut deps = deps_with_tags();
-        deps.platform = "win32".into();
-        let plan = plan_hot_switch(&old, &new_cfg, &deps);
-        assert_eq!(plan.kind, HotSwitchKind::None);
-        assert!(plan.puts.is_empty());
-    }
-
-    #[test]
-    fn plan_win_tun_system_allows_global_switch() {
-        let mut old = base_config();
-        old.proxy_mode_type = ProxyModeType::Tun;
-        old.tun_config = Some(TunModeConfig {
-            stack: TunStack::System,
-            ..Default::default()
-        });
-        let mut new_cfg = old.clone();
-        new_cfg.selected_server_id = Some(NODE_B.into());
-        let mut deps = deps_with_tags();
-        deps.platform = "win32".into();
-        let plan = plan_hot_switch(&old, &new_cfg, &deps);
-        assert_eq!(plan.kind, HotSwitchKind::Global);
+    fn plan_tun_stack_does_not_block_selector_hot_switch() {
+        for (stack, label) in [
+            (TunStack::Auto, "auto"),
+            (TunStack::Gvisor, "gvisor"),
+            (TunStack::Mixed, "mixed"),
+            (TunStack::System, "system"),
+        ] {
+            let mut old = base_config();
+            old.proxy_mode_type = ProxyModeType::Tun;
+            old.tun_config = Some(TunModeConfig {
+                stack,
+                ..Default::default()
+            });
+            let mut new_cfg = old.clone();
+            new_cfg.selected_server_id = Some(NODE_B.into());
+            let plan = plan_hot_switch(&old, &new_cfg, &deps_with_tags());
+            assert_eq!(plan.kind, HotSwitchKind::Global, "stack={label}");
+            assert_eq!(plan.puts.len(), 1, "stack={label}");
+            assert_eq!(plan.puts[0].member_tag, "tagB", "stack={label}");
+        }
     }
 
     // === planHotSwitch route 投影 guard（mesh 退回 direct 翻转 / force-route engaged）===
@@ -964,10 +832,7 @@ mod tests {
         old.selected_server_id = Some("wg-full".into());
         let mut new_cfg = old.clone();
         new_cfg.selected_server_id = Some("wg-offmesh".into());
-        let mut deps = HotSwitchDeps {
-            platform: "linux".into(),
-            ..Default::default()
-        };
+        let mut deps = HotSwitchDeps::default();
         let mut map = BTreeMap::new();
         map.insert("wg-full".into(), "tag-wg-full".into());
         map.insert("wg-offmesh".into(), "tag-wg-offmesh".into());
@@ -987,10 +852,7 @@ mod tests {
         old.selected_server_id = Some("wg-full".into());
         let mut new_cfg = old.clone();
         new_cfg.selected_server_id = Some("wg-full-2".into());
-        let mut deps = HotSwitchDeps {
-            platform: "linux".into(),
-            ..Default::default()
-        };
+        let mut deps = HotSwitchDeps::default();
         let mut map = BTreeMap::new();
         map.insert("wg-full".into(), "tag-wg-full".into());
         map.insert("wg-full-2".into(), "tag-wg-full-2".into());
@@ -1012,10 +874,7 @@ mod tests {
         old.selected_server_id = Some("wg-full".into());
         let mut new_cfg = old.clone();
         new_cfg.selected_server_id = Some("wg-onlysub".into());
-        let mut deps = HotSwitchDeps {
-            platform: "linux".into(),
-            ..Default::default()
-        };
+        let mut deps = HotSwitchDeps::default();
         let mut map = BTreeMap::new();
         map.insert("wg-full".into(), "t1".into());
         map.insert("wg-onlysub".into(), "t2".into());
@@ -1037,10 +896,7 @@ mod tests {
         old.selected_server_id = Some("A".into());
         let mut new_cfg = old.clone();
         new_cfg.selected_server_id = Some("Z".into()); // 仅切选中，servers 不变
-        let mut deps = HotSwitchDeps {
-            platform: "linux".into(),
-            ..Default::default()
-        };
+        let mut deps = HotSwitchDeps::default();
         let mut map = BTreeMap::new();
         map.insert("A".into(), "tagA".into());
         map.insert("Z".into(), "tagZ".into());
@@ -1070,10 +926,7 @@ mod tests {
         let r1_z = ext_rule("r1", Some("Z"));
         let mut new_cfg = old.clone();
         new_cfg.custom_rules = vec![r1_z]; // 仅规则目标 A→Z，servers 不变
-        let mut deps = HotSwitchDeps {
-            platform: "linux".into(),
-            ..Default::default()
-        };
+        let mut deps = HotSwitchDeps::default();
         let mut map = BTreeMap::new();
         map.insert("A".into(), "tagA".into());
         map.insert("Z".into(), "tagZ".into());
@@ -1115,7 +968,6 @@ mod tests {
             HotSwitchDeps {
                 current_id_to_tag_map: Some(map),
                 current_rule_target_map: Some(rtm),
-                platform: "linux".into(),
                 ..Default::default()
             },
             (),
@@ -1223,7 +1075,6 @@ mod tests {
         let deps = HotSwitchDeps {
             current_id_to_tag_map: None,
             current_rule_target_map: Some(rtm),
-            platform: "linux".into(),
             ..Default::default()
         };
         let mut old = base_config();
@@ -1297,7 +1148,6 @@ mod tests {
         let deps = HotSwitchDeps {
             current_id_to_tag_map: Some(map),
             current_rule_target_map: Some(rtm),
-            platform: "linux".into(),
             ..Default::default()
         };
         let mut old = base_config();

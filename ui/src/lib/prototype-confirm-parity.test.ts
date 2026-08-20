@@ -225,6 +225,13 @@ interface ImplOnlyRow {
 
 const IMPL_ONLY: readonly ImplOnlyRow[] = [
   {
+    key: 'logs-delete-legacy',
+    file: 'components/screens/logs/LogsScreen.tsx',
+    why:
+      '删除旧版无界 singbox.log 会直接移除磁盘上的原文件，不进回收站、无撤销腿；与旁边可选择目标且可恢复的' +
+      '「归档」不同，误点可能永久丢失故障证据，因此只给删除动作保留二次确认。',
+  },
+  {
     key: 'conn-clear-closed',
     file: 'components/screens/connections/ConnectionsScreen.tsx',
     why:

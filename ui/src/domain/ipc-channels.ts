@@ -110,6 +110,7 @@ export const IPC_CHANNELS = {
   LOGS_OPEN_DIR: 'logs_open_dir', // 文件管理器打开日志目录（后端一步做完：解析路径 + shell.open）
   LOGS_LEGACY_INFO: 'logs_legacy_info', // W26 前无界 singbox.log：只读大小/路径，不自动删除
   LOGS_ARCHIVE_LEGACY: 'logs_archive_legacy', // 用户选目标后事务式归档，成功才删原文件
+  LOGS_DELETE_LEGACY: 'logs_delete_legacy', // 用户二次确认后删除固定路径旧日志（前端不传文件路径）
   // 核**此刻实际**在用的日志级别（管理 API gRPC `GetDefaultLogLevel`）。与 `config.logLevel`
   // 不是同一件事：后者是「我写下的意图」，隐私锁抬级 / 暂存未落盘时两者会分叉，且渲染端无从补偿。
   LOGS_RUNTIME_LEVEL: 'logs_runtime_level',

@@ -21,15 +21,16 @@ describe('W11 Windows/Linux 窗口拖动带', () => {
     );
   });
 
-  it('Windows/Linux 两列都是紧凑 32px，完整覆盖 26px 自绘窗口控制', () => {
+  it('Windows/Linux 两列收到 28px，26px 自绘窗口控制的点击面积保持不变', () => {
     for (const css of styleSources) {
       expect(css).toMatch(
-        /:root\[data-os="win"\] \.side-chrome, :root\[data-os="lin"\] \.side-chrome\s*{\s*height:32px;\s*}/
+        /:root\[data-os="win"\] \.side-chrome, :root\[data-os="lin"\] \.side-chrome\s*{\s*height:28px;\s*}/
       );
       expect(css).toMatch(
-        /:root\[data-os="win"\] \.main-chrome, :root\[data-os="lin"\] \.main-chrome\s*{\s*height:32px;\s*}/
+        /:root\[data-os="win"\] \.main-chrome, :root\[data-os="lin"\] \.main-chrome\s*{\s*height:28px;\s*}/
       );
       expect(css).toMatch(/\.winctl\s*{\s*position:absolute;\s*top:3px;/);
+      expect(css).toMatch(/\.winctl button\s*{[^}]*height:26px;/);
     }
   });
 

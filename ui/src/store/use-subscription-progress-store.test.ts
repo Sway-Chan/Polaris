@@ -102,9 +102,12 @@ describe('订阅进度接线不变量', () => {
     expect(src).toMatch(/useEffect\(\s*\(\)\s*=>\s*subscribeSubscriptionProgressEvents\(\),\s*\[\]\s*\)/);
   });
 
-  it('NodesScreen 读 store 并把当前订阅的进度传给 SubInfoBar', () => {
+  it('NodesScreen 读一次 store，同时驱动全部订阅 tab 与当前订阅信息栏', () => {
     const src = read('components/screens/nodes/NodesScreen.tsx');
-    expect(src).toContain('useSubscriptionProgress(');
+    expect(src).toContain('useSubscriptionProgressStore(');
+    expect(src).toMatch(/subscriptionProgress\[g\.id\]/);
+    expect(src).toContain('data-tip={failureDetail ?? undefined}');
+    expect(src).toContain('sub-tab-failure');
     expect(src).toMatch(/progress=\{activeSubProgress\}/);
   });
 

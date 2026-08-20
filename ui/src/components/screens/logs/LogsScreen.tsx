@@ -84,8 +84,9 @@ function nextLogSubscriptionId(): string {
   logSubscriptionSeq += 1;
   return `logs-${Date.now()}-${logSubscriptionSeq}`;
 }
-/** 本屏唯一的原地二次确认项（原型 :4130 `log-clear`）。超时/复位语义全在 `lib/confirm-twice.ts`。 */
+/** 本屏的原地二次确认键；超时/复位语义全在 `lib/confirm-twice.ts`，不另起定时器。 */
 const CLEAR_KEY = 'logs-clear';
+const DELETE_LEGACY_KEY = 'logs-delete-legacy';
 /** 核内级别的重读间隔（仅 Logs 屏挂载期间）。理由见下方轮询 effect 的注释。 */
 const RUNTIME_LEVEL_POLL_MS = 5000;
 
@@ -139,7 +140,7 @@ export function LogsScreen() {
   const [diagnosticMode, setDiagnosticMode] = useState<boolean | null>(null);
   const [diagnosticBusy, setDiagnosticBusy] = useState(false);
   const [legacyLog, setLegacyLog] = useState<{ exists: boolean; bytes: number; path: string } | null>(null);
-  const [legacyArchiveBusy, setLegacyArchiveBusy] = useState(false);
+  const [legacyActionBusy, setLegacyActionBusy] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [source, setSource] = useState<LogSource>('all');
   const [search, setSearch] = useState('');
@@ -169,6 +170,7 @@ export function LogsScreen() {
   /** 清空的原地二次确认 —— 走全仓唯一实现（`lib/confirm-twice.ts`），不再自己管定时器。 */
   const { armed, confirmTwice } = useConfirmTwice();
   const confirmClear = armed === CLEAR_KEY;
+  const confirmDeleteLegacy = armed === DELETE_LEGACY_KEY;
 
   const viewRef = useRef<HTMLDivElement>(null);
   const exportMenuRef = useRef<HTMLDivElement>(null);
@@ -619,8 +621,8 @@ export function LogsScreen() {
   }, []);
 
   const onArchiveLegacy = useCallback(async () => {
-    if (legacyArchiveBusy) return;
-    setLegacyArchiveBusy(true);
+    if (legacyActionBusy) return;
+    setLegacyActionBusy(true);
     try {
       const result = await api.logs.archiveLegacy();
       if (result.success) {
@@ -633,9 +635,31 @@ export function LogsScreen() {
       console.error('[logs] archive legacy log failed:', err);
       toast.error(t('logs.archiveLegacyFailed'), err instanceof Error ? err.message : undefined);
     } finally {
-      setLegacyArchiveBusy(false);
+      setLegacyActionBusy(false);
     }
-  }, [legacyArchiveBusy, t]);
+  }, [legacyActionBusy, t]);
+
+  const onDeleteLegacyClick = useCallback(() => {
+    confirmTwice(DELETE_LEGACY_KEY, () => {
+      void (async () => {
+        if (legacyActionBusy) return;
+        setLegacyActionBusy(true);
+        try {
+          const result = await api.logs.deleteLegacy();
+          setLegacyLog((current) => current && { ...current, exists: false, bytes: 0 });
+          if (result.deleted) toast.success(t('logs.deleteLegacyDone'));
+        } catch (err) {
+          console.error('[logs] delete legacy log failed:', err);
+          toast.error(
+            t('logs.deleteLegacyFailed'),
+            err instanceof Error ? err.message : undefined,
+          );
+        } finally {
+          setLegacyActionBusy(false);
+        }
+      })();
+    });
+  }, [confirmTwice, legacyActionBusy, t]);
 
   /* 空搜索过滤当前绘制尾部；非空搜索消费后端完整保留环返回的独立结果集。 */
   const visible = useMemo(
@@ -782,15 +806,24 @@ export function LogsScreen() {
             <strong>{t('logs.legacyTitle')}</strong>{' '}
             {t('logs.legacyBody', { size: fmtBytes(legacyLog.bytes) })}
           </span>
-          <button
-            type="button"
-            className="btn ghost sm"
-            style={{ marginInlineStart: 'auto' }}
-            disabled={legacyArchiveBusy}
-            onClick={() => void onArchiveLegacy()}
-          >
-            {t('logs.archiveLegacy')}
-          </button>
+          <div className="legacy-log-actions">
+            <button
+              type="button"
+              className="btn ghost sm"
+              disabled={legacyActionBusy}
+              onClick={() => void onArchiveLegacy()}
+            >
+              {t('logs.archiveLegacy')}
+            </button>
+            <button
+              type="button"
+              className={`btn ghost sm danger-text${confirmDeleteLegacy ? ' confirming' : ''}`}
+              disabled={legacyActionBusy}
+              onClick={onDeleteLegacyClick}
+            >
+              {confirmDeleteLegacy ? t('common.confirmAgain') : t('logs.deleteLegacy')}
+            </button>
+          </div>
         </div>
       )}
 

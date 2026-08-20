@@ -14,6 +14,7 @@ import { useAppStore } from '@/store/app-store';
 import { Phead, SetBlock, SetRow, Switch, Select, Segmented } from './primitives';
 import {
   closeBehaviorOf,
+  defaultOn,
   languageDescKey,
   minimizeToTrayFor,
   shellPlatformFromDataOs,
@@ -141,7 +142,7 @@ export default function SettingsDisplay({ config, update }: SettingsDisplayProps
           tip={t('settings.general.keepTrayMenuWarmDesc')}
         >
           <Switch
-            checked={!!config.keepTrayMenuWarm}
+            checked={defaultOn(config.keepTrayMenuWarm)}
             onChange={(v) => void update({ keepTrayMenuWarm: v })}
           />
         </SetRow>

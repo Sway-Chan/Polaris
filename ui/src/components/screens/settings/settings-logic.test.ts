@@ -59,6 +59,14 @@ describe('defaultOn —— 缺省为开的三态布尔', () => {
   it('null（JSON null）判开', () => {
     expect(defaultOn(null)).toBe(true);
   });
+
+  it('托盘 warm 开关复用同一缺省语义，缺字段时不得显示成关闭', () => {
+    const src = readFileSync(
+      fileURLToPath(new URL('./SettingsDisplay.tsx', import.meta.url)),
+      'utf8'
+    );
+    expect(src).toContain('checked={defaultOn(config.keepTrayMenuWarm)}');
+  });
 });
 
 describe('#12 bypassLanState —— 绕过局域网总开关三态', () => {

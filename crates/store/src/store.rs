@@ -219,7 +219,7 @@ pub fn finalize_config(value: &mut Value) -> Result<(), StoreError> {
         obj.entry("autoLightweightMode")
             .or_insert_with(|| Value::Bool(false));
         obj.entry("keepTrayMenuWarm")
-            .or_insert_with(|| Value::Bool(false));
+            .or_insert_with(|| Value::Bool(true));
         obj.entry("rememberWindowSize")
             .or_insert_with(|| Value::Bool(true));
         obj.entry("interruptConnectionsOnSwitch")
@@ -266,7 +266,7 @@ pub fn default_config() -> Value {
         "minimizeToTray": true,
         "autoCheckUpdate": true,
         "autoLightweightMode": false,
-        "keepTrayMenuWarm": false,
+        "keepTrayMenuWarm": true,
         "hardwareAcceleration": true,
         "windowEffects": true,
         "desktopNotifications": true,
