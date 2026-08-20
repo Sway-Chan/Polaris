@@ -48,7 +48,7 @@ use crate::runtime::core_paths::core_filename_for;
 /// **全部删掉**（`core_install::prune_extra_files`，移植自 `helper.go:179-192`）。linux 安装脚本
 /// 会随核播种 `libcronet.so`（`manager.rs:879-880`），若提升时只带 `sing-box`，那个 cronet 会被
 /// prune 顺手删掉 ⇒ naive 出站静默失效。故 allowlist 必须带上它。
-pub const CORE_SIDECAR_PREFIX: &str = "libcronet.";
+pub use crate::runtime::core_paths::CORE_SIDECAR_PREFIX;
 
 /// 暂存目录名（`<config_dir>/core-promote/`）：喂给 `install-core` 的**干净** `src_dir`。
 ///

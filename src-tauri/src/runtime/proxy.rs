@@ -6805,11 +6805,14 @@ impl ProxyRuntime {
     /// 无谓剔掉、或反过来进核 FATAL 拖垮整批），而两边都「能跑」。
     #[must_use]
     pub fn core_build_env(&self) -> CoreBuildEnv {
-        let cronet = self.config.dir().join(cronet_lib_name());
         CoreBuildEnv {
             platform: platform_tag().to_string(),
             arch: std::env::consts::ARCH.to_string(),
-            has_cronet: cronet_available(cronet.exists(), platform_tag(), std::env::consts::ARCH),
+            has_cronet: cronet_available(
+                self.cronet_lib_exists_for_start(),
+                platform_tag(),
+                std::env::consts::ARCH,
+            ),
         }
     }
 
@@ -7937,7 +7940,6 @@ impl ProxyRuntime {
         config: &Value,
     ) -> GenerateConfigDeps {
         let dir = self.config.dir();
-        let cronet = dir.join(cronet_lib_name());
         // A2/C13：日志两轴跟随 config（此前硬编码 Info + 不落 disableLogFile）。
         let (log_level, disable_log_file) = log_axes_from_config(config);
         // C11：race sidecar 运行期状态注入。port>0 才生成 dns-node-race + 放行上游直连。
@@ -7962,7 +7964,11 @@ impl ProxyRuntime {
             race_upstream_ips,
             race_upstream_ports,
             // macOS(arm64+x64) cronet 静态编入内核（无 dylib 文件）→ 不能只看落盘，否则误拦所有 naive 节点。
-            has_cronet: cronet_available(cronet.exists(), platform_tag(), std::env::consts::ARCH),
+            has_cronet: cronet_available(
+                self.cronet_lib_exists_for_start(),
+                platform_tag(),
+                std::env::consts::ARCH,
+            ),
             cronet_copy_failed: false,
             // 随包核恒 pin 在 1.14 带（具体版本见 src-tauri/core-manifest.json 的 bundledCoreVersion，
             // **勿在此抄具体 alpha/beta 号**：抄一次就漂一次）→ 恒有 services schema。
@@ -8143,6 +8149,16 @@ impl ProxyRuntime {
                 }
             }
         }
+    }
+
+    /// 本次实际要启动的核心旁是否有 cronet 动态库。
+    ///
+    /// 必须与 [`Self::core_binary_for_start`] 同源：环境覆盖、可写核、随包核三条优先级任一变化时，
+    /// 依赖探测都跟着实际 spawn 路径走，不能再固定查配置目录根部。
+    fn cronet_lib_exists_for_start(&self) -> bool {
+        self.core_binary_for_start()
+            .ok()
+            .is_some_and(|core| cronet_lib_exists_beside_core(&core, std::env::consts::OS))
     }
 }
 
@@ -8940,6 +8956,11 @@ fn cronet_available(lib_exists: bool, platform: &str, arch: &str) -> bool {
     lib_exists || platform == "darwin"
 }
 
+/// 指定核心旁是否存在本平台的 cronet 动态库（路径纯函数在 `core_paths`，这里仅做 FS 探测）。
+fn cronet_lib_exists_beside_core(core: &Path, os: &str) -> bool {
+    crate::runtime::core_paths::core_sidecar_path_for(core, os).is_some_and(|p| p.is_file())
+}
+
 /// 崩溃自愈决策 seam（`run_crash_recovery` 与其单测共用）：读机内在途腿世代 → 喂 `handle_crash`。
 ///
 /// **为什么抽 seam**：`run_crash_recovery` 是重 I/O（退避 sleep + 真起核 = 真机门），其「把在途世代喂给
@@ -9069,15 +9090,6 @@ fn atomic_write_custom_rule(path: &Path, content: &str) -> Result<(), String> {
     polaris_store::fs::atomic_write_plan(path, &polaris_store::fs::random_tmp_suffix(), content)
         .execute(&polaris_store::fs::StdFs)
         .map_err(|e| format!("{e:?}"))
-}
-
-/// libcronet 库文件名（naive 协议可用性探测）。
-fn cronet_lib_name() -> &'static str {
-    match std::env::consts::OS {
-        "macos" => "libcronet.dylib",
-        "windows" => "cronet.dll",
-        _ => "libcronet.so",
-    }
 }
 
 /// 解析 sing-box 二进制路径。
@@ -10280,6 +10292,14 @@ mod tests {
                 false,
                 "linux 无 libcronet → false",
             ),
+            (true, "win32", "x86_64", true, "Windows 有 libcronet → true"),
+            (
+                false,
+                "win32",
+                "x86_64",
+                false,
+                "Windows 无 libcronet → false",
+            ),
         ];
         let mut fails = Vec::new();
         for (lib, plat, arch, want, label) in cases {
@@ -10293,6 +10313,32 @@ mod tests {
             "cronet_available 四象限失败:\n  {}",
             fails.join("\n  ")
         );
+    }
+
+    #[test]
+    fn cronet_probe_follows_the_actual_core_directory() {
+        let dir = std::env::temp_dir().join(format!(
+            "polaris-cronet-probe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let core = dir.join("sing-box.exe");
+        std::fs::write(&core, b"CORE").unwrap();
+
+        assert!(!cronet_lib_exists_beside_core(&core, "windows"));
+        std::fs::write(dir.join("libcronet.dll"), b"CRONET").unwrap();
+        assert!(
+            cronet_lib_exists_beside_core(&core, "windows"),
+            "Windows 必须按打包名 libcronet.dll 且只在实际核心同目录探测"
+        );
+        assert!(
+            !cronet_lib_exists_beside_core(&dir.join("other/sing-box.exe"), "windows"),
+            "配置根目录里有 DLL 不能替另一个核心目录冒充依赖可用"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -48,6 +48,11 @@ pub const CORE_UPDATE_DIR_NAME: &str = "core_update";
 pub const CORE_STAGED_DIR_NAME: &str = "core-staged";
 /// 备份侧车后缀（= 上游 `<core>.bak`）。
 pub const CORE_BACKUP_SUFFIX: &str = "bak";
+/// 随核同行的动态库前缀（当前为 NaiveProxy 的 cronet）。
+///
+/// `core_promote` 的 allowlist 与本模块的播种逻辑共用这一真值，避免一边认 `libcronet.*`、
+/// 另一边另写文件名后漂移。
+pub const CORE_SIDECAR_PREFIX: &str = "libcronet.";
 /// 播种簿记文件名。
 pub const CORE_SEED_MARKER: &str = ".core-seed.json";
 
@@ -85,6 +90,24 @@ pub fn core_filename_for(os: &str) -> &'static str {
 #[must_use]
 pub fn core_filename() -> &'static str {
     core_filename_for(std::env::consts::OS)
+}
+
+/// 本平台 NaiveProxy 动态库文件名（`os` 取 `std::env::consts::OS` 口径）。
+///
+/// macOS 的 cronet 已静态编入随包核，因此没有动态 sidecar。
+#[must_use]
+pub fn core_sidecar_filename_for(os: &str) -> Option<&'static str> {
+    match os {
+        "windows" => Some("libcronet.dll"),
+        "linux" => Some("libcronet.so"),
+        _ => None,
+    }
+}
+
+/// 与指定核心同行的 NaiveProxy 动态库路径。
+#[must_use]
+pub fn core_sidecar_path_for(core: &Path, os: &str) -> Option<PathBuf> {
+    Some(core.parent()?.join(core_sidecar_filename_for(os)?))
 }
 
 /// 可写核目录（纯函数）。
@@ -207,6 +230,16 @@ impl CoreSeedMarker {
     #[must_use]
     pub fn is_manual(&self) -> bool {
         self.source.trim().eq_ignore_ascii_case(SOURCE_MANUAL)
+    }
+
+    /// 当前核心是否与随包 cronet 成套。
+    ///
+    /// 在线更新 / 手动上传 / 回滚可能使用另一 ABI，绝不能拿随包库静默覆盖；只有随包播种与
+    /// 恢复出厂两类来源允许在下次启动时补回缺失 sidecar。
+    #[must_use]
+    fn uses_bundled_sidecar(&self) -> bool {
+        let source = self.source.trim();
+        source.eq_ignore_ascii_case("bundled") || source.eq_ignore_ascii_case("reset-factory")
     }
 }
 
@@ -358,6 +391,48 @@ pub fn post_install_macos(path: &Path) {
     let _ = path;
 }
 
+/// 把随包核心同行的 cronet 动态库原子落到可写核心旁。
+///
+/// 随包缺库不是本函数的硬错误：开发态可能只抓了 sing-box，生产打包门会独立保证 Windows/Linux
+/// 资源完整；运行时据实际文件存在性把 NaiveProxy 判为不可用即可。
+fn seed_bundled_sidecar(
+    os: &str,
+    bundled_core: &Path,
+    writable_core: &Path,
+    overwrite: bool,
+) -> Result<(), String> {
+    let (Some(source), Some(dest)) = (
+        core_sidecar_path_for(bundled_core, os),
+        core_sidecar_path_for(writable_core, os),
+    ) else {
+        return Ok(());
+    };
+    if !source.is_file() || (!overwrite && dest.is_file()) {
+        return Ok(());
+    }
+
+    let tmp = dest.with_extension("polaris-seed");
+    if let Err(e) = std::fs::copy(&source, &tmp) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!(
+            "复制随包核心配套失败 {} → {}: {e}",
+            source.display(),
+            tmp.display()
+        ));
+    }
+    if let Err(e) = std::fs::rename(&tmp, &dest) {
+        let _ = std::fs::remove_file(&tmp);
+        // reseed 已换成新核心时，旧 sidecar 比缺失更危险（可能 ABI 不匹配）；能删则让下次启动
+        // 明确走“缺失→补回”，删不掉也保留原错误供日志诊断。
+        if overwrite {
+            let _ = std::fs::remove_file(&dest);
+        }
+        return Err(format!("原子落位随包核心配套失败 {}: {e}", dest.display()));
+    }
+    log::info!("可写核心配套已落位：{}", dest.display());
+    Ok(())
+}
+
 /// 版本感知 reseed（**幂等；失败不 fatal**）。
 ///
 /// 移植 上游 `ensureWritableCore`（`ResourceManager.ts:345-416`）：可写核缺失 → 复制随包核；
@@ -379,6 +454,14 @@ pub fn ensure_writable_core_at(
     let marker = read_seed_marker(base);
     let action = decide_reseed(dest.is_file(), marker.as_ref(), bundled_version);
     if action == ReseedAction::Keep {
+        // 老版本只播种了 sing-box，升级后即使核心本身无需重播，也要为“随包/恢复出厂”来源
+        // 补回同行 cronet。自定义/在线更新核不碰，避免 ABI 被随包版本静默替换。
+        if marker
+            .as_ref()
+            .is_some_and(CoreSeedMarker::uses_bundled_sidecar)
+        {
+            seed_bundled_sidecar(os, bundled_core, &dest, false)?;
+        }
         return Ok(dest);
     }
 
@@ -401,6 +484,9 @@ pub fn ensure_writable_core_at(
     })?;
     post_install_macos(&dest);
     write_seed_marker(base, &CoreSeedMarker::bundled(bundled_version))?;
+    // 核与 cronet 是一套发布物：首次播种/版本重播时同行更新。若此步遇到临时占用，簿记已经
+    // 标成 bundled；下次启动会走上面的缺失自愈，不会把失败永久钉死。
+    seed_bundled_sidecar(os, bundled_core, &dest, true)?;
     log::info!(
         "可写现役核已{}：{}（随包基线 {bundled_version}）",
         if action == ReseedAction::Seed {
@@ -443,6 +529,14 @@ mod tests {
         assert_eq!(core_filename_for("macos"), "sing-box");
         // 未知 OS 回落 Unix 名（不 panic、不返空）。
         assert_eq!(core_filename_for("freebsd"), "sing-box");
+    }
+
+    #[test]
+    fn core_sidecar_filename_matches_packaged_cronet() {
+        assert_eq!(core_sidecar_filename_for("windows"), Some("libcronet.dll"));
+        assert_eq!(core_sidecar_filename_for("linux"), Some("libcronet.so"));
+        assert_eq!(core_sidecar_filename_for("macos"), None);
+        assert_eq!(core_sidecar_filename_for("freebsd"), None);
     }
 
     #[test]
@@ -682,6 +776,81 @@ mod tests {
         std::fs::write(&dest, b"USER-EDITED").unwrap();
         ensure_writable_core_at(base, "linux", &bundled, "1.13.0").unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), b"USER-EDITED");
+    }
+
+    #[test]
+    fn ensure_writable_core_seeds_and_repairs_windows_cronet_sidecar() {
+        let tmp = tmpdir();
+        let base = tmp.path();
+        let bundled_dir = base.join("resources-win");
+        std::fs::create_dir_all(&bundled_dir).unwrap();
+        let bundled = bundled_dir.join("sing-box.exe");
+        std::fs::write(&bundled, b"BUNDLED").unwrap();
+        std::fs::write(bundled_dir.join("libcronet.dll"), b"CRONET").unwrap();
+
+        let dest = ensure_writable_core_at(base, "windows", &bundled, "1.13.0").unwrap();
+        let sidecar = core_sidecar_path_for(&dest, "windows").unwrap();
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"CRONET");
+
+        // 模拟从旧版 Polaris 升级：核心与 bundled 簿记都在，但 sidecar 从未被播种。
+        std::fs::remove_file(&sidecar).unwrap();
+        ensure_writable_core_at(base, "windows", &bundled, "1.13.0").unwrap();
+        assert_eq!(
+            std::fs::read(&sidecar).unwrap(),
+            b"CRONET",
+            "同版 bundled 核必须自愈缺失的 libcronet.dll"
+        );
+    }
+
+    #[test]
+    fn ensure_writable_core_reseeds_cronet_with_core_upgrade() {
+        let tmp = tmpdir();
+        let base = tmp.path();
+        let bundled_dir = base.join("resources-linux");
+        std::fs::create_dir_all(&bundled_dir).unwrap();
+        let bundled = bundled_dir.join("sing-box");
+        std::fs::write(&bundled, b"CORE-OLD").unwrap();
+        std::fs::write(bundled_dir.join("libcronet.so"), b"CRONET-OLD").unwrap();
+        let dest = ensure_writable_core_at(base, "linux", &bundled, "1.12.0").unwrap();
+
+        std::fs::write(&bundled, b"CORE-NEW").unwrap();
+        std::fs::write(bundled_dir.join("libcronet.so"), b"CRONET-NEW").unwrap();
+        ensure_writable_core_at(base, "linux", &bundled, "1.13.0").unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"CORE-NEW");
+        assert_eq!(
+            std::fs::read(core_sidecar_path_for(&dest, "linux").unwrap()).unwrap(),
+            b"CRONET-NEW"
+        );
+    }
+
+    #[test]
+    fn ensure_writable_core_never_injects_bundled_sidecar_into_manual_core() {
+        let tmp = tmpdir();
+        let base = tmp.path();
+        let bundled_dir = base.join("resources-win");
+        std::fs::create_dir_all(&bundled_dir).unwrap();
+        let bundled = bundled_dir.join("sing-box.exe");
+        std::fs::write(&bundled, b"BUNDLED").unwrap();
+        std::fs::write(bundled_dir.join("libcronet.dll"), b"BUNDLED-CRONET").unwrap();
+
+        let dest = writable_core_path_in(base, "windows");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, b"MANUAL").unwrap();
+        write_seed_marker(
+            base,
+            &CoreSeedMarker {
+                version_line: "sing-box version 1.12.0".into(),
+                source: SOURCE_MANUAL.into(),
+            },
+        )
+        .unwrap();
+
+        ensure_writable_core_at(base, "windows", &bundled, "1.13.0").unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"MANUAL");
+        assert!(
+            !core_sidecar_path_for(&dest, "windows").unwrap().exists(),
+            "手动核的 cronet ABI 未知，禁止注入随包 DLL"
+        );
     }
 
     #[test]
