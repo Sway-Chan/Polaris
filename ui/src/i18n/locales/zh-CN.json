@@ -84,7 +84,10 @@
     "itemCount": "{{n}} 条",
     "default": "默认",
     "colon": "：",
-    "listSeparator": "、"
+    "listSeparator": "、",
+    "pageStatus": "第 {{start}}–{{end}} 条，共 {{total}} 条",
+    "previousPage": "上一页",
+    "nextPage": "下一页"
   },
   "sidebar": {
     "home": "主页",
@@ -232,9 +235,6 @@
     "confirmClearClosed": "确认清空",
     "closedCleared": "已清空连接记录",
     "clearClosedFailed": "清空连接记录失败",
-    "pageStatus": "第 {{start}}–{{end}} 条，共 {{total}} 条",
-    "previousPage": "上一页",
-    "nextPage": "下一页",
     "closeFilteredTitle": "关闭当前筛选命中的全部连接",
     "closeFiltered": "关闭当前 {{n}} 条",
     "closeFilteredDone": "已关闭 {{n}} 条连接",

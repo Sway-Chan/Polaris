@@ -16,11 +16,14 @@ describe('长期内存所有权接线', () => {
   it('日志页以 mount token 成对登记与退订，且监听先于水合', () => {
     const logs = source('./components/screens/logs/LogsScreen.tsx');
     const listenAt = logs.indexOf('api.logs.onReceivedBatchReady(onBatch)');
-    const getAt = logs.indexOf('.get(subscriptionId, MAX_RENDERED_ROWS)');
+    const getAt = logs.indexOf('.get(subscriptionId, MAX_BUFFERED_ROWS)');
     expect(listenAt).toBeGreaterThan(0);
     expect(getAt).toBeGreaterThan(listenAt);
     expect(logs).toContain('api.logs.unsubscribe(subscriptionId)');
     expect(logs).toContain('followRef.current');
+    expect(logs).toContain('const LOG_PAGE_SIZE = 50;');
+    expect(logs).toContain('renderedLogs.map');
+    expect(logs).not.toContain('{visible.map((l, i) =>');
   });
 
   it('窗口 reload 与销毁都兜底清理日志订阅', () => {

@@ -338,10 +338,11 @@ h1[tabindex='-1']:focus,
 h1[tabindex='-1']:focus-visible { outline: none; }
 
 /* 底栏按“流状态”重新成组并固定在左侧，右下角留给全局 toast。 */
-.log-foot { justify-content:flex-start; }
+.log-foot { justify-content:flex-start; flex-wrap:wrap; gap:8px 12px; }
 .log-stream-state { display:inline-flex; align-items:center; flex-wrap:wrap; gap:8px 12px; min-width:0; }
 .log-count { color:hsl(var(--fg-dim)); white-space:nowrap; }
 .log-count b { color:hsl(var(--fg)); }
+.log-foot .list-pager { min-height:30px; margin-inline-start:auto; padding:0; }
 
 /* 分段控件族（A 族）选中态文字统一为 flow-hi —— **反向修原型的两级设计**。
  *

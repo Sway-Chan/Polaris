@@ -84,7 +84,10 @@
     "itemCount": "{{n}} مورد",
     "default": "پیش‌فرض",
     "colon": ": ",
-    "listSeparator": "، "
+    "listSeparator": "، ",
+    "pageStatus": "{{start}} تا {{end}} از {{total}}",
+    "previousPage": "صفحهٔ قبل",
+    "nextPage": "صفحهٔ بعد"
   },
   "sidebar": {
     "home": "خانه",
@@ -232,9 +235,6 @@
     "confirmClearClosed": "تأیید پاک کردن",
     "closedCleared": "تاریخچهٔ اتصالات پاک شد",
     "clearClosedFailed": "پاک کردن تاریخچهٔ اتصالات ناموفق بود",
-    "pageStatus": "{{start}} تا {{end}} از {{total}}",
-    "previousPage": "صفحهٔ قبل",
-    "nextPage": "صفحهٔ بعد",
     "closeFilteredTitle": "بستن همه اتصالات منطبق با فیلتر فعلی",
     "closeFiltered": "بستن {{n}} مورد فعلی",
     "closeFilteredDone": "{{n}} اتصال بسته شد",

@@ -74,15 +74,43 @@ describe('日志 follow 的滚动来源判据', () => {
     expect(isLogViewAtBottom(metrics(31))).toBe(false);
   });
 
-  it('生产接线保留 150ms 合批与 500 行预算，并覆盖四类用户滚动输入', () => {
+  it('生产接线保留 150ms 合批与 500 行数据预算，DOM 每页不超过 50 行', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const screen = readFileSync(resolve(here, 'LogsScreen.tsx'), 'utf8');
     const backend = readFileSync(resolve(here, '../../../../../src-tauri/src/commands/misc.rs'), 'utf8');
     expect(backend).toContain('const LOG_BATCH_INTERVAL_MS: u64 = 150;');
-    expect(screen).toContain('const MAX_RENDERED_ROWS = 500;');
+    expect(screen).toContain('const MAX_BUFFERED_ROWS = 500;');
+    expect(screen).toContain('const LOG_PAGE_SIZE = 50;');
+    expect(screen).toContain('const renderedLogs = visible.slice(logPagination.start, logPagination.end);');
     expect(screen).toContain('shouldPauseLogFollow({');
     for (const event of ['wheel', 'touchstart', 'pointerdown', 'pointermove', 'keydown']) {
       expect(screen).toContain(`addEventListener('${event}'`);
     }
+  });
+
+  it('翻历史页会暂停 follow，恢复时重新锁定最新页', () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const screen = readFileSync(resolve(here, 'LogsScreen.tsx'), 'utf8');
+    expect(screen).toContain('follow ? Number.MAX_SAFE_INTEGER : logPage');
+
+    const pauseAt = screen.indexOf('const pauseFollow');
+    const pauseBody = screen.slice(pauseAt, screen.indexOf('}, []);', pauseAt));
+    expect(pauseBody.indexOf('followRef.current = false')).toBeLessThan(
+      pauseBody.indexOf('setFollow(false)')
+    );
+    expect(pauseBody.indexOf('setLogPage(displayedLogPageRef.current)')).toBeLessThan(
+      pauseBody.indexOf('setFollow(false)')
+    );
+
+    const pageAt = screen.indexOf('const onLogPageChange');
+    const pageBody = screen.slice(pageAt, screen.indexOf('}, []);', pageAt));
+    expect(pageBody).toContain('followRef.current = false');
+    expect(pageBody).toContain('setLogPage(page)');
+
+    const resumeAt = screen.indexOf('const resumeFollow');
+    const resumeBody = screen.slice(resumeAt, screen.indexOf('}, [scrollToBottom]);', resumeAt));
+    expect(resumeBody.indexOf('followRef.current = true')).toBeLessThan(
+      resumeBody.indexOf('setFollow(true)')
+    );
   });
 });

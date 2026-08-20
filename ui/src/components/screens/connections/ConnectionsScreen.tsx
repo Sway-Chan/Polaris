@@ -31,6 +31,7 @@ import { api } from '@/ipc';
 import { toast } from '@/lib/error-handler';
 import { useAppStore } from '@/store/app-store';
 import { RuleSubjectMenuItems } from '@/components/rule-subject-menu';
+import { ListPager, pageWindow } from '@/components/ListPager';
 import { clampToWrap } from '@/lib/overlay-position';
 import { createTopicSubscription } from '@/lib/topic-subscription';
 import { useConfirmTwice } from '@/lib/confirm-twice';
@@ -80,9 +81,10 @@ type SortKey =
 /**
  * 每页上限。不用「超长占位行 + 虚拟滚动」：WebKit 会按整个 table 滚动面维持
  * graphics surface，即使 DOM 只有十几行，1000 条历史的占位高度仍可把图形驻留推到数百 MiB。
- * 50 行约为 5 个视口，连续浏览不至于过碎；搜索/排序仍先作用于全部 1000 条数据。
+ * `.152` 同包压力下活动页实际达到 42 行，50 行滚动面会把 graphics 高水位明显抬高。
+ * 20 行约为两个默认视口、实际高度约 1060px；搜索/排序仍先作用于全部 1000 条数据。
  */
-const CONNECTION_PAGE_SIZE = 50;
+const CONNECTION_PAGE_SIZE = 20;
 /**
  * TOP 视图展示条数（原型 seg2 :2026，默认 10）。
  *
@@ -543,23 +545,20 @@ export function ConnectionsScreen() {
     }
     return list;
   }, [listRows, matchRow, sort, sortAt, sortSequence]);
-  const pageCount = Math.max(1, Math.ceil(filteredRows.length / CONNECTION_PAGE_SIZE));
-  const visiblePage = Math.min(page, pageCount - 1);
-  const pageStart = visiblePage * CONNECTION_PAGE_SIZE;
-  const pageEnd = Math.min(filteredRows.length, pageStart + CONNECTION_PAGE_SIZE);
-  const visibleRows = filteredRows.slice(pageStart, pageEnd);
+  const pagination = pageWindow(filteredRows.length, page, CONNECTION_PAGE_SIZE);
+  const visibleRows = filteredRows.slice(pagination.start, pagination.end);
 
   useEffect(() => {
     setPage(0);
   }, [view, q, sort]);
 
   useEffect(() => {
-    if (page !== visiblePage) setPage(visiblePage);
-  }, [page, visiblePage]);
+    if (page !== pagination.page) setPage(pagination.page);
+  }, [page, pagination.page]);
 
   useEffect(() => {
     if (tableScrollRef.current) tableScrollRef.current.scrollTop = 0;
-  }, [visiblePage, view, q, sort]);
+  }, [pagination.page, view, q, sort]);
 
   /* ── 关单条 / 关全部 ──
    * 后端 connections_close / connections_close_all 已真接管理 API gRPC（commands/proxy.rs:151-188），
@@ -1105,35 +1104,11 @@ export function ConnectionsScreen() {
             </table>
           </div>
         </div>
-        {filteredRows.length > CONNECTION_PAGE_SIZE && (
-          <div className="conn-pager" aria-live="polite">
-            <span>
-              {t('connections.pageStatus', {
-                start: pageStart + 1,
-                end: pageEnd,
-                total: filteredRows.length,
-              })}
-            </span>
-            <div className="conn-pager-actions">
-              <button
-                type="button"
-                className="btn ghost conn-page-btn"
-                disabled={visiblePage === 0}
-                onClick={() => setPage((current) => Math.max(0, current - 1))}
-              >
-                {t('connections.previousPage')}
-              </button>
-              <button
-                type="button"
-                className="btn ghost conn-page-btn"
-                disabled={visiblePage >= pageCount - 1}
-                onClick={() => setPage((current) => Math.min(pageCount - 1, current + 1))}
-              >
-                {t('connections.nextPage')}
-              </button>
-            </div>
-          </div>
-        )}
+        <ListPager
+          {...pagination}
+          total={filteredRows.length}
+          onPageChange={setPage}
+        />
         {/* 行右键菜单：域名/IP/进程先选一个规则对象，复制、新建、追加三条动作共用该对象。 */}
         {menu && (
           <div

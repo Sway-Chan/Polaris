@@ -8,8 +8,8 @@
  *      .log-tb-primary（日志级别 / 来源 + 诊断模式 / 导出 / 日志目录）
  *      .log-tb-main（搜索 + 自动滚动 / 脱敏 / 复制 / 清空）
  *    开关态由底色与 `aria-pressed` 同时表达；清空使用原地二次确认，暂停缓冲数由 `.cnt` 徽标承载。
- *  - #log-view.log-view（动态行 = 原型 renderLogs() 的 .log-line 模板逐行 .map）
- *  - .log-foot（.log-live + 行数）
+ *  - #log-view.log-view（当前页 = 原型 renderLogs() 的 .log-line 模板逐行 .map）
+ *  - .log-foot（.log-live + 完整结果行数 + 分页）
  *
  * 接线（保留，见 vault ~/docs/polaris/design/polaris-ui-rebuild-plan.md C3 台账）：
  *  - useAppStore(config/saveConfig/privacyMode)
@@ -55,6 +55,7 @@ import { runtimeLevelView } from './runtime-level';
 import type { LogLevel, RuntimeLogLevel } from '@/contracts/types';
 import { Csel, type CselOption } from '@/components/dialogs/Csel';
 import { InfoIcon } from '@/components/InfoIcon';
+import { ListPager, pageWindow } from '@/components/ListPager';
 import { fmtBytes } from '@/components/screens/shared/format';
 import { isUpwardLogScrollKey, shouldPauseLogFollow } from './follow-scroll';
 
@@ -71,8 +72,10 @@ const LEVEL_SELECT_OPTIONS: CselOption[] = LEVEL_OPTS.map((value) => ({
   value,
   label: value.toUpperCase(),
 }));
-/** 单次绘制 / IPC 结果上限。它不是检索历史上限；非空搜索由后端扫描完整保留环。 */
-const MAX_RENDERED_ROWS = 500;
+/** IPC / 页面内存结果上限。它不是检索历史上限；非空搜索由后端扫描完整保留环。 */
+const MAX_BUFFERED_ROWS = 500;
+/** 只限制实际挂载的日志 DOM；500 条内存结果、搜索范围与实时到达节奏均保持不变。 */
+const LOG_PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 180;
 let logSubscriptionSeq = 0;
 
@@ -143,6 +146,7 @@ export function LogsScreen() {
   const [searchSnapshot, setSearchSnapshot] = useState<LogSearchSnapshot | null>(null);
   const [logStreamReady, setLogStreamReady] = useState(false);
   const [follow, setFollow] = useState(true);
+  const [logPage, setLogPage] = useState(0);
   /** 直播监听只在 mount 时建立一次；用 ref 读取最新 follow，避免每次暂停都退订、重水合。 */
   const followRef = useRef(follow);
   followRef.current = follow;
@@ -159,6 +163,8 @@ export function LogsScreen() {
   const lastIdRef = useRef(-1);
   /** 只记最近一次明确的用户滚动输入；首次水合/程序化吸底没有这个证据。 */
   const lastUserScrollIntentAtRef = useRef<number | null>(null);
+  /** follow 态的真实末页会随结果数变化；暂停前把这一页固化，避免瞬间跳回旧页。 */
+  const displayedLogPageRef = useRef(0);
 
   /** 清空的原地二次确认 —— 走全仓唯一实现（`lib/confirm-twice.ts`），不再自己管定时器。 */
   const { armed, confirmTwice } = useConfirmTwice();
@@ -272,7 +278,7 @@ export function LogsScreen() {
             rows: mergeHydration(
               previous?.key === criteria.key ? previous.rows : [],
               matched,
-              MAX_RENDERED_ROWS
+              MAX_BUFFERED_ROWS
             ),
           }));
         }
@@ -280,12 +286,12 @@ export function LogsScreen() {
       if (followRef.current) {
         setLogs((prev) => {
           const next = [...prev, ...batch];
-          return next.length > MAX_RENDERED_ROWS ? next.slice(-MAX_RENDERED_ROWS) : next;
+          return next.length > MAX_BUFFERED_ROWS ? next.slice(-MAX_BUFFERED_ROWS) : next;
         });
       } else {
         pendingRef.current.push(...batch);
-        if (pendingRef.current.length > MAX_RENDERED_ROWS) {
-          pendingRef.current = pendingRef.current.slice(-MAX_RENDERED_ROWS);
+        if (pendingRef.current.length > MAX_BUFFERED_ROWS) {
+          pendingRef.current = pendingRef.current.slice(-MAX_BUFFERED_ROWS);
         }
         setPendingCount(pendingRef.current.length);
       }
@@ -300,17 +306,17 @@ export function LogsScreen() {
         return;
       }
       setLogStreamReady(true);
-      const batch = await api.logs.get(subscriptionId, MAX_RENDERED_ROWS);
+      const batch = await api.logs.get(subscriptionId, MAX_BUFFERED_ROWS);
       if (!alive) {
         // invoke 可能晚于 React cleanup 返回；token 退订只会删除这个陈旧实例。
         void api.logs.unsubscribe(subscriptionId);
         return;
       }
       if (!Array.isArray(batch)) return;
-      const snapshot = batch.slice(-MAX_RENDERED_ROWS);
+      const snapshot = batch.slice(-MAX_BUFFERED_ROWS);
       const top = maxLogId(snapshot);
       if (top !== null && top > lastIdRef.current) lastIdRef.current = top;
-      setLogs((prev) => mergeHydration(prev, snapshot, MAX_RENDERED_ROWS));
+      setLogs((prev) => mergeHydration(prev, snapshot, MAX_BUFFERED_ROWS));
     })()
       .catch(() => {
         /* 非 Tauri 忽略 */
@@ -334,7 +340,7 @@ export function LogsScreen() {
     const key = activeSearchKey;
     const timer = window.setTimeout(() => {
       void api.logs
-        .search(query, displayLevel, source, MAX_RENDERED_ROWS)
+        .search(query, displayLevel, source, MAX_BUFFERED_ROWS)
         .then((batch) => {
           if (!alive || !Array.isArray(batch)) return;
           setSearchSnapshot((previous) => ({
@@ -342,7 +348,7 @@ export function LogsScreen() {
             rows: mergeHydration(
               previous?.key === key ? previous.rows : [],
               batch,
-              MAX_RENDERED_ROWS
+              MAX_BUFFERED_ROWS
             ),
           }));
         })
@@ -423,6 +429,12 @@ export function LogsScreen() {
     if (el) el.scrollTop = el.scrollHeight;
   }, []);
 
+  const pauseFollow = useCallback(() => {
+    followRef.current = false;
+    setLogPage(displayedLogPageRef.current);
+    setFollow(false);
+  }, []);
+
   /* ── follow 时自动滚动到底 ── */
   useEffect(() => {
     if (follow) scrollToBottom();
@@ -435,7 +447,7 @@ export function LogsScreen() {
    * 只做「离底 → 暂停」，不做「回底 → 自动恢复」：恢复要把 pending 一次性回填并跳到底部，那是个有
    * 可见后果的动作，得由「回到底部」/「自动滚动」按钮显式触发，不该被一次滚过头的滚轮顺带做掉。
    *
-   * 关键是 scroll 不等于用户滚动：首次 500 行水合、字体/layout 变化、`scrollTop`
+   * 关键是 scroll 不等于用户滚动：首次水合（缓冲可达 500 行、DOM 按页）、字体/layout 变化、`scrollTop`
    * 程序化吸底都可能发 scroll。因此先记 wheel/touch/pointer/向上键盘的近期意图，再由
    * [`shouldPauseLogFollow`] 合取“正在 follow + 有用户意图 + 已离底”；程序事件不能再把 follow 打掉。 */
   useEffect(() => {
@@ -459,7 +471,7 @@ export function LogsScreen() {
           now: performance.now(),
         })
       ) {
-        setFollow(false);
+        pauseFollow();
       }
     };
     el.addEventListener('wheel', markUserIntent, { passive: true });
@@ -476,7 +488,7 @@ export function LogsScreen() {
       el.removeEventListener('keydown', onKeyDown);
       el.removeEventListener('scroll', onScroll);
     };
-  }, []);
+  }, [pauseFollow]);
 
   /* 清空按钮的两段式确认超时由 `useConfirmTwice` 自己在卸载时清理，此处不再各管一份。 */
 
@@ -637,6 +649,17 @@ export function LogsScreen() {
     },
     [activeSearchKey, logs, query, searchSnapshot, source, threshold]
   );
+  const logPagination = pageWindow(
+    visible.length,
+    follow ? Number.MAX_SAFE_INTEGER : logPage,
+    LOG_PAGE_SIZE
+  );
+  displayedLogPageRef.current = logPagination.page;
+  const renderedLogs = visible.slice(logPagination.start, logPagination.end);
+
+  useEffect(() => {
+    if (!follow && logPage !== logPagination.page) setLogPage(logPagination.page);
+  }, [follow, logPage, logPagination.page]);
 
   /** 是否对日志正文脱敏（隐私锁 或 C18 常态脱敏偏好）—— 渲染与复制**同一判定、同一函数**。 */
   const redacting = shouldRedactLogs(privacyMode, redactLogs);
@@ -645,7 +668,7 @@ export function LogsScreen() {
     [redacting]
   );
 
-  /* ── 复制当前可见行到剪贴板 ──
+  /* ── 复制当前筛选结果到剪贴板（分页只约束 DOM，不缩小复制范围）──
    * 复用 `visible` + `renderMessage`：复制路径此前自己抄了一份过滤条件、且**绕过了脱敏**——脱敏开关/
    * 隐私锁全开时点复制，粘出来的仍是明文域名与 IP（用户以为已脱敏，直接贴进 issue）。两份过滤条件
    * 各自演化本身就是这类漂移的成因，故一并收敛到同一处，而不是在副本上补一个 redact 调用。 */
@@ -674,17 +697,26 @@ export function LogsScreen() {
       setPendingCount(0);
       setLogs((prev) => {
         const merged = [...prev, ...pending];
-        return merged.length > MAX_RENDERED_ROWS ? merged.slice(-MAX_RENDERED_ROWS) : merged;
+        return merged.length > MAX_BUFFERED_ROWS ? merged.slice(-MAX_BUFFERED_ROWS) : merged;
       });
     }
+    followRef.current = true;
     setFollow(true);
     scrollToBottom();
   }, [scrollToBottom]);
 
   const toggleFollow = useCallback(() => {
-    if (follow) setFollow(false);
+    if (follow) pauseFollow();
     else resumeFollow();
-  }, [follow, resumeFollow]);
+  }, [follow, pauseFollow, resumeFollow]);
+
+  const onLogPageChange = useCallback((page: number) => {
+    followRef.current = false;
+    setFollow(false);
+    setLogPage(page);
+    const element = viewRef.current;
+    if (element) element.scrollTop = 0;
+  }, []);
 
   /* ── 搜索高亮：转义正则，<mark> 包裹命中（对齐原型 renderLogs 的 mark 替换）── */
   const highlight = useCallback(
@@ -955,7 +987,7 @@ export function LogsScreen() {
         tabIndex={0}
         aria-label={t('logs.liveStream')}
       >
-        {visible.map((l, i) => (
+        {renderedLogs.map((l, i) => (
           // key 用后端单调 `_id`（环形缓冲 seq）：缓冲滑动丢最旧时剩余行 key 不变。
           // 回落 `timestamp-index` 仅为缺字段的非 Tauri / 旧后端兜底（那时才有整列重 key 的老问题）。
           <div className="log-line" key={l._id ?? `${l.timestamp}-${i}`}>
@@ -998,6 +1030,11 @@ export function LogsScreen() {
             </button>
           )}
         </span>
+        <ListPager
+          {...logPagination}
+          total={visible.length}
+          onPageChange={onLogPageChange}
+        />
       </div>
     </section>
   );

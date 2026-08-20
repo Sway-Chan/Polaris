@@ -84,7 +84,10 @@
     "itemCount": "{{n}} items",
     "default": "Default",
     "colon": ": ",
-    "listSeparator": ", "
+    "listSeparator": ", ",
+    "pageStatus": "{{start}}–{{end}} of {{total}}",
+    "previousPage": "Previous page",
+    "nextPage": "Next page"
   },
   "sidebar": {
     "home": "Home",
@@ -232,9 +235,6 @@
     "confirmClearClosed": "Confirm Clear",
     "closedCleared": "Connection history cleared",
     "clearClosedFailed": "Failed to clear connection history",
-    "pageStatus": "{{start}}–{{end}} of {{total}}",
-    "previousPage": "Previous page",
-    "nextPage": "Next page",
     "closeFilteredTitle": "Close all connections matching the current filter",
     "closeFiltered": "Close current {{n}}",
     "closeFilteredDone": "Closed {{n}} connections",

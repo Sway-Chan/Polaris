@@ -96,10 +96,10 @@ describe('接线：LogsScreen 的水合腿真的换成了合并', () => {
 
   it('监听真就绪后才水合，搜索由后端完整历史执行', () => {
     const ready = src.indexOf('api.logs.onReceivedBatchReady(onBatch)');
-    const hydrate = src.indexOf('api.logs.get(subscriptionId, MAX_RENDERED_ROWS)');
+    const hydrate = src.indexOf('api.logs.get(subscriptionId, MAX_BUFFERED_ROWS)');
     expect(ready).toBeGreaterThan(0);
     expect(hydrate).toBeGreaterThan(ready);
-    expect(src).toMatch(/api\.logs\s*\.search\(query, displayLevel, source, MAX_RENDERED_ROWS\)/);
-    expect(src).toContain('const MAX_RENDERED_ROWS = 500');
+    expect(src).toMatch(/api\.logs\s*\.search\(query, displayLevel, source, MAX_BUFFERED_ROWS\)/);
+    expect(src).toContain('const MAX_BUFFERED_ROWS = 500');
   });
 });

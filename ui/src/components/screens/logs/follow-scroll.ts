@@ -40,7 +40,8 @@ export function isUpwardLogScrollKey(key: string, shiftKey = false): boolean {
 /**
  * scroll 事件是否应暂停 follow。
  *
- * DOM 在首次 500 行水合、字体/layout 更新、以及 `scrollTop = scrollHeight` 时也会发 scroll；这些
+ * DOM 在首次水合（缓冲可达 500 行、DOM 按页）、字体/layout 更新、以及 `scrollTop = scrollHeight`
+ * 时也会发 scroll；这些
  * 事件没有近期用户滚动意图，必须忽略。只有“正在跟随 + 用户刚操作 + 已离底”三项同时成立才暂停。
  */
 export function shouldPauseLogFollow(input: FollowPauseInput): boolean {

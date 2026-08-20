@@ -145,14 +145,15 @@ describe('detail 订阅腿随明细视图开关', () => {
 });
 
 describe('连接列表内存边界', () => {
-  it('列表按视图条件挂载且最多渲染 50 行，不再用超长占位行', () => {
+  it('列表按视图条件挂载且最多渲染 20 行，不再用超长占位行', () => {
     expect(SRC).toContain("(view === 'active' || view === 'closed') && (");
     expect(SRC).not.toMatch(/id="conn-table-view"\s+hidden=/);
-    expect(SRC).toContain('const CONNECTION_PAGE_SIZE = 50');
-    expect(SRC).toContain('filteredRows.slice(pageStart, pageEnd)');
+    expect(SRC).toContain('const CONNECTION_PAGE_SIZE = 20');
+    expect(SRC).toContain('pageWindow(filteredRows.length, page, CONNECTION_PAGE_SIZE)');
+    expect(SRC).toContain('filteredRows.slice(pagination.start, pagination.end)');
     expect(SRC).not.toContain('conn-spacer');
     expect(SRC).not.toContain('bottomSpace');
-    expect(SRC).toContain("t('connections.pageStatus'");
+    expect(SRC).toContain('<ListPager');
     expect(SRC).toContain('<colgroup>');
     expect(SRC).toContain('<col className="c-type" />');
     expect(STYLE).toContain('table-layout:fixed');

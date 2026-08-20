@@ -1103,10 +1103,10 @@ button{ font:inherit; cursor:pointer; color:inherit; border:0; background:none; 
 #conn-table-view[hidden], #conn-top-view[hidden]{ display:none; }
 .conn-toolbar, #s-connections > .phead{ flex:none; }
 .conn-scroll{ overflow:auto; border:1px solid hsl(var(--line)); border-radius:var(--r); flex:1; min-height:130px; }
-.conn-pager{ display:flex; align-items:center; justify-content:space-between; gap:12px; flex:none;
+.list-pager{ display:flex; align-items:center; justify-content:space-between; gap:12px; flex:none;
   min-height:38px; padding:7px 2px 0; color:hsl(var(--fg-faint)); font-size:11px; font-variant-numeric:tabular-nums; }
-.conn-pager-actions{ display:flex; align-items:center; gap:6px; }
-.conn-page-btn{ min-height:30px; padding:5px 10px; font-size:11px; }
+.list-pager-actions{ display:flex; align-items:center; gap:6px; }
+.list-page-btn{ min-height:30px; padding:5px 10px; font-size:11px; }
 /* 两个视图共享原生 table 布局，列宽只由各自 colgroup 控制。920px 是横向滚动下限；
    窄窗口滚动整表，不再把 table DOM 混成 grid 后压扁单个单元格。 */
 .conn-table{ width:100%; min-width:920px; table-layout:fixed; border-collapse:separate; border-spacing:0;
