@@ -205,6 +205,8 @@ pub mod exec_tests_helpers {
     #[derive(Default)]
     pub struct MockRunner {
         pub calls: RefCell<Vec<Command>>,
+        /// 与 `calls` 同序的预算；用于证明可选清理没有偷用必要事务的宽超时。
+        pub timeouts: RefCell<Vec<Duration>>,
         /// 按调用序返回的 stdout（队列；空则回空串）。
         pub stdouts: RefCell<Vec<String>>,
         /// 按「argv 含此子串」匹配返回 stdout（比队列更稳，不依赖调用序）。
@@ -237,6 +239,17 @@ pub mod exec_tests_helpers {
                 .any(|c| c.args.iter().any(|a| a.contains(substr)))
         }
 
+        /// 首条 argv 含该子串的调用预算。
+        pub fn timeout_for_arg(&self, substr: &str) -> Option<Duration> {
+            self.calls
+                .borrow()
+                .iter()
+                .zip(self.timeouts.borrow().iter().copied())
+                .find_map(|(c, timeout)| {
+                    c.args.iter().any(|a| a.contains(substr)).then_some(timeout)
+                })
+        }
+
         /// argv 含该子串的调用次数。
         pub fn count_arg(&self, substr: &str) -> usize {
             self.calls
@@ -260,8 +273,9 @@ pub mod exec_tests_helpers {
     }
 
     impl CommandRunner for MockRunner {
-        fn run(&self, cmd: &Command, _timeout: Duration) -> Result<CommandOutput, String> {
+        fn run(&self, cmd: &Command, timeout: Duration) -> Result<CommandOutput, String> {
             self.calls.borrow_mut().push(cmd.clone());
+            self.timeouts.borrow_mut().push(timeout);
             if self.fail_programs.iter().any(|p| p == &cmd.program) {
                 return Err("mock failure (program)".into());
             }

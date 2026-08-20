@@ -31,6 +31,15 @@ use std::time::Duration;
 /// 会把同步的接管流程钉死 → 统一给 10s 上限（远宽于这些命令的正常耗时，仅防挂起）。
 pub const PROXY_EXEC_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Windows 旧版 QUIC 防火墙规则清理的独立预算。
+///
+/// 这条命令只是在代理启停时清扫旧版本可能遗留的 `Polaris_Block_QUIC`，不是系统代理成立条件；
+/// 规则不存在或普通用户无权删除时都应 best-effort 让位。若与必要的注册表事务共用 10s 预算，
+/// `netsh advfirewall` 在防火墙服务繁忙时会把已经成功的连接动作额外钉住十余秒
+/// （Windows 真机 2026-08-20：15_254ms），用户看到的是“代理启动卡死”。750ms 足够健康本机命令
+/// 完成，同时把可选清理的最坏墙钟锁在首次点击可接受的范围内；停止/恢复腿也复用同一预算。
+const WINDOWS_QUIC_CLEANUP_TIMEOUT: Duration = Duration::from_millis(750);
+
 // ── 平台命令构造（纯函数，跨平台可单测；对齐 Polaris 三平台 enable/disable argv）──
 
 // `Command` 的单一真值在 `exec`（此前 proxy_ops::Command 与 dns_flush::FlushCommand 是两份逐字相同的
@@ -1131,8 +1140,17 @@ impl<R: CommandRunner> SystemProxyOpsImpl<R> {
     }
 
     fn run(&self, cmd: &Command) -> Result<crate::exec::CommandOutput, SystemIntegrationError> {
+        self.run_with_timeout(cmd, PROXY_EXEC_TIMEOUT)
+    }
+
+    /// 复用唯一命令执行缝，只为明确属于 best-effort 的动作收紧墙钟；必要事务仍走 [`Self::run`]。
+    fn run_with_timeout(
+        &self,
+        cmd: &Command,
+        timeout: Duration,
+    ) -> Result<crate::exec::CommandOutput, SystemIntegrationError> {
         self.runner
-            .run(cmd, PROXY_EXEC_TIMEOUT)
+            .run(cmd, timeout)
             .map_err(SystemIntegrationError::proxy)
     }
 
@@ -1272,7 +1290,10 @@ impl<R: CommandRunner> SystemProxyOps for SystemProxyOpsImpl<R> {
                     // rollback 处理。QUIC 规则只是旧版本可能留下的可选清理：不存在时 netsh 本身也
                     // 返回 exit=1（doveh 真机已证），故与 clear/restore 两腿保持同一 best-effort 语义。
                     self.run_all(&windows_enable_commands(&self.reg_exe, req))?;
-                    if let Err(err) = self.run(&windows_clear_quic_command(&self.netsh_exe)) {
+                    if let Err(err) = self.run_with_timeout(
+                        &windows_clear_quic_command(&self.netsh_exe),
+                        WINDOWS_QUIC_CLEANUP_TIMEOUT,
+                    ) {
                         log::warn!(
                             "Windows QUIC legacy firewall-rule cleanup skipped after proxy enable: {err}"
                         );
@@ -1310,7 +1331,10 @@ impl<R: CommandRunner> SystemProxyOps for SystemProxyOpsImpl<R> {
             Platform::Win => {
                 // 禁用时务必先清 QUIC 规则（上游 disableProxy 首行）。best-effort：清不掉不阻断禁用
                 // —— 关代理是断网防线，不能被一条防火墙规则清理失败拖住。
-                let _ = self.run(&windows_clear_quic_command(&self.netsh_exe));
+                let _ = self.run_with_timeout(
+                    &windows_clear_quic_command(&self.netsh_exe),
+                    WINDOWS_QUIC_CLEANUP_TIMEOUT,
+                );
                 self.run(&windows_disable_commands(&self.reg_exe))
                     .map(|_| ())
             }
@@ -1335,7 +1359,10 @@ impl<R: CommandRunner> SystemProxyOps for SystemProxyOpsImpl<R> {
         }
         match self.platform {
             Platform::Win => {
-                let _ = self.run(&windows_clear_quic_command(&self.netsh_exe));
+                let _ = self.run_with_timeout(
+                    &windows_clear_quic_command(&self.netsh_exe),
+                    WINDOWS_QUIC_CLEANUP_TIMEOUT,
+                );
                 // 回写原始 ProxyServer 串 + ProxyEnable=1。
                 self.run_all(&windows_restore_commands(&self.reg_exe, original))
             }
@@ -2473,6 +2500,16 @@ mod tests {
         assert!(ops.runner.ran_arg("ProxyEnable"));
         assert!(ops.runner.ran_arg("ProxyOverride"));
         assert!(ops.runner.ran_arg("Polaris_Block_QUIC"));
+        assert_eq!(
+            ops.runner.timeout_for_arg("Polaris_Block_QUIC"),
+            Some(WINDOWS_QUIC_CLEANUP_TIMEOUT),
+            "可选 QUIC 清理必须使用独立短预算，不能再把启动主链钉住 10s"
+        );
+        assert_eq!(
+            ops.runner.timeout_for_arg("ProxyServer"),
+            Some(PROXY_EXEC_TIMEOUT),
+            "必要注册表事务仍保留宽预算"
+        );
         // 用 System32 绝对路径（PATH 缺 System32 的设备也能跑）。
         assert!(ops
             .runner
