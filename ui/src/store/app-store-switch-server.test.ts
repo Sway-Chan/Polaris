@@ -23,6 +23,7 @@ vi.mock('../ipc', () => ({
 }));
 
 import { useAppStore } from './app-store';
+import { resetConfigWriteLock } from '../lib/config-write-lock';
 
 /** 起核前的形态：config 里存着旧的选中值（这里用直连哨兵 = 真机命中的那一版）。 */
 function seed(oldSelected: string) {
@@ -38,7 +39,9 @@ function seed(oldSelected: string) {
 
 describe('app-store switchServer', () => {
   beforeEach(() => {
-    switchMock.mockClear();
+    switchMock.mockReset();
+    switchMock.mockResolvedValue(undefined);
+    resetConfigWriteLock();
   });
 
   it('切节点后：扁平 selectedServerId 与 config.selectedServerId 必须都更新', async () => {
@@ -87,5 +90,29 @@ describe('app-store switchServer', () => {
     const s = useAppStore.getState();
     expect(s.selectedServerId).toBe('n-hk');
     expect(s.config).toBeNull();
+  });
+
+  it('快速连续切换严格按点击顺序入后端，最后一次选择最终胜出', async () => {
+    seed('n-a');
+    let releaseFirst!: () => void;
+    switchMock.mockImplementationOnce(
+      () => new Promise<undefined>((resolve) => {
+        releaseFirst = () => resolve(undefined);
+      }),
+    );
+
+    const first = useAppStore.getState().switchServer('n-b');
+    const last = useAppStore.getState().switchServer('n-c');
+    await Promise.resolve();
+
+    expect(switchMock.mock.calls.map(([id]) => id)).toEqual(['n-b']);
+    releaseFirst();
+    await first;
+    await last;
+
+    expect(switchMock.mock.calls.map(([id]) => id)).toEqual(['n-b', 'n-c']);
+    const s = useAppStore.getState();
+    expect(s.selectedServerId).toBe('n-c');
+    expect(s.config?.selectedServerId).toBe('n-c');
   });
 });

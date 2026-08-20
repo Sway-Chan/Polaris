@@ -90,9 +90,13 @@ describe('接线：主窗里的全量配置写必须都在闸门内', () => {
   });
 
   // 变异对照：把任一处的 `withConfigWriteLock(...)` 拆掉、只留裸调用 → 对应断言转红。
-  it('两处都真的裹在 withConfigWriteLock 里', () => {
-    expect(readFileSync(join(SRC, 'store/app-store.ts'), 'utf8')).toContain(
+  it('三处都真的裹在 withConfigWriteLock 里', () => {
+    const appStore = readFileSync(join(SRC, 'store/app-store.ts'), 'utf8');
+    expect(appStore).toContain(
       'withConfigWriteLock(() => api.config.save(config))'
+    );
+    expect(appStore).toContain(
+      'withConfigWriteLock(() => api.server.switch(serverId))'
     );
     // performSave 是薄壳：整个函数体（**含开头读 entries**）都在临界区内。
     expect(readFileSync(join(SRC, 'store/staged-config-store.ts'), 'utf8')).toContain(
@@ -100,8 +104,12 @@ describe('接线：主窗里的全量配置写必须都在闸门内', () => {
     );
   });
 
-  // 不可嵌套（临界区内再入队 = 自锁）。当前两个使用点互不调用；新增第三处必须先读头注那条。
-  it('闸门只有两个生产使用点', () => {
+  // 不可嵌套（临界区内再入队 = 自锁）。当前三个使用点互不调用；新增使用点必须先读头注那条。
+  it('闸门只有三个生产使用点', () => {
+    const appStore = readFileSync(join(SRC, 'store/app-store.ts'), 'utf8');
+    const stagedStore = readFileSync(join(SRC, 'store/staged-config-store.ts'), 'utf8');
+    expect((appStore.match(/withConfigWriteLock\(\(\) =>/g) ?? []).length).toBe(2);
+    expect((stagedStore.match(/withConfigWriteLock\(\(\) =>/g) ?? []).length).toBe(1);
     expect(filesWith('withConfigWriteLock(() =>', ['config-write-lock.ts'])).toEqual([
       'store/app-store.ts',
       'store/staged-config-store.ts',

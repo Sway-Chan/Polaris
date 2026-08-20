@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering}
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use tokio::sync::Notify;
+use tokio::sync::{Mutex as AsyncMutex, Notify};
 
 use polaris_config_engine::builder::custom_rule_files::{
     build_custom_rule_files, is_custom_rule_orphan_file,
@@ -1316,6 +1316,11 @@ pub struct ProxyRuntime {
     pending_switch: RwLock<Option<(u64, Value, bool)>>,
     /// switch 快照 id 发号器（与 force_restart_seq 同构，各自独立编号）。
     switch_seq: AtomicU64,
+    /// 配置入核单飞锁。正常热切换含管理 API I/O；没有这把锁时，快速连续切节点会让多个
+    /// `switch_mode` 同时基于同一份 `current_config` 规划，较慢的旧 PUT/commit 可在新请求之后落地，
+    /// 表现为最后一次点击被盖回、继而由错误快照触发多余重启。Tokio Mutex 按等待顺序放行，且锁只护
+    /// 配置入核流水线，不与同步 [`LifecycleGate`] / 配置写锁混用。
+    switch_serial: AsyncMutex<()>,
     /// 「保存不重启」欠下的账：本次运行核起来之后，是否发生过被 `defer_restart` 降级的结构性变更。
     ///
     /// # 为什么是一个记账标记而不是现算的差集
@@ -1981,6 +1986,7 @@ impl ProxyRuntime {
             switch_snapshot: RwLock::new(None),
             pending_switch: RwLock::new(None),
             switch_seq: AtomicU64::new(1),
+            switch_serial: AsyncMutex::new(()),
             restart_deferred: AtomicBool::new(false),
             crash_recovery: Mutex::new(CrashRecoveryMachine::default()),
             diagnostics: Mutex::new(DiagnosticCounters::new()),
@@ -5185,6 +5191,9 @@ impl ProxyRuntime {
         new_config: Value,
         defer_restart: bool,
     ) -> SwitchOutcome {
+        // 管理 API PUT、current_config commit 与重启判定必须是一个串行事务。尤其要排在 lifecycle
+        // busy 判定之前：等待期间可能恰好进入/退出重启，拿锁后必须重新看当下 gate，而非沿用旧快照。
+        let _switch_guard = self.switch_serial.lock().await;
         // ── 腿 0：lifecycle 在飞 → 暂存重放（顺序门，见方法文档）──
         if self.gate.is_busy() {
             let id = self.switch_seq.fetch_add(1, Ordering::SeqCst);
@@ -12007,6 +12016,34 @@ mod tests {
             probe_pool_ports: vec![],
         });
         *rt.current_config.write().unwrap() = Some(cfg.clone());
+    }
+
+    /// 快速连续切换必须在唯一生产入口串行，且拿锁后再看 lifecycle 真值。底层 Mutex 的 FIFO 语义由
+    /// tokio 提供；本门守的是它确实接在 `switch_mode_with`、并覆盖判定/PUT/commit 整条流水线。
+    #[test]
+    fn switch_mode_serializes_before_reading_lifecycle_state() {
+        let body = method_body(
+            include_str!("proxy.rs"),
+            "    pub async fn switch_mode_with(",
+        );
+        let lock = body
+            .find("self.switch_serial.lock().await")
+            .expect("switch_mode_with 必须取得配置入核单飞锁");
+        let gate = body
+            .find("if self.gate.is_busy()")
+            .expect("lifecycle 判定锚点");
+        let execute = body.find("SwitchExecutor.execute").expect("热切换执行锚点");
+        let commit = body
+            .find("self.commit_applied(&new_config)")
+            .expect("热切换提交锚点");
+        assert!(
+            lock < gate,
+            "等待期间 lifecycle 会变化，必须拿锁后再判 busy"
+        );
+        assert!(
+            gate < execute && execute < commit,
+            "锁须覆盖判定、PUT 与 commit 全链路"
+        );
     }
 
     /// 腿 0（顺序门）：lifecycle 在飞 → Pending 暂存，**即使核看起来没在跑**。

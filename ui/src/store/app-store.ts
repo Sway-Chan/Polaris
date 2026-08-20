@@ -337,7 +337,9 @@ export const useAppStore = create<AppState>((set, get) => ({
    * 而 UI 仍显示新节点 = 用户以为走代理、实则明文直连（真机实证的静默直连根因）。两处同源必须同写。 */
   switchServer: async (serverId) => {
     const { config } = get();
-    await api.server.switch(serverId);
+    // 与暂存保存/整份配置保存共用同一条 webview 内写队列：快速连点必须按调用顺序落盘，
+    // 否则较慢的旧 IPC 可能最后回包，把最后一次点击覆盖回旧节点。
+    await withConfigWriteLock(() => api.server.switch(serverId));
     invalidateLoadConfig();
     set({
       selectedServerId: serverId,

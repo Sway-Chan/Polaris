@@ -35,7 +35,7 @@
  *   promise 链跨不过去。跨 webview / 跨进程的写冲突由后端的 `baseVersion` 乐观并发闸负责检出
  *   —— 那是**检测**机制，不是预防机制，两者分工不同，别拿本闸门去顶它。
  * - **不可嵌套**：在临界区内再调一次 `withConfigWriteLock` 会自锁（后者排在前者之后，而前者
- *   在等后者）。当前两个使用点（`performSave` / `app-store.saveConfig`）互不调用，由
+ *   在等后者）。当前三个使用点（`performSave` / `app-store.saveConfig` / `app-store.switchServer`）互不调用，由
  *   `config_write_lock_has_no_nested_callers` 钉住。
  */
 

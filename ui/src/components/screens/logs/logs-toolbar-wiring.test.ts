@@ -29,15 +29,19 @@ describe('日志工具栏布局不变量', () => {
     expect(SCREEN).toContain('aria-haspopup="menu"');
   });
 
-  it('内核写盘级别仅在不一致或读取失败时以既有 pill 标签跟随级别下拉', () => {
+  it('内核写盘级别仅在不一致或读取失败时以既有 pill 标签跟随诊断模式按钮', () => {
     const levelFilter = SCREEN.indexOf('className="log-filter-field log-level-filter"');
     const sourceFilter = SCREEN.indexOf('className="log-filter-field log-source-filter"');
+    const diagnostic = SCREEN.indexOf('log-diagnostic-toggle');
     const badge = SCREEN.indexOf('className="pill warn log-core-lvl"');
+    const exportMenu = SCREEN.indexOf('className="log-export"');
 
     expect(levelFilter).toBeGreaterThan(-1);
-    expect(badge).toBeGreaterThan(levelFilter);
-    expect(badge).toBeLessThan(sourceFilter);
     expect(sourceFilter).toBeGreaterThan(levelFilter);
+    expect(diagnostic).toBeGreaterThan(sourceFilter);
+    expect(badge).toBeGreaterThan(diagnostic);
+    expect(badge).toBeLessThan(exportMenu);
+    expect(SCREEN).toContain('className="pill warn log-core-lvl"');
     expect(SCREEN).toContain("runtimeView.kind === 'known' && runtimeView.drift");
     expect(SCREEN).toContain("runtimeView.kind === 'unavailable'");
   });

@@ -26,7 +26,7 @@ use polaris_mesh::warp_http::RegisterOptions;
 
 use crate::commands::config::broadcast_config_changed;
 use crate::response::{ok_void, ApiResponse};
-use crate::runtime::config::ConfigManager;
+use crate::runtime::config::{ConfigManager, Decision};
 use crate::runtime::tailscale_login_core::StartLoginOutcome;
 use crate::runtime::unlock::{selected_exit_changed, BroadcastSink};
 use crate::runtime::AppRuntime;
@@ -407,6 +407,39 @@ fn prune_recent_server_ids(cfg: &mut Value, is_removed: impl Fn(&str) -> bool) {
     arr.retain(|v| v.as_str().is_some_and(|id| !is_removed(id)));
 }
 
+/// `server:switch` 的原子读改写核心。快速连点会并发到达 command 线程；必须复用
+/// [`ConfigManager::update`] 把「验证节点 → 取旧出口 → 改选中/MRU → 落盘」圈成一个动作，
+/// 否则两个请求都基于同一份旧配置写回，较慢者会覆盖较新的选择与 MRU。
+fn server_switch_core(config: &ConfigManager, server_id: &str) -> Result<(Value, bool), String> {
+    let (exit_changed, saved) = config
+        .update(|cfg| {
+            let exists = cfg
+                .get("servers")
+                .and_then(Value::as_array)
+                .is_some_and(|arr| {
+                    arr.iter()
+                        .any(|s| s.get("id").and_then(Value::as_str) == Some(server_id))
+                });
+            if !exists {
+                return Decision::Skip(Err(format!("服务器不存在: {server_id}")));
+            }
+            // A7：出口节点 identity 是否真变（用于切换后作废旧出口的解锁缓存）。取覆盖前的旧值比对。
+            let exit_changed = selected_exit_changed(
+                cfg.get("selectedServerId").and_then(Value::as_str),
+                Some(server_id),
+            );
+            if let Some(obj) = cfg.as_object_mut() {
+                obj.insert("selectedServerId".to_string(), json!(server_id));
+                push_recent_server_id(obj, server_id);
+            }
+            Decision::Write(Ok(exit_changed))
+        })
+        .map_err(|e| format!("{e}"))?;
+    let exit_changed = exit_changed?;
+    let cfg = saved.expect("server_switch 的 Write 腿必须返回已落盘配置");
+    Ok((cfg, exit_changed))
+}
+
 /// 上游 `SERVER_SWITCH`：切换选中节点。
 #[tauri::command]
 pub fn server_switch(
@@ -414,32 +447,8 @@ pub fn server_switch(
     state: State<'_, AppRuntime>,
     server_id: String,
 ) -> ApiResponse<()> {
-    let mut cfg = match state.config().load_full() {
-        Ok(c) => c,
-        Err(e) => return ApiResponse::err(format!("{e}")),
-    };
-    let exists = cfg
-        .get("servers")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .any(|s| s.get("id").and_then(Value::as_str) == Some(&server_id))
-        })
-        .unwrap_or(false);
-    if !exists {
-        return ApiResponse::err(format!("服务器不存在: {server_id}"));
-    }
-    // A7：出口节点 identity 是否真变（用于切换后作废旧出口的解锁缓存）。取覆盖前的旧值比对。
-    let exit_changed = selected_exit_changed(
-        cfg.get("selectedServerId").and_then(Value::as_str),
-        Some(&server_id),
-    );
-    if let Some(obj) = cfg.as_object_mut() {
-        obj.insert("selectedServerId".to_string(), json!(server_id));
-        push_recent_server_id(obj, &server_id);
-    }
-    match state.config().save_full(&cfg) {
-        Ok(()) => {
+    match server_switch_core(state.config(), &server_id) {
+        Ok((cfg, exit_changed)) => {
             broadcast_config_changed(&app, &cfg);
             // A7：换节点 = 出口 identity 变 → 作废旧出口的解锁探测缓存（否则解锁角标最长陈旧 30min，
             // 即缓存 FRESH_TTL）。重选同一节点（identity 未变）不失效，避免白刷探测。
@@ -451,7 +460,7 @@ pub fn server_switch(
             }
             ok_void()
         }
-        Err(e) => ApiResponse::err(format!("{e}")),
+        Err(e) => ApiResponse::err(e),
     }
 }
 
@@ -741,6 +750,48 @@ mod server_add_tests {
         ));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    fn seed_switch_nodes(mgr: &ConfigManager) {
+        let mut cfg = mgr.load_full().unwrap();
+        cfg["servers"] = json!([
+            {"id":"n-a","name":"A","protocol":"trojan","address":"1.1.1.1","port":443,"password":"pw"},
+            {"id":"n-b","name":"B","protocol":"trojan","address":"2.2.2.2","port":443,"password":"pw"},
+            {"id":"n-c","name":"C","protocol":"trojan","address":"3.3.3.3","port":443,"password":"pw"}
+        ]);
+        cfg["selectedServerId"] = json!("n-a");
+        mgr.save_full(&cfg).unwrap();
+    }
+
+    #[test]
+    fn server_switch_core_updates_selection_and_mru_in_one_write() {
+        let dir = temp_dir("switch-core");
+        let mgr = ConfigManager::new(dir.clone());
+        seed_switch_nodes(&mgr);
+
+        let (cfg, changed) = server_switch_core(&mgr, "n-b").expect("切换应成功");
+        assert!(changed);
+        assert_eq!(cfg["selectedServerId"], json!("n-b"));
+        assert_eq!(cfg["recentServerIds"], json!(["n-b"]));
+        assert_eq!(mgr.load_full().unwrap()["selectedServerId"], json!("n-b"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 调用点门：ConfigManager::update 已有强制交错的并发行为测；这里补生产入口接线，避免
+    /// `server_switch_core` 被改回 load_full → save_full 分离三步后那条底层测试仍然假绿。
+    #[test]
+    fn server_switch_core_uses_atomic_config_update() {
+        let src = include_str!("server.rs");
+        let start = src.find("fn server_switch_core(").expect("核心锚点");
+        let end = src[start..]
+            .find("/// 上游 `SERVER_SWITCH`")
+            .map(|n| start + n)
+            .expect("命令锚点");
+        let body = &src[start..end];
+        assert!(body.contains(".update(|cfg|"), "切节点必须走原子 update");
+        assert!(!body.contains("load_full()"), "不得退回分离读改写");
+        assert!(!body.contains("save_full("), "不得退回分离读改写");
     }
 
     /// A7 · 删节点后选中出口的旧→新转换 → `selected_exit_changed` 判失效（server_delete / batch 共用腿的牙）。

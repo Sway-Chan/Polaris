@@ -844,11 +844,6 @@ export function LogsScreen() {
                 options={LEVEL_SELECT_OPTIONS}
                 ariaLabel={t('logs.levelAria')}
               />
-              {runtimeLevelNotice && (
-                <span className="pill warn log-core-lvl" data-tip={coreLevelTip}>
-                  {runtimeLevelNotice}
-                </span>
-              )}
             </div>
           </div>
 
@@ -878,6 +873,11 @@ export function LogsScreen() {
               </svg>
               <span>{t('logs.diagnosticMode')}</span>
             </button>
+            {runtimeLevelNotice && (
+              <span className="pill warn log-core-lvl" data-tip={coreLevelTip}>
+                {runtimeLevelNotice}
+              </span>
+            )}
             <div className="log-export" ref={exportMenuRef}>
               <button
                 type="button"
