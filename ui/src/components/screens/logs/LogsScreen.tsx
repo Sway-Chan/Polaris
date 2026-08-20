@@ -19,16 +19,14 @@
  *  - 级别：configApi.save 写 config.logLevel（核记录 + 视图显示同一级别，无独立视图侧级别）。
  *    后端经 config.rs::broadcast_config_changed → logging::set_level 即刻改 max_level，而**内核日志
  *    也由同一个 max_level 在客户端筛**（proxy.rs 的核日志 relay 订阅管理 API `SubscribeLog`，该流恒
- *    全级别）⇒ 本页两侧日志改完即刻跟上。仍需重启内核的只有内核写进自己那份日志文件的级别。
+ *    全级别）⇒ 本页两侧日志与受管落盘改完即刻跟上。仍需重启内核的只有 pre-ready/helper stderr 级别。
  *  - 会话诊断：后端进程态 `logs:setDiagnostic` 临时把 app sink + sing-box 实时 relay 抬到 DEBUG，
- *    不写 config、不重启核；页面卸载不误关，应用退出后状态自然消失。内核自己写 `singbox.log` 的级别
+ *    不写 config、不重启核；页面卸载不误关，应用退出后状态自然消失。pre-ready/helper stderr 级别
  *    仍由内核状态标签如实显示（管理 API 没有 setter，不能伪装成已改变）。
  *  - 核在跑的真实级别：api.logs.runtimeLevel（管理 API `GetDefaultLogLevel`）→ `.log-core-lvl` 徽标。
  *    分段控件显示的是**我写下的值**，这颗徽标显示的是**核此刻实际在用的值**。
- *    **它管的是核写自己那份日志文件（`singbox.log`）时用的级别**，也就是「纯日志」「诊断报告」
- *    两个产物里核的那一半；本页显示的核日志不受它影响（那一份恒按分段控件选的级别在客户端筛）。
- *    屏幕上那份不会骗人了之后，盘上那份就是唯一还会与设置不一致的东西 —— 徽标的职责因此从
- *    「守屏幕」变成「守导出物」。
+ *    **它管的是核 pre-ready/helper stderr 的默认级别**；本页显示和受管实时日志不受它影响
+ *    （两者恒按分段控件选的级别在客户端筛）。
  *    与控件相同、核未运行或首次读取中均不占位置；仅不一致或读取失败时显示，成因二分
  *    （暂存未应用 / 核没重启）见 runtime-level.ts。
  *  - 来源：后端 logging.rs::ui_source 把 target 归一为 'sing-box' | 'app'（裸 log::info! 默认 target
@@ -57,6 +55,7 @@ import { runtimeLevelView } from './runtime-level';
 import type { LogLevel, RuntimeLogLevel } from '@/contracts/types';
 import { Csel, type CselOption } from '@/components/dialogs/Csel';
 import { InfoIcon } from '@/components/InfoIcon';
+import { fmtBytes } from '@/components/screens/shared/format';
 
 /** 级别 → 数字权重（对齐原型 LVL，越大越严重）。 */
 const LVL: Record<LogLevel, number> = {
@@ -137,6 +136,8 @@ export function LogsScreen() {
   /** `null` = 尚未从后端进程态水合；boolean = 本次应用运行是否临时抬到 DEBUG。 */
   const [diagnosticMode, setDiagnosticMode] = useState<boolean | null>(null);
   const [diagnosticBusy, setDiagnosticBusy] = useState(false);
+  const [legacyLog, setLegacyLog] = useState<{ exists: boolean; bytes: number; path: string } | null>(null);
+  const [legacyArchiveBusy, setLegacyArchiveBusy] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [source, setSource] = useState<LogSource>('all');
   const [search, setSearch] = useState('');
@@ -559,6 +560,39 @@ export function LogsScreen() {
     }
   }, [t]);
 
+  /* W26 历史日志只读探测：当前受管日志已搬到 logs/，旧 singbox.log 不会被自动改写/删除。 */
+  useEffect(() => {
+    let active = true;
+    void api.logs
+      .legacyInfo()
+      .then((info) => {
+        if (active) setLegacyLog(info);
+      })
+      .catch((err) => console.error('[logs] read legacy log info failed:', err));
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const onArchiveLegacy = useCallback(async () => {
+    if (legacyArchiveBusy) return;
+    setLegacyArchiveBusy(true);
+    try {
+      const result = await api.logs.archiveLegacy();
+      if (result.success) {
+        setLegacyLog((current) => current && { ...current, exists: false, bytes: 0 });
+        if (result.archived) toast.success(t('logs.archiveLegacyDone'));
+      } else if (result.error !== 'cancelled') {
+        toast.error(t('logs.archiveLegacyFailed'), result.error);
+      }
+    } catch (err) {
+      console.error('[logs] archive legacy log failed:', err);
+      toast.error(t('logs.archiveLegacyFailed'), err instanceof Error ? err.message : undefined);
+    } finally {
+      setLegacyArchiveBusy(false);
+    }
+  }, [legacyArchiveBusy, t]);
+
   /* 空搜索过滤当前绘制尾部；非空搜索消费后端完整保留环返回的独立结果集。 */
   const visible = useMemo(
     () => {
@@ -672,6 +706,27 @@ export function LogsScreen() {
             <path d="M8 11V8a4 4 0 018 0v3" />
           </svg>
           <span>{t('logs.privacyNote')}</span>
+        </div>
+      )}
+
+      {legacyLog?.exists && (
+        <div className="mode-warn show" id="log-legacy-note">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+            <path d="M4 7h16M6 7l1 13h10l1-13M9 7V4h6v3" />
+          </svg>
+          <span>
+            <strong>{t('logs.legacyTitle')}</strong>{' '}
+            {t('logs.legacyBody', { size: fmtBytes(legacyLog.bytes) })}
+          </span>
+          <button
+            type="button"
+            className="btn ghost sm"
+            style={{ marginInlineStart: 'auto' }}
+            disabled={legacyArchiveBusy}
+            onClick={() => void onArchiveLegacy()}
+          >
+            {t('logs.archiveLegacy')}
+          </button>
         </div>
       )}
 

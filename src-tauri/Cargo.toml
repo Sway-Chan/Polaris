@@ -41,6 +41,7 @@ polaris-unlock             = { path = "../crates/unlock" }
 polaris-updater            = { path = "../crates/updater" }
 polaris-singbox-grpc       = { path = "../crates/singbox-grpc" }
 polaris-helper-proto       = { path = "../crates/helper-proto" }
+polaris-log-budget         = { path = "../crates/log-budget" }
 # 平台 helper（单 crate，内部按 target_os cfg 隔离三平台；B3 接线前仅挂名未 use）
 polaris-helper             = { path = "../crates/helper" }
 # C11 节点域名解析多源竞速 sidecar（issue #147）：UDP 竞速 server + 上游模型 + DNS wire 编解码。

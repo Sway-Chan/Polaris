@@ -81,6 +81,8 @@
     "jsonFileType": "JSON 文件",
     "diagnosticExportTitle": "导出 Polaris 诊断报告",
     "logsExportTitle": "导出 Polaris 日志",
+    "legacyLogArchiveTitle": "归档旧版 sing-box 日志",
+    "logFileType": "日志文件",
     "configPickTitle": "选择配置文件",
     "configFileType": "配置文件",
     "corePickTitle": "选择 sing-box 内核可执行文件",

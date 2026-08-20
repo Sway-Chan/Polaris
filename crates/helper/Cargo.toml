@@ -20,6 +20,7 @@ repository.workspace = true
 
 [dependencies]
 polaris-helper-proto = { path = "../helper-proto" }
+polaris-log-budget = { path = "../log-budget" }
 # 以下四个是**跨平台**依赖（纯 Rust，无 OS 绑定），三平台编译单元都可能用到，故不 target-gate：
 # sha2/hex = core_install 的内核 sha256 校验 + hex 编码（共用层，mac/linux 都走）。
 sha2 = "0.10"
@@ -96,4 +97,3 @@ path = "src/lib.rs"
 [[bin]]
 name = "polaris-helper"
 path = "src/bin/main.rs"
-

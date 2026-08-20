@@ -81,6 +81,8 @@
     "jsonFileType": "فایل JSON",
     "diagnosticExportTitle": "برون‌بری گزارش عیب‌یابی Polaris",
     "logsExportTitle": "برون‌بری گزارش‌های Polaris",
+    "legacyLogArchiveTitle": "بایگانی گزارش قدیمی sing-box",
+    "logFileType": "پروندهٔ گزارش",
     "configPickTitle": "انتخاب فایل پیکربندی",
     "configFileType": "فایل پیکربندی",
     "corePickTitle": "انتخاب فایل اجرایی هستهٔ sing-box",

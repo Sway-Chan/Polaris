@@ -1964,6 +1964,8 @@ fn main() {
             logs_set_diagnostic,
             logs_export,
             logs_open_dir,
+            logs_legacy_info,
+            logs_archive_legacy,
             shell_open_external,
             open_singbox_dashboard,
             refresh_singbox_dashboard,

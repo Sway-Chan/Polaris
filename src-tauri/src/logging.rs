@@ -27,20 +27,19 @@
 //! - 完整正文先落盘；内存环为日志页诊断副本，受条数与单条字节双重预算约束。
 
 use std::collections::VecDeque;
-use std::fs::{File, OpenOptions};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use log::{Level, LevelFilter, Metadata, Record};
+use polaris_log_budget::{OpenMode, RotatingFile, DEFAULT_GENERATION_BYTES};
 
 /// sink 单例：`log::set_logger` 要求 `&'static dyn Log`，故存 static。
 static LOGGER: OnceLock<PolarisLogger> = OnceLock::new();
 
 /// 日志文件大小上限：超过即轮转一次到 `.1`（防无界增长撑爆用户磁盘）。
-const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_LOG_BYTES: u64 = DEFAULT_GENERATION_BYTES;
 
 // ── 内存环形缓冲（logs:get 水合 + EVENT_LOG_RECEIVED_BATCH 流式推送用）─────────────
 //
@@ -273,14 +272,9 @@ pub fn clear() {
 }
 
 struct PolarisLogger {
-    /// None = 文件不可用（只写 stderr）。日志绝不能因为落盘失败而影响主流程。
-    file: Mutex<Option<LogFileState>>,
-}
-
-struct LogFileState {
-    file: File,
-    log_dir: PathBuf,
-    bytes: u64,
+    /// app 与 sing-box 分文件，但共用同一套硬预算 writer。None = 文件不可用（只写 stderr）。
+    app_file: Mutex<Option<RotatingFile>>,
+    core_file: Mutex<Option<RotatingFile>>,
 }
 
 impl log::Log for PolarisLogger {
@@ -306,9 +300,18 @@ impl log::Log for PolarisLogger {
         );
         // stderr：开发态 / 终端启动时直接可见。
         eprintln!("{line}");
-        // 文件：打包后用户唯一能捞到的痕迹。写失败一律吞（日志失败不得反噬主流程）。
-        if let Ok(mut guard) = self.file.lock() {
-            append_log_line_with_limit(&mut guard, &line, MAX_LOG_BYTES);
+        // 文件：核日志与 app 日志分开，各自 current + `.1` 两代、每代 5MiB。写失败一律吞。
+        let file = if record.target() == SING_BOX_TARGET {
+            &self.core_file
+        } else {
+            &self.app_file
+        };
+        if let Ok(mut guard) = file.lock() {
+            if let Some(state) = guard.as_mut() {
+                if state.write_line(&line).is_err() {
+                    *guard = None;
+                }
+            }
         }
         // 内存环形缓冲：供日志页 logs:get 水合 + EVENT_LOG_RECEIVED_BATCH 流式推送。
         push_ring(
@@ -320,9 +323,11 @@ impl log::Log for PolarisLogger {
     }
 
     fn flush(&self) {
-        if let Ok(mut guard) = self.file.lock() {
-            if let Some(state) = guard.as_mut() {
-                let _ = state.file.flush();
+        for slot in [&self.app_file, &self.core_file] {
+            if let Ok(mut guard) = slot.lock() {
+                if let Some(state) = guard.as_mut() {
+                    let _ = state.flush();
+                }
             }
         }
     }
@@ -382,8 +387,8 @@ pub fn session_diagnostic_enabled() -> bool {
 /// 开关会话级诊断模式。只改变本进程日志门槛，不写 `config.logLevel`、不重启内核。
 ///
 /// sing-box 的 `SubscribeLog` 恒送全级别，relay 又逐帧读取 `log::max_level()`，所以抬到 Debug 后应用日志
-/// 与本页内核实时流都立即变详细；内核自己写 `singbox.log` 的级别仍由起核配置决定，UI 的「内核实跑」
-/// 徽标继续如实显示那一格，不能假装管理 API 有 setter。
+/// 与受管 `logs/singbox.log` 都立即变详细；helper 的 pre-ready/FATAL stderr 仍按起核配置，UI 的
+/// 「内核实跑」徽标继续如实显示那一格，不能假装管理 API 有 setter。
 pub fn set_session_diagnostic(enabled: bool) -> bool {
     let mut base = diagnostic_base();
     match (enabled, *base) {
@@ -450,7 +455,7 @@ fn level_from_config_file(config_dir: &Path) -> Option<LevelFilter> {
 /// 的 `SubscribeLog`，那条流恒是全级别，转发时走的就是 `log::log!` ⇒ 由这里设的 `max_level` 筛。
 /// 于是「把级别拨到 debug 立刻看到核的 debug 行」不再需要改核配置、更不需要重启核。
 ///
-/// **仍然管不到的那一格**：核写进它自己那份日志文件（`singbox.log`）时用的级别，是起核时注入进生成
+/// **仍然管不到的那一格**：核在 pre-ready / helper stderr 上使用的默认级别，是起核时注入进生成
 /// 配置的，改配置不追溯已在跑的核 —— UI 就这一格如实标注「需重启内核生效」，本函数不假装管得到。
 ///
 /// # 为什么 env 超驰在这里也要让位
@@ -486,86 +491,30 @@ pub fn set_level(level: &str) {
     log::info!("应用日志级别已切到 {effective}（sing-box 侧需重启内核生效）");
 }
 
-/// 把当前日志移到 `.1`。目标已存在时先删旧轮转文件；任一步失败都由调用方降级为继续 append。
-fn rotate_log_file(log_dir: &Path) -> bool {
-    let path = log_dir.join("polaris.log");
-    let rotated = log_dir.join("polaris.log.1");
-    if !path.exists() {
-        return true;
-    }
-    if rotated.exists() && std::fs::remove_file(&rotated).is_err() {
-        return false;
-    }
-    std::fs::rename(path, rotated).is_ok()
-}
-
-/// 打开日志文件（append）；启动时已超限则先轮转。任何 IO 失败 → None（只写 stderr，绝不 panic）。
-fn open_log_file_with_limit(log_dir: &Path, max_bytes: u64) -> Option<LogFileState> {
-    std::fs::create_dir_all(log_dir).ok()?;
-    let path = log_dir.join("polaris.log");
-    if std::fs::metadata(&path).is_ok_and(|m| m.len() > max_bytes) {
-        let _ = rotate_log_file(log_dir);
-    }
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .ok()?;
-    let bytes = file.metadata().map_or(0, |metadata| metadata.len());
-    Some(LogFileState {
-        file,
-        log_dir: log_dir.to_path_buf(),
-        bytes,
-    })
-}
-
-fn open_log_file(log_dir: &Path) -> Option<LogFileState> {
-    open_log_file_with_limit(log_dir, MAX_LOG_BYTES)
-}
-
-/// 追加一行并在**本次运行中**执行大小轮转。
-///
-/// 轮转判据看“写入后的投影大小”，所以常规行不会把当前文件推过预算；单行本身大于预算时保留整行，
-/// 下一次写入前再轮转，不能为了磁盘预算截断唯一的诊断证据。
-fn append_log_line_with_limit(slot: &mut Option<LogFileState>, line: &str, max_bytes: u64) {
-    let append_bytes = u64::try_from(line.len())
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
-    let should_rotate = slot.as_ref().is_some_and(|state| {
-        state.bytes > 0 && state.bytes.saturating_add(append_bytes) > max_bytes
-    });
-    if should_rotate {
-        let log_dir = slot.as_ref().map(|state| state.log_dir.clone());
-        // Windows 不能 rename 正被本进程打开的文件，必须先 drop File。
-        *slot = None;
-        if let Some(log_dir) = log_dir {
-            let _ = rotate_log_file(&log_dir);
-            *slot = open_log_file_with_limit(&log_dir, max_bytes);
-        }
-    }
-    let Some(state) = slot.as_mut() else {
-        return;
-    };
-    if writeln!(state.file, "{line}").is_ok() {
-        state.bytes = state.bytes.saturating_add(append_bytes);
-        let _ = state.file.flush();
-    }
+fn open_log_file(path: &Path) -> Option<RotatingFile> {
+    RotatingFile::open(path, MAX_LOG_BYTES, OpenMode::Append).ok()
 }
 
 /// 装 sink。**须在 setup 最早处调用一次**；重复调用（`set_boxed_logger` 返回 Err）静默忽略。
 ///
-/// 日志落 `<config_dir>/logs/polaris.log`。
+/// app 日志落 `<config_dir>/logs/polaris.log`，核日志落 `<config_dir>/logs/singbox.log`；
+/// 两者均为 current + `.1`，总活跃预算各 10MiB。
 pub fn init(config_dir: &Path) {
     let level = startup_level(config_dir);
+    let log_dir = config_dir.join("logs");
     let logger = LOGGER.get_or_init(|| PolarisLogger {
-        file: Mutex::new(open_log_file(&config_dir.join("logs"))),
+        app_file: Mutex::new(open_log_file(&log_dir.join("polaris.log"))),
+        core_file: Mutex::new(open_log_file(&log_dir.join("singbox.log"))),
     });
-    let file_available = logger.file.lock().is_ok_and(|f| f.is_some());
+    let app_file_available = logger.app_file.lock().is_ok_and(|f| f.is_some());
+    let core_file_available = logger.core_file.lock().is_ok_and(|f| f.is_some());
     if log::set_logger(logger).is_ok() {
         log::set_max_level(level);
-        log::info!("日志 sink 已装：level={level}, file={file_available}");
-        if !file_available {
-            log::warn!("日志文件不可用（目录不可写？）→ 仅 stderr");
+        log::info!(
+            "日志 sink 已装：level={level}, appFile={app_file_available}, coreFile={core_file_available}"
+        );
+        if !app_file_available || !core_file_available {
+            log::warn!("部分日志文件不可用（目录不可写？）→ 对应来源仅 stderr");
         }
     }
 }
@@ -648,32 +597,9 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos())
         ));
-        assert!(open_log_file(&dir).is_some());
-        assert!(dir.join("polaris.log").exists());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn log_file_rotates_during_same_process_lifetime() {
-        let dir = std::env::temp_dir().join(format!(
-            "polaris-log-runtime-rotate-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos())
-        ));
-        let mut slot = open_log_file_with_limit(&dir, 8);
-        append_log_line_with_limit(&mut slot, "1234", 8);
-        append_log_line_with_limit(&mut slot, "5678", 8);
-        drop(slot);
-
-        assert_eq!(
-            std::fs::read_to_string(dir.join("polaris.log.1")).unwrap(),
-            "1234\n"
-        );
-        assert_eq!(
-            std::fs::read_to_string(dir.join("polaris.log")).unwrap(),
-            "5678\n"
-        );
+        let path = dir.join("nested").join("polaris.log");
+        assert!(open_log_file(&path).is_some());
+        assert!(path.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -691,8 +617,8 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("建临时目录");
         let blocker = dir.join("not-a-dir");
         std::fs::write(&blocker, b"x").unwrap();
-        let log_dir = blocker.join("logs"); // 父是文件 → create_dir_all 必失败
-        assert!(open_log_file(&log_dir).is_none());
+        let log_path = blocker.join("logs").join("polaris.log"); // 父是文件 → create_dir_all 必失败
+        assert!(open_log_file(&log_path).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

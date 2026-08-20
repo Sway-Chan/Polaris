@@ -81,6 +81,8 @@
     "jsonFileType": "JSON File",
     "diagnosticExportTitle": "Export Polaris Diagnostic Report",
     "logsExportTitle": "Export Polaris Logs",
+    "legacyLogArchiveTitle": "Archive Legacy sing-box Log",
+    "logFileType": "Log File",
     "configPickTitle": "Select Configuration File",
     "configFileType": "Configuration File",
     "corePickTitle": "Select the sing-box core executable",

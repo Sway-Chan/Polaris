@@ -702,7 +702,7 @@ pub trait ProxyErrorEmitter: Send + Sync {
     /// 隐私模式的**单一真值**是 `commands::config` 的进程状态机（`PRIVACY_MODE: AtomicBool`，由
     /// `config:setPrivacyMode` 翻转 + emit `EVENT_ENTER/EXIT_PRIVACY_MODE`）。若在 runtime 侧再存一份
     /// 镜像（哪怕靠事件同步），就有了两个真相源 —— 而这条轴的失效方式恰恰是**静默**的：镜像漏更新时
-    /// 隐私模式看起来开着、核却继续按用户级别把域名写进 `singbox.log`，没有任何可见症状。故读取一律
+    /// 隐私模式看起来开着、核却继续按用户级别把域名写进 helper stderr，没有任何可见症状。故读取一律
     /// 回到那一份 flag。`AppHandleProxyErrorEmitter` 已持 `AppHandle`（`main.rs` setup 一次接线，扩方法
     /// **无需动 main.rs** —— 同 [`invalidate_unlock`](Self::invalidate_unlock) 的既定手法）。
     ///
@@ -3125,10 +3125,10 @@ impl ProxyRuntime {
             // #332：本腿的核 FATAL 真因收集口。**每腿一个新槽**：重试腿之间不共享，否则第 1 腿的地址
             // 冲突会被扣到第 3 腿头上（真因错配比没有真因更糟）。
             let fatal_slot: CoreFatalSlot = Arc::new(Mutex::new(None));
-            // helper 起核走的是**文件**而非管道（helper 把核 stdout/stderr 重定向进 `SINGBOX_STARTUP_LOG`，
-            // 见 `platform/windows/winproc` 的 `start_singbox`），且是 **append** 模式 —— 先记下当前长度，
-            // 失败时只扫本腿追加的那一段。不记偏移就会把上一次会话遗留的 FATAL 当成这一次的真因。
-            let startup_log_offset = self.startup_log_len(via_helper);
+            // helper 起核走的是**文件**而非 app 管道（helper 把核 stdout/stderr 经受管
+            // writer 收进 `SINGBOX_STARTUP_LOG`）。新 helper fresh-rotate，旧 helper append：同时记文件身份
+            // 与长度，失败时才能只扫本腿，不把上一次会话的 FATAL 误当本次真因。
+            let startup_log_cursor = self.startup_log_cursor(via_helper);
 
             let t_spawn = std::time::Instant::now();
             let pid = if via_helper {
@@ -3315,7 +3315,7 @@ impl ProxyRuntime {
                     let msg = "sing-box 启动期退出".to_string();
                     // #332：核自己吐的 FATAL 才知道**为什么**退出（就绪门只看得到「没了」）。
                     let fatal =
-                        self.observe_core_fatal(via_helper, startup_log_offset, &fatal_slot);
+                        self.observe_core_fatal(via_helper, startup_log_cursor, &fatal_slot);
                     // #159/#176：起核期退出（CoreStartRetryError 等价，恒可重试）→ 预算内静默重起（届时
                     // wintun 适配器/双 utun 已释放，新尝试重解析端口+重生成盘）。上面已 kill_core → 无孤儿核。
                     if attempt <= budget.max_retries {
@@ -3341,7 +3341,7 @@ impl ProxyRuntime {
                         format!("sing-box 起核超时（管理 API {api_port} 在 {CORE_READY_TIMEOUT_MS}ms 内未就绪）");
                     // #332：超时腿同样可能是核已 FATAL 退出、只是就绪门先走完了预算（真因照样在 stderr 里）。
                     let fatal =
-                        self.observe_core_fatal(via_helper, startup_log_offset, &fatal_slot);
+                        self.observe_core_fatal(via_helper, startup_log_cursor, &fatal_slot);
                     if attempt <= budget.max_retries {
                         log::warn!("sing-box 起核超时（第 {attempt} 次）→ 预算内自动重试");
                         // 同 Dead 腿：已 `kill_core()` → 取消腿无孤儿。
@@ -6157,11 +6157,8 @@ impl ProxyRuntime {
     ///
     /// # 它修掉的两件事
     ///
-    /// ① **TUN/helper 腿的日志页此前一行核日志都没有**：TUN 模式下生成侧把 `log.output` 指向
-    ///    `singbox.log`（`config-engine/src/builder/log.rs`），而 sing-box 一旦有 `output` 文件就把
-    ///    `logWriter` 换成 `io.Discard`（`log/log.go`）⇒ stderr 一行不出；helper 起核腿 app 侧又根本
-    ///    没有管道（helper 把核输出重定向进启动日志文件）。两条叠起来 = Win/mac 主力路径上日志页零核行，
-    ///    只有导出诊断时事后 `read_tail` 才看得到。本 relay 不经 stderr，两条腿一并盖住。
+    /// ① **TUN/helper 腿 app 侧没有 child 管道**：helper 在自己的进程里排空核 stdout/stderr，app 无法
+    ///    从那根 pipe 做实时分发。本 relay 不经 child stderr，三平台 helper 腿统一拿到结构化实时日志。
     /// ② **看 debug 不必再改核配置**：本流恒是全级别（喂它的 platform writer 分发不受 `log.level`
     ///    过滤，见 crate `polaris-singbox-grpc` 的 `subscribe_logs` 文档），级别筛在客户端 ——
     ///    判据是 `log::max_level()`，由 `logging::set_level` 跟着 `config.logLevel` 即时改。
@@ -7769,28 +7766,31 @@ impl ProxyRuntime {
         TunAdapterObservation::Indeterminate
     }
 
-    /// **#332**：helper 起核腿开始前的启动日志长度（非 helper 腿恒 0，零系统调用）。
+    /// **#332**：helper 起核腿开始前的启动日志游标（非 helper 腿为空游标，零系统调用）。
     ///
-    /// helper 把核的 stdout/stderr 重定向进 `SINGBOX_STARTUP_LOG`，且**以 append 打开**
-    /// （Windows `start_singbox` 的 `OpenOptions::append(true)`）。整文件扫 FATAL 会把上一次会话
-    /// （甚至上一条重试腿）的失败当成这一次的真因 —— 那比不给真因更糟，因为它看起来是确诊。
-    /// 故按「本腿追加了什么」取差分：偏移在这里记，失败时从这里往后读。
+    /// 新 helper 会在每次 spawn 前 fresh-rotate 启动日志，旧 helper 仍会 append。整文件扫 FATAL 会把
+    /// 上一次会话（甚至上一条重试腿）的失败当成这一次的真因 —— 那比不给真因更糟，因为它看起来是
+    /// 确诊。故同时记文件身份与长度：同一文件才从旧长度读，身份变化或文件缩短都从 0 读。
     ///
     /// 取不到长度（文件还不存在 = 首次起核）→ 0，语义正好是「整文件都是本腿写的」。
-    fn startup_log_len(&self, via_helper: bool) -> u64 {
+    fn startup_log_cursor(&self, via_helper: bool) -> StartupLogCursor {
         if !via_helper {
-            return 0;
+            return StartupLogCursor::default();
         }
-        std::fs::metadata(self.config.join(SINGBOX_STARTUP_LOG))
-            .map(|m| m.len())
-            .unwrap_or(0)
+        std::fs::metadata(self.config.join(SINGBOX_STARTUP_LOG)).map_or_else(
+            |_| StartupLogCursor::default(),
+            |metadata| StartupLogCursor {
+                offset: metadata.len(),
+                identity: log_file_identity(&metadata),
+            },
+        )
     }
 
     /// **#332**：读出本腿核 stderr 里的结构化真因（两条起核路径各取各的来源）。
     ///
     /// - **直起**：核 stderr 是我方管道，[`pipe_to_log`] 已在流上逐行判过 → 直接取槽。
     /// - **helper 起**（Windows/macOS 的 TUN 路径）：app 侧**没有**那根管道，核 stderr 被 helper
-    ///   重定向进 `SINGBOX_STARTUP_LOG` → 读本腿追加的那一段再扫。**这一条不能省**：#332 的现场就是
+    ///   经受管 writer 收进 `SINGBOX_STARTUP_LOG` → 按本腿游标取会话片段再扫。**这一条不能省**：#332 的现场就是
     ///   Windows TUN，而 TUN 恒经 helper 起核 —— 只接管道那条腿，等于修在一条永远跑不到的路上。
     ///
     /// # 已知边界（诚实标注，不是漏了）
@@ -7806,12 +7806,17 @@ impl ProxyRuntime {
     fn observe_core_fatal(
         &self,
         via_helper: bool,
-        offset: u64,
+        cursor: StartupLogCursor,
         slot: &CoreFatalSlot,
     ) -> Option<CoreFatalKind> {
         let kind = if via_helper {
             let path = self.config.join(SINGBOX_STARTUP_LOG);
-            let tail = read_file_range(&path, offset, CORE_FATAL_SCAN_BYTES)?;
+            // 新 helper 每次 spawn 前 fresh-rotate（current 文件身份变化）→ 从 0 读；旧 helper 仍在
+            // 同一个文件 append（身份不变）→ 从旧长度读。不能只比较长度：新会话完全可能比旧文件更长。
+            let metadata = std::fs::metadata(&path).ok()?;
+            let start =
+                startup_log_read_start(cursor, metadata.len(), log_file_identity(&metadata));
+            let tail = read_file_range(&path, start, CORE_FATAL_SCAN_BYTES)?;
             scan_core_fatal(&tail)
         } else {
             slot.lock().ok().and_then(|g| *g)
@@ -7945,8 +7950,8 @@ impl ProxyRuntime {
             has_management_api: true,
             // B1：隐私模式**活态**（读单一真值 = `commands::config` 的 `PRIVACY_MODE` 进程状态机，
             // 经 emitter 的 `privacy_mode()` 取，见该方法文档解释为何走 emitter 而非另存一份）。
-            // 下游 `build_log_config` 据此 `effective()` 把核日志级别抬到 ≥warn —— 隐私期 sing-box 才
-            // 不再把连接明细（含用户访问的域名）写进 `singbox.log`。此前硬编码 false ⇒ 隐私模式只在
+            // 下游 `build_log_config` 据此 `effective()` 把核日志级别抬到 ≥warn —— 隐私期 relay 才
+            // 不再把连接明细（含用户访问的域名）写进受管核日志。此前硬编码 false ⇒ 隐私模式只在
             // 前端遮蔽，盘上仍是明文域名 —— 而前端遮蔽只管显示，管不到磁盘，那不是防线。
             //
             // ⚠️ **延迟生效口径（与 上游 一致，别当即时开关读）**：活态只在**本函数（config 生成）**
@@ -7962,7 +7967,11 @@ impl ProxyRuntime {
             dashboard_serve_dir: resolve_dashboard_serve_dir(dir),
             tailscale_api_port: api_port,
             cache_path: dir.join("cache.db").to_string_lossy().into_owned(),
-            log_file_path: Some(dir.join("singbox.log").to_string_lossy().into_owned()),
+            // B3/W26：不再让 sing-box 自己持有固定 output fd。子进程不会响应外部轮转：Unix rename
+            // 后继续写旧 inode，Windows 还可能拒绝 rename，均无法形成运行期硬上限。核日志由既有
+            // SubscribeLog / 起核 stderr 管道进入 `logging.rs` 的 shared bounded writer；helper 腿的
+            // pre-ready/FATAL stderr 则由 helper 同一 writer 收进 `singbox-startup.log`。
+            log_file_path: None,
             runtime_rules_dir: dir.join("rules").to_string_lossy().into_owned(),
             rule_resources_path: rule_resource_dir(dir).to_string_lossy().into_owned(),
             custom_rules_dir: dir.join("custom-rules").to_string_lossy().into_owned(),
@@ -8275,6 +8284,50 @@ fn rule_resource_dir(data_dir: &Path) -> PathBuf {
 /// `false` = 流还没活，stderr 那条腿负责把核日志喂进 sink；`true` = 流已收到首帧并接管，
 /// stderr 腿只保留 FATAL 分类、**不再转发**（否则直起腿每行会进两遍环形缓冲）。
 type CoreLogHandoff = Arc<AtomicBool>;
+
+/// helper 启动日志的会话边界。`identity=None` 表示起核前没有可识别的 current 文件。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct StartupLogCursor {
+    offset: u64,
+    identity: Option<u128>,
+}
+
+/// 判定本次 helper 起核日志从哪里开始读。
+///
+/// 兼容两代 helper：旧版在同一文件 append，新版 fresh-rotate 后 current 身份变化。单看长度不能区分
+/// 「旧文件继续增长」和「新会话写得比旧文件更长」，故只有身份相同且未缩短时才沿用旧偏移。
+fn startup_log_read_start(
+    cursor: StartupLogCursor,
+    current_len: u64,
+    current_identity: Option<u128>,
+) -> u64 {
+    if cursor.identity.is_some()
+        && cursor.identity == current_identity
+        && current_len >= cursor.offset
+    {
+        cursor.offset
+    } else {
+        0
+    }
+}
+
+/// 文件身份只用于区分 helper 日志轮转前后的 current，不参与持久化或安全判定。
+#[cfg(unix)]
+fn log_file_identity(metadata: &std::fs::Metadata) -> Option<u128> {
+    use std::os::unix::fs::MetadataExt;
+    Some((u128::from(metadata.dev()) << 64) | u128::from(metadata.ino()))
+}
+
+#[cfg(windows)]
+fn log_file_identity(metadata: &std::fs::Metadata) -> Option<u128> {
+    use std::os::windows::fs::MetadataExt;
+    Some(u128::from(metadata.creation_time()))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn log_file_identity(_metadata: &std::fs::Metadata) -> Option<u128> {
+    None
+}
 
 /// 子进程 stdout/stderr → 日志 sink（`logging.rs` 的 `log::Log` 实现）+ 起核期 FATAL 真因分类。
 ///
@@ -17537,8 +17590,7 @@ mod tests {
     /// **隐私模式活态必须真的流进 `GenerateConfigDeps.privacy_mode`**（此前硬编码 false）。
     ///
     /// 后果不是 UI 问题而是**落盘泄露**：`build_log_config` 的 `effective(privacy)` 把 info/debug 抬到
-    /// warn，正是为了让隐私期 sing-box 不把连接明细（含用户访问的域名）写进 `singbox.log`；硬编码 false
-    /// 时那条抬级永远不触发，唯一的防线只剩前端的显示层遮蔽——而日志文件就在盘上。
+    /// warn，正是为了让隐私期 helper stderr 不记连接明细；硬编码 false 时那条抬级永远不触发。
     ///
     /// **变异锁**：把 `privacy_mode:` 改回 `false` → 第二条转红；把 `privacy_mode_active` 的
     /// emitter 未接线默认改成 `true` → 第一条转红（未接线时不得擅自抬级 = 静默改变用户设定的日志级别）。
@@ -17557,7 +17609,21 @@ mod tests {
         assert!(
             rt.generate_deps(1, 0, &[], &serde_json::json!({}))
                 .privacy_mode,
-            "隐私模式开启时 deps 必须为 true，否则核日志级别不抬 ⇒ 隐私期域名照写 singbox.log"
+            "隐私模式开启时 deps 必须为 true，否则核日志级别不抬 ⇒ 隐私期域名照写 helper stderr"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// W26：生产 runtime 永远不给 sing-box `log.output` 文件句柄；否则 child 自己持有的 fd/handle
+    /// 无法被 Polaris writer 运行期轮转，1.46GB 同型故障会直接复发。
+    #[test]
+    fn runtime_log_output_is_owned_by_bounded_sink_not_core() {
+        let (rt, dir) = test_runtime();
+        assert!(
+            rt.generate_deps(1, 0, &[], &serde_json::json!({}))
+                .log_file_path
+                .is_none(),
+            "runtime config 不得把固定 output 文件重新交给 sing-box 持有"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -17762,6 +17828,34 @@ mod tests {
         assert_eq!(
             scan_core_fatal("+0800 FATAL start service: create service: bad json"),
             None
+        );
+    }
+
+    #[test]
+    fn startup_log_cursor_distinguishes_append_from_fresh_rotation() {
+        let cursor = StartupLogCursor {
+            offset: 128,
+            identity: Some(7),
+        };
+        assert_eq!(
+            startup_log_read_start(cursor, 256, Some(7)),
+            128,
+            "旧 helper 在同一文件 append：只读本腿新增部分"
+        );
+        assert_eq!(
+            startup_log_read_start(cursor, 512, Some(8)),
+            0,
+            "新 helper fresh-rotate：即使新文件更长也必须从头读"
+        );
+        assert_eq!(
+            startup_log_read_start(cursor, 64, Some(7)),
+            0,
+            "同一身份但长度缩短时不能 seek 越过本腿日志"
+        );
+        assert_eq!(
+            startup_log_read_start(StartupLogCursor::default(), 64, Some(8)),
+            0,
+            "起核前没有 current 文件时整份都属于本腿"
         );
     }
 

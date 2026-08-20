@@ -387,33 +387,34 @@ impl CoreSpawner for AmbientCapsSpawner {
             cmd.current_dir(cwd);
         }
 
-        // Go :443-451：log 重定向 + chown 到对端 uid。开失败 → 不重定向（继承 helper，Go 同）。
-        if let Some(log) = &req.log {
-            use std::os::unix::fs::OpenOptionsExt;
-            // Go: os.OpenFile(logPath, O_CREATE|O_WRONLY|O_APPEND, 0o644)。
-            if let Ok(f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .mode(0o644)
-                .open(log)
-            {
-                // Go: lf.Chown(int(cred.Uid), int(cred.Gid))（best-effort）。fchown = 对 fd（非 path）。
-                let _ = std::os::unix::fs::fchown(&f, Some(req.uid), Some(req.gid));
-                if let Ok(dup) = f.try_clone() {
-                    cmd.stdout(std::process::Stdio::from(dup));
-                }
-                cmd.stderr(std::process::Stdio::from(f));
-            }
+        // B3/W26：child 输出走 pipe → shared 有界 writer；直接继承一个 append fd 无法在运行期安全
+        // 轮转（rename 后 child 仍写旧 inode/handle），正是历史 `singbox.log` 无界增长的同型风险。
+        if req.log.is_some() {
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
         }
 
         // Go :434-442：SysProcAttr{Credential{Uid,Gid,Groups}, AmbientCaps}。降权+ambient 经 pre_exec 装。
         attach_privilege_drop(&mut cmd, req.uid, req.gid, req.groups.clone());
 
         // Go :452：c.Start()。失败 → ERR start（转发态复位由 handler 负责，对照 :456）。
-        let child = cmd.spawn().map_err(|e| SpawnError::Spawn {
+        let mut child = cmd.spawn().map_err(|e| SpawnError::Spawn {
             detail: e.to_string(),
         })?;
         let pid = child.id();
+
+        if let Some(log) = &req.log {
+            polaris_log_budget::spawn_pipe_loggers(
+                child.stdout.take(),
+                child.stderr.take(),
+                log,
+                polaris_log_budget::DEFAULT_GENERATION_BYTES,
+            );
+            // writer 以降权后的登录用户身份运行；helper 自身是 root，创建出的文件需归还对端属主。
+            if let Ok(file) = std::fs::OpenOptions::new().write(true).open(log) {
+                let _ = std::os::unix::fs::fchown(&file, Some(req.uid), Some(req.gid));
+            }
+        }
 
         let slot = ChildSlot::new(pid);
         self.slots

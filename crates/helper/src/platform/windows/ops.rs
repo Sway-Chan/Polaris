@@ -42,7 +42,7 @@ pub trait ProcOps: Send + Sync {
     /// 启动 sing-box 子进程（`winproc.go:21-49` `startSingbox`）。
     ///
     /// 返回子进程 pid（Go 返回 `*exec.Cmd`，本 trait 只需 pid + 可终止语义）。
-    /// `log_path` 非空 → 子进程 stdout/stderr 重定向到此文件（早期启动诊断）。
+    /// `log_path` 非空 → 子进程 stdout/stderr 经 shared 有界 writer 写入两代文件（早期启动诊断）。
     /// `fwd`（allowLan）= true → 启动前 best-effort 开 IP 转发（`enableIPForwarding`）。
     fn start_singbox(
         &self,

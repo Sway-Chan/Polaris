@@ -3106,6 +3106,7 @@ dependencies = [
  "polaris-helper",
  "polaris-helper-client",
  "polaris-helper-proto",
+ "polaris-log-budget",
  "polaris-mesh",
  "polaris-net-stack",
  "polaris-singbox-grpc",
@@ -3175,6 +3176,7 @@ dependencies = [
  "log",
  "nix",
  "polaris-helper-proto",
+ "polaris-log-budget",
  "sha2",
  "tempfile",
  "thiserror 2.0.18",
@@ -3194,6 +3196,10 @@ dependencies = [
 
 [[package]]
 name = "polaris-helper-proto"
+version = "1.0.0"
+
+[[package]]
+name = "polaris-log-budget"
 version = "1.0.0"
 
 [[package]]

@@ -47,7 +47,7 @@ describe('runtimeLevelView', () => {
  * 不变量 2。两个方向都是「控件意图尚未进核」：即便核更啰嗦只会多记行，也不能伪装成已同步。
  */
 describe('双向一致性', () => {
-  it('核比控件更严（导出的 singbox.log 会缺行）→ 报', () => {
+  it('核比控件更严（启动诊断会缺行）→ 报', () => {
     expect(runtimeLevelView({ level: 'info', reason: null }, 'debug', 'debug')).toEqual({
       kind: 'known',
       level: 'info',

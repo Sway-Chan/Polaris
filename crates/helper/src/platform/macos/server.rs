@@ -445,23 +445,24 @@ mod sys {
             if !self.config.conf_dir.is_empty() {
                 cmd.current_dir(&self.config.conf_dir);
             }
-            // helper.go:540-547: sing-box stdout/stderr 重定向到 app 日志文件（O_CREATE|O_WRONLY|O_APPEND 0644）。
-            // 子进程在 spawn 时 dup fd；父进程随 File drop 立即关副本（避免每次启停泄漏 fd，helper.go:555-558）。
+            // B3/W26：不再把 child 直接绑到一个永不重开的 append fd。那种形状外部 rename 后 child
+            // 仍持续写旧 inode，Windows 还可能直接拒绝 rename，无法形成运行期硬上限。改用 pipe，
+            // 由 shared `polaris-log-budget` writer 掌握 current + `.1` 两代并在本次运行中轮转。
             if !log.is_empty() {
-                if let Ok(f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(log)
-                {
-                    if let Ok(f2) = f.try_clone() {
-                        cmd.stdout(f);
-                        cmd.stderr(f2);
-                    }
-                }
+                cmd.stdout(std::process::Stdio::piped());
+                cmd.stderr(std::process::Stdio::piped());
             }
             // helper.go:548-554: c.Start()
-            let child = cmd.spawn().map_err(|e| SpawnError::Failed(e.to_string()))?;
+            let mut child = cmd.spawn().map_err(|e| SpawnError::Failed(e.to_string()))?;
             let pid = child.id();
+            if !log.is_empty() {
+                polaris_log_budget::spawn_pipe_loggers(
+                    child.stdout.take(),
+                    child.stderr.take(),
+                    log,
+                    polaris_log_budget::DEFAULT_GENERATION_BYTES,
+                );
+            }
             // helper.go:559-561: child=c; childDone=done（身份代自增）
             let done = DoneFlag::new();
             let generation = {

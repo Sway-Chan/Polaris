@@ -587,12 +587,28 @@ export const logsApi = {
   /**
    * 在系统文件管理器里打开日志目录（G3，原型 log 工具栏「目录」）。
    *
-   * 打开的是**配置目录**——应用日志在 `logs/polaris.log`、内核日志在 `singbox.log`，
-   * 两者不同层，开二者的共同父目录才不会让最常要的 singbox.log 落在视野外（见 Rust 侧命令注释）。
+   * 打开的是**配置目录**——受管日志在 `logs/`，helper 启动日志和旧版只读 singbox.log 在父层；
+   * 打开共同父目录才能同时看见（见 Rust 侧命令注释）。
    * 路径解析在后端，前端不拼路径（三平台不同，portable 形态另有落点）。
    */
   async openDir(): Promise<void> {
     return invoke(IPC_CHANNELS.LOGS_OPEN_DIR);
+  },
+
+  /** W26 前遗留的无界 singbox.log；当前版本只读识别，不会继续写入或自动删除。 */
+  async legacyInfo(): Promise<{ exists: boolean; bytes: number; path: string }> {
+    return invoke(IPC_CHANNELS.LOGS_LEGACY_INFO);
+  },
+
+  /** 用户显式选择目标后归档旧日志；后端先复制+落盘复核，最后才移除原文件。 */
+  async archiveLegacy(): Promise<{
+    success: boolean;
+    archived?: boolean;
+    bytes?: number;
+    filePath?: string;
+    error?: string;
+  }> {
+    return invoke(IPC_CHANNELS.LOGS_ARCHIVE_LEGACY);
   },
 
   /**

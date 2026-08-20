@@ -81,6 +81,8 @@
     "jsonFileType": "Файл JSON",
     "diagnosticExportTitle": "Экспорт диагностического отчёта Polaris",
     "logsExportTitle": "Экспорт журналов Polaris",
+    "legacyLogArchiveTitle": "Архивировать старый журнал sing-box",
+    "logFileType": "Файл журнала",
     "configPickTitle": "Выберите файл конфигурации",
     "configFileType": "Файл конфигурации",
     "corePickTitle": "Выберите исполняемый файл ядра sing-box",

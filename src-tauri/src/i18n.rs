@@ -437,6 +437,10 @@ pub mod key {
     pub const NATIVE_DIAGNOSTIC_EXPORT_TITLE: &str = "native.diagnosticExportTitle";
     /// 导出日志：保存框标题。
     pub const NATIVE_LOGS_EXPORT_TITLE: &str = "native.logsExportTitle";
+    /// 归档旧版无界核日志：保存框标题。
+    pub const NATIVE_LEGACY_LOG_ARCHIVE_TITLE: &str = "native.legacyLogArchiveTitle";
+    /// `.log` 过滤器显示名。
+    pub const NATIVE_LOG_FILE_TYPE: &str = "native.logFileType";
     /// 本地导入配置：打开框标题。
     pub const NATIVE_CONFIG_PICK_TITLE: &str = "native.configPickTitle";
     /// 配置文件过滤器显示名。

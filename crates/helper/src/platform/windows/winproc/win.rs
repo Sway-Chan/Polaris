@@ -16,10 +16,9 @@ use crate::platform::windows::ops::{NetTableOps, ProcOps};
 use crate::platform::windows::selfuninstall::self_uninstall_cmd_line;
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::process::CommandExt;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, SetHandleInformation, BOOL, ERROR_INVALID_PARAMETER, FALSE, HANDLE,
-    HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, TRUE,
+    CloseHandle, GetLastError, BOOL, ERROR_INVALID_PARAMETER, FALSE, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::NetworkManagement::IpHelper::GetExtendedTcpTable;
 use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
@@ -42,8 +41,7 @@ use windows_sys::Win32::System::Registry::{
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, GetExitCodeProcess, OpenProcess, QueryFullProcessImageNameW, TerminateProcess,
     CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, DETACHED_PROCESS, PROCESS_INFORMATION,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, STARTF_USESTDHANDLES,
-    STARTUPINFOW,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, STARTUPINFOW,
 };
 
 /// IPv4 TCP owner PID 行（`winproc.go:259-266` `MIB_TCPROW_OWNER_PID`）。
@@ -238,51 +236,14 @@ impl ProcOps for WinProcOps {
         if fwd {
             self.enable_ip_forwarding();
         }
-        // 构造命令行：singbox_bin run -c cfg（Go: exec.Command(singboxBin, "run", "-c", cfg)）。
-        let args = ["run", "-c", cfg];
-        let cmdline = build_command_line(singbox_bin, &args);
-        // CreateProcessW 需可写 wide lpCommandLine。
-        let mut cmdline_w: Vec<u16> = OsString::from(cmdline)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
-        si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-        // W4 修：log 重定向（Go winproc.go:28-35：logPath!="" 时 c.Stdout=c.Stderr=logFile，
-        // O_CREATE|O_WRONLY|O_APPEND）。此前 `let _ = log_path` 丢弃 → 启动诊断日志无处可查。
-        // 手法：std::fs 开文件拿句柄 → SetHandleInformation 置可继承 → STARTUPINFOW 的 std 句柄 +
-        // bInheritHandles=TRUE 传给 child。句柄须活到 CreateProcessW 之后（child 继承独立副本）；
-        // 父副本随 File drop（函数末）关闭，避免每次启停泄漏。stdin 指向 NUL（Go os/exec 对 nil Stdin
-        // 的等价），避免 child 拿到无效 stdin 句柄。
-        // 其余句柄（管道 SA bInheritHandle=FALSE、Job/OpenProcess 默认非继承）→ 不随 bInheritHandles 泄漏。
-        let mut log_file: Option<std::fs::File> = None;
-        let mut nul_file: Option<std::fs::File> = None;
-        let mut inherit_handles = FALSE;
+        // B3/W26：改用 std Command 的 pipe，不再把 child 直接绑到一个永不重开的 append handle。
+        // shared writer 才能在本次 child 存活期间关闭 current → rename → 重开，形成跨平台硬上限。
+        let mut cmd = std::process::Command::new(singbox_bin);
+        cmd.args(["run", "-c", cfg])
+            .stdin(std::process::Stdio::null());
         if !log_path.is_empty() {
-            if let Ok(lf) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log_path)
-            {
-                let lh = lf.as_raw_handle() as HANDLE;
-                // SAFETY: 置 log 句柄 HANDLE_FLAG_INHERIT（child 经 bInheritHandles=TRUE 继承副本）。
-                unsafe { SetHandleInformation(lh, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
-                si.dwFlags |= STARTF_USESTDHANDLES;
-                si.hStdOutput = lh;
-                si.hStdError = lh;
-                if let Ok(nf) = std::fs::OpenOptions::new().read(true).open("NUL") {
-                    let nh = nf.as_raw_handle() as HANDLE;
-                    // SAFETY: 同上，NUL stdin 句柄置可继承。
-                    unsafe { SetHandleInformation(nh, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
-                    si.hStdInput = nh;
-                    nul_file = Some(nf);
-                } else {
-                    // NUL 打不开（极罕见）：stdin 复用 log 句柄（sing-box run 不读 stdin，无害）。
-                    si.hStdInput = lh;
-                }
-                inherit_handles = TRUE;
-                log_file = Some(lf);
-            }
+            cmd.stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
         }
         // CWD = 配置文件所在目录（= 用户可写 config 目录）。**不设的后果不是噪音，是写错地方**：
         // helper 是 SCM 服务，进程 CWD 恒为 `C:\Windows\System32`，child 不设就继承它，而 sing-box
@@ -296,46 +257,22 @@ impl ProcOps for WinProcOps {
         // （`platform/macos/server.rs`）三条腿早就设了，本腿是漏的那条 —— 同一根因下做对的三条腿，
         // 正是「这不是有意取舍」的证据。取父目录的方式与 Linux 腿同（配置文件的所在目录），只是不能用
         // `std::path`（见 `logic::filepath_dir`）。取不到父目录（裸文件名）→ 不设，保持旧行为。
-        let cwd_w: Option<Vec<u16>> = filepath_dir(cfg).map(|dir| {
-            OsString::from(dir)
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect()
-        });
-        let cwd_ptr = cwd_w.as_ref().map_or(std::ptr::null(), |v| v.as_ptr());
-        let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-        // SAFETY: CreateProcessW 启动 child。CREATE_NEW_PROCESS_GROUP 使 child 可被 CTRL_BREAK 投递
-        //（服务模式 no-op，见 send_ctrl_break 注释）。CREATE_NO_WINDOW 避免黑窗。
-        // bInheritHandles=inherit_handles（有 log 重定向时 TRUE，让 child 继承 STARTUPINFOW 的 std 句柄；
-        // 其余句柄均非可继承 → 不泄漏）。lpApplicationName=NULL → lpCommandLine 首 token 作 exe。
-        // lpCurrentDirectory=cwd_ptr（`cwd_w` 须活到本调用之后，故在同作用域持有到函数末）。
-        let ok = unsafe {
-            CreateProcessW(
-                std::ptr::null(),
-                cmdline_w.as_mut_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                inherit_handles,
-                CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
-                std::ptr::null(),
-                cwd_ptr,
-                &si,
-                &mut pi,
-            )
-        };
-        // 父副本句柄在此关闭（child 已继承独立副本）；防每次启停泄漏。
-        drop(log_file);
-        drop(nul_file);
-        if ok == 0 {
-            return Err(std::io::Error::last_os_error());
+        if let Some(cwd) = filepath_dir(cfg) {
+            cmd.current_dir(cwd);
         }
-        let pid = pi.dwProcessId;
-        // SAFETY: 关闭 CreateProcessW 返回的 thread/process 句柄（我们只用 pid + Job Object 管生命周期，
-        // 不直接 Wait —— child 的 reap 由 reap_child 经 OpenProcess(pid) + TerminateProcess 完成）。
-        unsafe {
-            CloseHandle(pi.hThread);
-            CloseHandle(pi.hProcess);
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+        let mut child = cmd.spawn()?;
+        let pid = child.id();
+        if !log_path.is_empty() {
+            polaris_log_budget::spawn_pipe_loggers(
+                child.stdout.take(),
+                child.stderr.take(),
+                log_path,
+                polaris_log_budget::DEFAULT_GENERATION_BYTES,
+            );
         }
+        // 生命周期仍由 Job Object + pid 收割链管理；drop Child 只关闭父侧 process handle，不杀进程。
+        drop(child);
         // ensureJob + assignToJob（winproc.go:40-47）：best-effort 防孤儿安全网。失败不阻断 start。
         if let Some(h_job) = self.ensure_job() {
             self.assign_to_job(h_job, pid);
@@ -791,48 +728,12 @@ fn wide_to_string(buf: &[u16]) -> String {
     String::from_utf16_lossy(&buf[..len])
 }
 
-/// 构造 CreateProcessW 的 lpCommandLine（argv[0]=exe + args，空格分隔，含空格路径用引号）。
-fn build_command_line(exe: &str, args: &[&str]) -> String {
-    let mut parts: Vec<String> = Vec::with_capacity(args.len() + 1);
-    parts.push(quote_if_needed(exe));
-    for a in args {
-        parts.push(quote_if_needed(a));
-    }
-    parts.join(" ")
-}
-
-/// token 含空格或 tab → 加双引号（CreateProcessW 命令行解析规则）。
-fn quote_if_needed(s: &str) -> String {
-    if s.contains(' ') || s.contains('\t') {
-        format!("\"{s}\"")
-    } else {
-        s.to_owned()
-    }
-}
-
 // 父死看护（watchParent，`helper.go:131-159`）现由 [`WinProcOps::spawn_watch_parent`] 承载（W15 接线：
 // helper 分派层在 start 成功后调 trait 方法起后台线程；此前的 zero-call 自由函数版已删）。
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn build_command_line_quotes_spaced_paths() {
-        let cl = build_command_line(
-            r"C:\Program Files\Polaris\sing-box.exe",
-            &["run", "-c", r"C:\my cfg\c.json"],
-        );
-        assert!(cl.contains(r#""C:\Program Files\Polaris\sing-box.exe""#));
-        assert!(cl.contains(r#""C:\my cfg\c.json""#));
-        assert!(cl.contains(" run -c "));
-    }
-
-    #[test]
-    fn build_command_line_no_quotes_for_simple_paths() {
-        let cl = build_command_line("/usr/bin/sing-box", &["run", "-c", "/tmp/c.json"]);
-        assert_eq!(cl, "/usr/bin/sing-box run -c /tmp/c.json");
-    }
 
     #[test]
     fn wide_to_string_truncates_at_null() {

@@ -45,6 +45,12 @@ use crate::runtime::AppRuntime;
 
 /// 每个日志文件最多纳入诊断报告的尾部字节数（足够排障，又不让报告爆大）。上游 `LOG_TAIL_BYTES`。
 const LOG_TAIL_BYTES: u64 = 64 * 1024;
+/// W26 前由 sing-box 自己无界追加的历史文件。新版本只读识别，绝不在启动/升级时自动删除。
+const LEGACY_SINGBOX_LOG: &str = "singbox.log";
+/// 新版本由 Polaris sink 掌管的两代有界核日志（位于 `logs/`，避开旧文件句柄/历史资产）。
+const MANAGED_SINGBOX_LOG: &str = "singbox.log";
+const STARTUP_SINGBOX_LOG: &str = "singbox-startup.log";
+static ARCHIVE_TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// 连接 / DNS 类错误标记（命中且非 debug 级 → 提示把日志级别切到 DEBUG 复现）。
 ///
@@ -103,6 +109,57 @@ fn read_tail(path: &Path, max_bytes: u64) -> String {
         }
     } else {
         text
+    }
+}
+
+/// 读取 shared writer 的 current + `.1` 两代尾部。不存在仍沿用 [`read_tail`] 的占位口径。
+fn read_managed_tail(path: &Path, max_bytes: u64) -> String {
+    let Ok(buf) = polaris_log_budget::read_rotated_tail(path, max_bytes) else {
+        return "(无日志文件)".to_string();
+    };
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// 组装核日志最近窗口：历史旧文件（只读）+ helper 起核/FATAL + SubscribeLog 受管落盘。
+/// 三路各分到 1/3 预算，防为了兼容旧日志把导出报告重新撑成无界。
+fn read_core_log_tail(dir: &Path, max_bytes: u64) -> String {
+    let per_source = (max_bytes / 3).max(1);
+    let mut sections = Vec::new();
+    let legacy = dir.join(LEGACY_SINGBOX_LOG);
+    if legacy.exists() {
+        sections.push(format!(
+            "===== singbox.log [legacy] =====\n{}",
+            read_tail(&legacy, per_source)
+        ));
+    }
+    let startup = dir.join(STARTUP_SINGBOX_LOG);
+    if startup.exists() || polaris_log_budget::rotated_path(&startup).exists() {
+        sections.push(format!(
+            "===== singbox-startup.log[.1] =====\n{}",
+            read_managed_tail(&startup, per_source)
+        ));
+    }
+    let managed = dir.join("logs").join(MANAGED_SINGBOX_LOG);
+    if managed.exists() || polaris_log_budget::rotated_path(&managed).exists() {
+        sections.push(format!(
+            "===== logs/singbox.log[.1] =====\n{}",
+            read_managed_tail(&managed, per_source)
+        ));
+    }
+    if sections.is_empty() {
+        "(无日志文件)".to_string()
+    } else {
+        let joined = sections.join("\n\n");
+        let max = usize::try_from(max_bytes).unwrap_or(usize::MAX);
+        if joined.len() <= max {
+            joined
+        } else {
+            let mut start = joined.len() - max;
+            while !joined.is_char_boundary(start) {
+                start += 1;
+            }
+            joined[start..].to_string()
+        }
     }
 }
 
@@ -573,9 +630,8 @@ pub fn shell_open_external(app: AppHandle, url: String) -> ApiResponse<()> {
 ///
 /// # 为什么打开的是**配置目录**而不是 `logs/`
 ///
-/// 两份日志不在同一层：应用日志是 `<configDir>/logs/polaris.log`，内核日志是
-/// `<configDir>/singbox.log`（`runtime/proxy.rs` 的 `log_file_path`）。只开 `logs/` 会让用户
-/// **最常要的那一份**（singbox.log）不在视野里，还得自己往上翻一级。故开二者的共同父目录。
+/// 受管应用/内核日志在 `<configDir>/logs/`；helper 启动日志与 W26 前只读历史文件在 `<configDir>`。
+/// 开共同父目录能同时看见两类，不把旧 1.46GB 文件藏在上一级。
 ///
 /// # 为什么在后端一步做完，而不是「后端返路径 + 前端 openExternal」
 ///
@@ -594,6 +650,139 @@ pub fn logs_open_dir(app: AppHandle, state: State<'_, AppRuntime>) -> ApiRespons
         return ApiResponse::err(format!("{e}"));
     }
     ok_void()
+}
+
+/// 查询 W26 前遗留的无界 `singbox.log`。只读 metadata；新受管日志位于 `logs/singbox.log`，
+/// 因此本文件存在本身就等价于「待用户显式处理的历史资产」，不会再被当前核写入。
+#[tauri::command]
+pub fn logs_legacy_info(state: State<'_, AppRuntime>) -> ApiResponse<Value> {
+    let path = state.config().dir().join(LEGACY_SINGBOX_LOG);
+    match std::fs::metadata(&path) {
+        Ok(meta) if meta.is_file() => ApiResponse::ok(json!({
+            "exists": true,
+            "bytes": meta.len(),
+            "path": path.to_string_lossy(),
+        })),
+        _ => ApiResponse::ok(json!({
+            "exists": false,
+            "bytes": 0,
+            "path": path.to_string_lossy(),
+        })),
+    }
+}
+
+/// 把旧版无界日志显式归档到用户选择的位置，再移除原文件。
+///
+/// 事务纪律：先复制到目标同目录临时文件并 `sync_all`，复核源文件在复制期间未变化，再同目录 `rename` 提交；
+/// 最后一步才删源。任一步失败都保留源文件，绝不让“节省磁盘”变成不可恢复的数据丢失。
+#[tauri::command]
+pub async fn logs_archive_legacy(
+    app: AppHandle,
+    state: State<'_, AppRuntime>,
+) -> Result<ApiResponse<Value>, ()> {
+    let source = state.config().dir().join(LEGACY_SINGBOX_LOG);
+    if !source.is_file() {
+        return Ok(ApiResponse::ok(
+            json!({ "success": true, "archived": false }),
+        ));
+    }
+    let default_name = format!("polaris-singbox-legacy-{}.log", today_yyyy_mm_dd());
+    let lang = crate::i18n::app_lang(&app);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title(t(lang, key::NATIVE_LEGACY_LOG_ARCHIVE_TITLE))
+        .set_file_name(&default_name)
+        .add_filter(t(lang, key::NATIVE_LOG_FILE_TYPE), &["log"])
+        .add_filter(t(lang, key::NATIVE_ALL_FILES), &["*"])
+        .save_file(move |path| {
+            let _ = tx.send(path);
+        });
+    let Some(destination) = rx.await.ok().flatten().and_then(|p| p.into_path().ok()) else {
+        return Ok(ApiResponse::ok(
+            json!({ "success": false, "error": "cancelled" }),
+        ));
+    };
+    let destination_for_task = destination.clone();
+    let archived =
+        tokio::task::spawn_blocking(move || archive_legacy_log(&source, &destination_for_task))
+            .await
+            .map_err(|e| format!("archive task join failed: {e}"))
+            .and_then(|r| r);
+    Ok(match archived {
+        Ok(bytes) => ApiResponse::ok(json!({
+            "success": true,
+            "archived": true,
+            "bytes": bytes,
+            "filePath": destination.to_string_lossy(),
+        })),
+        Err(e) => ApiResponse::err(e),
+    })
+}
+
+fn archive_legacy_log(source: &Path, destination: &Path) -> Result<u64, String> {
+    if source == destination {
+        return Err("archive destination must differ from legacy log".to_string());
+    }
+    if destination.exists() {
+        let source_canonical =
+            std::fs::canonicalize(source).map_err(|e| format!("resolve legacy log: {e}"))?;
+        let destination_canonical = std::fs::canonicalize(destination)
+            .map_err(|e| format!("resolve archive destination: {e}"))?;
+        if source_canonical == destination_canonical {
+            return Err("archive destination must differ from legacy log".to_string());
+        }
+    }
+    let before = std::fs::metadata(source).map_err(|e| format!("legacy log metadata: {e}"))?;
+    let before_modified = before.modified().ok();
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "archive destination has no parent directory".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("create archive directory: {e}"))?;
+    let seq = ARCHIVE_TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut tmp_name = destination.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(format!(".polaris-partial-{}-{seq}", std::process::id()));
+    let temporary = parent.join(tmp_name);
+    let _ = std::fs::remove_file(&temporary);
+    let copied = match std::fs::copy(source, &temporary) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(format!("copy legacy log: {e}"));
+        }
+    };
+    let sync_result = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&temporary)
+        .and_then(|file| file.sync_all());
+    if let Err(e) = sync_result {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(format!("sync archived log: {e}"));
+    }
+    let after = match std::fs::metadata(source) {
+        Ok(metadata) => metadata,
+        Err(e) => {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(format!("recheck legacy log: {e}"));
+        }
+    };
+    if copied != before.len()
+        || after.len() != before.len()
+        || before_modified.is_some_and(|modified| after.modified().ok() != Some(modified))
+    {
+        let _ = std::fs::remove_file(&temporary);
+        return Err("legacy log changed while archiving; source was kept".to_string());
+    }
+    // `std::fs::rename` 在两端均为同目录提交，并按平台语义替换现有普通文件；不要预删 destination，
+    // 否则 rename 失败会把用户原先的同名归档一并弄丢。
+    if let Err(e) = std::fs::rename(&temporary, destination) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(format!("commit archived log: {e}"));
+    }
+    std::fs::remove_file(source).map_err(|e| {
+        format!("archive was saved, but the legacy source could not be removed: {e}")
+    })?;
+    Ok(copied)
 }
 
 // ── sing-box 官方面板 ── Polaris helper-handlers dashboard 部分 ──
@@ -1037,8 +1226,8 @@ pub async fn diagnostic_export(
     };
 
     let dir = state.config().dir().to_path_buf();
-    let app_log_tail = read_tail(&dir.join("logs").join("polaris.log"), LOG_TAIL_BYTES);
-    let singbox_log_tail = read_tail(&dir.join("singbox.log"), LOG_TAIL_BYTES);
+    let app_log_tail = read_managed_tail(&dir.join("logs").join("polaris.log"), LOG_TAIL_BYTES);
+    let singbox_log_tail = read_core_log_tail(&dir, LOG_TAIL_BYTES);
 
     let status = state.proxy().status();
     // 报告里这一格必须是**核实际在跑的级别**，不是盘上写的那个。
@@ -1161,7 +1350,7 @@ pub async fn diagnostic_export(
 /// 上游 `LOGS_EXPORT`：导出**纯日志**（非诊断报告）。
 ///
 /// 与 [`diagnostic_export`] 是**两种产物**（对齐原型 log 工具栏的两个按钮）：
-/// - 本命令 = app.log + singbox.log 原文拼接，**不含配置、不含版本号**。
+/// - 本命令 = 两代 app 日志 + 三路 sing-box 近期窗口，**不含配置、不含版本号**。
 /// - `diagnostic_export` = 脱敏配置 + 版本号 + 运行态 + 日志的 Markdown 诊断报告。
 ///
 /// # 脱敏边界（重要，勿误当等价物）
@@ -1175,8 +1364,8 @@ pub async fn logs_export(
     state: State<'_, AppRuntime>,
 ) -> Result<ApiResponse<Value>, ()> {
     let dir = state.config().dir().to_path_buf();
-    let app_log = read_tail(&dir.join("logs").join("polaris.log"), LOG_TAIL_BYTES);
-    let singbox_log = read_tail(&dir.join("singbox.log"), LOG_TAIL_BYTES);
+    let app_log = read_managed_tail(&dir.join("logs").join("polaris.log"), LOG_TAIL_BYTES);
+    let singbox_log = read_core_log_tail(&dir, LOG_TAIL_BYTES);
 
     // 节点身份打码：日志原文含节点域名/IP/节点名 —— 与诊断报告共用同一套标识符收集 + 替换，不另写一份。
     let ids = match state.config().load_full() {
@@ -1189,7 +1378,7 @@ pub async fn logs_export(
 要附到公开 issue 请改用「诊断报告」导出。\n\n\
 生成时间：{}\n\n\
 ## app.log（近期）\n\n```text\n{}\n```\n\n\
-## singbox.log（近期）\n\n```text\n{}\n```\n",
+## sing-box logs（近期）\n\n```text\n{}\n```\n",
         now_iso8601(),
         if app_log.is_empty() {
             "(空)"
@@ -1971,6 +2160,85 @@ pub fn schedule_ipinfo_refresh(app: &AppHandle, delay_ms: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_log_dir(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "polaris-misc-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn core_log_tail_keeps_legacy_startup_and_managed_sources_bounded() {
+        let dir = temp_log_dir("core-tail");
+        std::fs::create_dir_all(dir.join("logs")).unwrap();
+        std::fs::write(dir.join(LEGACY_SINGBOX_LOG), b"legacy-line\n").unwrap();
+        std::fs::write(dir.join(STARTUP_SINGBOX_LOG), b"fatal-line\n").unwrap();
+        std::fs::write(dir.join("logs").join(MANAGED_SINGBOX_LOG), b"live-line\n").unwrap();
+
+        let tail = read_core_log_tail(&dir, 192);
+        assert!(tail.contains("legacy-line"));
+        assert!(tail.contains("fatal-line"));
+        assert!(tail.contains("live-line"));
+        assert!(tail.len() <= 192, "三路兼容不得让导出重新变成无界");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_archive_commits_destination_before_removing_source() {
+        let dir = temp_log_dir("archive");
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join(LEGACY_SINGBOX_LOG);
+        let destination = dir.join("archive").join("saved.log");
+        std::fs::write(&source, b"historical evidence").unwrap();
+
+        assert_eq!(archive_legacy_log(&source, &destination).unwrap(), 19);
+        assert!(!source.exists());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"historical evidence");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_archive_replaces_an_approved_existing_target() {
+        let dir = temp_log_dir("archive-replace");
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join(LEGACY_SINGBOX_LOG);
+        let destination = dir.join("saved.log");
+        std::fs::write(&source, b"new evidence").unwrap();
+        std::fs::write(&destination, b"old archive").unwrap();
+
+        assert_eq!(archive_legacy_log(&source, &destination).unwrap(), 12);
+        assert!(!source.exists());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"new evidence");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_archive_refuses_in_place_destination() {
+        let dir = temp_log_dir("archive-same");
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join(LEGACY_SINGBOX_LOG);
+        std::fs::write(&source, b"keep me").unwrap();
+        assert!(archive_legacy_log(&source, &source).is_err());
+        assert_eq!(std::fs::read(&source).unwrap(), b"keep me");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_archive_refuses_a_path_alias_to_the_source() {
+        let dir = temp_log_dir("archive-alias");
+        std::fs::create_dir_all(dir.join("alias")).unwrap();
+        let source = dir.join(LEGACY_SINGBOX_LOG);
+        let destination = dir.join("alias").join("..").join(LEGACY_SINGBOX_LOG);
+        std::fs::write(&source, b"keep me too").unwrap();
+        assert!(archive_legacy_log(&source, &destination).is_err());
+        assert_eq!(std::fs::read(&source).unwrap(), b"keep me too");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn log_subscription_tokens_protect_new_mount_from_stale_cleanup() {
