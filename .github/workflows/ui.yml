@@ -33,10 +33,10 @@ on:
   # 供 package.yml 复用作发布前置门：CI 绿但前端红也不许打包。
   workflow_call:
 
-# 判据与 ci.yml 逐字一致（见那边的长注释）：main 上被顶掉的旧跑没有消费者；
-# 用 github.ref 而非 event_name，是因为 workflow_call 作发布门时 event_name 取调用方的。
+# 判据与 ci.yml 一致：调用方名称进入并发组，独立 UI 与 Package 内复用门互不取消；
+# 同一调用方/ref 的旧 main/PR 跑仍由新跑顶掉。
 concurrency:
-  group: ui-${{ github.ref }}
+  group: ui-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
 
 jobs:

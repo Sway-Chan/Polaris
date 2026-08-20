@@ -36,4 +36,13 @@ describe('package 全平台前置 CI 的矩阵输入', () => {
     expect(pkg).toContain('uses: ./.github/workflows/ci.yml');
     expect(pkg).toContain("if: needs.setup.outputs.full == 'true'");
   });
+
+  it('独立门与 Package 复用门必须按调用方隔离并发组，不能互相取消制造假红', () => {
+    expect(workflow('ci.yml')).toContain(
+      'group: ci-${{ github.workflow }}-${{ github.ref }}',
+    );
+    expect(workflow('ui.yml')).toContain(
+      'group: ui-${{ github.workflow }}-${{ github.ref }}',
+    );
+  });
 });

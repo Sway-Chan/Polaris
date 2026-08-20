@@ -51,12 +51,12 @@ on:
   workflow_call:
 
 # 同一 ref 上新跑取消在途旧跑。
-# 2026-07-31 把 main push 也纳入取消：连着推几笔时，被顶掉的那几跑的结论没有任何消费者
-# （只有 tip 会发布），却照样计费。判据用 `github.ref` 而不是 `github.event_name == 'push'`——
-# 经 package.yml workflow_call 作发布门时 event_name 取**调用方**的（tag push 也是 'push'），
-# 用 event_name 会把发布门也变成可取消的。tag ref 是 refs/tags/*，走不进下面这条。
+# 2026-07-31 把 main push 也纳入取消：连着推几笔时，被顶掉的旧 tip 没有消费者，照跑只会计费。
+# `workflow_call` 里的 `github.workflow` 取**调用方**名称（GitHub 官方语义），故把它纳入组：
+# 独立 CI 与 Package 内复用的 CI 门互不取消；同一调用方/ref 的旧跑仍会被新跑顶掉。
+# tag ref 是 refs/tags/*，走不进下面的 cancel 条件。
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
 
 jobs:
