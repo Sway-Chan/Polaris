@@ -83,11 +83,16 @@ jobs:
         # 走全矩阵分支，正确。
         #
         # 最前面多一段 dispatch 单平台分支（2026-08-05）：手动 dispatch 且选了具体平台 → 只跑那一条。
-        # 判据用 `github.event.inputs.os` 而**不是** `inputs.os`，与 package.yml 里那条同理——
-        # workflow_call / push 的 payload 里根本没有 inputs 键，`inputs.os` 在那些路径上会报错或取到
-        # 调用方的输入，而 `github.event.inputs.os` 恒为空串 ⇒ 干净地落到原判定上。
+        # 判据用 `github.event.inputs.os` 而**不是** `inputs.os`，并且先守 `os != ''`：package.yml 的
+        # `platform=all` workflow_dispatch 会把外层 event_name / payload 传给 workflow_call；那份 payload
+        # 有 `platform`、没有 `os`。若只写 `os != 'all'`，空串也满足，矩阵会生成 `[""]` ⇒
+        # `runs-on: ""`、job labels 为空，永远没有 runner 能接（B9 run 32357370395 实证）。push / PR /
+        # package workflow_call 的空 `os` 必须落回下方原矩阵；只有 CI 自己手动 dispatch 且明确选了
+        # 非 all 的 os 才走单平台腿。
         os: >-
-          ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.os != 'all')
+          ${{ (github.event_name == 'workflow_dispatch'
+              && github.event.inputs.os != ''
+              && github.event.inputs.os != 'all')
               && fromJSON(format('["{0}"]', github.event.inputs.os))
               || ((github.event_name == 'push' && github.ref == 'refs/heads/main')
                   && fromJSON('["ubuntu-22.04"]')
