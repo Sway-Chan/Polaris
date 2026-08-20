@@ -52,6 +52,7 @@ import {
 } from './active-detail';
 import { applyClosedHistoryUpdate } from './closed-history';
 import { connectionRuleSubjects } from './connection-rule-subjects';
+import { cycleSortState, type SortState } from './sort-cycle';
 
 type ConnView = 'top' | 'active' | 'closed';
 
@@ -92,11 +93,6 @@ const CONNECTION_PAGE_SIZE = 20;
  * 两种视图不再共用一个“拓扑上限”；本页显式选项仍是 5/10/15。
  */
 const TOP_N_OPTIONS = [5, 10, 15] as const;
-interface SortState {
-  key: SortKey;
-  dir: 1 | -1;
-}
-
 /** 连接行显示态（含本地派生：速率 / 累计 / 时长 / L4 类型 / 进程）。 */
 interface ConnRow {
   entry: ConnectionEntry;
@@ -253,7 +249,7 @@ export function ConnectionsScreen() {
   const [view, setView] = useState<ConnView>('top');
   const [search, setSearch] = useState('');
   const [paused, setPaused] = useState(false);
-  const [sort, setSort] = useState<SortState | null>(null);
+  const [sort, setSort] = useState<SortState<SortKey> | null>(null);
   const [page, setPage] = useState(0);
 
   const [rows, setRows] = useState<ConnRow[]>([]);
@@ -753,16 +749,20 @@ export function ConnectionsScreen() {
   }, [t]);
 
   const onSort = useCallback((key: SortKey) => {
-    setSort((s) => {
-      if (!s || s.key !== key) return { key, dir: 1 };
-      return { key, dir: (s.dir === 1 ? -1 : 1) as 1 | -1 };
-    });
+    setSort((current) => cycleSortState(current, key));
   }, []);
 
   const thSortable = (key: SortKey, label: string, extraClass?: string) => (
     <th
       className={`${extraClass ? extraClass + ' ' : ''}sortable${sort?.key === key ? ' sorted' : ''}`}
       onClick={() => onSort(key)}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        onSort(key);
+      }}
+      tabIndex={0}
+      aria-sort={sort?.key !== key ? 'none' : sort.dir > 0 ? 'ascending' : 'descending'}
       data-tip={label}
     >
       <span>{label}</span>
