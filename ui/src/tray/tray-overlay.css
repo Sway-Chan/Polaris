@@ -54,6 +54,23 @@ body {
   box-shadow: none;
 }
 
+/* `data-tray-edge` 由 Rust 按托盘锚点所在 monitor/work area 播种并在热开时同步。卡片靠系统栏的一侧
+ * 恒留 2px，剩余透明安全边移到远侧；每个方向的横/纵 margin 总量保持 22px / 12px 不变，因此固定
+ * 窗宽、tray_resize 自适应窗高和文字可用宽都不会抖。旧基线只适合顶部菜单栏：Windows 底部任务栏
+ * 会吃到 10px bottom margin，再叠原生 gap，正是单屏下也显得“不贴边”的直接来源。 */
+:root[data-tray-edge="bottom"] .tray-menu {
+  margin-top: 10px;
+  margin-bottom: 2px;
+}
+:root[data-tray-edge="left"] .tray-menu {
+  margin-left: 2px;
+  margin-right: 20px;
+}
+:root[data-tray-edge="right"] .tray-menu {
+  margin-left: 20px;
+  margin-right: 2px;
+}
+
 /* ── 紧凑度收紧（浮层窗专属，不改 components.css 的原型基线）──
  * 实测原型 `.tray-i` = 35px 逻辑高（padding:8px + 16px 图标 + normal 行高），比原生 macOS 菜单项
  * （~22px）明显偏松。这里在**浮层窗内**把纵向 padding/行高收紧到 ~28px（近原生、仍舒适可点），

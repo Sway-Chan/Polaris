@@ -58,6 +58,22 @@ describe('守卫自检：扫到的确实是源码（防读空文件恒绿）', (
   });
 });
 
+describe('托盘卡片随系统栏边缘贴合', () => {
+  it('四边共享 data-tray-edge 契约，近侧恒为 2px 且总外边距不变', () => {
+    expect(OVERLAY_RAW).toMatch(
+      /:root\[data-tray-edge="bottom"\]\s+\.tray-menu\s*{[^}]*margin-top:\s*10px;[^}]*margin-bottom:\s*2px;/s,
+    );
+    expect(OVERLAY_RAW).toMatch(
+      /:root\[data-tray-edge="left"\]\s+\.tray-menu\s*{[^}]*margin-left:\s*2px;[^}]*margin-right:\s*20px;/s,
+    );
+    expect(OVERLAY_RAW).toMatch(
+      /:root\[data-tray-edge="right"\]\s+\.tray-menu\s*{[^}]*margin-left:\s*20px;[^}]*margin-right:\s*2px;/s,
+    );
+    // 顶边沿用基础 2/10；底边改成 10/2，横向两组仍都是 22px，避免 tray_resize/固定窗宽抖动。
+    expect(OVERLAY_RAW).toMatch(/\.tray-menu\s*{[^}]*margin:\s*2px 11px 10px;/s);
+  });
+});
+
 describe('状态卡超长出口 IP：默认截断，悬停或聚焦时才滚动', () => {
   it('溢出由真实布局量测，且没有 IP 时长节点名仍保持静态', () => {
     expect(MENU).toMatch(/el\.scrollWidth\s*-\s*el\.clientWidth/);

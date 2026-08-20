@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tauri::{
-    AppHandle, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewUrl,
+    AppHandle, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Position, Size, WebviewUrl,
     WebviewWindowBuilder, WindowEvent,
 };
 
@@ -526,10 +526,10 @@ pub struct TrayOverlay {
     click_monitor: Mutex<Option<usize>>,
 }
 
-/// 托盘图标的屏幕物理矩形（左上角 + 尺寸）。`TrayIconEvent::Click` 的 `rect` 归一化后存这里。
-/// `allow(dead_code)`：`h` 只在 mac 分支用（菜单栏图标下沿），Linux/Win 编译时未读。
-#[derive(Clone, Copy)]
-#[allow(dead_code)]
+/// 托盘图标的屏幕物理矩形（左上角 + 尺寸）。`TrayIconEvent::Click` 的 `rect` 原样存这里。
+/// `tray-icon` 的三平台事件契约均为物理坐标；尤其 Windows 源自 `Shell_NotifyIconGetRect`，不能再拿
+/// 浮层窗当前屏的 DPI 猜一次转换比例。
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhysicalRect {
     x: f64,
     y: f64,
@@ -537,17 +537,77 @@ pub struct PhysicalRect {
     h: f64,
 }
 
-fn store_anchor(app: &AppHandle, rect: tauri::Rect, scale: f64) {
-    let p = rect.position.to_physical::<f64>(scale);
-    let s = rect.size.to_physical::<f64>(scale);
+/// 一块显示器上的物理像素区域，边界采用左闭右开/上闭下开。窗口定位只认它，不把「整屏」与
+/// 「扣掉任务栏/Dock/菜单栏后的工作区」混在同一组 `(position, size)` 参数里。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ScreenArea {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+impl ScreenArea {
+    fn new(position: &PhysicalPosition<i32>, size: &PhysicalSize<u32>) -> Self {
+        Self {
+            left: position.x,
+            top: position.y,
+            right: position.x.saturating_add(size.width as i32),
+            bottom: position.y.saturating_add(size.height as i32),
+        }
+    }
+
+    fn is_usable(self) -> bool {
+        self.right > self.left && self.bottom > self.top
+    }
+}
+
+/// 托盘所在的系统边缘；浮层朝相反方向（工作区内部）展开。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrayEdge {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+impl TrayEdge {
+    fn attr(self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct OverlayPlacement {
+    work_area: ScreenArea,
+    edge: TrayEdge,
+    scale_factor: f64,
+}
+
+fn physical_tray_rect(rect: tauri::Rect) -> Option<PhysicalRect> {
+    let (Position::Physical(p), Size::Physical(s)) = (rect.position, rect.size) else {
+        return None;
+    };
+    Some(PhysicalRect {
+        x: f64::from(p.x),
+        y: f64::from(p.y),
+        w: f64::from(s.width),
+        h: f64::from(s.height),
+    })
+}
+
+fn store_anchor(app: &AppHandle, rect: tauri::Rect) {
+    let Some(rect) = physical_tray_rect(rect) else {
+        return;
+    };
     if let Some(state) = app.try_state::<TrayOverlay>() {
         if let Ok(mut guard) = state.anchor.lock() {
-            *guard = Some(PhysicalRect {
-                x: p.x,
-                y: p.y,
-                w: s.width,
-                h: s.height,
-            });
+            *guard = Some(rect);
         }
     }
 }
@@ -644,8 +704,13 @@ fn build_overlay(app: &AppHandle, generation: u64) -> Option<tauri::WebviewWindo
         return Some(win); // 已建（幂等）
     }
 
-    let initialization_script =
-        format!("window.__POLARIS_TRAY_GENERATION__ = {generation};\n{TRAY_BLUR_DISMISS_JS}");
+    let initial_edge = overlay_placement(app, anchor(app))
+        .map(|placement| placement.edge)
+        .unwrap_or_else(default_tray_edge);
+    let edge_script = tray_edge_boot_script(initial_edge);
+    let initialization_script = format!(
+        "window.__POLARIS_TRAY_GENERATION__ = {generation};\n{edge_script}\n{TRAY_BLUR_DISMISS_JS}"
+    );
     let mut builder = WebviewWindowBuilder::new(app, TRAY_LABEL, WebviewUrl::App(TRAY_PAGE.into()))
         .title("Polaris")
         // DOM `blur` → tray_hide 的替代 dismiss（defect#3a，mac Rust 侧 Focused 递送不可靠时兜底）。
@@ -710,7 +775,7 @@ fn build_overlay(app: &AppHandle, generation: u64) -> Option<tauri::WebviewWindo
 
 /// 把冷建排到托盘点击回调返回之后：W18 已证实 WebView 建/销不能跑在 OS 消息分发栈内；同一纪律
 /// 适用于托盘 `Click` 回调。renderer 未 ready 前窗口保持 hidden，避免空壳和加载期 blur 竞态。
-fn queue_overlay_build(app: &AppHandle, generation: u64, rect: Option<tauri::Rect>) {
+fn queue_overlay_build(app: &AppHandle, generation: u64) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let callback_app = app.clone();
@@ -732,18 +797,9 @@ fn queue_overlay_build(app: &AppHandle, generation: u64, rect: Option<tauri::Rec
                     lifecycle.build_finished(generation, win.is_some());
                 }
             }
-            let Some(win) = win else {
+            if win.is_none() {
                 clear_open_probe(&callback_app);
                 return;
-            };
-            if let Some(r) = rect {
-                let scale = win
-                    .current_monitor()
-                    .ok()
-                    .flatten()
-                    .map(|m| m.scale_factor())
-                    .unwrap_or(1.0);
-                store_anchor(&callback_app, r, scale);
             }
             schedule_overlay_ready_timeout(&callback_app, generation);
         });
@@ -794,19 +850,12 @@ fn show_ready_overlay(app: &AppHandle, win: &tauri::WebviewWindow) {
 /// 可见 → 隐藏（toggle off）；不可见 → 定位到托盘所在屏角 + 显示 + 聚焦。
 /// 浮层创建失败 → 本次点击 no-op；不把「托盘菜单」意图突然放大成主窗。
 pub fn toggle_overlay(app: &AppHandle, rect: Option<tauri::Rect>) {
-    let existing = app.get_webview_window(TRAY_LABEL);
-    if let Some(win) = &existing {
-        // 先记锚点（即便本次是点击关闭，下次开也有最新位置；tray_resize 改高后同样复用）。
-        if let Some(r) = rect {
-            let scale = win
-                .current_monitor()
-                .ok()
-                .flatten()
-                .map(|m| m.scale_factor())
-                .unwrap_or(1.0);
-            store_anchor(app, r, scale);
-        }
+    // 事件 rect 自身就是物理像素，不依赖浮层窗是否已建、当前落在哪块屏。先存锚点，冷建与热开共用；
+    // 即便本次点击是关闭，下次打开也从最新托盘位置起步。
+    if let Some(rect) = rect {
+        store_anchor(app, rect);
     }
+    let existing = app.get_webview_window(TRAY_LABEL);
     if existing
         .as_ref()
         .is_some_and(|win| win.is_visible().unwrap_or(false))
@@ -838,7 +887,7 @@ pub fn toggle_overlay(app: &AppHandle, rect: Option<tauri::Rect>) {
         }
         OverlayOpenAction::AwaitReady => {}
         OverlayOpenAction::QueueBuild { generation } => {
-            queue_overlay_build(app, generation, rect);
+            queue_overlay_build(app, generation);
         }
     }
 }
@@ -1065,80 +1114,187 @@ fn remove_click_monitor(app: &AppHandle) {
     }
 }
 
-/// 纯几何：由锚点（图标屏幕物理矩形）+ 显示器位置/尺寸 + 窗口尺寸算浮层左上角（物理像素）。
-/// 抽成不碰任何窗口/平台 API 的纯函数 → 可在**任意平台单测**定位逻辑（mac 真机只需验坐标系正确、
-/// 不必验这套数学）。`mac` 参数取代 `#[cfg]`，让「菜单栏在顶 / 任务栏在底」两套垂直放置都能被测。
-///
-/// - 有锚点：水平**居中对齐图标**（`icon_cx - win_w/2`）；垂直 mac 贴图标下沿+gap、其余贴图标上沿-窗高-gap。
-/// - 锚点缺失**或退化**（w/h ≤ 0，mac 偶发拿到空 rect）：回退贴屏右上（mac 菜单栏图标惯例在右）/ 右下。
-/// - 末尾 `clamp` 回显示器可见范围：图标贴屏幕最右时浮层**右对齐不溢出**、贴最左时不越界成负坐标。
+fn valid_anchor(anchor: PhysicalRect) -> bool {
+    anchor.x.is_finite()
+        && anchor.y.is_finite()
+        && anchor.w.is_finite()
+        && anchor.h.is_finite()
+        && anchor.w > 0.0
+        && anchor.h > 0.0
+}
+
+fn default_tray_edge() -> TrayEdge {
+    if cfg!(target_os = "macos") {
+        TrayEdge::Top
+    } else {
+        TrayEdge::Bottom
+    }
+}
+
+fn edge_distance(anchor: PhysicalRect, screen: ScreenArea, edge: TrayEdge) -> f64 {
+    match edge {
+        TrayEdge::Top => (anchor.y - f64::from(screen.top)).abs(),
+        TrayEdge::Bottom => (f64::from(screen.bottom) - (anchor.y + anchor.h)).abs(),
+        TrayEdge::Left => (anchor.x - f64::from(screen.left)).abs(),
+        TrayEdge::Right => (f64::from(screen.right) - (anchor.x + anchor.w)).abs(),
+    }
+}
+
+fn work_inset(screen: ScreenArea, work: ScreenArea, edge: TrayEdge) -> i32 {
+    match edge {
+        TrayEdge::Top => work.top.saturating_sub(screen.top),
+        TrayEdge::Bottom => screen.bottom.saturating_sub(work.bottom),
+        TrayEdge::Left => work.left.saturating_sub(screen.left),
+        TrayEdge::Right => screen.right.saturating_sub(work.right),
+    }
+    .max(0)
+}
+
+/// 从托盘锚点与同屏工作区推断系统栏所在边。工作区有保留边时只在这些边中选离锚点最近者：这能在
+/// Windows 竖向任务栏的底角处打破“左/右与底边同距”的歧义，也能在 mac 同时存在顶部菜单栏与
+/// 底部/侧边 Dock 时仍选中图标实际所在的顶部。自动隐藏使工作区等于整屏时，再退回四边最近距离；
+/// 距离完全相同时保持平台默认（mac 顶、其余底）。
+fn resolve_tray_edge(
+    anchor: Option<PhysicalRect>,
+    screen: ScreenArea,
+    work: ScreenArea,
+    preferred: TrayEdge,
+) -> TrayEdge {
+    let Some(anchor) = anchor.filter(|anchor| valid_anchor(*anchor)) else {
+        return preferred;
+    };
+    let edges = [
+        preferred,
+        TrayEdge::Top,
+        TrayEdge::Bottom,
+        TrayEdge::Left,
+        TrayEdge::Right,
+    ];
+    let has_reserved_edge = edges
+        .iter()
+        .copied()
+        .any(|edge| work_inset(screen, work, edge) > 0);
+    let mut best: Option<(TrayEdge, f64)> = None;
+    for edge in edges {
+        if has_reserved_edge && work_inset(screen, work, edge) == 0 {
+            continue;
+        }
+        let distance = edge_distance(anchor, screen, edge);
+        if best.is_none_or(|(_, best_distance)| distance < best_distance) {
+            best = Some((edge, distance));
+        }
+    }
+    best.map(|(edge, _)| edge).unwrap_or(preferred)
+}
+
+/// 托盘锚点中心点是选屏的唯一权威：不再看浮层窗上一次停留的 `current_monitor()`。Tauri 的
+/// `monitor_from_point` 在 Windows 直达 `MonitorFromPoint`，`work_area()` 直达 `GetMonitorInfoW.rcWork`；
+/// 因而多屏负坐标、异 DPI 与任务栏保留区都来自同一个 monitor 事实源。无有效锚点才回退主屏。
+fn overlay_placement(app: &AppHandle, anchor: Option<PhysicalRect>) -> Option<OverlayPlacement> {
+    let anchor = anchor.filter(|anchor| valid_anchor(*anchor));
+    let monitor = anchor
+        .and_then(|anchor| {
+            app.monitor_from_point(anchor.x + anchor.w / 2.0, anchor.y + anchor.h / 2.0)
+                .ok()
+                .flatten()
+        })
+        .or_else(|| app.primary_monitor().ok().flatten())?;
+    let screen = ScreenArea::new(monitor.position(), monitor.size());
+    let monitor_work = monitor.work_area();
+    let work = ScreenArea::new(&monitor_work.position, &monitor_work.size);
+    let work = if work.is_usable() { work } else { screen };
+    Some(OverlayPlacement {
+        work_area: work,
+        edge: resolve_tray_edge(anchor, screen, work, default_tray_edge()),
+        scale_factor: monitor.scale_factor(),
+    })
+}
+
+/// 首帧前播种托盘边缘，供 CSS 把卡片的透明留白移到**远离**系统栏的一侧；四个方向的外边距总量不变，
+/// 所以不会让 `tray_resize` 高度或固定窗宽发生二次抖动。运行期热开到另一块屏时由同一个 setter 更新。
+fn tray_edge_boot_script(edge: TrayEdge) -> String {
+    format!(
+        r#"(function () {{
+  window.__POLARIS_TRAY_EDGE__ = '{edge}';
+  function apply() {{
+    var el = document.documentElement;
+    if (el) el.setAttribute('data-tray-edge', window.__POLARIS_TRAY_EDGE__);
+  }}
+  window.__POLARIS_SET_TRAY_EDGE__ = function (next) {{
+    if (window.__POLARIS_TRAY_EDGE__ === next) return;
+    window.__POLARIS_TRAY_EDGE__ = next;
+    apply();
+  }};
+  apply();
+  document.addEventListener('readystatechange', apply);
+  document.addEventListener('DOMContentLoaded', apply);
+}})();"#,
+        edge = edge.attr()
+    )
+}
+
+fn apply_tray_edge(win: &tauri::WebviewWindow, edge: TrayEdge) {
+    let _ = win.eval(format!(
+        "window.__POLARIS_SET_TRAY_EDGE__ && window.__POLARIS_SET_TRAY_EDGE__('{}');",
+        edge.attr()
+    ));
+}
+
+/// 纯几何：由锚点（图标屏幕物理矩形）+ **同屏工作区** + 窗口尺寸 + 系统栏边缘算浮层左上角。
+/// 有锚点时沿图标中心对齐并朝工作区内部展开；无/退化锚点时贴该边的右下惯用角。最终只在同一工作区
+/// 内 clamp，绝不跨回浮层旧屏或主屏。
 fn overlay_xy(
     anchor: Option<PhysicalRect>,
-    mon_pos: (i32, i32),
-    mon_size: (u32, u32),
+    work: ScreenArea,
     win_size: (u32, u32),
     gap: i32,
-    mac: bool,
+    edge: TrayEdge,
 ) -> (i32, i32) {
-    let (mpx, mpy) = mon_pos;
-    let (msw, msh) = (mon_size.0 as i32, mon_size.1 as i32);
-    let (wsw, wsh) = (win_size.0 as i32, win_size.1 as i32);
+    let wsw = i32::try_from(win_size.0).unwrap_or(i32::MAX);
+    let wsh = i32::try_from(win_size.1).unwrap_or(i32::MAX);
 
-    let (x, y) = match anchor.filter(|a| a.w > 0.0 && a.h > 0.0) {
+    let (x, y) = match anchor.filter(|anchor| valid_anchor(*anchor)) {
         Some(a) => {
             let cx = (a.x + a.w / 2.0).round() as i32 - wsw / 2;
-            let cy = if mac {
-                (a.y + a.h).round() as i32 + gap // 菜单栏图标下沿 + 极小间隙
-            } else {
-                a.y.round() as i32 - wsh - gap // 任务栏图标上沿 - 浮层高 - 间隙
-            };
-            (cx, cy)
+            let cy = (a.y + a.h / 2.0).round() as i32 - wsh / 2;
+            match edge {
+                TrayEdge::Top => (cx, (a.y + a.h).round() as i32 + gap),
+                TrayEdge::Bottom => (cx, a.y.round() as i32 - wsh - gap),
+                TrayEdge::Left => ((a.x + a.w).round() as i32 + gap, cy),
+                TrayEdge::Right => (a.x.round() as i32 - wsw - gap, cy),
+            }
         }
-        None => {
-            let x = mpx + msw - wsw - gap; // 贴屏右
-            let y = if mac {
-                mpy + gap
-            } else {
-                mpy + msh - wsh - gap
-            };
-            (x, y)
-        }
+        None => match edge {
+            TrayEdge::Top => (work.right - wsw - gap, work.top + gap),
+            TrayEdge::Bottom => (work.right - wsw - gap, work.bottom - wsh - gap),
+            TrayEdge::Left => (work.left + gap, work.bottom - wsh - gap),
+            TrayEdge::Right => (work.right - wsw - gap, work.bottom - wsh - gap),
+        },
     };
-    let x = x.clamp(mpx, (mpx + msw - wsw).max(mpx));
-    let y = y.clamp(mpy, (mpy + msh - wsh).max(mpy));
+    let x = x.clamp(work.left, work.right.saturating_sub(wsw).max(work.left));
+    let y = y.clamp(work.top, work.bottom.saturating_sub(wsh).max(work.top));
     (x, y)
 }
 
 /// 把浮层对齐到**托盘图标**并夹回屏内。锚点来自 `TrayIconEvent::Click` 的 `rect`（OS 给的图标屏幕矩形，
-/// 已在 [`store_anchor`] 归一为物理像素）。真正的几何在 [`overlay_xy`]（纯函数、可单测）；本函数只负责
-/// 取显示器/窗口尺寸并下发 `set_position`。取不到显示器信息 → 保持当前位置（不猜坐标）。
+/// 本来就是物理像素）。真正的几何在 [`overlay_xy`]（纯函数、可单测）；本函数只负责按锚点中心找
+/// monitor/work area、同步 CSS 边缘并下发 `set_position`。取不到显示器信息 → 保持当前位置（不猜坐标）。
 fn reposition(win: &tauri::WebviewWindow) {
-    let monitor = win
-        .current_monitor()
-        .ok()
-        .flatten()
-        .or_else(|| win.primary_monitor().ok().flatten());
-    let Some(m) = monitor else {
+    let app = win.app_handle();
+    let anchor = anchor(app);
+    let Some(placement) = overlay_placement(app, anchor) else {
         return;
     };
-    let mp = m.position(); // PhysicalPosition<i32>
-    let ms = m.size(); // PhysicalSize<u32>
     let ws = win.outer_size().unwrap_or(PhysicalSize::new(280, 420));
-    let scale = m.scale_factor();
-    // 窗口顶沿到菜单栏/任务栏的间隙（defect#1「浮层偏低」收紧；真机反馈 6px+本 gap 合计仍偏远，已缩至
-    // 2px）。无箭头「面板风」：窗口顶沿贴图标下沿下方 1 逻辑像素（本 gap），卡片自身再靠
-    // `tray-overlay.css .tray-menu { margin-top:2px }` 让出 native 小间隙——不再有箭头尖需要对齐图标。
-    // gap 用物理像素（overlay_xy 全程物理坐标），
-    // 故 = round(1 逻辑 × scale)。窗口到菜单栏的这段是**原生**间隙，本机（Linux）验不了，列为真机
-    // （mac）待确认；卡片贴窗顶、无糊三角、圆角完整由 WebKit harness 实证。
-    let gap = (1.0 * scale).round() as i32;
+    // gap 是 1 逻辑像素折到**锚点所在屏**的物理像素；卡片近系统栏侧另留 2px CSS 安全边，合计约 3px。
+    let gap = placement.scale_factor.round() as i32;
+    apply_tray_edge(win, placement.edge);
     let (x, y) = overlay_xy(
-        anchor(&win.app_handle().clone()),
-        (mp.x, mp.y),
-        (ms.width, ms.height),
+        anchor,
+        placement.work_area,
         (ws.width, ws.height),
         gap,
-        cfg!(target_os = "macos"),
+        placement.edge,
     );
     let _ = win.set_position(PhysicalPosition::new(x, y));
 }
@@ -1658,7 +1814,7 @@ mod overlay_lifecycle_gate {
             "托盘浮层创建失败时应保持 no-op，不得回退打开主窗"
         );
         assert!(
-            toggle_body.contains("queue_overlay_build(app, generation, rect)")
+            toggle_body.contains("queue_overlay_build(app, generation)")
                 && !toggle_body.contains("build_overlay("),
             "托盘 Click 帧只许排冷建任务，不能同步 build WebView"
         );
@@ -1883,90 +2039,180 @@ mod tests {
         PhysicalRect { x, y, w, h }
     }
     // 单显示器 2000×1200@原点，浮层 536×700，gap=4。
-    const MON_POS: (i32, i32) = (0, 0);
-    const MON_SIZE: (u32, u32) = (2000, 1200);
+    const SCREEN: ScreenArea = ScreenArea {
+        left: 0,
+        top: 0,
+        right: 2000,
+        bottom: 1200,
+    };
     const WIN: (u32, u32) = (536, 700);
     const GAP: i32 = 4;
 
     #[test]
-    fn mac_centers_on_icon_and_hugs_menu_bar() {
+    fn tray_event_rect_is_already_physical() {
+        let event_rect = tauri::Rect {
+            position: PhysicalPosition::new(-1180, 2160).into(),
+            size: PhysicalSize::new(32, 32).into(),
+        };
+        assert_eq!(
+            physical_tray_rect(event_rect),
+            Some(rect(-1180.0, 2160.0, 32.0, 32.0))
+        );
+    }
+
+    #[test]
+    fn top_edge_centers_on_icon_and_hugs_menu_bar() {
         // 图标在菜单栏中右：x=1000 w=44，y=0 h=48。
+        let work = ScreenArea { top: 48, ..SCREEN };
         let (x, y) = overlay_xy(
             Some(rect(1000.0, 0.0, 44.0, 48.0)),
-            MON_POS,
-            MON_SIZE,
+            work,
             WIN,
             GAP,
-            true,
+            TrayEdge::Top,
         );
         assert_eq!(x, 1022 - 268); // icon_cx(1022) - win_w/2(268) = 754，水平居中图标
         assert_eq!(y, 48 + GAP); // 图标下沿 + gap，紧贴菜单栏（不是屏顶+28）
     }
 
     #[test]
-    fn right_edge_icon_clamps_no_overflow() {
-        // 图标贴屏最右：居中会溢出 → 夹到右对齐（不超屏、不贴最左）。
-        let (x, _) = overlay_xy(
-            Some(rect(1960.0, 0.0, 40.0, 48.0)),
-            MON_POS,
-            MON_SIZE,
-            WIN,
-            GAP,
-            true,
-        );
-        assert_eq!(x, 2000 - 536); // = 1464，右对齐
-    }
-
-    #[test]
-    fn left_edge_icon_clamps_to_screen_left_not_negative() {
-        // 图标贴屏最左：居中算出负坐标 → 夹到 0（不越界）。这与「弹窗错误贴最左」的 bug 不同：
-        // 那个 bug 是 reposition 根本没生效落默认位；这里是图标真在最左时的正确夹取。
-        let (x, _) = overlay_xy(
-            Some(rect(0.0, 0.0, 44.0, 48.0)),
-            MON_POS,
-            MON_SIZE,
-            WIN,
-            GAP,
-            true,
-        );
-        assert_eq!(x, 0);
-    }
-
-    #[test]
-    fn degenerate_anchor_falls_back_to_top_right() {
-        // mac 偶发拿到空 rect（w=h=0）→ 当作无锚点，回退屏右上（不是错误地居中到 x≈-268→0）。
-        let (x, y) = overlay_xy(
-            Some(rect(0.0, 0.0, 0.0, 0.0)),
-            MON_POS,
-            MON_SIZE,
-            WIN,
-            GAP,
-            true,
-        );
-        assert_eq!(x, 2000 - 536 - GAP); // 贴屏右
-        assert_eq!(y, GAP); // 贴屏顶（菜单栏侧）
-    }
-
-    #[test]
-    fn no_anchor_windows_taskbar_bottom_right() {
-        // 非 mac 无锚点：贴屏右下（任务栏在底）。
-        let (x, y) = overlay_xy(None, MON_POS, MON_SIZE, WIN, GAP, false);
-        assert_eq!(x, 2000 - 536 - GAP);
-        assert_eq!(y, 1200 - 700 - GAP);
-    }
-
-    #[test]
-    fn non_mac_places_above_icon() {
-        // 非 mac 有锚点（任务栏图标在底）：浮层在图标上方（图标上沿 - 窗高 - gap）。
+    fn bottom_edge_places_above_icon() {
+        let work = ScreenArea {
+            bottom: 1160,
+            ..SCREEN
+        };
         let (_, y) = overlay_xy(
             Some(rect(1000.0, 1160.0, 40.0, 40.0)),
-            MON_POS,
-            MON_SIZE,
+            work,
             WIN,
             GAP,
-            false,
+            TrayEdge::Bottom,
         );
-        assert_eq!(y, 1160 - 700 - GAP); // = 456
+        assert_eq!(y, 1160 - 700 - GAP);
+    }
+
+    #[test]
+    fn left_edge_places_right_of_icon() {
+        let work = ScreenArea { left: 48, ..SCREEN };
+        let (x, y) = overlay_xy(
+            Some(rect(0.0, 500.0, 48.0, 40.0)),
+            work,
+            WIN,
+            GAP,
+            TrayEdge::Left,
+        );
+        assert_eq!(x, 48 + GAP);
+        assert_eq!(y, 520 - 350);
+    }
+
+    #[test]
+    fn right_edge_places_left_of_icon() {
+        let work = ScreenArea {
+            right: 1952,
+            ..SCREEN
+        };
+        let (x, y) = overlay_xy(
+            Some(rect(1952.0, 500.0, 48.0, 40.0)),
+            work,
+            WIN,
+            GAP,
+            TrayEdge::Right,
+        );
+        assert_eq!(x, 1952 - 536 - GAP);
+        assert_eq!(y, 520 - 350);
+    }
+
+    #[test]
+    fn degenerate_anchor_falls_back_to_edge_corner() {
+        let (x, y) = overlay_xy(
+            Some(rect(0.0, 0.0, 0.0, 0.0)),
+            SCREEN,
+            WIN,
+            GAP,
+            TrayEdge::Top,
+        );
+        assert_eq!(x, 2000 - 536 - GAP);
+        assert_eq!(y, GAP);
+    }
+
+    #[test]
+    fn clamps_to_same_negative_coordinate_work_area() {
+        let work = ScreenArea {
+            left: -2520,
+            top: 40,
+            right: -48,
+            bottom: 1400,
+        };
+        let (x, y) = overlay_xy(
+            Some(rect(-60.0, 1360.0, 40.0, 40.0)),
+            work,
+            WIN,
+            GAP,
+            TrayEdge::Bottom,
+        );
+        assert_eq!(x, -48 - 536);
+        assert_eq!(y, 1360 - 700 - GAP);
+    }
+
+    #[test]
+    fn reserved_work_edge_breaks_vertical_taskbar_corner_tie() {
+        let work = ScreenArea { left: 48, ..SCREEN };
+        assert_eq!(
+            resolve_tray_edge(
+                Some(rect(0.0, 1160.0, 48.0, 40.0)),
+                SCREEN,
+                work,
+                TrayEdge::Bottom,
+            ),
+            TrayEdge::Left
+        );
+    }
+
+    #[test]
+    fn auto_hidden_taskbar_uses_anchor_with_platform_tie_break() {
+        assert_eq!(
+            resolve_tray_edge(
+                Some(rect(1960.0, 1160.0, 40.0, 40.0)),
+                SCREEN,
+                SCREEN,
+                TrayEdge::Bottom,
+            ),
+            TrayEdge::Bottom
+        );
+        assert_eq!(
+            resolve_tray_edge(
+                Some(rect(1960.0, 0.0, 40.0, 40.0)),
+                SCREEN,
+                SCREEN,
+                TrayEdge::Bottom,
+            ),
+            TrayEdge::Top
+        );
+    }
+
+    #[test]
+    fn edge_boot_script_sets_stable_css_contract() {
+        let script = tray_edge_boot_script(TrayEdge::Right);
+        assert!(script.contains("window.__POLARIS_TRAY_EDGE__ = 'right'"));
+        assert!(script.contains("data-tray-edge"));
+        assert!(script.contains("__POLARIS_SET_TRAY_EDGE__"));
+    }
+
+    #[test]
+    fn placement_uses_anchor_monitor_and_work_area_not_overlay_current_screen() {
+        const TRAY_RS: &str = include_str!("tray.rs");
+        let store = crate::commands::guard_scan::top_level_fn_body(TRAY_RS, "fn store_anchor(");
+        assert!(!store.contains("current_monitor"));
+        assert!(!store.contains("to_physical"));
+
+        let placement =
+            crate::commands::guard_scan::top_level_fn_body(TRAY_RS, "fn overlay_placement(");
+        assert!(placement.contains("app.monitor_from_point("));
+        assert!(placement.contains("monitor.work_area()"));
+
+        let reposition = crate::commands::guard_scan::top_level_fn_body(TRAY_RS, "fn reposition(");
+        assert!(!reposition.contains("current_monitor"));
+        assert!(reposition.contains("placement.work_area"));
     }
 
     // ── 托盘原生文案：五语齐备 + 值→键映射 ─────────────────────────────────────
