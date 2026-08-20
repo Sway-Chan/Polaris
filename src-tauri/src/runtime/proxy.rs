@@ -400,9 +400,9 @@ fn tun_exit_interface_for_probe() -> Result<Option<String>, SystemIntegrationErr
         let ip = ROUTE_PROBE_IP
             .parse::<std::net::Ipv4Addr>()
             .map_err(|e| SystemIntegrationError::route(e.to_string()))?;
-        return polaris_helper::platform::windows::wintun::best_route_interface_index(ip)
+        polaris_helper::platform::windows::wintun::best_route_interface_index(ip)
             .map(|index| Some(format!("ifindex:{index}")))
-            .map_err(|e| SystemIntegrationError::route(e.to_string()));
+            .map_err(|e| SystemIntegrationError::route(e.to_string()))
     }
     #[cfg(not(target_os = "windows"))]
     {
