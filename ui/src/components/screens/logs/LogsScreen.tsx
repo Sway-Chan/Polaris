@@ -56,6 +56,7 @@ import type { LogLevel, RuntimeLogLevel } from '@/contracts/types';
 import { Csel, type CselOption } from '@/components/dialogs/Csel';
 import { InfoIcon } from '@/components/InfoIcon';
 import { fmtBytes } from '@/components/screens/shared/format';
+import { isUpwardLogScrollKey, shouldPauseLogFollow } from './follow-scroll';
 
 /** 级别 → 数字权重（对齐原型 LVL，越大越严重）。 */
 const LVL: Record<LogLevel, number> = {
@@ -82,8 +83,6 @@ function nextLogSubscriptionId(): string {
 }
 /** 本屏唯一的原地二次确认项（原型 :4130 `log-clear`）。超时/复位语义全在 `lib/confirm-twice.ts`。 */
 const CLEAR_KEY = 'logs-clear';
-/** 距底 ≤ 此像素即算「贴底」（对齐 上游 `checkIsAtBottom` 的 30px 容差，容子像素/行高抖动）。 */
-const AT_BOTTOM_PX = 30;
 /** 核内级别的重读间隔（仅 Logs 屏挂载期间）。理由见下方轮询 effect 的注释。 */
 const RUNTIME_LEVEL_POLL_MS = 5000;
 
@@ -158,6 +157,8 @@ export function LogsScreen() {
    * 复位反而会让清空前的残留批次被当成新行重新收下。
    */
   const lastIdRef = useRef(-1);
+  /** 只记最近一次明确的用户滚动输入；首次水合/程序化吸底没有这个证据。 */
+  const lastUserScrollIntentAtRef = useRef<number | null>(null);
 
   /** 清空的原地二次确认 —— 走全仓唯一实现（`lib/confirm-twice.ts`），不再自己管定时器。 */
   const { armed, confirmTwice } = useConfirmTwice();
@@ -427,23 +428,54 @@ export function LogsScreen() {
     if (follow) scrollToBottom();
   }, [logs, follow, scrollToBottom]);
 
-  /* ── 离底检测：用户上滚脱离底部即暂停 follow（新行转入 pending，「回到底部」按钮露出）──
+  /* ── 离底检测：只有用户滚动脱离底部才暂停 follow（新行转入 pending）──
    *
    * 无条件吸底的话，用户往上翻查一条报错时每来一批新日志就被拽回底部，等于看不了历史。
    *
    * 只做「离底 → 暂停」，不做「回底 → 自动恢复」：恢复要把 pending 一次性回填并跳到底部，那是个有
    * 可见后果的动作，得由「回到底部」/「自动滚动」按钮显式触发，不该被一次滚过头的滚轮顺带做掉。
-   * 程序化吸底本身落在贴底区内 → 不会自触发暂停（无反馈环）。 */
+   *
+   * 关键是 scroll 不等于用户滚动：首次 500 行水合、字体/layout 变化、`scrollTop`
+   * 程序化吸底都可能发 scroll。因此先记 wheel/touch/pointer/向上键盘的近期意图，再由
+   * [`shouldPauseLogFollow`] 合取“正在 follow + 有用户意图 + 已离底”；程序事件不能再把 follow 打掉。 */
   useEffect(() => {
     const el = viewRef.current;
     if (!el) return;
-    const onScroll = () => {
-      const atBottom =
-        el.scrollHeight - el.scrollTop - el.clientHeight <= AT_BOTTOM_PX;
-      if (!atBottom) setFollow((f) => (f ? false : f));
+    const markUserIntent = () => {
+      lastUserScrollIntentAtRef.current = performance.now();
     };
+    const onPointerMove = (event: PointerEvent) => {
+      if (event.buttons !== 0) markUserIntent();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isUpwardLogScrollKey(event.key, event.shiftKey)) markUserIntent();
+    };
+    const onScroll = () => {
+      if (
+        shouldPauseLogFollow({
+          follow: followRef.current,
+          metrics: el,
+          lastUserIntentAt: lastUserScrollIntentAtRef.current,
+          now: performance.now(),
+        })
+      ) {
+        setFollow(false);
+      }
+    };
+    el.addEventListener('wheel', markUserIntent, { passive: true });
+    el.addEventListener('touchstart', markUserIntent, { passive: true });
+    el.addEventListener('pointerdown', markUserIntent, { passive: true });
+    el.addEventListener('pointermove', onPointerMove, { passive: true });
+    el.addEventListener('keydown', onKeyDown);
     el.addEventListener('scroll', onScroll, { passive: true });
-    return () => el.removeEventListener('scroll', onScroll);
+    return () => {
+      el.removeEventListener('wheel', markUserIntent);
+      el.removeEventListener('touchstart', markUserIntent);
+      el.removeEventListener('pointerdown', markUserIntent);
+      el.removeEventListener('pointermove', onPointerMove);
+      el.removeEventListener('keydown', onKeyDown);
+      el.removeEventListener('scroll', onScroll);
+    };
   }, []);
 
   /* 清空按钮的两段式确认超时由 `useConfirmTwice` 自己在卸载时清理，此处不再各管一份。 */
@@ -916,7 +948,13 @@ export function LogsScreen() {
       </div>
 
       {/* 日志流：原型 renderLogs() 的 .log-line 模板逐行 .map，空数组即空渲染（不发明占位态） */}
-      <div className="log-view" id="log-view" ref={viewRef}>
+      <div
+        className="log-view"
+        id="log-view"
+        ref={viewRef}
+        tabIndex={0}
+        aria-label={t('logs.liveStream')}
+      >
         {visible.map((l, i) => (
           // key 用后端单调 `_id`（环形缓冲 seq）：缓冲滑动丢最旧时剩余行 key 不变。
           // 回落 `timestamp-index` 仅为缺字段的非 Tauri / 旧后端兜底（那时才有整列重 key 的老问题）。
