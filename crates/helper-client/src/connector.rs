@@ -12,20 +12,19 @@
 //! - **mac/linux**：`std::os::unix::net::UnixStream::connect` + `set_read_timeout(5s)`（移植 Go
 //!   `conn.SetReadDeadline`）。写完请求帧后 `shutdown(Write)` 半关闭 = 上游 `sock.end(frame)`，通知
 //!   helper「请求发完」（helper 据此立即处理并回响应，不必等 5s 读超时）。
-//! - **win**：命名管道 `\\.\pipe\polaris-helper`。std 无「命名管道客户端 + 读超时」的安全封装
-//!   （`SetCommTimeouts`/overlapped 需 FFI，违 `forbid(unsafe_code)`），故用 `OpenOptions::open`
-//!   打开管道（返回 `File`）复用 [`IoAdapter`](crate::transport::IoAdapter)（逐行读 + no-op shutdown）。
-//!   **读超时缺口**（真机门）：helper 侧 5s 读超时会主动关管道 → client 读到 EOF 收口，故实践中不会永挂；
-//!   但 client 侧无独立读超时，纯静默的 helper 需靠 helper 侧超时兜底（见报告真机门）。
+//! - **win**：命名管道 `\\.\pipe\polaris-helper`。复用 `interprocess` 的安全同步
+//!   `DuplexPipeStream<Bytes>`：它以 overlapped `ReadFileEx`/`WriteFileEx` 实现阻塞语义，避开
+//!   `std::fs::File` 在 Rust 1.89 上的 `NtReadFile` + 管道 HANDLE 等待路径。后者真机稳定在 helper
+//!   已起核后额外挂约 5s；同帧 Win32 `ReadFile` A/B 仅 80–133ms。连接等待受 `READ_TIMEOUT` 约束。
 //!
 //! ## 移植纪律
 //!
-//! - `forbid(unsafe_code)`：`UnixStream` / `File` / `OpenOptions` 全是安全 std，无裸 syscall。
+//! - `forbid(unsafe_code)`：Unix 走安全 std；Windows 复用 `interprocess` 的安全 API，不在本 crate 裸调 syscall。
 //! - trait 边界只暴露字节流原语（[`ConnectionStream`]），三平台 [`HelperClient`] 共用。
 
 use crate::client::{ClientError, Connector};
 use crate::transport::ConnectionStream;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::transport::READ_TIMEOUT;
 #[cfg(unix)]
 use std::io;
@@ -144,7 +143,7 @@ impl ConnectionStream for UnixConnStream {
 
 /// Windows 命名管道连接器（win 生产 [`Connector`]）。
 ///
-/// 打开 `\\.\pipe\polaris-helper`（`OpenOptions::read+write`）复用 [`IoAdapter`](crate::transport::IoAdapter)
+/// 以 overlapped 安全流打开 `\\.\pipe\polaris-helper`，再复用 [`IoAdapter`](crate::transport::IoAdapter)
 /// 的逐行读；写端无需半关闭（helper win 侧「裸 HANDLE 整帧读」按 `\n` 判帧完整，不依赖 EOF）。
 #[cfg(windows)]
 pub struct PipeConnector {
@@ -172,17 +171,20 @@ impl PipeConnector {
 impl Connector for PipeConnector {
     fn connect(&self) -> Result<Box<dyn ConnectionStream>, ClientError> {
         use crate::transport::IoAdapter;
-        use std::fs::OpenOptions;
-        // 命名管道客户端：双向打开（读响应 + 写请求）。管道忙（ERROR_PIPE_BUSY）/ 不存在 → Connect 错误，
-        // 由 HelperClient::send_with_retry 在「装完等 daemon 起来」场景重试。
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&self.pipe_path)
-            .map_err(|e| {
-                ClientError::Connect(format!("open pipe {}: {e}", self.pipe_path.display()))
-            })?;
-        Ok(Box::new(IoAdapter::new(file)))
+        use interprocess::os::windows::named_pipe::{pipe_mode, DuplexPipeStream};
+        use interprocess::ConnectWaitMode;
+
+        // std::fs::File 不能替代这里：Rust 1.89 的同步 File IO 走 NtReadFile/NtWriteFile 后等待
+        // pipe HANDLE，真机会把 start 响应拖到约 5s；interprocess 用 overlapped ReadFileEx/WriteFileEx，
+        // 与 Win32/.NET A/B 的亚秒往返一致。Timeout 同时覆盖 ERROR_PIPE_BUSY 的实例等待。
+        let pipe = DuplexPipeStream::<pipe_mode::Bytes>::connect_by_path_with_wait_mode(
+            self.pipe_path.as_path(),
+            ConnectWaitMode::Timeout(READ_TIMEOUT),
+        )
+        .map_err(|e| {
+            ClientError::Connect(format!("open pipe {}: {e}", self.pipe_path.display()))
+        })?;
+        Ok(Box::new(IoAdapter::new(pipe)))
     }
 }
 

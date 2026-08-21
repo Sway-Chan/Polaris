@@ -92,10 +92,10 @@ where
     S: Write,
 {
     fn read_until_timeout(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        // Windows byte-mode named pipe 的服务端回包后会 FlushFileBuffers，直到 client 取完响应才返回。
-        // 真机 A/B：一次申请 1KiB 会让 start 在 child 已创建后额外阻塞约 4–5s；ReadByte 同配置、
-        // 同日志、同 ppid 的完整往返约 0.4s。响应本就是一条很短的行协议，逐字节读到换行既不依赖
-        // server disconnect，也不会把下一条数据吞进本请求（每连接一次请求）。
+        // 响应是一条很短的行协议；逐字节读到换行不依赖 server disconnect，也不会吞掉下一条数据
+        //（每连接一次请求）。Windows 的 5s 真机尾延迟不来自这里的申请长度，而来自 std::fs::File
+        // 的 NtReadFile + pipe HANDLE 等待；生产 PipeConnector 已改用 overlapped 安全流。保留逐字节
+        // 边界，使 Unix/std 流和 Windows/overlapped 流共享完全相同的行收口语义。
         let mut byte = [0u8; 1];
         let mut total = 0;
         loop {
