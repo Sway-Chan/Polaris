@@ -92,22 +92,24 @@ where
     S: Write,
 {
     fn read_until_timeout(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        // 响应是一条很短的行协议；逐字节读到换行不依赖 server disconnect，也不会吞掉下一条数据
-        //（每连接一次请求）。Windows 的 5s 真机尾延迟不来自这里的申请长度，而来自 std::fs::File
-        // 的 NtReadFile + pipe HANDLE 等待；生产 PipeConnector 已改用 overlapped 安全流。保留逐字节
-        // 边界，使 Unix/std 流和 Windows/overlapped 流共享完全相同的行收口语义。
-        let mut byte = [0u8; 1];
+        // 一次连接只有一条短响应。Windows overlapped pipe 的每次 Read 都有固定调度成本；逐字节读
+        // 会把十几字节的 `OK started ...\n` 放大成数秒。按小块读、命中首个换行即收口；换行后的
+        // 字节不属于本次响应（协议是一连接一请求），故不带入上层。
+        let mut chunk = [0u8; 256];
         let mut total = 0;
         loop {
-            let n = self.inner.read(&mut byte)?;
+            let n = self.inner.read(&mut chunk)?;
             if n == 0 {
                 break;
             }
-            buf.push(byte[0]);
-            total += 1;
-            if byte[0] == b'\n' {
+            if let Some(pos) = chunk[..n].iter().position(|&byte| byte == b'\n') {
+                let end = pos + 1;
+                buf.extend_from_slice(&chunk[..end]);
+                total += end;
                 break;
             }
+            buf.extend_from_slice(&chunk[..n]);
+            total += n;
         }
         Ok(total)
     }
@@ -273,15 +275,17 @@ mod tests {
     }
 
     #[test]
-    fn io_adapter_requests_one_byte_at_a_time_until_newline() {
+    fn io_adapter_reads_a_pipe_chunk_and_stops_at_newline() {
         struct PipeLike {
             inner: std::io::Cursor<Vec<u8>>,
             requested: Vec<usize>,
+            max_read: usize,
         }
         impl Read for PipeLike {
             fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
                 self.requested.push(buf.len());
-                self.inner.read(buf)
+                let limit = buf.len().min(self.max_read);
+                self.inner.read(&mut buf[..limit])
             }
         }
         impl Write for PipeLike {
@@ -296,12 +300,41 @@ mod tests {
         let mut adapter = IoAdapter::new(PipeLike {
             inner: std::io::Cursor::new(b"OK stopped\nignored".to_vec()),
             requested: Vec::new(),
+            max_read: usize::MAX,
         });
         let mut buf = Vec::new();
         let total = adapter.read_until_timeout(&mut buf).unwrap();
         assert_eq!(buf, b"OK stopped\n");
         assert_eq!(total, b"OK stopped\n".len());
-        assert!(adapter.inner().requested.iter().all(|&size| size == 1));
-        assert_eq!(adapter.inner().requested.len(), total);
+        assert_eq!(adapter.inner().requested, vec![256]);
+    }
+
+    #[test]
+    fn io_adapter_assembles_fragmented_pipe_response() {
+        struct FragmentedPipe {
+            inner: std::io::Cursor<Vec<u8>>,
+        }
+        impl Read for FragmentedPipe {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                let limit = buf.len().min(3);
+                self.inner.read(&mut buf[..limit])
+            }
+        }
+        impl Write for FragmentedPipe {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut adapter = IoAdapter::new(FragmentedPipe {
+            inner: std::io::Cursor::new(b"OK started 42\nignored".to_vec()),
+        });
+        let mut buf = Vec::new();
+        let total = adapter.read_until_timeout(&mut buf).unwrap();
+        assert_eq!(buf, b"OK started 42\n");
+        assert_eq!(total, b"OK started 42\n".len());
     }
 }
