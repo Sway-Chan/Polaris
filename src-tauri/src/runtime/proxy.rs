@@ -2609,13 +2609,17 @@ impl ProxyRuntime {
     /// 当前**运行核快照**里的接管模式；与磁盘 `config.current()` 刻意分离。
     ///
     /// 结构性切换会先把磁盘期望值改成新模式，再去抖重启旧核。系统代理活态若读磁盘值，就会在
-    /// “新配置=systemProxy、旧运行核仍=TUN”窗口里去查 OS 代理并误判未生效。复用 `current_config`
-    /// （它只在核真正就绪时换新）可让查询明确返回 unknown，而不是拿两代状态拼一个假结论。
+    /// “新配置=systemProxy、旧运行核仍=TUN”窗口里去查 OS 代理并误判未生效。旧核唯一可信真值是
+    /// `startup_snapshot`：结构重启的 `apply_restart` 会在去抖前先把 `current_config` 前推到新配置，
+    /// 而起核快照只在新核真正就绪时换代、停核时清空。模式本身是结构字段，热切/no-op 不会改变它。
     pub(crate) fn running_proxy_mode_type(&self) -> Option<ProxyModeType> {
         if !self.core_running() {
             return None;
         }
-        self.current_config_snapshot()
+        self.startup_snapshot
+            .read()
+            .ok()
+            .and_then(|snapshot| snapshot.clone())
             .and_then(|config| serde_json::from_value::<UserConfig>(config).ok())
             .map(|config| config.proxy_mode_type)
     }
@@ -12786,7 +12790,8 @@ mod tests {
         };
     }
 
-    /// 活态查询的模式必须取**运行核快照**，不能取已经先行落盘的新配置。
+    /// 活态查询的模式必须取 `startup_snapshot` 这份**运行核快照**，不能取结构重启去抖前已被
+    /// `apply_restart` 前推的新 `current_config`。
     #[test]
     fn running_proxy_mode_type_tracks_the_running_snapshot_only() {
         let (rt, dir) = test_runtime();
@@ -12796,14 +12801,27 @@ mod tests {
             ("tun", ProxyModeType::Tun),
             ("manual", ProxyModeType::Manual),
         ] {
-            *rt.current_config.write().unwrap() = Some(serde_json::json!({
+            *rt.startup_snapshot.write().unwrap() = Some(serde_json::json!({
                 "servers": [],
                 "selectedServerId": "__direct__",
                 "proxyMode": "smart",
                 "proxyModeType": mode,
             }));
+            // 精确复现结构切换窗口：current_config 已提交成相反的新模式，旧核仍按 startup snapshot 跑。
+            *rt.current_config.write().unwrap() = Some(serde_json::json!({
+                "servers": [],
+                "selectedServerId": "__direct__",
+                "proxyMode": "smart",
+                "proxyModeType": if mode == "systemProxy" { "tun" } else { "systemProxy" },
+            }));
             assert_eq!(rt.running_proxy_mode_type(), Some(expected));
         }
+        *rt.startup_snapshot.write().unwrap() = None;
+        assert_eq!(
+            rt.running_proxy_mode_type(),
+            None,
+            "核在跑但无起核快照时必须返回 unknown，不能回落到已前推的 current_config"
+        );
         *rt.status.write().unwrap() = ProxyStatus::default();
         assert_eq!(
             rt.running_proxy_mode_type(),
