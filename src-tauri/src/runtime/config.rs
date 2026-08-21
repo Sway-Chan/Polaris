@@ -140,29 +140,37 @@ impl ConfigManager {
 
     /// 加载配置（read → sanitize → migrate → validate + 填默认），刷新 currentConfig 缓存。
     ///
-    /// 维度7 #7：坏 JSON/坏字段绝不崩溃，回落默认配置；磁盘真实文件绝不覆盖（仅 was_missing=true
-    /// 新装才允许落盘默认——本层不自动落盘，交由调用方按 LoadResult.was_missing 决策）。
+    /// 维度7 #7：坏 JSON/坏字段绝不崩溃，回落默认配置；损坏的磁盘真实文件绝不覆盖。仅新装默认值
+    /// 与迁移链已确认的改写会在本层 best-effort 落盘，保证带标记迁移真正一次完成。
     pub fn load_full(&self) -> Result<Value, StoreError> {
         deny_inside_projection("load_full");
         let LoadResult {
             config,
             loaded_from_disk,
+            migration_delta,
             was_missing,
             error,
-            ..
         } = ConfigStore::load(&StdFs, &self.path);
         // 加载或校验失败 → 回落默认（LoadResult 已处理），但记日志保留 error 上下文。
         if let Some(e) = &error {
             log::warn!("config load fallback (loaded_from_disk={loaded_from_disk}): {e}");
         }
-        // 新装（文件本不存在）→ 落盘一次默认配置（Polaris startup-tasks 的新装路径）。
+        // 新装（文件本不存在）→ 落盘一次默认配置；迁移有改写 → 同步落盘迁移值与幂等标记。
+        // 若只把迁移后的 Value 放进 cache、忽略 migration_delta，重启后还会从旧磁盘形态重复迁移；
+        // 更糟的是「用户关闭预热」这类一次性默认纠偏无法证明已经完成。损坏配置的 fallback 同时满足
+        // was_missing=false + migration_delta.changed=false，仍保持“不覆盖损坏原件”的安全边界。
         //
         // 第 4 参是**原子写的 12hex tmp 后缀**（`randomBytes(6).toString('hex')` 等价），
         // 不是品牌名/应用名。此处曾误传字面量 `"polaris"` → debug 撞 `tmp_path` 的
         // `debug_assert` **首启即崩**（本行正是 P0 的触发点：config.json 不存在才走到）；
         // release 下则静默产出永不被清扫的 `config.json.polaris.tmp`。
-        if was_missing {
-            let _ = ConfigStore::save(&StdFs, &self.path, &config, &random_tmp_suffix());
+        if was_missing || migration_delta.changed {
+            if let Err(e) = ConfigStore::save(&StdFs, &self.path, &config, &random_tmp_suffix()) {
+                log::warn!(
+                    "config load persist failed (was_missing={was_missing}, migrated={}): {e}",
+                    migration_delta.changed
+                );
+            }
         }
         // 刷缓存（持有写锁）。
         if let Ok(mut guard) = self.cache.write() {
@@ -456,6 +464,41 @@ mod tests {
         mgr.load_full().unwrap();
         let second = std::fs::read_to_string(dir.join("config.json")).unwrap();
         assert_eq!(first, second, "二次 load 不应改变磁盘内容");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 迁移不能只存在于进程内 cache：带标记的一次性默认纠偏必须在首次 load 后立即落盘；用户之后
+    /// 显式改回 false 时，新进程读取到标记并尊重该值。
+    #[test]
+    fn load_full_persists_migration_marker_then_respects_user_value() {
+        let dir = temp_dir("migration-persist");
+        let path = dir.join("config.json");
+        let mut legacy = polaris_store::default_config();
+        legacy["keepTrayMenuWarm"] = Value::Bool(false);
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("keepTrayMenuWarmDefaultMigrated");
+        std::fs::write(&path, serde_json::to_string_pretty(&legacy).unwrap()).unwrap();
+
+        let mgr = ConfigManager::new(dir.clone());
+        let migrated = mgr.load_full().expect("升级配置应成功迁移");
+        assert_eq!(migrated["keepTrayMenuWarm"], true);
+        assert_eq!(migrated["keepTrayMenuWarmDefaultMigrated"], true);
+
+        let on_disk: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap())
+            .expect("迁移结果应立即落为合法 JSON");
+        assert_eq!(on_disk["keepTrayMenuWarm"], true);
+        assert_eq!(on_disk["keepTrayMenuWarmDefaultMigrated"], true);
+
+        mgr.set_value("keepTrayMenuWarm", Value::Bool(false))
+            .expect("用户关闭预热应落盘");
+        let restarted = ConfigManager::new(dir.clone())
+            .load_full()
+            .expect("二次启动应读取已标记配置");
+        assert_eq!(restarted["keepTrayMenuWarm"], false);
+        assert_eq!(restarted["keepTrayMenuWarmDefaultMigrated"], true);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

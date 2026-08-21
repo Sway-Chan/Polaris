@@ -47,8 +47,9 @@ pub struct ConfigStore;
 impl ConfigStore {
     /// 加载配置：read → sanitize → migrate → validate → 填默认。
     ///
-    /// 维度7 #7：坏 JSON/坏字段绝不崩溃，回落默认配置；**磁盘真实文件绝不覆盖**
-    /// （仅 was_missing=true 新装才允许落盘默认）。
+    /// 维度7 #7：坏 JSON/坏字段绝不崩溃，回落默认配置；本纯函数**不写磁盘**。调用方仅可在
+    /// `was_missing=true` 时落默认，或在 `migration_delta.changed=true` 时落已确认迁移；损坏回落两者均 false，
+    /// 因而原件不会被覆盖。
     /// 维度7 #54：迁移链全量执行（幂等 + 吞异常）。
     pub fn load<F: ConfigFs + ?Sized>(fs: &F, path: &Path) -> LoadResult {
         let path_buf: PathBuf = path.to_path_buf();
@@ -260,6 +261,7 @@ pub fn default_config() -> Value {
         "tunStackMigrated": true,
         "tunMtuMigrated": true,
         "customRules": [],
+        "bypassProcesses": [],
         "autoStart": false,
         "silentStart": false,
         "autoConnect": false,
