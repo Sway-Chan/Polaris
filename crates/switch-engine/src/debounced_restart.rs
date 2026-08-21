@@ -38,9 +38,12 @@ use polaris_core_supervisor::lifecycle_gate::{
     DebouncedDecision, LifecycleEndResult, LifecycleGate, LifecycleKind, PendingDrain,
 };
 
-/// 去抖延迟：对齐 上游 `RESTART_DEBOUNCE_MS = 1500`（L400）。
-/// 窗口内连改多条配置只重启一次（消除「连改 5 条规则 = 5 次断流」）。
-pub const RESTART_DEBOUNCE: Duration = Duration::from_millis(1500);
+/// 去抖延迟：窗口内连改多条配置只重启一次（消除「连改 5 条规则 = 5 次断流」）。
+///
+/// 上游原值 1500ms 会被完整叠加到显式的 System/TUN 模式切换上；Windows 真机即使 helper
+/// 起核只需数百毫秒，端到端仍会越过 5s。500ms 足以合并同一轮 UI 连续落盘，同时不再让用户
+/// 为内部去抖白等 1.5s。
+pub const RESTART_DEBOUNCE: Duration = Duration::from_millis(500);
 
 /// 去抖 trailing 回调的决策结果（包装 [`DebouncedDecision`] + 世代守卫结果）。
 ///
@@ -465,8 +468,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn debounce_delay_is_1500ms() {
-        // 验证去抖窗口 ≈ 1500ms（对齐 Polaris RESTART_DEBOUNCE_MS）。
+    async fn debounce_delay_is_500ms() {
+        // 验证去抖窗口 ≈ 500ms：保留合并语义，但不把显式模式切换拖过 5s。
         let engine = new_engine();
         let start = std::time::Instant::now();
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -475,10 +478,10 @@ mod tests {
         });
         let _ = rx.await;
         let elapsed = start.elapsed();
-        // 允许 ±200ms 抖动（tokio timer 精度 + CI 调度）。
+        // 允许 -100/+300ms 抖动（tokio timer 精度 + CI 调度）。
         assert!(
-            elapsed >= Duration::from_millis(1300) && elapsed <= Duration::from_millis(1900),
-            "debounce elapsed {elapsed:?} not within 1500ms ±200ms"
+            elapsed >= Duration::from_millis(400) && elapsed <= Duration::from_millis(800),
+            "debounce elapsed {elapsed:?} not within the 500ms window"
         );
     }
 }

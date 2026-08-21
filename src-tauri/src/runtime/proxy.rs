@@ -140,8 +140,12 @@ const CORE_READY_TIMEOUT_MS: u64 = 12_000;
 ///
 /// **总预算不变**：`max_polls = ceil(timeout/poll)` 随之 24 → 240，覆盖的仍是同一个 12s 窗口。
 const CORE_READY_POLL_MS: u64 = 50;
-/// 单次 TCP 就绪探测超时（上游 `probeTcpReachable` 默认 1000ms，core-readiness.ts:42）。
-const READY_PROBE_TIMEOUT: Duration = Duration::from_millis(1000);
+/// 单次 loopback TCP 就绪探测超时。
+///
+/// 这是对 `127.0.0.1` 管理端口的采样，不是一次允许跑满 1s 的外网连接。Windows 在端口尚未
+/// listen 时可能让 connect 挂到超时；1s 会令每个失败样本遮住随后已经就绪的端口。250ms 只提高
+/// 重采样频率，是否最终判失败仍由独立的 [`CORE_READY_TIMEOUT_MS`] 12s 总窗口决定。
+const READY_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 /// SIGTERM→SIGKILL 宽限期（上游 `stopSingBoxProcess` 的 5s 优雅窗口，:5230）。
 const STOP_GRACE: Duration = Duration::from_secs(5);
 /// 崩溃监测轮询间隔（ms）。tokio `Child::wait()` 单持有者 → 监测只能轮询 `try_wait`（见
@@ -9996,6 +10000,11 @@ mod tests {
         assert_eq!(
             CORE_READY_TIMEOUT_MS, 12_000,
             "总超时是慢机器容忍度，不得随轮询间隔一起缩短"
+        );
+        assert_eq!(
+            READY_PROBE_TIMEOUT,
+            Duration::from_millis(250),
+            "loopback 单次探测不得重新膨胀成肉眼可感的串行等待"
         );
 
         // 等待窗口以「实际覆盖的时间」为准，而非轮数：max_polls = ceil(timeout/poll)。
