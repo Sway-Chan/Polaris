@@ -21,6 +21,11 @@ fn missing_file_loads_default_and_marks_was_missing() {
     assert!(!res.loaded_from_disk);
     assert!(res.error.is_none());
     assert_eq!(res.config["proxyMode"], serde_json::json!("smart"));
+    assert_eq!(res.config["keepTrayMenuWarm"], serde_json::json!(true));
+    assert_eq!(
+        res.config["keepTrayMenuWarmDefaultMigrated"],
+        serde_json::json!(true)
+    );
 }
 
 #[test]
@@ -100,6 +105,7 @@ fn migration_chain_runs_and_is_idempotent_on_real_fs() {
         "proxyModeType": "TUN",
         "logLevel": "info",
         "tunConfig": {"mtu":1350,"stack":"system","autoRoute":true,"strictRoute":true},
+        "keepTrayMenuWarm": false,
         "subscriptionUpdateViaProxy": true
     }"#;
     std::fs::write(&path, old).unwrap();
@@ -108,6 +114,11 @@ fn migration_chain_runs_and_is_idempotent_on_real_fs() {
     assert!(res1.loaded_from_disk);
     assert!(res1.migration_delta.changed, "首次加载有迁移变更");
     assert_eq!(res1.config["tunStackMigrated"], serde_json::json!(true));
+    assert_eq!(res1.config["keepTrayMenuWarm"], serde_json::json!(true));
+    assert_eq!(
+        res1.config["keepTrayMenuWarmDefaultMigrated"],
+        serde_json::json!(true)
+    );
     assert_eq!(
         res1.config["subscriptionProxyPolicy"],
         serde_json::json!("proxy")
@@ -121,6 +132,14 @@ fn migration_chain_runs_and_is_idempotent_on_real_fs() {
     assert!(res2.loaded_from_disk);
     assert!(!res2.migration_delta.changed, "已迁移配置二次加载无变更");
     assert_eq!(res2.config, res1.config, "二次加载内容稳定");
+
+    // 迁移后用户独立关闭预热：再次保存/加载必须保留 false，不得被启动迁移反复顶回。
+    let mut user_disabled = res2.config;
+    user_disabled["keepTrayMenuWarm"] = serde_json::json!(false);
+    ConfigStore::save(&StdFs, &path, &user_disabled, "223344556677").unwrap();
+    let res3 = ConfigStore::load(&StdFs, &path);
+    assert!(!res3.migration_delta.changed);
+    assert_eq!(res3.config["keepTrayMenuWarm"], serde_json::json!(false));
 }
 
 #[test]

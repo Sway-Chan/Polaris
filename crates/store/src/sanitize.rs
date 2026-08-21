@@ -89,6 +89,7 @@ fn sanitize_value_in_place(value: &mut Value) {
         "autoCheckUpdate",
         "autoLightweightMode",
         "keepTrayMenuWarm",
+        "keepTrayMenuWarmDefaultMigrated",
         "rememberWindowSize",
         "restartOnNodeChange",
         "disableLogFile",

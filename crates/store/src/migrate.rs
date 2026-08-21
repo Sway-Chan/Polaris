@@ -15,8 +15,9 @@
 //!   5. migrateSubscriptionProxyPolicy（旧布尔 subscriptionUpdateViaProxy → 三态）
 //!   6. migrateTunStack（存量 stack → 'auto' + 标记）
 //!   7. migrateTunMtu（抹掉存量 tunConfig.mtu → 缺席即自动 + 标记）
-//!   8. migrateDiagnosticCapture（撤掉的诊断采集机制：还原 logLevel + 清孤儿键）
-//!   9. appRulesSeeded（默认注入内置预设 + 剔除下线预设）
+//!   8. migrateTrayMenuWarmDefault（中间构建写入的旧默认 false → 最终默认 true + 标记）
+//!   9. migrateDiagnosticCapture（撤掉的诊断采集机制：还原 logLevel + 清孤儿键）
+//!  10. appRulesSeeded（默认注入内置预设 + 剔除下线预设）
 
 #![forbid(unsafe_code)]
 
@@ -45,6 +46,7 @@ pub fn migrate_all(value: &mut Value) -> MigrationDelta {
     migrate_subscription_proxy_policy(value, &mut delta);
     migrate_tun_stack(value, &mut delta);
     migrate_tun_mtu(value, &mut delta);
+    migrate_tray_menu_warm_default(value, &mut delta);
     migrate_diagnostic_capture(value, &mut delta);
     delta.changed |= seed_app_rules(value);
     // F29 隐私密码：纯逻辑侧仅清内存明文（防 CONFIG_GET_VALUE 外泄）；
@@ -519,6 +521,24 @@ pub fn migrate_tun_mtu(value: &mut Value, delta: &mut MigrationDelta) {
     delta.changed = true;
 }
 
+/// 托盘菜单预热最终默认值的一次性迁移。
+///
+/// 该开关曾在中间验收构建里以 `false` 为默认并被持久化，最终产品决策改为默认 `true` 后，普通的
+/// `or_insert(true)` 无法纠正已经存在的 `false`。配置里没有可用的版本来源来区分「中间默认值」与
+/// 「用户在中间构建里手动关闭」，因此这里按最终产品默认统一纠正一次，并写入独立标记。标记落定后，
+/// 用户再显式关闭预热会被完整保留，不会在后续启动时反复改回。
+pub fn migrate_tray_menu_warm_default(value: &mut Value, delta: &mut MigrationDelta) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+    if obj.get("keepTrayMenuWarmDefaultMigrated") == Some(&Value::Bool(true)) {
+        return;
+    }
+    obj.insert("keepTrayMenuWarm".into(), Value::Bool(true));
+    obj.insert("keepTrayMenuWarmDefaultMigrated".into(), Value::Bool(true));
+    delta.changed = true;
+}
+
 /// **撤掉的「诊断采集」机制留下的孤儿键清理**（本项无历史锚点，是本仓自己的机制被删后的收尾）。
 ///
 /// # 为什么必须有这条腿
@@ -806,6 +826,40 @@ mod tests {
             json!(65535),
             "已迁移后不得再碰用户值"
         );
+        assert!(!d2.changed);
+    }
+
+    /// 中间构建把默认 false 持久化后，最终默认必须只纠正一次；随后用户仍可独立关闭。
+    #[test]
+    fn tray_menu_warm_default_migration_runs_once_then_respects_user_value() {
+        let mut v = json!({"keepTrayMenuWarm": false});
+        let mut d = MigrationDelta::default();
+        migrate_tray_menu_warm_default(&mut v, &mut d);
+        assert!(d.changed);
+        assert_eq!(v["keepTrayMenuWarm"], json!(true));
+        assert_eq!(v["keepTrayMenuWarmDefaultMigrated"], json!(true));
+
+        // 迁移完成后用户显式关闭，二次启动不得再覆写。
+        v["keepTrayMenuWarm"] = json!(false);
+        let mut d2 = MigrationDelta::default();
+        migrate_tray_menu_warm_default(&mut v, &mut d2);
+        assert_eq!(v["keepTrayMenuWarm"], json!(false));
+        assert!(!d2.changed);
+    }
+
+    #[test]
+    fn tray_menu_warm_default_migration_fills_missing_value_and_is_idempotent() {
+        let mut v = json!({});
+        let mut d = MigrationDelta::default();
+        migrate_tray_menu_warm_default(&mut v, &mut d);
+        assert!(d.changed);
+        assert_eq!(v["keepTrayMenuWarm"], json!(true));
+        assert_eq!(v["keepTrayMenuWarmDefaultMigrated"], json!(true));
+
+        let snapshot = v.clone();
+        let mut d2 = MigrationDelta::default();
+        migrate_tray_menu_warm_default(&mut v, &mut d2);
+        assert_eq!(v, snapshot);
         assert!(!d2.changed);
     }
 

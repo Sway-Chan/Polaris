@@ -267,6 +267,7 @@ pub fn default_config() -> Value {
         "autoCheckUpdate": true,
         "autoLightweightMode": false,
         "keepTrayMenuWarm": true,
+        "keepTrayMenuWarmDefaultMigrated": true,
         "hardwareAcceleration": true,
         "windowEffects": true,
         "desktopNotifications": true,

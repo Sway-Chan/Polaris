@@ -537,6 +537,8 @@ export interface UserConfig {
   // 托盘菜单保持 warm：默认 true。开启后日常隐藏不回收托盘 WebView，换取后续热开；
   // 与主窗口 autoLightweightMode 独立，只有显式关闭本项才在隐藏 120s 后释放托盘 renderer。
   keepTrayMenuWarm?: boolean;
+  // 中间验收构建曾把上项的旧默认 false 写盘；一次性纠正为最终默认 true 的内部迁移标记。
+  keepTrayMenuWarmDefaultMigrated?: boolean;
   // 图形兼容逃生门（正向语义：**默认开**=true，关闭是 opt-in 用户自救；均需重启生效）。
   // 消费一律用 `!== false`（undefined=未设/旧配置=默认开），对齐本仓 autoCheckUpdate 惯例。
   // hardwareAcceleration：false → 改用软件渲染，规避 GPU 进程反复崩溃/白屏/花屏。
