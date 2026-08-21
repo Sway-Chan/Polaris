@@ -417,6 +417,13 @@ const TRAY_BLUR_DISMISS_JS: &str = r#"
 /// 卡片 `.tray-menu` 宽 246 + 浮层 CSS 左右各 ~11 外边距（让圆角/1px 边框不贴窗沿被裁）≈ 268。
 const TRAY_WIDTH: f64 = 268.0;
 
+/// Windows 11 系统主托盘浮层（通知中心、应用活动中心）与任务栏工作区边界保留 12 逻辑像素。
+/// macOS 菜单栏面板仍沿用 1 逻辑像素；卡片靠系统栏一侧的 CSS margin 已归零，不能再重复叠加。
+#[cfg(target_os = "windows")]
+const TRAY_EDGE_GAP_LOGICAL: f64 = 12.0;
+#[cfg(not(target_os = "windows"))]
+const TRAY_EDGE_GAP_LOGICAL: f64 = 1.0;
+
 /// 浮层「刚被隐藏」的去抖窗口：托盘图标点击会先让浮层失焦（→ 自动隐藏），
 /// 若紧接着的 Click 事件在此窗口内到达，视为「点击图标关闭」，不再重开（否则闪一下又弹回）。
 const REOPEN_DEBOUNCE_MS: u128 = 300;
@@ -1341,8 +1348,9 @@ fn apply_tray_edge(win: &tauri::WebviewWindow, edge: TrayEdge) {
 }
 
 /// 纯几何：由锚点（图标屏幕物理矩形）+ **同屏工作区** + 窗口尺寸 + 系统栏边缘算浮层左上角。
-/// 有锚点时沿图标中心对齐并朝工作区内部展开；无/退化锚点时贴该边的右下惯用角。最终只在同一工作区
-/// 内 clamp，绝不跨回浮层旧屏或主屏。
+/// 有锚点时只沿系统栏方向按图标中心对齐；垂直于系统栏的坐标始终以工作区边界为准。后者不能取锚点
+/// 边缘：Windows 隐藏图标面板里的图标位于工作区内部，拿它定位会把菜单额外抬高一整行。无/退化锚点
+/// 时贴该边的右下惯用角。最终只在同一工作区内 clamp，绝不跨回浮层旧屏或主屏。
 fn overlay_xy(
     anchor: Option<PhysicalRect>,
     work: ScreenArea,
@@ -1358,10 +1366,10 @@ fn overlay_xy(
             let cx = (a.x + a.w / 2.0).round() as i32 - wsw / 2;
             let cy = (a.y + a.h / 2.0).round() as i32 - wsh / 2;
             match edge {
-                TrayEdge::Top => (cx, (a.y + a.h).round() as i32 + gap),
-                TrayEdge::Bottom => (cx, a.y.round() as i32 - wsh - gap),
-                TrayEdge::Left => ((a.x + a.w).round() as i32 + gap, cy),
-                TrayEdge::Right => (a.x.round() as i32 - wsw - gap, cy),
+                TrayEdge::Top => (cx, work.top + gap),
+                TrayEdge::Bottom => (cx, work.bottom - wsh - gap),
+                TrayEdge::Left => (work.left + gap, cy),
+                TrayEdge::Right => (work.right - wsw - gap, cy),
             }
         }
         None => match edge {
@@ -1386,8 +1394,11 @@ fn reposition(win: &tauri::WebviewWindow) {
         return;
     };
     let ws = win.outer_size().unwrap_or(PhysicalSize::new(280, 420));
-    // gap 是 1 逻辑像素折到**锚点所在屏**的物理像素；卡片近系统栏侧另留 2px CSS 安全边，合计约 3px。
-    let gap = placement.scale_factor.round() as i32;
+    // gap 按**锚点所在屏**的缩放折成物理像素。Windows 对齐系统主托盘浮层的 12px；macOS 维持
+    // 菜单栏面板的 1px。卡片近系统栏侧的 CSS margin 为 0，不再二次叠加透明高度。
+    let gap = (TRAY_EDGE_GAP_LOGICAL * placement.scale_factor)
+        .round()
+        .max(1.0) as i32;
     apply_tray_edge(win, placement.edge);
     let (x, y) = overlay_xy(
         anchor,
@@ -2209,6 +2220,31 @@ mod tests {
     }
 
     #[test]
+    fn bottom_overflow_anchor_still_uses_taskbar_work_edge() {
+        let work = ScreenArea {
+            bottom: 1160,
+            ..SCREEN
+        };
+        // Windows 隐藏图标面板位于工作区内部；锚点上沿比任务栏边界高 72px。
+        // 浮层只沿 x 轴跟随图标，底边仍须与普通系统托盘浮层处于同一高度。
+        let (_, y) = overlay_xy(
+            Some(rect(1500.0, 1088.0, 40.0, 40.0)),
+            work,
+            WIN,
+            GAP,
+            TrayEdge::Bottom,
+        );
+        assert_eq!(y, work.bottom - 700 - GAP);
+    }
+
+    #[test]
+    fn platform_tray_gap_scales_from_logical_pixels() {
+        let expected = if cfg!(target_os = "windows") { 12 } else { 1 };
+        assert_eq!(TRAY_EDGE_GAP_LOGICAL.round() as i32, expected);
+        assert_eq!((TRAY_EDGE_GAP_LOGICAL * 2.0).round() as i32, expected * 2);
+    }
+
+    #[test]
     fn left_edge_places_right_of_icon() {
         let work = ScreenArea { left: 48, ..SCREEN };
         let (x, y) = overlay_xy(
@@ -2268,7 +2304,7 @@ mod tests {
             TrayEdge::Bottom,
         );
         assert_eq!(x, -48 - 536);
-        assert_eq!(y, 1360 - 700 - GAP);
+        assert_eq!(y, work.bottom - 700 - GAP);
     }
 
     #[test]
