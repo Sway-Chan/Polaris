@@ -418,10 +418,10 @@ const TRAY_BLUR_DISMISS_JS: &str = r#"
 /// 卡片 `.tray-menu` 宽 246 + 浮层 CSS 左右各 ~11 外边距（让圆角/1px 边框不贴窗沿被裁）≈ 268。
 const TRAY_WIDTH: f64 = 268.0;
 
-/// Windows 11 系统主托盘浮层（通知中心、应用活动中心）与任务栏工作区边界保留 12 逻辑像素。
+/// Windows 11 普通托盘菜单与任务栏工作区边界保留 4 逻辑像素。
 /// macOS 菜单栏面板仍沿用 1 逻辑像素；卡片靠系统栏一侧的 CSS margin 已归零，不能再重复叠加。
 #[cfg(target_os = "windows")]
-const TRAY_EDGE_GAP_LOGICAL: f64 = 12.0;
+const TRAY_EDGE_GAP_LOGICAL: f64 = 4.0;
 #[cfg(not(target_os = "windows"))]
 const TRAY_EDGE_GAP_LOGICAL: f64 = 1.0;
 
@@ -1446,7 +1446,7 @@ fn reposition(win: &tauri::WebviewWindow) {
         return;
     };
     let ws = win.outer_size().unwrap_or(PhysicalSize::new(280, 420));
-    // gap 按**锚点所在屏**的缩放折成物理像素。Windows 对齐系统主托盘浮层的 12px；macOS 维持
+    // gap 按**锚点所在屏**的缩放折成物理像素。Windows 对齐普通托盘菜单的 4px；macOS 维持
     // 菜单栏面板的 1px。卡片近系统栏侧的 CSS margin 为 0，不再二次叠加透明高度。
     let gap = (TRAY_EDGE_GAP_LOGICAL * placement.scale_factor)
         .round()
@@ -2330,7 +2330,7 @@ mod tests {
 
     #[test]
     fn platform_tray_gap_scales_from_logical_pixels() {
-        let expected = if cfg!(target_os = "windows") { 12 } else { 1 };
+        let expected = if cfg!(target_os = "windows") { 4 } else { 1 };
         assert_eq!(TRAY_EDGE_GAP_LOGICAL.round() as i32, expected);
         assert_eq!((TRAY_EDGE_GAP_LOGICAL * 2.0).round() as i32, expected * 2);
     }
