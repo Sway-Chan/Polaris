@@ -16,8 +16,9 @@
 //!
 //! # 生命周期
 //!
-//! 首次托盘点击只登记展示意图并跳出事件帧，随后 [`build_overlay`] 按需创建 → renderer-ready 后
-//! 定位+显示+聚焦（再点=隐藏）→
+//! `keepTrayMenuWarm` 开启时，托盘创建完成后即在后台排队 [`build_overlay`]，renderer-ready 前始终
+//! hidden；因此首次点击也只需定位+显示+聚焦。关闭 warm 时仍由首次点击登记展示意图并跳出事件帧，
+//! 随后按需冷建（再点=隐藏）→
 //! 点窗外/切他 app 收起：Rust `Focused(false)` + DOM `window.blur`→`tray_hide` **双路** dismiss（后者
 //! 经 `initialization_script` 注入，兜 mac 上次级窗 Focused 递送不可靠，见 [`TRAY_BLUR_DISMISS_JS`]）。
 //! `keepTrayMenuWarm` 默认开启：日常隐藏只收起、不自动回收，换取后续点击热开；用户关闭后，隐藏超过
@@ -456,6 +457,19 @@ struct OverlayLifecycle {
 }
 
 impl OverlayLifecycle {
+    /// 后台预热一代 renderer，但不登记展示意图。ready 回执只把本代提交为可热开，绝不能自行 show。
+    #[cfg(any(target_os = "macos", target_os = "windows", test))]
+    fn request_prewarm(&mut self, window_exists: bool) -> Option<u64> {
+        if window_exists || self.build_queued {
+            return None;
+        }
+        self.generation = self.generation.wrapping_add(1);
+        self.build_queued = true;
+        self.renderer_ready = false;
+        self.show_requested = false;
+        Some(self.generation)
+    }
+
     fn request_open(&mut self, window_exists: bool) -> OverlayOpenAction {
         self.show_requested = true;
         if window_exists && self.renderer_ready {
@@ -934,6 +948,34 @@ fn overlay_keeps_warm(app: &AppHandle) -> bool {
         .is_none_or(|state| state.keep_warm.load(Ordering::Relaxed))
 }
 
+/// warm 开启时在托盘就绪后后台预建隐藏 renderer。复用冷开同一套代次、主线程建窗和 ready 超时机制；
+/// 唯一差异是 `show_requested=false`，所以预热完成不会抢焦点或露出窗口。
+pub(crate) fn prewarm_overlay_if_enabled(app: &AppHandle) {
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = app;
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        if !overlay_keeps_warm(app) || app.tray_by_id("main").is_none() {
+            return;
+        }
+        let window_exists = app.get_webview_window(TRAY_LABEL).is_some();
+        let generation = app.try_state::<TrayOverlay>().and_then(|state| {
+            state
+                .lifecycle
+                .lock()
+                .ok()
+                .and_then(|mut lifecycle| lifecycle.request_prewarm(window_exists))
+        });
+        if let Some(generation) = generation {
+            log::debug!("托盘浮层 warm 开启：后台预建隐藏 renderer（generation={generation}）");
+            queue_overlay_build(app, generation);
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OverlayRetentionAction {
     None,
@@ -988,7 +1030,14 @@ pub(crate) fn reconcile_overlay_retention(app: &AppHandle) {
     let overlay_hidden = app
         .get_webview_window(TRAY_LABEL)
         .is_some_and(|win| !win.is_visible().unwrap_or(false));
-    match overlay_retention_action(previous, next, overlay_hidden) {
+    // 用户可能恰在启动预热的建窗窗口内关掉 warm：此刻 WebView 尚不存在，但 120s 回收任务仍须挂上，
+    // 否则 build 随后完成后会成为永不回收的隐藏 renderer。
+    let overlay_building = state
+        .lifecycle
+        .lock()
+        .ok()
+        .is_some_and(|lifecycle| lifecycle.build_queued);
+    match overlay_retention_action(previous, next, overlay_hidden || overlay_building) {
         OverlayRetentionAction::None => {}
         OverlayRetentionAction::CancelReclaim => {
             invalidate_overlay_reclaim(app);
@@ -998,6 +1047,9 @@ pub(crate) fn reconcile_overlay_retention(app: &AppHandle) {
             schedule_overlay_reclaim(app);
             log::debug!("托盘浮层关闭 warm：已恢复隐藏回收任务");
         }
+    }
+    if next {
+        prewarm_overlay_if_enabled(app);
     }
 }
 
@@ -1900,8 +1952,8 @@ mod autosave_name_gate {
 
 #[cfg(test)]
 mod overlay_lifecycle_gate {
-    //! 托盘浮层的结构性契约：启动期懒创建、跳出点击帧冷建、renderer-ready 后才展示、普通隐藏独立
-    //! 定时回收、轻量转场提前回收。任一条漂移都会重新引入首击失效、空壳或独立 WebContent 常驻。
+    //! 托盘浮层的结构性契约：warm 启动期后台预建、关闭 warm 后跳出点击帧冷建、renderer-ready 后才
+    //! 允许展示、普通隐藏独立定时回收。任一条漂移都会重新引入首击滞后、空壳或违背偏好的常驻。
 
     use super::{should_arm_last_overlay_exit_guard, OverlayLifecycle, OverlayOpenAction};
 
@@ -1909,11 +1961,25 @@ mod overlay_lifecycle_gate {
     const MAIN_RS: &str = include_str!("main.rs");
 
     #[test]
-    fn overlay_is_lazy_not_built_during_setup() {
+    fn warm_overlay_is_prebuilt_after_tray_setup_and_cold_build_stays_off_click_frame() {
         assert!(
             !MAIN_RS.contains("tray::build_overlay("),
-            "启动 setup 不得预建托盘 WebView；首次托盘点击只能按需排队创建"
+            "启动 setup 不得同步 build 托盘 WebView；预热也必须排队跳出当前分发帧"
         );
+        assert_eq!(
+            MAIN_RS
+                .matches("tray::prewarm_overlay_if_enabled(app.handle());")
+                .count(),
+            1,
+            "托盘创建成功后必须恰好发起一次启动预热"
+        );
+        let tray_ready = MAIN_RS
+            .find("let tray_present =")
+            .expect("找不到托盘创建结果锚点");
+        let prewarm = MAIN_RS
+            .find("tray::prewarm_overlay_if_enabled(app.handle());")
+            .expect("找不到启动预热接线");
+        assert!(tray_ready < prewarm, "预热必须晚于托盘锚点创建结果");
         let toggle_body = TRAY_RS
             .split_once("pub fn toggle_overlay")
             .and_then(|(_, rest)| rest.split_once("fn invalidate_overlay_reclaim"))
@@ -1942,6 +2008,31 @@ mod overlay_lifecycle_gate {
         assert!(
             spawn < main && main < build,
             "冷建次序必须是 spawn → 排回主线程 → build"
+        );
+    }
+
+    #[test]
+    fn prewarm_commits_hidden_renderer_without_showing_until_first_click() {
+        let mut lifecycle = OverlayLifecycle::default();
+        let generation = lifecycle
+            .request_prewarm(false)
+            .expect("warm 启动必须排一代隐藏 renderer");
+        assert_eq!(generation, 1);
+        assert_eq!(
+            lifecycle.request_prewarm(false),
+            None,
+            "在飞预热不得叠第二代 WebView"
+        );
+        lifecycle.build_finished(generation, true);
+        assert!(
+            !lifecycle.mark_ready(generation),
+            "预热 ready 只能提交热开状态，绝不能自行展示"
+        );
+        assert!(!lifecycle.should_show(generation));
+        assert_eq!(
+            lifecycle.request_open(true),
+            OverlayOpenAction::ShowNow,
+            "首次点击应直接消费已 ready 的隐藏 renderer"
         );
     }
 

@@ -1626,7 +1626,7 @@ fn main() {
             app.manage(ExitCleanupState(AtomicBool::new(false)));
             // 托盘运行期状态（自绘浮层去抖 + 轻量重建时的待导航目标；Linux 虽不建浮层仍要后者）。
             app.manage(tray::TrayOverlay::default());
-            // 同步托盘 warm 偏好。必须在 TrayOverlay manage 后执行；缺省 false 保持按需冷建 + 120s 回收。
+            // 同步托盘 warm 偏好。必须在 TrayOverlay manage 后执行；缺省 true，待托盘创建成功后后台预建。
             tray::reconcile_overlay_retention(app.handle());
 
             // ── 订阅自动更新调度器（启动补更 8s + 周期巡检 30min + 代理就绪补更）──
@@ -1871,9 +1871,12 @@ fn main() {
                 false
             };
 
-            // 自绘浮层不在启动期预建：首次托盘点击由 `toggle_overlay` 按需创建。默认 warm：隐藏后保留
-            // renderer，换取后续热开；用户关掉 `keepTrayMenuWarm` 才在隐藏 2 分钟后回收。Linux 的点击归原生菜单所有，
-            // 不会创建这块 WebView。建窗失败只记日志，不曲解用户意图为显示主窗。
+            // 默认 warm：托盘锚点存在后立即后台预建 hidden renderer，ready 后仍不展示/不抢焦点，首次点击
+            // 直接热开；用户关掉 `keepTrayMenuWarm` 才恢复首次按需冷建 + 隐藏 2 分钟后回收。偏好与主窗口
+            // 轻量模式完全独立。Linux 的点击归原生菜单所有，不创建这块 WebView。
+            if tray_present {
+                tray::prewarm_overlay_if_enabled(app.handle());
+            }
 
             // C15：start_hidden 但托盘缺失（Linux 无 StatusNotifier）→ 无唤出锚点，**必须**显示主窗，否则
             // 窗口永远隐藏且无处唤起 = 死界面。托盘在则保持隐藏（靠主激活/原生菜单/dock 唤出）。窗口可见性 → stats

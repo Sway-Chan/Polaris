@@ -421,7 +421,7 @@
       "autoLightweightMode": "自动轻量模式",
       "autoLightweightModeDesc": "界面隐藏或最小化 10 分钟后释放内存；托盘与代理继续运行",
       "keepTrayMenuWarm": "托盘菜单保持预热",
-      "keepTrayMenuWarmDesc": "默认开启。托盘菜单隐藏后保持预热，后续打开更快；与主窗口轻量模式独立，通常会额外占用约 30–40 MB 内存。关闭后，隐藏 2 分钟会自动释放。",
+      "keepTrayMenuWarmDesc": "默认开启。应用启动后会在后台预建托盘菜单，并在隐藏后保持预热；与主窗口轻量模式独立，通常会额外占用约 30–40 MB 内存。关闭后改为按需创建，隐藏 2 分钟会自动释放。",
       "desktopNotifications": "桌面通知",
       "desktopNotificationsDesc": "代理出现严重错误时弹系统通知",
       "autoCheckUpdate": "启动时检查更新",

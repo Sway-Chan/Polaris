@@ -272,7 +272,27 @@ const REGISTRY: readonly PromiseRow[] = [
     timer: { lang: 'rs', name: 'HIDDEN_RECLAIM_SECS' },
   },
   {
-    snippet: '关闭后，隐藏 2 分钟会自动释放',
+    snippet: '默认开启。应用启动后会在后台预建托盘菜单',
+    evidence: {
+      kind: 'anchors',
+      items: [
+        {
+          file: 'crates/store/src/store.rs',
+          needle: '"keepTrayMenuWarm": true',
+        },
+        {
+          file: 'src-tauri/src/main.rs',
+          needle: 'tray::prewarm_overlay_if_enabled(app.handle());',
+        },
+        {
+          file: 'src-tauri/src/tray.rs',
+          needle: 'lifecycle.request_prewarm(window_exists)',
+        },
+      ],
+    },
+  },
+  {
+    snippet: '关闭后改为按需创建，隐藏 2 分钟会自动释放',
     // 配置消费方在 Rust 托盘生命周期：打开 warm 取消在飞回收，关闭时隐藏窗恢复 120s 计时；
     // `config-key` 门会要求设置屏之外存在真实读取，避免只长出一个无效开关。
     evidence: { kind: 'config-key', key: 'keepTrayMenuWarm' },

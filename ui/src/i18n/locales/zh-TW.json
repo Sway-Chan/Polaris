@@ -421,7 +421,7 @@
       "autoLightweightMode": "自動輕量模式",
       "autoLightweightModeDesc": "介面隱藏或最小化 10 分鐘後釋放記憶體；系統匣與代理繼續運作",
       "keepTrayMenuWarm": "系統匣選單保持預熱",
-      "keepTrayMenuWarmDesc": "預設開啟。系統匣選單隱藏後保持預熱，之後開啟更快；與主視窗輕量模式獨立，通常會額外占用約 30–40 MB 記憶體。關閉後，隱藏 2 分鐘會自動釋放。",
+      "keepTrayMenuWarmDesc": "預設開啟。應用程式啟動後會在背景預先建立系統匣選單，並在隱藏後保持預熱；與主視窗輕量模式獨立，通常會額外占用約 30–40 MB 記憶體。關閉後改為按需建立，隱藏 2 分鐘會自動釋放。",
       "desktopNotifications": "桌面通知",
       "desktopNotificationsDesc": "代理出現嚴重錯誤時跳出系統通知",
       "autoCheckUpdate": "啟動時檢查更新",

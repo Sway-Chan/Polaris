@@ -421,7 +421,7 @@
       "autoLightweightMode": "Auto lightweight mode",
       "autoLightweightModeDesc": "Release the interface after it has been hidden or minimized for 10 minutes; the tray and proxy keep running",
       "keepTrayMenuWarm": "Keep tray menu warm",
-      "keepTrayMenuWarmDesc": "Enabled by default. Keeps the hidden tray menu ready for faster reopening, independently of main-window lightweight mode, and typically uses about 30–40 MB more memory. When disabled, it is released after 2 minutes hidden.",
+      "keepTrayMenuWarmDesc": "Enabled by default. Preloads the tray menu after app startup and keeps it ready while hidden, independently of main-window lightweight mode; this typically uses about 30–40 MB more memory. When disabled, it is created on demand and released after 2 minutes hidden.",
       "desktopNotifications": "Desktop notifications",
       "desktopNotificationsDesc": "Raises a system notification when the proxy hits a serious error",
       "autoCheckUpdate": "Check for updates at startup",
