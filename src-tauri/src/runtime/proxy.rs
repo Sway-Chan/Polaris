@@ -1229,6 +1229,20 @@ fn should_enable_system_proxy(mode: ProxyModeType) -> bool {
     matches!(mode, ProxyModeType::SystemProxy)
 }
 
+/// 重启的 stop→start 空窗里是否需要收掉旧会话的系统代理（纯决策）。
+///
+/// 同模式 `SystemProxy → SystemProxy` 必须保留：新核会继续监听同一 mixed port，提前清理只会制造不必要的
+/// 直连窗口。只有运行核的快照明确是 `SystemProxy`、且新核明确切到不代设系统代理的模式时才清：否则
+/// `SystemProxy → Tun/Manual` 会把 OS 代理永远留在旧的 loopback 端口，TUN 即使已接管也仍带一层错误残留。
+/// 任一侧无法解析时不在这里猜；新配置若无效，`start` 失败腿已有统一的 marker 门控收口。
+fn should_clear_system_proxy_between_restart(
+    old_mode: Option<ProxyModeType>,
+    new_mode: Option<ProxyModeType>,
+) -> bool {
+    old_mode.is_some_and(should_enable_system_proxy)
+        && new_mode.is_some_and(|mode| !should_enable_system_proxy(mode))
+}
+
 /// **C6-5 起核路由决策（纯函数）**：是否经提权 helper 起核（而非 [`TokioSpawner`] 直起）。
 ///
 /// 判据 = TUN 模式 **且** 平台有 helper 实现。根因（对齐 上游 `startViaHelper` 门控）：
@@ -4340,10 +4354,12 @@ impl ProxyRuntime {
     /// —— 系统代理非我方设置（或已清）绝不动手，不误清用户自配的第三方代理。清理失败只记日志、不 panic、
     /// 不阻断停止（`stop` 恒返回 `Ok`）。
     ///
-    /// **只挂主动停止腿，不挂 restart 的停核腿**：`restart` = stop→start 是**瞬态**停核，紧接 start 重建，
-    /// 清了会在重建前留下「无系统代理」窗口（对齐上游 `ensureSystemProxyCleared` 首行
-    /// `if (this.stopping) return`）。restart 若在 start 腿失败留下死端口，由上面的 start 失败腿收口，不由
-    /// 此处。故 [`restart`](Self::restart) 调 [`stop_inner`](Self::stop_inner) 而非本方法。
+    /// **只挂主动停止腿，不把清理塞进 restart 共用的 stop 腿**：`restart` = stop→start 是瞬态停核；
+    /// `SystemProxy → SystemProxy` 清了会在重建前留下「无系统代理」窗口（对齐上游
+    /// `ensureSystemProxyCleared` 首行 `if (this.stopping) return`）。但 `SystemProxy → Tun/Manual` 必须清旧
+    /// 代理，故 [`restart_inner`](Self::restart_inner) 在 stop 腿完成后按新旧模式选择性调用本收口点。
+    /// restart 若在 start 腿失败留下死端口，仍由上面的 start 失败腿收口。故 [`restart`](Self::restart)
+    /// 调 [`stop_inner`](Self::stop_inner) 而非本方法。
     /// **换代即让位**：`stop_inner` 返 `false` 表示本腿在停核期间已被更新的 start/stop 接管
     /// （见该方法的换代守卫）。此时系统代理**属接管方**——清它就是把新会话刚设好的代理抹掉、
     /// 用户全网走直连。故这条收口也一并让位，由接管方自己的终态负责。
@@ -4361,8 +4377,9 @@ impl ProxyRuntime {
     /// 2. kill 进程（core-supervisor `ProcessKiller`：SIGTERM → 宽限 → SIGKILL）
     /// 3. 清状态 + 快照；`end(Stop)` 丢弃全部 pending（停止优先）
     ///
-    /// **[`restart`](Self::restart) 复用本腿**（瞬态停核，紧接 start 重建，故**不**清系统代理——见
-    /// [`stop`](Self::stop)）。
+    /// **[`restart`](Self::restart) 复用本腿**；本腿自身不碰系统代理。restart 会在它返回 `true` 后按
+    /// 新旧模式选择性收口（同为 systemProxy 则保留，离开 systemProxy 才清），见
+    /// [`restart_inner`](Self::restart_inner)。
     ///
     /// # 返回值 = 「本腿跑完了拆除、且仍当权」
     ///
@@ -4586,9 +4603,11 @@ impl ProxyRuntime {
     /// 会钻进空窗并发起第二条重启，且内层 `stop_inner` 的 [`finish_lifecycle`](Self::finish_lifecycle)`(Stop)`
     /// 在 depth 0 命中 `Stopped` 终态分支 → **静默丢弃**窗口内暂存的 switch/force-restart（本不变式的 drifted 缺陷）。
     ///
-    /// 用 `stop_inner`（**不清系统代理**）而非 [`stop`](Self::stop)：重启是瞬态停核，紧接 start 重建；主动清会在
-    /// 重建前留下「无系统代理」窗口。restart 若在 start 腿失败留死端口，由 start 失败腿
-    /// （`maybe_clear_system_proxy_on_start_failure`）收口——见 [`stop`](Self::stop) 文档。
+    /// 用 `stop_inner` 而非 [`stop`](Self::stop)：重启是瞬态停核，`SystemProxy → SystemProxy` 紧接着会在
+    /// 同一 mixed port 重建，主动清会制造「无系统代理」窗口。跨模式 `SystemProxy → Tun/Manual` 则必须在
+    /// 停核腿仍当权时清掉旧 marker/OS 代理，否则新模式不会再走 enable 腿、残留会永久存在。该分流由
+    /// [`should_clear_system_proxy_between_restart`] 单点判定。restart 若在 start 腿失败留死端口，仍由
+    /// `maybe_clear_system_proxy_on_start_failure` 统一收口——见 [`stop`](Self::stop) 文档。
     pub async fn restart(self: &Arc<Self>, config: Value) -> Result<ProxyStatus, StartError> {
         self.gate.begin(); // restart 外层 begin（上游 beginLifecycleOp，:1500）→ depth≥1 不变式起点。
         let r = self.restart_inner(config).await;
@@ -4600,10 +4619,26 @@ impl ProxyRuntime {
 
     /// [`restart`](Self::restart) 内层：瞬态停核 + 重建。外层 begin/finish 由 `restart` 持有（depth≥1 不变式）。
     async fn restart_inner(self: &Arc<Self>, config: Value) -> Result<ProxyStatus, StartError> {
-        // 停核腿的返回值（是否仍当权）在这里**刻意不消费**：重启的语义就是「无论如何都要按这份 config
-        // 重建」，而随后的 `start` 自己会 bump 世代并带着新世代跑完整条起核（含它自己的让位判定）。
-        // `stop` 那边要判，是因为「清系统代理」是**终态**动作，让位与否会改变最终留给用户的系统状态。
-        let _ = self.stop_inner().await;
+        // `apply_restart` 在调度前已经把 current_config 提交成**新**配置，不能据它判断旧模式；唯一可信的
+        // 旧核真值是就绪时落下的 startup_snapshot。必须在 stop_inner 清快照之前取。
+        let old_mode = self
+            .startup_snapshot
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
+            .and_then(|v| serde_json::from_value::<UserConfig>(v).ok())
+            .map(|cfg| cfg.proxy_mode_type);
+        let new_mode = serde_json::from_value::<UserConfig>(config.clone())
+            .ok()
+            .map(|cfg| cfg.proxy_mode_type);
+        // 停核腿的返回值**只约束跨模式清理的所有权，不决定是否继续重建**：重启的语义仍是「无论如何
+        // 都按这份 config 重建」，随后的 `start` 自己会 bump 世代并带着新世代跑完整条起核。若 stop 已被
+        // 接管，系统代理可能属于接管方，旧腿绝不能清；但本次 restart 仍继续 start，由其世代规则竞争。
+        let stop_completed = self.stop_inner().await;
+        if stop_completed && should_clear_system_proxy_between_restart(old_mode, new_mode) {
+            log::info!("重启跨模式离开 systemProxy → 起新核前清理旧会话系统代理");
+            self.clear_system_proxy().await;
+        }
         self.start(config).await
     }
 
@@ -12895,7 +12930,7 @@ mod tests {
     async fn restart_start_leg_failure_invokes_system_proxy_clearer() {
         let (rt, dir, calls) = test_runtime_recording();
         rt.stale_sweep_disabled.store(true, Ordering::SeqCst);
-        // restart = stop_inner()（**不清系统代理**：瞬态停核，无核 → no-op）+ start(bad)（失败 → 清）。
+        // 无旧核快照，restart 的跨模式收口门不命中；start(bad) 失败腿负责清。
         let r = rt.restart(bad_config()).await;
         assert!(r.is_err(), "restart 的 start 腿坏配置必失败");
         assert_eq!(
@@ -13881,9 +13916,9 @@ mod tests {
         );
     }
 
-    /// 变异守卫（与上一条 + `restart_start_leg_failure` 构成双向锁）：`restart` 的**停核腿不清**系统代理
-    /// （瞬态停核，紧接 start 重建）。此处 restart 的 start 腿用坏配置**必失败** → 全程唯一的一次清来自
-    /// **start 失败腿**，而非停核腿。若把清挂进 `stop_inner`（restart 复用腿），本测将读到 2 次而转红。
+    /// 变异守卫（与上一条 + `restart_start_leg_failure` 构成双向锁）：`restart` 不得把系统代理清理无条件
+    /// 塞进共用的 `stop_inner`。此处没有旧运行快照，跨模式门不命中；start 腿用坏配置**必失败** → 全程
+    /// 唯一一次清来自 start 失败腿。若把清挂进 `stop_inner`，本测将读到 2 次而转红。
     #[tokio::test]
     async fn restart_stop_leg_does_not_clear_system_proxy() {
         let (rt, dir, calls) = test_runtime_recording();
@@ -13893,9 +13928,37 @@ mod tests {
         assert_eq!(
             calls.load(Ordering::SeqCst),
             1,
-            "restart 全程恰一次清（来自 start 失败腿）；停核腿绝不清，否则重建前留无代理窗口"
+            "无旧运行快照的 restart 全程恰一次清（来自 start 失败腿）；共用 stop_inner 不得无条件清"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 接线门：纯真值表必须落在 `stop_inner` 之后、`start` 之前，并与 stop 的所有权返回值合取。
+    /// 少 `stop_completed` 会让已被新会话接管的残 restart 清掉接管方代理；挪到 start 后则 TUN 起核期间
+    /// 仍带着旧 OS 代理。行为逻辑由 `restart_system_proxy_cleanup_truth_table` 覆盖，这里只钉调用位置。
+    #[test]
+    fn restart_cross_mode_proxy_cleanup_is_owned_and_between_legs() {
+        let body = method_body(
+            include_str!("proxy.rs"),
+            "    async fn restart_inner(self: &Arc<Self>, config: Value) -> Result<ProxyStatus, StartError> {",
+        );
+        let stop = body
+            .find("let stop_completed = self.stop_inner().await;")
+            .unwrap();
+        let clear = body
+            .find(
+                "if stop_completed && should_clear_system_proxy_between_restart(old_mode, new_mode)",
+            )
+            .unwrap();
+        let start = body.find("self.start(config).await").unwrap();
+        assert!(
+            stop < clear && clear < start,
+            "跨模式代理收口必须位于 owned stop 与新 start 之间；实际方法体：\n{body}"
+        );
+        assert!(
+            body[clear..start].contains("self.clear_system_proxy().await;"),
+            "判定命中后必须复用 marker 门控的统一清理点；实际方法体：\n{body}"
+        );
     }
 
     // ══════════════════════════════════════════════════════════════════════════════
@@ -18781,6 +18844,37 @@ mod tests {
         assert!(should_enable_system_proxy(ProxyModeType::SystemProxy));
         assert!(!should_enable_system_proxy(ProxyModeType::Tun));
         assert!(!should_enable_system_proxy(ProxyModeType::Manual));
+    }
+
+    /// 重启空窗的系统代理收口真值表：只清 `SystemProxy → 非 SystemProxy`，其余组合一律不动。
+    /// 尤其 `SystemProxy → SystemProxy` 要保留代理连续性；未知模式交给 start 失败腿统一收口，不能猜。
+    #[test]
+    fn restart_system_proxy_cleanup_truth_table() {
+        use ProxyModeType::{Manual, SystemProxy, Tun};
+        assert!(should_clear_system_proxy_between_restart(
+            Some(SystemProxy),
+            Some(Tun)
+        ));
+        assert!(should_clear_system_proxy_between_restart(
+            Some(SystemProxy),
+            Some(Manual)
+        ));
+        assert!(!should_clear_system_proxy_between_restart(
+            Some(SystemProxy),
+            Some(SystemProxy)
+        ));
+        for old in [None, Some(Tun), Some(Manual)] {
+            for new in [None, Some(SystemProxy), Some(Tun), Some(Manual)] {
+                assert!(
+                    !should_clear_system_proxy_between_restart(old, new),
+                    "非 systemProxy 旧会话不得清系统代理：old={old:?} new={new:?}"
+                );
+            }
+        }
+        assert!(!should_clear_system_proxy_between_restart(
+            Some(SystemProxy),
+            None
+        ));
     }
 
     /// C-tun-conflict 模式守卫：TUN 出口夺取硬闸**仅**适用 TUN 模式。
