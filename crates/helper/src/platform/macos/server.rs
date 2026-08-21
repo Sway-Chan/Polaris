@@ -171,6 +171,13 @@ pub fn should_lock_command(command: &str) -> bool {
 /// root 跑 sing-box 会把这些目录里的文件写成 root 600 → 登录用户跑读不了 → endpoint post-start FATAL。
 pub const CHOWN_SUBDIRS: [&str; 3] = ["tailscale", "singbox-dashboard", "ui"];
 
+/// root 核会直接写在 confDir 根部、退出后必须归还登录用户的运行时文件。
+///
+/// `cache.db` 不在 [`CHOWN_SUBDIRS`] 的树内；漏掉它会让 TUN(root) → 系统模式(user) 的下一次
+/// 起核以 `initialize cache-file: permission denied` 退出。启动前另有 fd 级属主准备，退出归还是
+/// 对旧 helper 遗留文件与异常退出的第二道收口。
+pub const CHOWN_FILES: [&str; 1] = ["cache.db"];
+
 /// 某条目是否需 `Lchown` 归还（移植自 `helper.go:237`）。
 ///
 /// 仅 root（uid==0）写入的条目才归还 —— 已是登录用户属主的跳过，省无谓 Lchown（TUN 起停周期对可能很大的树）。
@@ -311,7 +318,7 @@ mod sys {
     };
     use crate::token::{FileTokenStore, TokenStore};
     use nix::sys::signal::Signal;
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     use std::os::unix::net::UnixListener;
     use std::path::Path;
     use std::sync::{Arc, Condvar, Mutex};
@@ -436,6 +443,11 @@ mod sys {
             if let Some(existing) = child_g.as_ref() {
                 return Ok(existing.pid);
             }
+            // root sing-box 会写 `<conf_dir>/cache.db`。文件若由上一轮 TUN 创建成 root:staff 0644，
+            // 切到用户态系统代理后会直接 FATAL permission denied；只在退出后 chown 又会与紧接着的
+            // 重启竞速。故 root 起核前先按 conf_dir 属主准备 cache，root 仍可写，后续用户核也可写。
+            // O_NOFOLLOW + fd 级 fchown：conf_dir 属用户可写，路径级 chown 存在换成 symlink 的 TOCTOU。
+            prepare_cache_for_user(&self.config.conf_dir).map_err(SpawnError::Failed)?;
             // helper.go:538: exec.Command(singboxBin, "run", "-c", cfg)
             let mut cmd = std::process::Command::new(&self.config.singbox_bin);
             cmd.arg("run").arg("-c").arg(cfg);
@@ -703,8 +715,38 @@ mod sys {
         nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), sig)
     }
 
-    /// chownRuntimeDirs（`helper.go:206-242`）：把 confDir/{tailscale,singbox-dashboard,ui} 里仍属 root 的
-    /// 条目 `Lchown` 归还登录用户。尽力而为，单项失败即跳过，绝不阻断。
+    /// root 起核前把 cache.db 锁定为 confDir 属主。
+    ///
+    /// 不截断既有数据库；最后一段若为符号链接则 `O_NOFOLLOW` 拒绝。打开后只对 fd `fchown`，
+    /// 不在用户可写目录里做「检查路径 → 再 chown 路径」的 TOCTOU。
+    pub(super) fn prepare_cache_for_user(conf_dir: &str) -> Result<(), String> {
+        if conf_dir.is_empty() {
+            return Ok(());
+        }
+        let dir_meta = std::fs::metadata(conf_dir)
+            .map_err(|e| format!("读取配置目录属主失败（{conf_dir}）：{e}"))?;
+        let uid = dir_meta.uid();
+        let gid = dir_meta.gid();
+        if should_skip_confdir_chown(uid) {
+            return Err(format!(
+                "配置目录异常归 root 所有，拒绝准备 cache.db：{conf_dir}"
+            ));
+        }
+        let cache = Path::new(conf_dir).join(CHOWN_FILES[0]);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(nix::libc::O_NOFOLLOW)
+            .open(&cache)
+            .map_err(|e| format!("安全打开 cache.db 失败（{}）：{e}", cache.display()))?;
+        std::os::unix::fs::fchown(&file, Some(uid), Some(gid))
+            .map_err(|e| format!("归还 cache.db 属主失败（{}）：{e}", cache.display()))
+    }
+
+    /// chownRuntimeDirs（`helper.go:206-242`）：把 confDir/{tailscale,singbox-dashboard,ui} 与根部
+    /// cache.db 里仍属 root 的条目 `Lchown` 归还登录用户。尽力而为，单项失败即跳过，绝不阻断。
     fn chown_runtime_dirs(conf_dir: &str) {
         // helper.go:207-209: confDir 空 → 跳过
         if conf_dir.is_empty() {
@@ -723,6 +765,9 @@ mod sys {
         }
         // helper.go:222-224: 三个运行时子目录逐树归还
         for name in CHOWN_SUBDIRS {
+            chown_tree(&Path::new(conf_dir).join(name), uid, gid);
+        }
+        for name in CHOWN_FILES {
             chown_tree(&Path::new(conf_dir).join(name), uid, gid);
         }
     }
@@ -1228,6 +1273,39 @@ mod tests {
     fn chown_subdirs_match_go() {
         // helper.go:222
         assert_eq!(CHOWN_SUBDIRS, ["tailscale", "singbox-dashboard", "ui"]);
+        assert_eq!(CHOWN_FILES, ["cache.db"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cache_prepare_preserves_bytes_and_uses_confdir_owner() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join(CHOWN_FILES[0]);
+        std::fs::write(&cache, b"keep-cache-bytes").unwrap();
+
+        sys::prepare_cache_for_user(dir.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(std::fs::read(&cache).unwrap(), b"keep-cache-bytes");
+        let dir_meta = std::fs::metadata(dir.path()).unwrap();
+        let cache_meta = std::fs::metadata(&cache).unwrap();
+        assert_eq!(cache_meta.uid(), dir_meta.uid());
+        assert_eq!(cache_meta.gid(), dir_meta.gid());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cache_prepare_refuses_symlink_without_touching_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        std::fs::write(&target, b"untouched").unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join(CHOWN_FILES[0])).unwrap();
+
+        let error = sys::prepare_cache_for_user(dir.path().to_str().unwrap()).unwrap_err();
+
+        assert!(error.contains("安全打开 cache.db 失败"), "{error}");
+        assert_eq!(std::fs::read(target).unwrap(), b"untouched");
     }
 
     #[test]

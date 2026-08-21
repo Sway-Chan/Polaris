@@ -80,6 +80,13 @@ struct LightweightState(AtomicBool);
 /// `mark_clean_exit` 消费（与 `LightweightState` 同款），陈旧置位不会跨进程存活。
 struct RestartState(AtomicBool);
 
+/// 真实退出收尾的一次性门。
+///
+/// 常规退出先发 `ExitRequested`、随后还会发最终 `Exit`；macOS 原生 `NSApplication` 终止在真机上可直接
+/// 落到 `Exit`。两条腿都必须能触发停核/清系统代理，但同一次退出只执行一次，否则 `app:restart` 的
+/// `RestartState` 会被第一次消费后又在第二次错误落成“正常退出”标记。
+struct ExitCleanupState(AtomicBool);
+
 /// C15 启动模式判定（纯函数，可单测）：据进程 argv + 是否有图形显示决定 CLI 早退 / 隐藏启动。
 /// 迁移自 上游 `resolveCliEarlyExit`（`cli-early-exit.ts:26-38`）+ `index.ts:895/1494` 的 `--hidden` 处理。
 #[derive(Debug, PartialEq, Eq)]
@@ -329,6 +336,20 @@ fn run_exit_cleanup(app: &tauri::AppHandle) {
             log::error!("退出清理：停核失败（不阻断退出）: {e}");
         }
     });
+}
+
+/// 真实退出的统一汇流点：正常退出标记先落，再阻塞停核/清系统代理；`ExitRequested` 与最终 `Exit`
+/// 可能连续到达，故由 [`ExitCleanupState`] 保证整段只跑一次。
+fn run_real_exit_once(app: &tauri::AppHandle) {
+    if app
+        .state::<ExitCleanupState>()
+        .0
+        .swap(true, Ordering::SeqCst)
+    {
+        return;
+    }
+    mark_clean_exit(app);
+    run_exit_cleanup(app);
 }
 
 /// 按代理连接态切托盘图标；连接/断开靠**形态**区分（实心 vs 空心），三平台**全单色自适应**（不再彩色）。
@@ -1601,6 +1622,8 @@ fn main() {
             app.manage(LightweightState(AtomicBool::new(false)));
             // Q1-b ④：「本次退出是 app:restart 发起的」，默认 false = 真退出（照落正常退出标记）。
             app.manage(RestartState(AtomicBool::new(false)));
+            // 正常 ExitRequested + 最终 Exit（以及 macOS 仅最终 Exit）共用的一次性退出收尾门。
+            app.manage(ExitCleanupState(AtomicBool::new(false)));
             // 托盘运行期状态（自绘浮层去抖 + 轻量重建时的待导航目标；Linux 虽不建浮层仍要后者）。
             app.manage(tray::TrayOverlay::default());
             // 同步托盘 warm 偏好。必须在 TrayOverlay manage 后执行；缺省 false 保持按需冷建 + 120s 回收。
@@ -2034,7 +2057,7 @@ fn main() {
         .build(ctx)
         .expect("error while building Polaris")
         // RunEvent 循环：① macOS dock 图标重开 ② C1 退出清理（停核 + 清系统代理）。关窗语义仍由
-        // on_window_event + QuitState 决定，未改动；本回调只在**进程级退出请求**时兜安全清理。
+        // on_window_event + QuitState 决定，未改动；本回调只在**进程级真实退出**时兜安全清理。
         .run(|app_handle, event| match event {
             // macOS：点 dock 图标（NSApplicationDelegate applicationShouldHandleReopen）→ RunEvent::Reopen。
             // 主窗关闭进入轻量驻留后，Dock 重开是 macOS 上召回/重建窗口的路径；Windows 靠任务栏
@@ -2060,13 +2083,13 @@ fn main() {
                     api.prevent_exit();
                     return;
                 }
-                // Q1-b ④：落「上次是正常退出」标记，供下次启动的渲染端据以清 staged（见 `clean_exit`）。
                 // **必须在 C16 守卫之后**：被 `prevent_exit` 的那条腿进程根本没退（轻量模式销毁主窗
-                // 而已），在那儿落标记会让重建出来的 webview 把自己的编辑当「上次退出过」清掉。
-                // **必须在 `run_exit_cleanup` 之前**：那里面是阻塞停核，卡住 / panic 都会让标记落不下去。
-                mark_clean_exit(app_handle);
-                run_exit_cleanup(app_handle);
+                // 而已），在那儿收尾会停核，并让重建出来的 webview 把自己的编辑当「上次退出过」清掉。
+                run_real_exit_once(app_handle);
             }
+            // macOS 原生 `NSApplication` 终止可不经过上面的 ExitRequested；最终 Exit 是不可阻止的
+            // 真实退出兜底。常规退出也会来到这里，由一次性门幂等短路，不能二次消费 RestartState。
+            tauri::RunEvent::Exit => run_real_exit_once(app_handle),
             _ => {}
         });
 }
@@ -2224,7 +2247,8 @@ mod tests {
         );
     }
 
-    /// Q1-b ④：正常退出标记在 `ExitRequested` 里的**落点**必须夹在两个锚之间。行为断言够不着
+    /// Q1-b ④：正常退出收尾在 `ExitRequested` 里的**落点**必须晚于轻量模式早退；统一汇流点内，
+    /// 标记必须先于阻塞停核。行为断言够不着
     /// （要一个跑起来的 Tauri 事件循环），而挪错任何一边都是静默的正确性缺陷：
     ///
     /// - 挪到 C16 `prevent_exit` 早退**之前** ⇒ 轻量模式销毁主窗（**进程没退**）也落标记 ⇒
@@ -2233,8 +2257,8 @@ mod tests {
     /// - 挪到 `run_exit_cleanup` **之后** ⇒ 那里面是**阻塞**停核（`block_on(proxy.stop())`），
     ///   卡住 / panic 都会让标记落不下去 ⇒ 每次正常退出都被下次启动当成强杀 ⇒ ④ 整条腿失效。
     ///
-    /// **变异锁**：把 `mark_clean_exit(app_handle);` 挪到 `api.prevent_exit();` 之前或
-    /// `run_exit_cleanup(app_handle);` 之后 ⇒ 转红；整句删掉 ⇒ 锚点消失、转红。
+    /// **变异锁**：把 `run_real_exit_once(app_handle);` 挪到 `api.prevent_exit();` 之前、删掉最终
+    /// `RunEvent::Exit` 兜底，或在汇流点内把 mark 挪到 cleanup 之后 ⇒ 转红。
     #[test]
     fn clean_exit_marker_is_written_only_on_the_real_exit_leg() {
         let body =
@@ -2242,17 +2266,34 @@ mod tests {
         let prevent = body
             .find("api.prevent_exit();")
             .expect("锚点消失：C16 轻量模式的 prevent_exit 早退，守卫已失去判据");
-        let mark = body
-            .find("mark_clean_exit(app_handle);")
-            .expect("锚点消失：正常退出标记的落点，Q1-b ④ 已无人守");
-        let cleanup = body
-            .find("run_exit_cleanup(app_handle);")
-            .expect("锚点消失：退出清理调用点，守卫已失去判据");
+        let finish = body
+            .find("run_real_exit_once(app_handle);")
+            .expect("锚点消失：ExitRequested 的真实退出收尾，C1/Q1-b ④ 已无人守");
         assert!(
-            prevent < mark,
-            "正常退出标记落在了 C16 `prevent_exit` 早退之前 —— 轻量模式销毁 webview（进程没退）\
-             也会落标记，重建后用户的暂存编辑会被当成「上次退出过」清掉（NFR-1）。"
+            prevent < finish,
+            "真实退出收尾落在了 C16 `prevent_exit` 早退之前 —— 轻量模式销毁 webview（进程没退）\
+             会停核，且重建后用户的暂存编辑会被当成『上次退出过』清掉（NFR-1）。"
         );
+
+        assert!(
+            body.contains("tauri::RunEvent::Exit => run_real_exit_once(app_handle)"),
+            "最终 RunEvent::Exit 兜底消失 —— macOS 原生终止可跳过 ExitRequested，系统代理会残留死端口。"
+        );
+
+        let finish_body = crate::commands::guard_scan::top_level_fn_body(
+            include_str!("main.rs"),
+            "fn run_real_exit_once(app: &tauri::AppHandle) {",
+        );
+        let once = finish_body
+            .find(".swap(true, Ordering::SeqCst)")
+            .expect("一次性门消失：ExitRequested + Exit 会重复执行退出收尾");
+        let mark = finish_body
+            .find("mark_clean_exit(app);")
+            .expect("锚点消失：正常退出标记的落点，Q1-b ④ 已无人守");
+        let cleanup = finish_body
+            .find("run_exit_cleanup(app);")
+            .expect("锚点消失：退出清理调用点，C1 已无人守");
+        assert!(once < mark, "一次性门必须先于任何有副作用的退出收尾");
         assert!(
             mark < cleanup,
             "正常退出标记落在了 `run_exit_cleanup` 之后 —— 那里面是阻塞停核，卡住/panic 就落不下标记，\
