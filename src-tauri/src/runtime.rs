@@ -48,6 +48,8 @@ pub mod update_install;
 pub mod update_popup;
 pub mod updater;
 pub mod win_console;
+#[cfg(windows)]
+pub(crate) mod windows_process;
 pub mod x25519;
 
 use std::sync::Arc;

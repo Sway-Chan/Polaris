@@ -153,8 +153,9 @@ const STOP_GRACE: Duration = Duration::from_secs(5);
 const CRASH_MONITOR_POLL_MS: u64 = 1_000;
 /// helper 腿的 pid **身份**复核间隔（单位：tick，1 tick = [`CRASH_MONITOR_POLL_MS`]）。
 ///
-/// 不每 tick 复核：mac/win 的身份取材要 spawn 子进程（`ps` / `tasklist`），1Hz 常驻 spawn 不值当。
-/// 10s 的检出延迟对一件**今天永远检不出**的事是纯增量，不是折衷（见 [`process_identity`]）。
+/// 不每 tick 复核：macOS 身份取材要 spawn `ps`；Windows 虽已改成原生句柄查询，也没有必要
+/// 每秒重复读创建时间。10s 的检出延迟对一件**今天永远检不出**的事是纯增量，不是折衷
+///（见 [`process_identity`]）。
 const PID_IDENTITY_RECHECK_TICKS: u64 = 10;
 /// stale-core 清扫 SIGTERM→SIGKILL 宽限期（对齐 上游 `killOrphanedProcessesLinux` 的 1.5s，:1132）。
 const STALE_KILL_GRACE: Duration = Duration::from_millis(1_500);
@@ -9715,7 +9716,7 @@ pub(crate) fn pid_alive(pid: u32) -> bool {
 /// # 为什么需要它
 ///
 /// helper 腿（三平台的 TUN 一律经 helper，见 `should_start_via_helper`）没有本地 child 句柄，
-/// 崩溃监测只能靠 [`pid_alive`] —— 而 `kill(pid, 0)` / `tasklist` 只回答「这个号码上有进程吗」，
+/// 崩溃监测只能靠 [`pid_alive`] —— 而 `kill(pid, 0)` / Win32 探活只回答「这个号码上有进程吗」，
 /// **不回答「是不是我那个」**。核死后 pid 被系统复用，探活恒真 ⇒ 崩溃自愈永不触发，
 /// 用户看到 `running: true` 而代理全断。直起腿不受影响（`child.try_wait()` 认的是句柄不是号码）。
 ///
@@ -9729,8 +9730,8 @@ pub(crate) fn pid_alive(pid: u32) -> bool {
 /// - **linux**：`/proc/<pid>/stat` 的 starttime（第 22 字段）。该文件**世界可读**，不受属主与
 ///   dumpable 影响 —— 正是 exe 那条路取不到时仍取得到的那一格。
 /// - **macos**：`ps -p <pid> -o lstart=`（跨用户可读，同 [`running_exe_path`] 的 mac 腿）。
-/// - **windows**：`tasklist` 的映像名。比前两者弱（复用成**同名**进程认不出），但「复用成了另一个
-///   程序」必被抓到；windows 无低成本的创建时间途径，不为此引入 WMI。
+/// - **windows**：`OpenProcess + GetProcessTimes` 的创建时间。它比旧 `tasklist` 映像名更强（同名
+///   进程复用 PID 也能识别），且不再为每次探活启动一个约 3.5s 的外部进程。
 /// - **其余平台**：`None` ⇒ 判 [`PidIdentity::Unobservable`]，只跳过、**绝不**据此报崩溃。
 fn process_identity(pid: u32) -> Option<String> {
     // pid=0 = 还没拿到真 pid → 没有可观测对象（同 `running_exe_path` 的口径）。
@@ -9761,14 +9762,7 @@ fn process_identity_impl(pid: u32) -> Option<String> {
 
 #[cfg(windows)]
 fn process_identity_impl(pid: u32) -> Option<String> {
-    let out = no_console_window(std::process::Command::new("tasklist").args([
-        "/FI",
-        &format!("PID eq {pid}"),
-        "/NH",
-    ]))
-    .output()
-    .ok()?;
-    parse_tasklist_image_name(&String::from_utf8_lossy(&out.stdout), pid)
+    crate::runtime::windows_process::creation_identity(pid)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
@@ -9785,25 +9779,6 @@ fn process_identity_impl(_pid: u32) -> Option<String> {
 fn parse_proc_stat_starttime(stat: &str) -> Option<String> {
     let tail = &stat[stat.rfind(')')? + 1..];
     tail.split_whitespace().nth(19).map(str::to_owned)
-}
-
-/// `tasklist /NH` 输出 → 该 pid 那一行的映像名（首列，纯逻辑）。
-///
-/// 定位判据与 [`tasklist_reports_pid`] 同源（按 token 全等找行，不做子串匹配，理由见那里）。
-/// 映像名含空格时只取首段——windows 的可执行名不带空格，且本令牌只用于**比对是否变化**，
-/// 截断对该用途无害（截断是稳定的）。
-#[cfg(any(windows, test))]
-fn parse_tasklist_image_name(stdout: &str, pid: u32) -> Option<String> {
-    let want = pid.to_string();
-    stdout
-        .lines()
-        .find(|line| {
-            line.split_whitespace()
-                .any(|tok| tok.trim_end_matches(',') == want)
-        })?
-        .split_whitespace()
-        .next()
-        .map(str::to_owned)
 }
 
 /// pid 身份复核的三态。
@@ -9828,34 +9803,9 @@ fn pid_identity_verdict(baseline: Option<&str>, current: Option<&str>) -> PidIde
     }
 }
 
-/// `tasklist /NH` 输出 → 该 pid 是否在列（纯逻辑）。行格式：
-/// `imagename  pid  session  session#  memusage`，**按空白切分逐 token 全等比对**。
-///
-/// 不用 `contains(pid)` 子串匹配：内存列（`12,500 K`）/ 会话号会撞小 pid，
-/// 且过滤无命中时 tasklist 打印 `INFO: No tasks are running...` 也可能夹带数字 → 假「存活」。
-#[cfg(any(windows, test))]
-fn tasklist_reports_pid(stdout: &str, pid: u32) -> bool {
-    let want = pid.to_string();
-    stdout.lines().any(|line| {
-        line.split_whitespace()
-            .any(|tok| tok.trim_end_matches(',') == want)
-    })
-}
-
 #[cfg(windows)]
 pub(crate) fn pid_alive(pid: u32) -> bool {
-    // tasklist 过滤该 pid。Windows 无 EPERM 等价盲区（普通用户也能枚举 SYSTEM 进程的
-    // 名字/pid），但 tasklist 本身起不来时**没有死亡证据** → 与 unix EPERM 同一保守方向判存活，
-    // 绝不因为探活工具缺失就宣告核已崩（那会触发无谓重启）。
-    let Ok(out) = no_console_window(std::process::Command::new("tasklist").args([
-        "/FI",
-        &format!("PID eq {pid}"),
-        "/NH",
-    ]))
-    .output() else {
-        return true;
-    };
-    tasklist_reports_pid(&String::from_utf8_lossy(&out.stdout), pid)
+    crate::runtime::windows_process::is_alive(pid)
 }
 
 /// 当前 epoch 毫秒（喂崩溃自愈状态机的冷却/退避时间轴）。
@@ -20062,27 +20012,17 @@ mod tests {
         }
     }
 
-    /// Windows 探活的解析腿（跨权限盲区体检的产物）。本机 Linux 编不到 `pid_alive` 的 win 分支，
-    /// 但纯解析函数经 `cfg(any(windows, test))` 在此可验。
-    ///
-    /// 打断（退回 `stdout.contains(&pid.to_string())` 子串匹配）→ 第二个断言转红：
-    /// 内存列 `12,500 K` 含子串 "500" 会把**任意** pid 500 误判成存活。
+    /// Windows 探活必须走原生 API，禁止退回每轮启动 `tasklist` 的高延迟实现。
+    /// 本机 Linux 不编译 Windows 模块，故以源码契约锁住 FFI 与安全判据；Windows Package gate
+    /// 另会编译并运行模块内的 liveness 真值表测试。
     #[test]
-    fn tasklist_parser_matches_whole_pid_token_not_substring() {
-        let row = "sing-box.exe                  6439 Services                   0     45,120 K";
-        assert!(tasklist_reports_pid(row, 6439), "该行确实报告了 6439");
-        assert!(
-            !tasklist_reports_pid(row, 500),
-            "内存列 45,120 / 会话号等数字不得把别的 pid 撞成存活（子串匹配会）"
-        );
-        // 过滤无命中时 tasklist 打印 INFO 行 → 必须判不存活。
-        assert!(
-            !tasklist_reports_pid(
-                "INFO: No tasks are running which match the specified criteria.",
-                6439
-            ),
-            "无命中提示行不得被当成存活"
-        );
+    fn windows_pid_probe_uses_native_process_handle_not_tasklist() {
+        let source = include_str!("windows_process.rs");
+        for required in ["OpenProcess(", "GetExitCodeProcess(", "GetProcessTimes("] {
+            assert!(source.contains(required), "缺原生探活锚点：{required}");
+        }
+        assert!(source.contains("ERROR_INVALID_PARAMETER"));
+        assert!(!source.contains("Command::new(\"tasklist\")"));
     }
 
     /// `/proc/<pid>/stat` 的 starttime 取材腿（helper 腿 pid 身份令牌的 linux 侧）。
@@ -20118,34 +20058,6 @@ mod tests {
         );
         // 连 `)` 都没有 → None。
         assert_eq!(parse_proc_stat_starttime("garbage").as_deref(), None);
-    }
-
-    /// Windows 侧身份令牌的解析腿：取该 pid 那一行的映像名。
-    ///
-    /// 打断（改成取 `lines().next()` 而不是「含该 pid token 的那一行」）→ 第二个断言转红：
-    /// 多行输出时会恒取第一行，令牌与 pid 脱钩。
-    #[test]
-    fn tasklist_image_name_comes_from_the_row_of_that_pid() {
-        let out = "sing-box.exe                  6439 Services                   0     45,120 K\n\
-                   other.exe                      777 Console                    1      1,024 K";
-        assert_eq!(
-            parse_tasklist_image_name(out, 6439).as_deref(),
-            Some("sing-box.exe")
-        );
-        assert_eq!(
-            parse_tasklist_image_name(out, 777).as_deref(),
-            Some("other.exe"),
-            "必须按 pid 定位到行，而不是恒取第一行"
-        );
-        assert_eq!(parse_tasklist_image_name(out, 12345), None, "不在列 → None");
-        assert_eq!(
-            parse_tasklist_image_name(
-                "INFO: No tasks are running which match the specified criteria.",
-                6439
-            ),
-            None,
-            "无命中提示行不得被当成一个映像名"
-        );
     }
 
     /// **本次修复要防住的那件事的回放**：pid 还在（`pid_alive` 恒真）、但号码上换了进程。

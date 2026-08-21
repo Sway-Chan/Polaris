@@ -86,20 +86,6 @@ const GUARDED: &[Guarded] = &[
         window: 8,
     },
     Guarded {
-        file: "src-tauri/src/runtime/proxy.rs",
-        anchor: "#[cfg(windows)]\nfn process_identity_impl(",
-        suppressor: "no_console_window(",
-        self_check: "Command::new(",
-        window: 10,
-    },
-    Guarded {
-        file: "src-tauri/src/runtime/proxy.rs",
-        anchor: "#[cfg(windows)]\npub(crate) fn pid_alive(",
-        suppressor: "no_console_window(",
-        self_check: "Command::new(",
-        window: 16,
-    },
-    Guarded {
         file: "src-tauri/src/runtime/updater.rs",
         anchor: "pub fn read_core_version_line(",
         suppressor: "no_console_window(",
@@ -220,7 +206,7 @@ fn every_windows_reachable_spawn_suppresses_the_console() {
 }
 
 /// 已知会在 Windows 上执行的 console 程序名（字面量形态）。按**程序名反查**，与上面的清单互补：
-/// 清单防「已守的被删」，本条防「新增一个 `tasklist` 调用却忘了挂标志」。
+/// 清单防「已守的被删」，本条防「新增一个 console 程序调用却忘了挂标志」。
 const CONSOLE_PROGRAMS: &[&str] = &[
     "\"tasklist\"",
     "\"taskkill\"",
@@ -294,15 +280,21 @@ fn no_new_console_program_spawn_escapes_the_suppression() {
         scanned > 50,
         "只扫到 {scanned} 个文件 —— 遍历坏了，绿没有信息量"
     );
-    // 具名自检比数量更有信息量：那条 **1Hz** 的 `tasklist`（helper 腿探活）是本门最初要守的东西，
-    // 它掉出扫描面就说明遍历/匹配坏了 —— 而那正是「绿了却什么都没查」的形状。
-    assert!(
-        sighted
-            .iter()
-            .any(|s| s.starts_with("src-tauri/src/runtime/proxy.rs") && s.contains("\"tasklist\"")),
-        "扫描面里没有 `proxy.rs` 的 tasklist（1Hz 探活腿）—— 遍历或匹配坏了。实际命中 {hits} 处：\n{}",
-        sighted.join("\n")
-    );
+    // 具名自检比数量更有信息量：锁住两个仍真实存在、来自不同 crate 的 console 调用点，
+    // 防遍历/匹配坏掉后「零命中也绿」。旧 1Hz `tasklist` 探活已改为 Win32 原生 API，
+    // 不再把性能问题本身当成本门必须存在的自检锚点。
+    for (file, program) in [
+        ("src-tauri/src/runtime/proxy.rs", "\"taskkill\""),
+        ("crates/helper-client/src/manager.rs", "\"sc\""),
+    ] {
+        assert!(
+            sighted
+                .iter()
+                .any(|s| s.starts_with(file) && s.contains(program)),
+            "扫描面里没有 `{file}` 的 {program} 调用——遍历或匹配坏了。实际命中 {hits} 处：\n{}",
+            sighted.join("\n")
+        );
+    }
     assert!(
         offenders.is_empty(),
         "以下 console 程序调用点没有窗口抑制（Windows 上会弹黑框）：\n{}",
