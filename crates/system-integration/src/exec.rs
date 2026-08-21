@@ -485,8 +485,10 @@ mod tests {
             ],
         );
         // 远超管道缓冲（64KB）：若不起排空线程，此处会与 try_wait 轮询互等 → 超时失败。
+        // 复用平台烟测预算：Windows hosted runner 在整仓并行测试峰值期启动 PowerShell + 写出
+        // 300KB 曾超过固定 10s；此测试验证「能排空并退出」，不把共享 runner 负载误判成死锁。
         let out = StdCommandRunner
-            .run(&cmd, Duration::from_secs(10))
+            .run(&cmd, COMMAND_SMOKE_TIMEOUT)
             .expect("大输出须正常收完");
         assert_eq!(out.stdout.len(), 300_000);
     }
