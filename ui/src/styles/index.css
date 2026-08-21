@@ -177,6 +177,19 @@ body,
   margin: 0;
 }
 
+/* 各平台统一为无常驻轨道的滚动容器。
+ *
+ * macOS 的系统 overlay scrollbar 默认会自动隐去；Windows WebView2 / Linux Chromium 则可能把
+ * `overflow:auto` 的原生轨道常驻画出来，导致同一页面平白少一条内容宽度。复用节点横向标签既有的
+ * 隐藏手法，收口到全局：只隐藏 scrollbar 的视觉部件，绝不把 overflow 改成 hidden，因此鼠标滚轮、
+ * 触控板、键盘、程序化 scrollIntoView 与可访问性滚动语义全部保留。 */
+* {
+  scrollbar-width: none;
+}
+*::-webkit-scrollbar {
+  display: none;
+}
+
 body {
   font-family: var(--sans);
   color: hsl(var(--fg));
