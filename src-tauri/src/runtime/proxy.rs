@@ -1263,6 +1263,21 @@ fn should_start_via_helper(mode: ProxyModeType, platform: Platform) -> bool {
     mode.is_tun() && matches!(platform, Platform::Mac | Platform::Win | Platform::Linux)
 }
 
+/// 用**观察完成后的最新世代**区分主动停核与崩溃。
+///
+/// helper 核的观察腿会做 Windows 进程身份查询；这段同步查询虽没有 `.await`，但在多线程 runtime
+/// 上仍可能与另一 worker 上的 `stop()` 并行。若在查询**之前**缓存世代，时序会变成：读到旧世代 →
+/// 用户 stop 先 bump 并停核 → 身份查询回报退出 → 拿旧世代误判 Crash，最终把用户刚停掉的 TUN
+/// 又由崩溃自愈拉起。把世代读取封在分类点，复用 [`classify_child_exit`] 的既有判据，同时封死这条
+/// stale-snapshot 窗口。
+fn classify_observed_child_exit(
+    gate: &LifecycleGate,
+    my_generation: u64,
+    observation: ChildObservation,
+) -> ExitClassification {
+    classify_child_exit(my_generation, gate.generation(), observation)
+}
+
 /// 代理运行时（`State`-managed，单实例）。
 ///
 /// 持有 config / helper / mesh 引用（跨运行时协作：启动需读 config + 可能经 helper 提权 + mesh exit route）。
@@ -2686,6 +2701,9 @@ impl ProxyRuntime {
         if !self.stale_sweep_disabled.load(Ordering::SeqCst) {
             self.cleanup_stale_cores().await?;
         }
+        // 用户/其它显式 start 接管后，清掉此前主动 stop 留下的自愈中止标记。状态机已有这一语义，
+        // 这里补齐生产写侧；否则一旦主动停过，后续新会话真的崩溃也会被永久当作用户仍在阻止自愈。
+        self.crash_lock().reset_user_aborted();
         // 世代 +1（上游 :632 start 入口）：本腿快照世代，被更新的 start/stop 接管即让位（#176）。
         let my_gen = self.bump_generation();
         self.gate.begin();
@@ -4393,6 +4411,9 @@ impl ProxyRuntime {
     /// （见该方法的换代守卫）。此时系统代理**属接管方**——清它就是把新会话刚设好的代理抹掉、
     /// 用户全网走直连。故这条收口也一并让位，由接管方自己的终态负责。
     pub async fn stop(self: &Arc<Self>) -> Result<(), String> {
+        // 主动停止是崩溃自愈的终止意图：先置位，再由 stop_inner bump 世代并停核。退避中的自愈腿
+        // 会在 post_backoff 读到该标记并放弃；下次显式 start 在其入口复位。
+        self.crash_lock().mark_user_aborted();
         if self.stop_inner().await {
             // 维度7 #8 对称收口（见方法文档）：marker 门控幂等，失败只记日志不阻断停止。
             self.clear_system_proxy().await;
@@ -4690,7 +4711,6 @@ impl ProxyRuntime {
             loop {
                 tokio::time::sleep(Duration::from_millis(CRASH_MONITOR_POLL_MS)).await;
                 ticks += 1;
-                let gen_now = me.gate.generation();
                 // 观察核存活。C6-5：helper 核无本地 child 句柄 → 若按 child 观察必得 `Absent`→`Retire`
                 //（永不自愈）。改用 pid 探活（对齐 上游 健康检查 `isProcessAlive(activePid)`）：pid 死=崩溃。
                 // 直起路径仍走 child.try_wait（仅短暂持锁，绝不跨 await）。
@@ -4756,7 +4776,9 @@ impl ProxyRuntime {
                         },
                     }
                 };
-                match classify_child_exit(my_gen, gen_now, observation) {
+                // 世代必须在观察**之后**读取：Windows 的进程身份查询可能与另一 worker 上的 stop 并行；
+                // 查询前缓存会把主动停核后的 Exited 配上旧世代，误判 Crash 并自动拉回 TUN。
+                match classify_observed_child_exit(&me.gate, my_gen, observation) {
                     ExitClassification::KeepWatching => {}
                     // 主动 stop/restart 接管（世代变 / 句柄被取）→ 退场，不触发自愈。
                     ExitClassification::Retire => return,
@@ -20002,6 +20024,69 @@ mod tests {
                 "缺任一侧材料一律 Unobservable（没观测到 ≠ 观测到没问题）"
             );
         }
+    }
+
+    /// Windows TUN 真机回放：helper 核身份观察开始后，用户 stop 在另一 worker 上先 bump 世代并停核；
+    /// 观察最终拿到 Exited。分类必须读取**观察完成后的**世代，因此 Retire，绝不能触发崩溃自愈。
+    ///
+    /// 变异：生产调用点改回「观察前 `let gen_now = ...`，观察后直接喂旧值」时，本 seam 不再被使用；
+    /// 相邻 `crash_monitor_classification_is_wired_after_observation` 会转红。这里则锁住 seam 自身的语义。
+    #[test]
+    fn active_stop_during_helper_observation_retires_instead_of_recovering() {
+        let gate = LifecycleGate::default();
+        let my_gen = gate.bump_generation();
+
+        // 模拟同步 process_identity/pid_alive 观察期间，另一 runtime worker 执行 stop 入口。
+        gate.bump_generation();
+        let verdict = classify_observed_child_exit(&gate, my_gen, ChildObservation::Exited);
+
+        assert_eq!(
+            verdict,
+            ExitClassification::Retire,
+            "观察期间发生的主动 stop 必须按最新世代让旧监测退场，不能把 TUN 自动拉回"
+        );
+    }
+
+    /// 接线顺序门：分类调用必须位于 `let observation = ...` 之后，且生产方法不得再在观察前缓存
+    /// `gen_now`。纯函数测试只能证明判据会算，守不住调用点重新喂陈旧快照的回归，故这里对方法体锁序。
+    #[test]
+    fn crash_monitor_classification_is_wired_after_observation() {
+        const HEAD: &str = "fn spawn_crash_monitor(self: &Arc<Self>, my_gen: u64) {";
+        let body = method_body(include_str!("proxy.rs"), HEAD);
+        let observation_at = body
+            .find("let observation =")
+            .expect("崩溃监测必须形成一次完整 observation");
+        let classify_at = body
+            .find("classify_observed_child_exit(&me.gate, my_gen, observation)")
+            .expect("崩溃监测必须走观察后读世代的分类 seam");
+        assert!(
+            classify_at > observation_at,
+            "分类必须发生在观察完成后，否则主动停核仍可能与旧世代拼成假崩溃"
+        );
+        assert!(
+            !body[..observation_at].contains("let gen_now ="),
+            "观察前不得缓存世代；Windows 同步身份查询期间 stop 可在另一 worker 上推进世代"
+        );
+    }
+
+    /// `CrashRecoveryMachine` 的主动停/新起方法此前只有状态机单测，没有生产写侧。这里从公开入口回放：
+    /// stop 置 abort；下一次 start（即便配置随后校验失败）先复位，避免“一次停过、永不再自愈”。
+    #[tokio::test]
+    async fn public_stop_marks_recovery_aborted_and_next_start_resets_it() {
+        let (rt, dir) = test_runtime();
+        rt.stop().await.expect("空闲态 stop 应幂等成功");
+        assert!(
+            rt.crash_lock().auto_restart_aborted(),
+            "主动 stop 必须中止退避中的崩溃自愈"
+        );
+
+        rt.stale_sweep_disabled.store(true, Ordering::SeqCst);
+        let _ = rt.start(bad_config()).await;
+        assert!(
+            !rt.crash_lock().auto_restart_aborted(),
+            "下一次显式 start 必须复位旧 stop 的 abort 标记"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// **接线门**：纯逻辑对了不代表崩溃监测真的去问了它。
