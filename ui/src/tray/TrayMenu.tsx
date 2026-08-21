@@ -319,14 +319,20 @@ export default function TrayMenu() {
   // 自适应高：内容尺寸变化 → 回报浮层窗高（tray 模块设窗高 + 重定位，宽固定）。
   useLayoutEffect(() => {
     const report = () => {
-      // WebKit 实证：`document.body.scrollHeight` 漏掉 `.tray-menu` 的顶外边距 + 底外边距，上报比
-      // 真实内容矮 → tray_resize 把窗设矮 → 末项「退出 Polaris」被裁。改按卡片下沿（rect.bottom 天然
-      // 涵盖顶部外边距）+ 底外边距量高 → 含顶部间隙 + 全部项 + 底部留白。
+      // 不能只报 `rect.bottom`：初始宿主只有 420px，`.tray-menu` 又以 `100vh` 为 max-height，rect 已被
+      // viewport 截短；拿它回报会把窗锁死在 420px。自然高必须取 scrollHeight + 两条 border，再与实际
+      // rect 高取大；rect.top/底 margin 继续承接四个 tray edge 的外边距。这样长内容先把宿主拉到平台上限，
+      // 随后才在卡片内滚；短内容仍按自身高度收缩。
       const menu = menuRef.current;
       let h = document.body.scrollHeight;
       if (menu) {
-        const mb = parseFloat(getComputedStyle(menu).marginBottom || '0');
-        h = menu.getBoundingClientRect().bottom + mb;
+        const style = getComputedStyle(menu);
+        const rect = menu.getBoundingClientRect();
+        const borderHeight =
+          parseFloat(style.borderTopWidth || '0') + parseFloat(style.borderBottomWidth || '0');
+        const naturalMenuHeight = menu.scrollHeight + borderHeight;
+        const mb = parseFloat(style.marginBottom || '0');
+        h = rect.top + Math.max(rect.height, naturalMenuHeight) + mb;
       }
       void invoke(IPC_CHANNELS.TRAY_RESIZE, { height: Math.ceil(h) }).catch(() => {});
     };

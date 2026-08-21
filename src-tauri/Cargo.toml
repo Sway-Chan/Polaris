@@ -96,9 +96,10 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 
 # W13 托盘图标明暗真值：直读注册表 Personalize（SystemUsesLightTheme）。复用工作区既有 crate
 # （helper 的 win FFI 同源，版本一致、features 并集不新增 lock 包）；仅 cfg(windows) 参与，
-# Linux/mac 编译不拉入（与 helper 同款做法）。只要 Registry + Foundation 两项 feature。
+# Linux/mac 编译不拉入（与 helper 同款做法）。Registry + Foundation 供主题探测；
+# WindowsAndMessaging 复用同一依赖，让无装饰托盘窗绕过 TAO `set_inner_size` 的 +20px 正反馈。
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Registry"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }

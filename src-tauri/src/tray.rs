@@ -427,8 +427,8 @@ const TRAY_EDGE_GAP_LOGICAL: f64 = 12.0;
 const TRAY_EDGE_GAP_LOGICAL: f64 = 1.0;
 
 /// Windows 的主视图卡片实测为约 688 逻辑像素高，底部任务栏形态还要加 12px 远侧 margin。
-/// 旧的 720 上限会留下约 20px 透明尾部：宿主虽已贴到工作区，用户看到的卡片仍明显悬空。
-/// 收到 700 后由 CSS `calc(100vh - 12px)` 把超长视图转为卡片内滚，不裁末项、不让透明尾部垫高。
+/// 700 上限让超长视图在卡片内滚；宿主的精确尺寸由 [`set_overlay_size`] 保证，不能再走 TAO
+/// `set_inner_size`（透明无装饰窗会多出 20px，并被 ResizeObserver 正反馈放大到上限）。
 #[cfg(target_os = "windows")]
 const TRAY_MAX_HEIGHT_LOGICAL: f64 = 700.0;
 #[cfg(not(target_os = "windows"))]
@@ -1473,12 +1473,76 @@ fn reposition(win: &tauri::WebviewWindow) {
 
 // ── 浮层 React 端 → 主进程的专用薄 command ─────────────────────────────────────
 
+/// 逻辑尺寸按托盘锚点所在屏的缩放折成物理像素。纯函数单测钉住：这里不掺任何装饰边框补偿；
+/// Windows 的浮层已经是无装饰窗，目标值就是最终 HWND/viewport 的尺寸。
+#[cfg(any(target_os = "windows", test))]
+fn overlay_physical_size(width: f64, height: f64, scale_factor: f64) -> PhysicalSize<u32> {
+    LogicalSize::new(width, height).to_physical(scale_factor)
+}
+
+/// Windows 的 TAO 0.35 `set_inner_size` 在这类 transparent + undecorated HWND 上会把请求高度扩大
+/// 20px；renderer 的 ResizeObserver 随即把扩大后的 viewport 再上报，形成 420→440→…→720 的正反馈。
+/// Win32 `SetWindowPos` 直接设置已无非客户区的 HWND 外框，真机验证其 Window/Client/DWM 三个矩形相等，
+/// 因而这里按目标物理尺寸一次落位；不写“减 20”这种只对当前系统样式成立的补丁常量。
+#[cfg(target_os = "windows")]
+fn set_overlay_size(
+    win: &tauri::WebviewWindow,
+    width: f64,
+    height: f64,
+    scale_factor: f64,
+) -> Result<(), String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
+    };
+
+    let size = overlay_physical_size(width, height, scale_factor);
+    let width = i32::try_from(size.width).map_err(|_| "托盘浮层宽度超出 Win32 范围".to_string())?;
+    let height =
+        i32::try_from(size.height).map_err(|_| "托盘浮层高度超出 Win32 范围".to_string())?;
+    let hwnd = win.hwnd().map_err(|e| e.to_string())?;
+    // SAFETY: hwnd 由仍存活的 `WebviewWindow` 持有；调用不保存句柄，只同步改当前无装饰窗的尺寸，
+    // 且 SWP_NOMOVE/NOZORDER/NOACTIVATE 保持位置、层级与焦点不变。
+    let ok = unsafe {
+        SetWindowPos(
+            hwnd.0,
+            std::ptr::null_mut(),
+            0,
+            0,
+            width,
+            height,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+    };
+    if ok == 0 {
+        Err(std::io::Error::last_os_error().to_string())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn set_overlay_size(
+    win: &tauri::WebviewWindow,
+    width: f64,
+    height: f64,
+    _scale_factor: f64,
+) -> Result<(), String> {
+    win.set_size(LogicalSize::new(width, height))
+        .map_err(|e| e.to_string())
+}
+
 /// 浮层量出内容高度后回报 → 设窗高（宽固定 [`TRAY_WIDTH`]）并重定位（自适应高）。
 #[tauri::command]
 pub fn tray_resize(app: AppHandle, height: f64) -> ApiResponse<()> {
     if let Some(win) = app.get_webview_window(TRAY_LABEL) {
         let h = height.clamp(80.0, TRAY_MAX_HEIGHT_LOGICAL);
-        let _ = win.set_size(LogicalSize::new(TRAY_WIDTH, h));
+        let scale_factor = overlay_placement(&app, anchor(&app))
+            .map(|placement| placement.scale_factor)
+            .or_else(|| win.scale_factor().ok())
+            .unwrap_or(1.0);
+        if let Err(e) = set_overlay_size(&win, TRAY_WIDTH, h, scale_factor) {
+            log::warn!("托盘浮层尺寸设置失败：{e}");
+        }
         reposition(&win);
     }
     ok_void()
@@ -2352,6 +2416,18 @@ mod tests {
             720.0
         };
         assert_eq!(TRAY_MAX_HEIGHT_LOGICAL, expected);
+    }
+
+    #[test]
+    fn overlay_size_conversion_adds_no_hidden_window_chrome() {
+        assert_eq!(
+            overlay_physical_size(TRAY_WIDTH, 700.0, 1.0),
+            PhysicalSize::new(268, 700)
+        );
+        assert_eq!(
+            overlay_physical_size(TRAY_WIDTH, 700.0, 1.25),
+            PhysicalSize::new(335, 875)
+        );
     }
 
     #[test]

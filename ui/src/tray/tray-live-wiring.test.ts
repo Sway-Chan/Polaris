@@ -75,6 +75,13 @@ describe('托盘卡片随系统栏边缘贴合', () => {
       /\.tray-menu\s*{[^}]*max-height:\s*calc\(100vh\s*-\s*12px\);/s,
     );
   });
+
+  it('自适应高度取未裁剪内容，不能被初始 420px viewport 锁死', () => {
+    expect(MENU).toContain('menu.scrollHeight + borderHeight');
+    expect(MENU).toMatch(/Math\.max\(rect\.height,\s*naturalMenuHeight\)/);
+    expect(MENU).toMatch(/parseFloat\(style\.borderTopWidth/);
+    expect(MENU).toMatch(/parseFloat\(style\.borderBottomWidth/);
+  });
 });
 
 describe('状态卡超长出口 IP：默认截断，悬停或聚焦时才滚动', () => {
