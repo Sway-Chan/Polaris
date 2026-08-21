@@ -74,13 +74,13 @@ describe('日志 follow 的滚动来源判据', () => {
     expect(isLogViewAtBottom(metrics(31))).toBe(false);
   });
 
-  it('生产接线保留 150ms 合批与 500 行数据预算，DOM 每页不超过 50 行', () => {
+  it('生产接线保留 150ms 合批与 500 行数据预算，DOM 每页不超过 20 行', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const screen = readFileSync(resolve(here, 'LogsScreen.tsx'), 'utf8');
     const backend = readFileSync(resolve(here, '../../../../../src-tauri/src/commands/misc.rs'), 'utf8');
     expect(backend).toContain('const LOG_BATCH_INTERVAL_MS: u64 = 150;');
     expect(screen).toContain('const MAX_BUFFERED_ROWS = 500;');
-    expect(screen).toContain('const LOG_PAGE_SIZE = 50;');
+    expect(screen).toContain('const LOG_PAGE_SIZE = 20;');
     expect(screen).toContain('const renderedLogs = visible.slice(logPagination.start, logPagination.end);');
     expect(screen).toContain('shouldPauseLogFollow({');
     for (const event of ['wheel', 'touchstart', 'pointerdown', 'pointermove', 'keydown']) {

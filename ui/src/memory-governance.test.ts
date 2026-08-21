@@ -21,7 +21,7 @@ describe('长期内存所有权接线', () => {
     expect(getAt).toBeGreaterThan(listenAt);
     expect(logs).toContain('api.logs.unsubscribe(subscriptionId)');
     expect(logs).toContain('followRef.current');
-    expect(logs).toContain('const LOG_PAGE_SIZE = 50;');
+    expect(logs).toContain('const LOG_PAGE_SIZE = 20;');
     expect(logs).toContain('renderedLogs.map');
     expect(logs).not.toContain('{visible.map((l, i) =>');
   });

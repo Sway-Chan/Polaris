@@ -74,8 +74,14 @@ const LEVEL_SELECT_OPTIONS: CselOption[] = LEVEL_OPTS.map((value) => ({
 }));
 /** IPC / 页面内存结果上限。它不是检索历史上限；非空搜索由后端扫描完整保留环。 */
 const MAX_BUFFERED_ROWS = 500;
-/** 只限制实际挂载的日志 DOM；500 条内存结果、搜索范围与实时到达节奏均保持不变。 */
-const LOG_PAGE_SIZE = 50;
+/**
+ * 只限制实际挂载的日志 DOM；500 条内存结果、搜索范围与实时到达节奏均保持不变。
+ *
+ * macOS WebKit 真机在 50 行直播日志上会把 graphics footprint 推到约 200 MB，离开页面三分钟后仍
+ * 约为首页基线的两倍。20 行与连接明细页的分页预算一致，约覆盖两个默认视口；历史浏览继续走既有
+ * ListPager，不用丢数据换内存。
+ */
+const LOG_PAGE_SIZE = 20;
 const SEARCH_DEBOUNCE_MS = 180;
 let logSubscriptionSeq = 0;
 
