@@ -418,12 +418,21 @@ const TRAY_BLUR_DISMISS_JS: &str = r#"
 /// 卡片 `.tray-menu` 宽 246 + 浮层 CSS 左右各 ~11 外边距（让圆角/1px 边框不贴窗沿被裁）≈ 268。
 const TRAY_WIDTH: f64 = 268.0;
 
-/// Windows 11 普通托盘菜单与任务栏工作区边界保留 4 逻辑像素。
-/// macOS 菜单栏面板仍沿用 1 逻辑像素；卡片靠系统栏一侧的 CSS margin 已归零，不能再重复叠加。
+/// Windows 11 普通托盘弹窗的**可见窗体**与任务栏工作区边界保留 12 逻辑像素。
+/// 真机物理点击对照 OneDrive：其 UIA 窗体底边为 `rcWork.bottom - 12`。Polaris 透明宿主还有一段
+/// 由高度上限留下的窗内透明尾部，不能把宿主外框的 4px 误当成可见卡片间距。
 #[cfg(target_os = "windows")]
-const TRAY_EDGE_GAP_LOGICAL: f64 = 4.0;
+const TRAY_EDGE_GAP_LOGICAL: f64 = 12.0;
 #[cfg(not(target_os = "windows"))]
 const TRAY_EDGE_GAP_LOGICAL: f64 = 1.0;
+
+/// Windows 的主视图卡片实测为约 688 逻辑像素高，底部任务栏形态还要加 12px 远侧 margin。
+/// 旧的 720 上限会留下约 20px 透明尾部：宿主虽已贴到工作区，用户看到的卡片仍明显悬空。
+/// 收到 700 后由 CSS `calc(100vh - 12px)` 把超长视图转为卡片内滚，不裁末项、不让透明尾部垫高。
+#[cfg(target_os = "windows")]
+const TRAY_MAX_HEIGHT_LOGICAL: f64 = 700.0;
+#[cfg(not(target_os = "windows"))]
+const TRAY_MAX_HEIGHT_LOGICAL: f64 = 720.0;
 
 /// 浮层「刚被隐藏」的去抖窗口：托盘图标点击会先让浮层失焦（→ 自动隐藏），
 /// 若紧接着的 Click 事件在此窗口内到达，视为「点击图标关闭」，不再重开（否则闪一下又弹回）。
@@ -1446,7 +1455,7 @@ fn reposition(win: &tauri::WebviewWindow) {
         return;
     };
     let ws = win.outer_size().unwrap_or(PhysicalSize::new(280, 420));
-    // gap 按**锚点所在屏**的缩放折成物理像素。Windows 对齐普通托盘菜单的 4px；macOS 维持
+    // gap 按**锚点所在屏**的缩放折成物理像素。Windows 对齐普通托盘弹窗的 12px；macOS 维持
     // 菜单栏面板的 1px。卡片近系统栏侧的 CSS margin 为 0，不再二次叠加透明高度。
     let gap = (TRAY_EDGE_GAP_LOGICAL * placement.scale_factor)
         .round()
@@ -1468,7 +1477,7 @@ fn reposition(win: &tauri::WebviewWindow) {
 #[tauri::command]
 pub fn tray_resize(app: AppHandle, height: f64) -> ApiResponse<()> {
     if let Some(win) = app.get_webview_window(TRAY_LABEL) {
-        let h = height.clamp(80.0, 720.0);
+        let h = height.clamp(80.0, TRAY_MAX_HEIGHT_LOGICAL);
         let _ = win.set_size(LogicalSize::new(TRAY_WIDTH, h));
         reposition(&win);
     }
@@ -2330,9 +2339,19 @@ mod tests {
 
     #[test]
     fn platform_tray_gap_scales_from_logical_pixels() {
-        let expected = if cfg!(target_os = "windows") { 4 } else { 1 };
+        let expected = if cfg!(target_os = "windows") { 12 } else { 1 };
         assert_eq!(TRAY_EDGE_GAP_LOGICAL.round() as i32, expected);
         assert_eq!((TRAY_EDGE_GAP_LOGICAL * 2.0).round() as i32, expected * 2);
+    }
+
+    #[test]
+    fn platform_tray_height_cap_leaves_no_windows_transparent_tail() {
+        let expected = if cfg!(target_os = "windows") {
+            700.0
+        } else {
+            720.0
+        };
+        assert_eq!(TRAY_MAX_HEIGHT_LOGICAL, expected);
     }
 
     #[test]

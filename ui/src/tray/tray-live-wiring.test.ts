@@ -71,6 +71,9 @@ describe('托盘卡片随系统栏边缘贴合', () => {
     );
     // 顶边沿用基础 2/10；底边改成 12/0，横向两组仍都是 22px，避免 tray_resize/固定窗宽抖动。
     expect(OVERLAY_RAW).toMatch(/\.tray-menu\s*{[^}]*margin:\s*2px 11px 10px;/s);
+    expect(OVERLAY_RAW).toMatch(
+      /\.tray-menu\s*{[^}]*max-height:\s*calc\(100vh\s*-\s*12px\);/s,
+    );
   });
 });
 
