@@ -12,12 +12,6 @@ thiserror = "2"
 # log = 连接 / 重连 / 装卸事件 facade（生产侧由 host 接管；测试侧 no-op）。
 log = "0.4"
 
-[target.'cfg(windows)'.dependencies]
-# Windows std::fs::File 的同步 IO 走 NtReadFile/NtWriteFile + HANDLE 等待；真机命名管道 start
-# 会在 helper 已回包后额外挂约 5s。interprocess 的安全同步 PipeStream 走 overlapped
-# ReadFileEx/WriteFileEx，复用成熟实现而不在本 crate（forbid unsafe）内自造 Win32 FFI。
-interprocess = "=2.4.3"
-
 [dev-dependencies]
 # tempfile = token 文件 / 脚本落盘的临时目录（token.rs / manager.rs 测试）。
 tempfile = "3"

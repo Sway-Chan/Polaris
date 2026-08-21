@@ -12,14 +12,14 @@
 //! - **mac/linux**：`std::os::unix::net::UnixStream::connect` + `set_read_timeout(5s)`（移植 Go
 //!   `conn.SetReadDeadline`）。写完请求帧后 `shutdown(Write)` 半关闭 = 上游 `sock.end(frame)`，通知
 //!   helper「请求发完」（helper 据此立即处理并回响应，不必等 5s 读超时）。
-//! - **win**：命名管道 `\\.\pipe\polaris-helper`。复用 `interprocess` 的安全同步
-//!   `DuplexPipeStream<Bytes>`：它以 overlapped `ReadFileEx`/`WriteFileEx` 实现阻塞语义，避开
-//!   `std::fs::File` 在 Rust 1.89 上的 `NtReadFile` + 管道 HANDLE 等待路径。后者真机稳定在 helper
-//!   已起核后额外挂约 5s；同帧 Win32 `ReadFile` A/B 仅 80–133ms。连接等待受 `READ_TIMEOUT` 约束。
+//! - **win**：命名管道 `\\.\pipe\polaris-helper`。用安全 `std::fs::File` 取得同步 HANDLE，
+//!   配合逐字节 `ReadFile` 语义读取单行响应；真机同帧 Win32 A/B 往返约 0.2s。不得改成
+//!   overlapped `ReadFileEx`：逐字节会叠加 APC 调度成本，大缓冲又会与 helper 的
+//!   `FlushFileBuffers` 形成数秒等待。`ERROR_PIPE_BUSY` 在 `READ_TIMEOUT` 内有界重试。
 //!
 //! ## 移植纪律
 //!
-//! - `forbid(unsafe_code)`：Unix 走安全 std；Windows 复用 `interprocess` 的安全 API，不在本 crate 裸调 syscall。
+//! - `forbid(unsafe_code)`：三平台只用安全 std，不在本 crate 裸调 syscall。
 //! - trait 边界只暴露字节流原语（[`ConnectionStream`]），三平台 [`HelperClient`] 共用。
 
 use crate::client::{ClientError, Connector};
@@ -143,7 +143,7 @@ impl ConnectionStream for UnixConnStream {
 
 /// Windows 命名管道连接器（win 生产 [`Connector`]）。
 ///
-/// 以 overlapped 安全流打开 `\\.\pipe\polaris-helper`，再复用 [`IoAdapter`](crate::transport::IoAdapter)
+/// 以安全同步流打开 `\\.\pipe\polaris-helper`，再复用 [`IoAdapter`](crate::transport::IoAdapter)
 /// 的逐行读；写端无需半关闭（helper win 侧「裸 HANDLE 整帧读」按 `\n` 判帧完整，不依赖 EOF）。
 #[cfg(windows)]
 pub struct PipeConnector {
@@ -171,20 +171,31 @@ impl PipeConnector {
 impl Connector for PipeConnector {
     fn connect(&self) -> Result<Box<dyn ConnectionStream>, ClientError> {
         use crate::transport::IoAdapter;
-        use interprocess::os::windows::named_pipe::{pipe_mode, DuplexPipeStream};
-        use interprocess::ConnectWaitMode;
+        use std::fs::OpenOptions;
+        use std::time::Instant;
 
-        // std::fs::File 不能替代这里：Rust 1.89 的同步 File IO 走 NtReadFile/NtWriteFile 后等待
-        // pipe HANDLE，真机会把 start 响应拖到约 5s；interprocess 用 overlapped ReadFileEx/WriteFileEx，
-        // 与 Win32/.NET A/B 的亚秒往返一致。Timeout 同时覆盖 ERROR_PIPE_BUSY 的实例等待。
-        let pipe = DuplexPipeStream::<pipe_mode::Bytes>::connect_by_path_with_wait_mode(
-            self.pipe_path.as_path(),
-            ConnectWaitMode::Timeout(READ_TIMEOUT),
-        )
-        .map_err(|e| {
-            ClientError::Connect(format!("open pipe {}: {e}", self.pipe_path.display()))
-        })?;
-        Ok(Box::new(IoAdapter::new(pipe)))
+        const ERROR_PIPE_BUSY: i32 = 231;
+        let deadline = Instant::now() + READ_TIMEOUT;
+        loop {
+            match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&self.pipe_path)
+            {
+                Ok(file) => return Ok(Box::new(IoAdapter::new(file))),
+                Err(e)
+                    if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => {
+                    return Err(ClientError::Connect(format!(
+                        "open pipe {}: {e}",
+                        self.pipe_path.display()
+                    )));
+                }
+            }
+        }
     }
 }
 
