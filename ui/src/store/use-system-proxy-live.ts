@@ -68,7 +68,7 @@ export function useSystemProxyLive(): SystemProxyLive {
 }
 
 /**
- * 本活态是否「适用」——**只有「核在跑 且 接管方式是 systemProxy」时才有意义**：
+ * 本活态是否「适用」——**只有「核稳定运行、没有起核腿在飞，且接管方式是 systemProxy」时才有意义**：
  * TUN / manual 分支根本不消费这个信号（见 `deriveTakeoverConnState`），断开态更没有 mixed 口可比对。
  *
  * 兜底口径（config 未水合 → 按 `systemProxy`）**必须与 `deriveTakeoverConnState` 内那条一致**：
@@ -77,9 +77,10 @@ export function useSystemProxyLive(): SystemProxyLive {
  */
 export function isSystemProxyLiveApplicable(
   running: boolean,
-  proxyModeType: string | undefined
+  proxyModeType: string | undefined,
+  starting = false
 ): boolean {
-  return running && (proxyModeType ?? 'systemProxy') === 'systemProxy';
+  return running && !starting && (proxyModeType ?? 'systemProxy') === 'systemProxy';
 }
 
 /**
@@ -116,8 +117,9 @@ export async function fetchSystemProxyLive(): Promise<SystemProxyLive> {
  */
 export function useSystemProxyLivePolling(): void {
   const running = useAppStore((s) => s.proxyStatus?.running ?? false);
+  const starting = useAppStore((s) => s.proxyStatus?.starting ?? false);
   const proxyModeType = useEffectiveConfig((c) => c?.proxyModeType);
-  const active = isSystemProxyLiveApplicable(running, proxyModeType);
+  const active = isSystemProxyLiveApplicable(running, proxyModeType, starting);
 
   useEffect(() => {
     const setLive = useStore.getState().setLive;

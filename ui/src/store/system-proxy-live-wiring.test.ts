@@ -92,8 +92,9 @@ describe('T2：两个消费方拿的是同一份活态（共享 store，不是�
 describe('T3：三层节流不得丢（活态在常驻期近乎零开销的全部依据）', () => {
   const store = code(read(STORE));
 
-  it('① 适用范围门：只在「核在跑 + systemProxy」时查', () => {
+  it('① 适用范围门：只在「核稳定运行 + 非 starting + systemProxy」时查', () => {
     expect(store).toContain('isSystemProxyLiveApplicable');
+    expect(store).toMatch(/running\s*&&\s*!starting/);
     // 兜底口径必须与 deriveTakeoverConnState 内那条一致（config 未水合 → 按 systemProxy）。
     expect(store).toMatch(/proxyModeType\s*\?\?\s*'systemProxy'/);
   });

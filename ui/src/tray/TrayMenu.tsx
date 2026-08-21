@@ -191,10 +191,10 @@ export default function TrayMenu() {
       setRunning(status.running);
       setStarting(status.starting ?? false);
       setErrorCode(status.errorCode);
-      // 活态取一发 —— 只在**适用范围内**（核在跑 + systemProxy）才查，闸门与主窗共用同一个谓词
+      // 活态取一发 —— 只在**适用范围内**（核稳定运行 + 非 starting + systemProxy）才查，闸门与主窗共用同一个谓词
       // （`isSystemProxyLiveApplicable`），退出适用范围立刻把结论丢回 `unknown`，别让陈旧的
       // `not-effective` 悬着。查询失败折 `unknown` 而非 `not-effective`（读不到 ≠ 没生效）。
-      if (isSystemProxyLiveApplicable(status.running, cfg.proxyModeType)) {
+      if (isSystemProxyLiveApplicable(status.running, cfg.proxyModeType, status.starting)) {
         setSystemProxyLive(await fetchSystemProxyLive());
       } else {
         setSystemProxyLive('unknown');

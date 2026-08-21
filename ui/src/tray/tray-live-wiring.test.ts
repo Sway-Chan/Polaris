@@ -237,7 +237,9 @@ describe('A2b：systemProxy 降级态跨窗一致（2026-07-28 复审 MED #4）'
   });
 
   it('适用范围闸门与主窗共用同一个谓词（不适用时不发查询、且丢回 unknown）', () => {
-    expect(MENU).toMatch(/if \(isSystemProxyLiveApplicable\(status\.running, cfg\.proxyModeType\)\)/);
+    expect(MENU).toMatch(
+      /if \(isSystemProxyLiveApplicable\(status\.running, cfg\.proxyModeType, status\.starting\)\)/
+    );
     expect(MENU).toMatch(/setSystemProxyLive\('unknown'\)/);
   });
 });

@@ -510,7 +510,7 @@ pub struct PendingChangesSummary {
 ///
 /// # 三个 phase 的判据（都是可诚实断言的控制流位置，不猜）
 ///
-/// - `ready` —— [`ProxyRuntime::start_inner`] 就绪腿（核已就绪、`startup_snapshot` 已换新）。
+/// - `ready` —— [`ProxyRuntime::start`] 成功收口（核已就绪、系统接管腿已落定、起核在飞计数已归还）。
 /// - `stopped` —— [`ProxyRuntime::stop_inner`] 拆除腿（`startup_snapshot` 已清）。
 /// - `failed` —— [`ProxyRuntime::start`] 包装的 `Err` 腿（**全部**起核入口的唯一汇流点）。
 ///
@@ -2606,6 +2606,20 @@ impl ProxyRuntime {
         self.current_config.read().ok().and_then(|g| g.clone())
     }
 
+    /// 当前**运行核快照**里的接管模式；与磁盘 `config.current()` 刻意分离。
+    ///
+    /// 结构性切换会先把磁盘期望值改成新模式，再去抖重启旧核。系统代理活态若读磁盘值，就会在
+    /// “新配置=systemProxy、旧运行核仍=TUN”窗口里去查 OS 代理并误判未生效。复用 `current_config`
+    /// （它只在核真正就绪时换新）可让查询明确返回 unknown，而不是拿两代状态拼一个假结论。
+    pub(crate) fn running_proxy_mode_type(&self) -> Option<ProxyModeType> {
+        if !self.core_running() {
+            return None;
+        }
+        self.current_config_snapshot()
+            .and_then(|config| serde_json::from_value::<UserConfig>(config).ok())
+            .map(|config| config.proxy_mode_type)
+    }
+
     /// 诊断两轴计数快照（喂给 `diagnostic_export` 报告，维度7 #11）。
     ///
     /// - **慢起轴** `last_start_ready_retries`：本运行时在就绪门累计（`wait_ready` 的
@@ -2659,7 +2673,7 @@ impl ProxyRuntime {
         // 「转圈但 running:false」，托盘若据 running 决策就会在此叠第二次 start。Guard 的 Drop 保证
         // 下面 `?` 早退（清扫 → ROOT_ORPHAN_BLOCKED）也归还计数。
         self.start_inflight.fetch_add(1, Ordering::SeqCst);
-        let _inflight = InflightGuard(Arc::clone(&self.start_inflight));
+        let inflight = InflightGuard(Arc::clone(&self.start_inflight));
         // **每次** start 都清扫孤儿核（对齐 上游 :700），只杀「本 app 二进制起的」核——见
         // `cleanup_stale_cores`。孤儿不只来自上个会话崩溃，也来自本会话中途失败的起核尝试，
         // 故不能只清一次（见 `stale_sweep_disabled` 字段文档：那个门闩正是本次事故的放大器）。
@@ -2683,6 +2697,20 @@ impl ProxyRuntime {
         // C11：起核失败 → 把刚起的竞速 sidecar 一并收掉，别留一个没有内核在消费的 UDP 监听
         // （端口占着、下次起核换新口，而生成侧状态还指着旧口）。守卫同上：被接管则交接管方收口。
         self.maybe_stop_race_sidecar_on_start_failure(&r, my_gen);
+        // **成功生命周期的唯一广播点**：必须等 `start_inner` 的整条接管事务（含 Windows 系统代理写入）
+        // 返回，再先归还 `starting` 在飞计数，最后才告诉 UI ready。这样事件订阅方回拉到的是
+        // `running:true + starting:false` 的完整终态，不会在旧 TUN 核 / 注册表写入中的半成品上探活。
+        //
+        // `start_inner` 的让位腿也会 `Ok(self.status())`，甚至可能读到接管方的 running 核；故成功不能只看
+        // `r.is_ok()`，还要本世代仍当权。世代已变就由接管方自己的 ready/failed 收口，本腿保持沉默。
+        let committed =
+            r.as_ref().is_ok_and(|status| status.running) && self.gate.generation() == my_gen;
+        drop(inflight);
+        if committed {
+            // 与 stopped 腿同一配对纪律：差集与生命周期描述同一次终态跃迁，必须相邻发布。
+            self.push_pending_changes();
+            self.push_lifecycle(&ProxyLifecycleEvent::ready());
+        }
         // **起核失败的唯一广播点**（`event:proxyLifecycle{phase:'failed'}`）。挂这里而不是各失败腿，
         // 理由同上面两条收口：这是全部起核入口（IPC / 托盘 / 启动自动连接 / `restart` 的 start 腿）
         // 的汇流点，新增失败腿只要照常 `?` 就自动有事件，没有哪条腿能悄悄失败。
@@ -3499,21 +3527,22 @@ impl ProxyRuntime {
         if let Ok(mut g) = self.status.write() {
             *g = new_status.clone();
         }
-        // 差集的**分母侧**刚被改写 ⇒ 必须在此推一次（见 `push_pending_changes` 的「两侧」那节）。
-        // 上面三行刚把 `switch_snapshot`/`startup_snapshot`/`restart_deferred` 换成「这个核吃进去的是什么」，
-        // 而此前唯一的 PUSH 挂在 `switch_mode` 尾（分子侧）—— 于是**由后端自己驱动的重启**
-        // （去抖重启 / 「立即应用」/ drain 排空 / 崩溃自愈）落地后没有任何一侧通知 UI 差集已清。
-        // 前端那两条 pull 兜底挂在 `event:proxyStarted`/`Stopped` 上，而那两个事件**只由命令层**
-        // （`commands/proxy.rs` 的 proxy_start/stop/restart）发 —— 内部驱动的重启一个都不发。
-        // 后果（陈先生 2026-07-30 真机）：点「立即应用」→ 核真重启了 → 条上仍是「立即应用」，
-        // 因为 store 里那份差集停在 `switch_mode` 推的最后一帧（`restartDeferred:true`），无人覆盖。
+        // A1：systemProxy 模式把 OS 系统代理指向本地 mixed 入站（127.0.0.1:mixedPort），否则流量不经核
+        // = 表现「选直连也没启动」。放在**核已就绪之后**：核未就绪就设代理会把流量导向尚未服务的端口。
+        // 与下方 residual 提示互斥（前者只在 systemProxy 生效、后者只在 tun 生效，见各自门控）。
         //
-        // 紧跟的 `push_lifecycle(ready)` 是同一次跃迁的另一个投影（**必须相邻**，见 `push_lifecycle`
-        // 头注的配对纪律）：差集说「已经没有待应用的了」，它说「核这一次真的起来了」。少了后者，
-        // 条只能靠 12s 兜底轮询才敢离开「应用中…」；而差集为空**不能**当成功信号 —— 起核失败时
-        // 差集同样为空。
-        self.push_pending_changes();
-        self.push_lifecycle(&ProxyLifecycleEvent::ready());
+        // **必须早于 ready 生命周期 PUSH**：`App.tsx` 收到 ready 会立即重拉 `running:true`，继而触发
+        // `system_proxy_get_status` 活态查询。若先 PUSH 再 await Windows `reg`，渲染端会在这段真实的启动事务
+        // 中读到旧注册表、误报「系统代理未生效」，且把误报保留到 15s 后的下一拍。这里等待的是既有系统
+        // 代理写入本身，不加延时；失败腿也会先落 `SYSTEM_PROXY_FAILED`，随后 ready 刷到的是诚实降级态。
+        let t_system_proxy = std::time::Instant::now();
+        self.maybe_enable_system_proxy(&user_config, mixed_port)
+            .await;
+        let system_proxy_ms = t_system_proxy.elapsed().as_millis();
+        log::info!("起核耗时：系统代理设置={system_proxy_ms}ms");
+        // 差集分母已换新，但此处**不提前 PUSH**：系统代理/DNS 等接管腿尚未落定，UI 收到同点配对的
+        // ready 后会立刻探活。成功 PUSH 统一收在 `start` 包装的终态腿（先归还 `starting` 计数，再相邻发布
+        // 差集 + ready）；失败/让位则各走自己的终态，不把“核端口已监听”冒充“接管事务已完成”。
         // **H3 修复接线点**：核就绪 → 后台把各 selector 的选择校正回本次 config 的意图（压过 cache_file
         // 持久化的旧选择），校正完成/放弃后才失效解锁缓存。三条时序都是承重的，见
         // [`spawn_reassert_selector_selection`](Self::spawn_reassert_selector_selection) 的方法文档：
@@ -3549,14 +3578,6 @@ impl ProxyRuntime {
         // `direct` 而非节点 tag）。此处不再单独预置 —— 两个独立写者对同一个 `proxy-selector` 各写一次，
         // 谁最后落地取决于调度，正是「flag 说已让位、selector 却指着未登录的 TS 出口」这类脱节的来源。
         log::info!("sing-box 已就绪：pid={pid} apiPort={api_port}");
-        // A1：systemProxy 模式把 OS 系统代理指向本地 mixed 入站（127.0.0.1:mixedPort），否则流量不经核
-        // = 表现「选直连也没启动」。放在**核已就绪之后**：核未就绪就设代理会把流量导向尚未服务的端口。
-        // 与下方 residual 提示互斥（前者只在 systemProxy 生效、后者只在 tun 生效，见各自门控）。
-        let t_system_proxy = std::time::Instant::now();
-        self.maybe_enable_system_proxy(&user_config, mixed_port)
-            .await;
-        let system_proxy_ms = t_system_proxy.elapsed().as_millis();
-        log::info!("起核耗时：系统代理设置={system_proxy_ms}ms");
         // **规则资源缺失告知**（T3）：本次生成真有 rule_set 被 fail-closed 剪掉 → 分流规则整段没了，
         // 用户看到的「智能分流」名不副实。放在出口自证**之前**：这是根因，出口自证是后果，后者若也
         // 命中应由它覆写 status（更贴近用户观感的「走错出口」）。两条都各自 emit 事件，互不遮蔽。
@@ -6568,8 +6589,8 @@ impl ProxyRuntime {
     /// + `restart_deferred`)。**任一侧被改写都改变差集**，故 PUSH 必须挂在两侧各自的写入点上：
     ///
     /// - **分子**（配置变了）→ [`switch_mode_with`](Self::switch_mode_with) 尾。
-    /// - **分母**（运行核换了）→ [`start_inner`](Self::start_inner) 就绪腿与
-    ///   [`stop_inner`](Self::stop_inner) 拆除腿，即写/清 `startup_snapshot` 的那两处。
+    /// - **分母**（运行核换了）→ [`start`](Self::start) 成功收口与 [`stop_inner`](Self::stop_inner)
+    ///   拆除腿。启动侧刻意等完整接管事务落定再推，避免 UI 在系统代理写入期间提前探活。
     ///
     /// 只挂分子那一侧曾是本缺陷的根因：后端自驱的重启（去抖 / 「立即应用」/ drain / 崩溃自愈）
     /// 落地后差集其实已清，但没人说 —— 而前端的 pull 兜底挂在 `event:proxyStarted`/`Stopped`，
@@ -12403,8 +12424,11 @@ mod tests {
             switched.contains("self.push_pending_changes();"),
             "分子侧（落盘/切节点）必须推 —— 否则改完配置条根本不出现"
         );
-        // 分母侧（运行核换了）：写 / 清 `startup_snapshot` 的那两处。
-        let started = method_body(SRC, "    async fn start_inner(");
+        // 分母侧（运行核换了）：start 成功终态 / stop 拆除终态。
+        let started = method_body(
+            SRC,
+            "    pub async fn start(self: &Arc<Self>, config: Value) -> Result<ProxyStatus, StartError> {",
+        );
         assert!(
             started.contains("self.push_pending_changes();"),
             "起核就绪腿必须推 —— 否则「立即应用」引发的重启落地后没人告诉 UI 差集已清，条停在「立即应用」"
@@ -12426,14 +12450,17 @@ mod tests {
     /// 但它必须落在 `start` 包装的 `Err` 腿 —— 那是全部起核入口的唯一汇流点。挪进任一条具体失败腿
     /// 就会漏掉别的入口，而漏掉的那些正是「没人在 await」的托盘 / 自动连接 / 去抖重启。
     ///
-    /// 变异对照：把 `start_inner` 里那两行的顺序颠倒、或在中间插一条语句 → 第一条转红；
+    /// 变异对照：把 `start` 成功腿里那两行的顺序颠倒、或在中间插一条语句 → 第一条转红；
     /// 删掉 `start` 包装里的 `failed` 腿 → 第三条转红。
     #[test]
     fn lifecycle_push_is_paired_with_the_diff_push() {
         const SRC: &str = include_str!("proxy.rs");
         const DIFF: &str = "self.push_pending_changes();";
 
-        let started = method_body(SRC, "    async fn start_inner(");
+        let started = method_body(
+            SRC,
+            "    pub async fn start(self: &Arc<Self>, config: Value) -> Result<ProxyStatus, StartError> {",
+        );
         assert!(
             line_immediately_followed_by(
                 &started,
@@ -12462,6 +12489,45 @@ mod tests {
                 && start_wrap.contains("self.push_lifecycle(&ProxyLifecycleEvent::failed(e));"),
             "`failed` 必须挂在 `start` 包装的 Err 腿（全部起核入口的唯一汇流点）——\
              挪进具体失败腿会漏掉托盘 / 自动连接 / 去抖重启这些「没人在 await」的入口"
+        );
+    }
+
+    /// systemProxy 的 `ready` 是“接管事务已落定”，不能只是“核端口已监听”。
+    ///
+    /// 真机回归（Windows 2026-08-21）：旧顺序先 PUSH ready，主窗立即刷新到 `running:true` 并读取注册表，
+    /// 而 `enable_system_proxy` 仍在随后约 1.1s 的 `reg` 腿中；于是横幅瞬时误报，并因正常轮询为 15s 而
+    /// 长时间残留。无真核的单测无法跑完整 `start_inner`，故以源码顺序守卫锁住这个 I/O 边界；
+    /// `maybe_enable_system_proxy` 自身的模式/成功/失败行为由下方 A1 行为测试覆盖。
+    ///
+    /// 变异对照：把 ready PUSH 挪回 enable 之前 → 本条转红。
+    #[test]
+    fn system_proxy_enable_settles_before_ready_lifecycle_push() {
+        let src = include_str!("proxy.rs");
+        let inner = method_body(src, "    async fn start_inner(");
+        assert!(
+            inner.contains("self.maybe_enable_system_proxy(&user_config, mixed_port)"),
+            "start_inner 必须等待系统代理启用腿"
+        );
+        assert!(
+            !inner.contains("self.push_lifecycle(&ProxyLifecycleEvent::ready());"),
+            "start_inner 尚未归还 starting 计数，不得提前发布 ready"
+        );
+        let started = method_body(
+            src,
+            "    pub async fn start(self: &Arc<Self>, config: Value) -> Result<ProxyStatus, StartError> {",
+        );
+        let inner_return = started
+            .find("let r = self.start_inner(config, my_gen).await;")
+            .expect("start 包装必须等待 start_inner 完整事务");
+        let drop_inflight = started
+            .find("drop(inflight);")
+            .expect("ready 前必须归还 starting 计数");
+        let ready = started
+            .find("self.push_lifecycle(&ProxyLifecycleEvent::ready());")
+            .expect("start 成功终态必须发布 ready 生命周期");
+        assert!(
+            inner_return < drop_inflight && drop_inflight < ready,
+            "必须完整等待接管事务并归还 starting 计数后再发布 ready"
         );
     }
 
@@ -12718,6 +12784,33 @@ mod tests {
             clash_api_port: 19090,
             ..ProxyStatus::default()
         };
+    }
+
+    /// 活态查询的模式必须取**运行核快照**，不能取已经先行落盘的新配置。
+    #[test]
+    fn running_proxy_mode_type_tracks_the_running_snapshot_only() {
+        let (rt, dir) = test_runtime();
+        mark_running(&rt);
+        for (mode, expected) in [
+            ("systemProxy", ProxyModeType::SystemProxy),
+            ("tun", ProxyModeType::Tun),
+            ("manual", ProxyModeType::Manual),
+        ] {
+            *rt.current_config.write().unwrap() = Some(serde_json::json!({
+                "servers": [],
+                "selectedServerId": "__direct__",
+                "proxyMode": "smart",
+                "proxyModeType": mode,
+            }));
+            assert_eq!(rt.running_proxy_mode_type(), Some(expected));
+        }
+        *rt.status.write().unwrap() = ProxyStatus::default();
+        assert_eq!(
+            rt.running_proxy_mode_type(),
+            None,
+            "核未运行时不得把残留 current_config 冒充运行模式"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ── apply_pending 真实状态（此前硬编码 "applied" → UI 误报成功）──

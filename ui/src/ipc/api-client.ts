@@ -131,7 +131,8 @@ export const proxyApi = {
    * 别自己拿 `enabled` 判 —— 契约见 `SystemProxyStatus`）。
    *
    * 后端每次调用会 exec `networksetup`/`gsettings`/`reg`（mac 三次），**属有成本的查询**：
-   * 调用方须低频、且只在 systemProxy 接管 + 核在跑 + 窗口可见时取（见 StatusBar 的 `useSystemProxyLive`）。
+   * 调用方须低频、且只在 systemProxy 接管 + 核稳定运行（非 starting）+ 窗口可见时取
+   *（见 App 顶层的 `useSystemProxyLivePolling`）。
    * 核未运行 / 读取受阻 → reject（**不返回 false**）：读不到 ≠ 没生效，调用方应折成「未知」而非「未生效」。
    */
   async getSystemProxyStatus(): Promise<SystemProxyStatus> {

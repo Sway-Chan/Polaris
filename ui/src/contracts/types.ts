@@ -451,7 +451,7 @@ export interface PendingNodeChanges {
  * `event:proxyLifecycle` 的载荷：**这一次核起停尝试的真实结局**。
  *
  * Rust 侧真值 = `src-tauri/src/runtime/proxy.rs` 的 `ProxyLifecycleEvent`；三个 phase 各对应一个
- * 可诚实断言的控制流位置（`start_inner` 就绪腿 / `stop_inner` 拆除腿 / `start` 包装的 Err 腿）。
+ * 可诚实断言的控制流位置（`start` 完整接管成功收口 / `stop_inner` 拆除腿 / `start` 包装的 Err 腿）。
  *
  * # 为什么需要它，以及为什么它不是「差集变空」
  *

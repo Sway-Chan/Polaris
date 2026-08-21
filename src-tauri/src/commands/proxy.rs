@@ -19,6 +19,7 @@
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
 
+use polaris_config_engine::user_config::ProxyModeType;
 use polaris_singbox_grpc::{Endpoint, SingBoxApiClient};
 
 use crate::events::channel::{EVENT_PROXY_STARTED, EVENT_PROXY_STOPPED};
@@ -695,6 +696,15 @@ pub async fn system_proxy_get_status(
     if !status.running || status.mixed_port == 0 {
         return Ok(ApiResponse::err("核未运行，无 mixed 入站可比对"));
     }
+    // 两代状态不得拼判据：结构性切换会先落磁盘新模式，再去抖重启旧核；此外 `running:true` 会在
+    // `start_inner` 内核就绪后先落，而 `starting` 要到整条接管事务返回才归零。两种窗口里 OS 设置都还
+    // 不能代表新会话，须返回 unknown（失败信封由前端折 unknown），绝不能编成 not-effective。
+    if status.starting {
+        return Ok(ApiResponse::err("代理接管仍在启动，系统代理活态尚未落定"));
+    }
+    if state.proxy().running_proxy_mode_type() != Some(ProxyModeType::SystemProxy) {
+        return Ok(ApiResponse::err("当前运行核不是系统代理接管模式"));
+    }
     let mixed_port = status.mixed_port;
     // 比对基准与 `runtime/proxy.rs::maybe_enable_system_proxy` 的 `ProxyEnableRequest.address` 同源
     // （那里恒 `127.0.0.1`）。两处不一致 = 恒判「未生效」，改一处必须改另一处。
@@ -1178,5 +1188,32 @@ mod start_payload_guard {
                 "{sig} 不得再收 `config: Value` 参数：留着它，渲染端的陈旧副本就还能被喂进来"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod system_proxy_live_guard {
+    use crate::commands::guard_scan::top_level_fn_body;
+
+    /// 活态查询只能消费同一代、已稳定的运行态；两道门都必须早于任何 OS 读取。
+    #[test]
+    fn live_query_rejects_starting_and_non_system_running_sessions_before_os_read() {
+        let body = top_level_fn_body(
+            include_str!("proxy.rs"),
+            "pub async fn system_proxy_get_status(",
+        );
+        let starting = body
+            .find("if status.starting")
+            .expect("系统代理活态查询必须拒绝 starting 半成品");
+        let running_mode = body
+            .find("running_proxy_mode_type() != Some(ProxyModeType::SystemProxy)")
+            .expect("活态查询必须核对运行核模式，不能读先行落盘的新配置");
+        let os_read = body
+            .find("production_system_proxy_live_status")
+            .expect("活态查询必须保留真实 OS 读取");
+        assert!(
+            starting < os_read && running_mode < os_read,
+            "starting / 运行核模式两道门必须先于 reg/networksetup/gsettings"
+        );
     }
 }
