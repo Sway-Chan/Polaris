@@ -34,10 +34,14 @@
 | 平台 | 文件 |
 |---|---|
 | macOS | `*-mac-arm64.dmg` / `*-mac-x64.dmg` |
-| Windows | `*-win-setup.exe`；离线环境用 `*-offline-setup.exe`；免安装用 `polaris-portable-*.zip` |
+| Windows | `*-win-setup.exe`；免安装用 `polaris-portable-*.zip` |
 | Linux | `*.deb` / `*.AppImage` |
 
 安装包当前不做付费代码签名，首次启动需按平台放行。
+
+Windows 安装器不内嵌 WebView2 Runtime；系统缺失时会联网获取。精简版 / LTSC 或便携版用户若缺少
+Runtime，请先从微软官方下载并安装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。
+Polaris 不提供离线 WebView2 安装包。
 
 ### macOS 首次安装
 
@@ -69,7 +73,7 @@ cargo tauri build --config src-tauri/tauri.linux.conf.json
 ```
 
 内核不入库，打包前必须拉。平台 `--config` 不可省：缺了会打出**没有内核的包**，且构建期零报错，
-直到运行期才暴露。完整说明、CI 分工、Windows 双安装器与更新器选包契约见
+直到运行期才暴露。完整说明、CI 分工、Windows 安装器与更新器选包契约见
 [构建与打包](docs/build-and-package.md)。
 
 开发门禁：

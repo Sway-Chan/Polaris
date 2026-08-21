@@ -76,12 +76,11 @@ cargo tauri build --config src-tauri/tauri.macos-x64.conf.json --target x86_64-a
 |---|---|---|
 | Linux | `*.deb` / `*.AppImage` | deb 包 + AppImage（单文件免装） |
 | macOS | `*-mac-arm64.dmg` / `*-mac-x64.dmg` | **分架构单出**（不再出 universal，未签名）。⚠️ 这是 **release 资产名**，不是本地产物名 —— 见下 |
-| Windows | `*-win-setup.exe` | NSIS 安装器（bootstrapper 主产物） |
-| Windows | `*-offline-setup.exe` | 内嵌 WebView2 的离线安装器（见「Windows 双安装器」） |
+| Windows | `*-win-setup.exe` | NSIS 安装器（WebView2 downloadBootstrapper，不内嵌 Runtime） |
 | Windows | `polaris-portable-*.zip` | 免安装绿色版（解压即用，自带 `resources/` + `portable.marker` 形态标记） |
 
-后两项由 `package.yml` 在 Windows 腿额外产出（离线版跑第二趟 `cargo tauri build`，portable 从
-`target/release/polaris.exe` + `resources/` 打 zip），本地单跑上面那条 `cargo tauri build` 不会有。
+portable 由 `package.yml` 在 Windows 腿从 `target/release/polaris.exe` + `resources/` 额外打 zip，
+本地单跑上面那条 `cargo tauri build` 不会有。
 
 ⚠️ **dmg 那行同理，但成因不同**：`-mac-arm64` / `-mac-x64` 这个 arch tag 不是 Tauri 产出的，
 是 `package.yml` 的 `Tag macOS dmg with arch` 步把 `<名>.dmg` 重命名成 `<名>-<tag>.dmg` 加上的
@@ -89,8 +88,9 @@ cargo tauri build --config src-tauri/tauri.macos-x64.conf.json --target x86_64-a
 这个 tag 是更新器选包契约的硬要求：`github.rs::find_suitable_update_asset` 按资产名里的
 `mac-arm64` / `mac-x64` 选包，匹配不到直接返回 `None`（已取消「任意 .dmg」回落）。
 
-一个 release 里 deb / AppImage / mac-arm64 dmg / mac-x64 dmg / win setup / offline setup /
-portable zip **各恰好一个**（共 7 个资产），由 `verify-packaging.mjs assets --label release` 机器守住。
+一个 release 里 deb / AppImage / mac-arm64 dmg / mac-x64 dmg / win setup / portable zip
+**各恰好一个**（共 6 个平台交付物，另含 `SHA256SUMS`），由
+`verify-packaging.mjs assets --label release` 机器守住。
 两个 Linux 形态同样是「恰好一个」而非「至少一个」：updater 的 Linux 分支取首个命中
 （`github.rs` 的 `app_image.first()` / `deb.first()`），多一个就和 dmg / setup 一样选谁看资产顺序。
 
@@ -119,18 +119,15 @@ portable zip **各恰好一个**（共 7 个资产），由 `verify-packaging.mj
 - **`package.yml`** — 发布工程：三平台 matrix 跑 fetch + `tauri build` + 产物上传。
   触发 = tag（`v*`）/ 手动 / main 改动打包相关路径。职责 = 「能否产出可分发安装包」。
 
-## Windows 双安装器（LTSC / 离线场景）
+## Windows 安装器与 WebView2
 
-Tauri 2 依赖 WebView2 runtime；普通 Win10/11 已预装，但 LTSC / 精简系统 / 内网默认没有（§E.2）。
-故 Windows 产两个安装器：
+Tauri 2 依赖 WebView2 Runtime。Windows 只发布一个 **`*-win-setup.exe`**，使用
+`tauri.conf.json` 的 `downloadBootstrapper`：普通 Win10/11 通常已预装，缺失时安装器联网获取微软
+Runtime。Polaris 不内嵌、不镜像 WebView2 Runtime，也不维护第二套 Windows 安装包。
 
-- **`*-win-setup.exe`**（主产物，bootstrapper）— 安装时联网拉 WebView2（+0MB，绝大多数用户用这个）。
-- **`*-offline-setup.exe`**（离线版，+~127MB）— 内嵌 WebView2 runtime，无需联网。LTSC / 内网 / 离线用户用。
-
-CI 从**仓库根**跑 `cargo tauri build --config src-tauri/tauri.windows.conf.json --config
-src-tauri/tauri.offline.conf.json` 作第二趟（offline 那份**只**携带 `webviewInstallMode:
-offlineInstaller`，Tauri 2 是 camelCase，v1 的 `OfflineInstaller` 会被 schema 拒收；也不得复制
-`version` 等 base 键——`--config` 会覆盖 base，导致版本号一升离线包仍是旧号）。
+精简版 / LTSC 或便携版用户若缺少 Runtime，需要先从微软官方下载并安装
+[Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。设备若完全
+离线，也无法下载 Polaris 或获取订阅，因此发行链不再为该场景维护第二套安装包与校验工作流。
 
 命名不是随意的：更新器（`crates/updater/src/github.rs`）Windows 侧**按运行形态分成两条互不相交的
 选包规则**：
@@ -140,9 +137,8 @@ offlineInstaller`，Tauri 2 是 camelCase，v1 的 `OfflineInstaller` 会被 sch
 | 安装态（NSIS 装的） | `.exe` 且名含 `win` | `*-win-setup.exe` |
 | 便携（解压 zip 跑的） | `polaris-portable-` 前缀 + `.zip` | `polaris-portable-*.zip` |
 
-故主产物显式带 `win`；离线版**故意不带**，好让「名含 win 的 .exe」全局恰好一个、更新目标确定
-（离线版是手动下载变体，**永不被自动更新选中**是有意的）。便携版是 zip，与两个 `.exe` 分属不相交
-的命名空间，两条规则各自无歧义。这些「恰好一个」由 `verify-packaging.mjs assets` 在 CI 里机器守住。
+故安装器显式带 `win`，便携版是 zip，与 `.exe` 分属不相交的命名空间，两条规则各自无歧义。
+这些「恰好一个」由 `verify-packaging.mjs assets` 在 CI 里机器守住。
 
 **便携形态怎么被认出来**：便携 zip 里与 `polaris.exe` 同级有一个 `portable.marker` 文件，
 应用启动检查更新时读它（`commands/updater.rs::is_portable_layout`）。不用 `PORTABLE_EXECUTABLE_DIR`

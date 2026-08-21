@@ -4,7 +4,7 @@
 # 易被误认为是脚本）。真正被注入构建的是 `nsis-hooks.nsh`（经 tauri.conf.json 的
 # `bundle.windows.nsis.installerHooks`）。
 #
-# 本文件说明 Windows 侧 NSIS 双产物策略（§I-Q2 + §E.2）。Tauri 2 不需要手写完整 .nsi 脚本
+# 本文件说明 Windows 侧 NSIS 与 WebView2 策略（§I-Q2 + §E.2）。Tauri 2 不需要手写完整 .nsi 脚本
 # （官方 NSIS 模板已覆盖通用 webview 应用流程），而是通过 tauri.conf.json 的 bundle.windows.nsis
 # 字段配置；需要深度定制时再经 installerHooks / template 注入。
 #
@@ -14,18 +14,10 @@
 # 不补则控制面板卸载后残留孤儿 LocalSystem 服务。用户数据不在该钩子范围内 —— Tauri 模板自带的
 # 「删除应用数据」复选框已覆盖 `%APPDATA%\com.polaris.app` 与 `%LOCALAPPDATA%\com.polaris.app`。
 #
-# === 双产物（§E.2 默认 = 双产物）===
-# Tauri 2 的 webviewInstallMode 仅能二选一（一次构建一种），故双产物 = 跑两趟 build，CI 各产一个 setup：
-#
-#   1. polaris-{version}-{arch}-setup.exe        主产物：DownloadBootstrapper（+0MB，需联网装 WebView2）
-#      → tauri.conf.json 默认值。普通用户用（绝大多数 Win10/11 已预装 WebView2，bootstrapper 即 no-op）。
-#
-#   2. polaris-{version}-{arch}-setup-offline.exe 离线产物：OfflineInstaller（+~127MB，内嵌 WebView2 runtime）
-#      → 用 tauri.offline.conf.json 覆盖（tauri build --config tauri.offline.conf.json）。
-#        LTSC / 精简系统 / 内网 / 离线用户用。README 显式指引「装不上？用 offline 版」。
-#
-# 体积权衡（§E.2 表）：embedBootstrapper +1.8MB 不离线 / fixedVersion +180MB 过大 → 均不默认，
-# 仅留 bootstrapper（主）+ offlineInstaller（离线）两档。
+# === WebView2（§E.2）===
+# CI 只产一个 polaris-{version}-{arch}-setup.exe，使用 tauri.conf.json 的 DownloadBootstrapper。
+# Polaris 不内嵌或分发 WebView2 Runtime。普通 Win10/11 通常已预装；精简版 / LTSC 缺失时，
+# 安装器需要联网获取微软 Runtime。便携用户需先安装微软官方 Runtime，README 给出官方下载入口。
 #
 # === 不签名（§I-Q1 用户定调）===
 # Windows 无代码签名（沿 上游 现状）。后果保留、不可删：
@@ -41,6 +33,6 @@
 # === portable 形态（§I-Q4）===
 # 上游 支持 portable exe + 专属更新逻辑（§C #40/#33）。Tauri 2 的 NSIS 无原生 portable 产物，
 # 由 CI 单独产一个 zip（解压即用的目录形态，绕过安装器，便携盘/U盘场景）。portable 启动检测
-# WebView2 缺失时用原生弹窗指引 offline installer（§E.2 附加护栏，对应 上游 早期崩溃路径）。
+# WebView2 缺失时需安装微软官方 Runtime；Polaris 不提供离线 Runtime 或第二安装器。
 #
 # 语言：English / 简体中文 / 繁体中文（displayLanguageSelector=true 首装让用户选）。

@@ -5,10 +5,10 @@ name: Package
 # 只在发布/手动时触发（tag / release / dispatch），产物体积大故不进常规 push/PR 门禁。
 #
 # 设计文档：
-#   - §H B10：NSIS 双产物 + mac DMG（未签名）+ deb/AppImage + portable + README/LICENSE/NOTICE 谱系
-#   - §E.2：WebView2 双产物（bootstrapper 主 + offline ~127MB 离线版）
+#   - §H B10：NSIS + mac DMG（未签名）+ deb/AppImage + portable + README/LICENSE/NOTICE 谱系
+#   - §E.2：WebView2 downloadBootstrapper（不内嵌 Runtime）
 #   - §I-Q1：不签名（macOS/Windows 均无代码签名，沿 上游 现状）
-#   - §I-Q2：双 NSIS 产物（bootstrapper + offline）
+#   - §I-Q2：单 NSIS 产物（缺 WebView2 时联网获取微软 Runtime）
 #
 # 不签名纪律：本 workflow 不含任何 codesign / notarize 步骤。mac 未签名 → 用户首次运行需
 # Gatekeeper 右键放行（README 已指引）；win 未签名 → SmartScreen 「仍要运行」（README 已指引）。
@@ -498,7 +498,7 @@ jobs:
       # ── 打包 conf 不变量（**Rust 构建之前**跑，秒级失败）──
       # 守「每个包只含且恰含本平台内核」这条核心交付契约的**输入侧**：公共资源逐条不丢 /
       # 每个 conf 恰含 1 个平台内核 / base 不含任何平台内核 / 每个 conf 都被本 workflow 显式引用
-      # （改名即红）/ offline conf 不越权覆盖 base（version 覆盖已实测）。
+      # （改名即红）/ per-platform conf 不得越权覆盖 base。
       # 位置在 fetch 之后：检查里含「conf 引用的资源目录必须真实存在」，dashboard 是 fetch 产物。
       # 纯静态、无构建依赖，任意开发机可复现：`node scripts/verify-packaging.mjs confs`
       - name: Verify packaging conf invariants
@@ -775,12 +775,7 @@ jobs:
         shell: bash
         run: node scripts/verify-packaging.mjs assets --label ${{ matrix.label }} --dir target/${{ matrix.rust_target }}/release/bundle/dmg
 
-      # ── Windows 离线产物（第二 NSIS，§E.2 / §I-Q2）+ 更新器命名契约 ──
-      #
-      # 两次 build 产物路径相同（同名 *-setup.exe），故必须先把第一次的**移走**再打第二次。
-      # 用 Move-Item（不是 Copy-Item）：旧写法 Copy 后 nsis/ 里同时留着 `*-setup.exe` 与副本，
-      # 第二次 build 覆盖 `*-setup.exe` ⇒ 上传的 `*-setup.exe` 与 `*-setup-offline.exe` **字节相同**，
-      # 等于往 release 塞一份 ~127MB 重复物，且名字暗示它才是默认版。
+      # ── Windows NSIS（§E.2 / §I-Q2）+ 更新器命名契约 ──
       #
       # 🔴 命名契约（crates/updater/src/github.rs:293-296）：Windows 侧选包要求
       #    「`.exe` 且名含 `win`（大小写敏感）」。Tauri NSIS 默认名是 `Polaris_{version}_x64-setup.exe`
@@ -788,11 +783,9 @@ jobs:
       #    **不含 `win`** ⇒ find_suitable_update_asset 恒返回 None ⇒ Windows 用户永远收不到更新且静默。
       #    故在此处（与 mac 改名步同一手法、同一处立契约）把 bootstrapper 改名带上 `win`。
       #
-      # ⚠️ 离线版**故意不带 `win`**：updater 的 Windows 分支是 `find(is_setup)` 取首个命中，
-      #    命中集里有两个 setup 时选谁取决于 release 资产顺序（不确定）。让「名含 win 的 .exe」
-      #    全局恰好一个，更新目标才是确定的 bootstrapper（小包）；离线版是 LTSC/内网**手动下载**
-      #    变体，本就不该被自动更新选中。该「恰好一个」由后面的 assets 断言机器守住。
-      - name: Stash bootstrapper installer
+      # 仅发布一个 downloadBootstrapper 安装器；Polaris 不内嵌 WebView2 Runtime。
+      # 缺 Runtime 的精简 / LTSC 系统需联网获取微软官方 Runtime。
+      - name: Stage Windows installer
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -802,38 +795,7 @@ jobs:
           New-Item -ItemType Directory -Force dist-win | Out-Null
           $name = $setup.Name -replace '-setup\.exe$', '-win-setup.exe'
           Move-Item $setup.FullName "dist-win/$name"
-          Write-Host "bootstrapper -> dist-win/$name"
-
-      # 从**仓库根**跑：`--config` 按进程 CWD 解析，而 `working-directory: src-tauri` + 仓库根相对
-      # 路径已实测硬失败（`invalid value 'src-tauri/tauri.offline.conf.json' for '--config'：
-      # failed to read configuration file … No such file or directory`）——Windows job 会死在这一步，
-      # 走不到后面的 stash/upload。仓库根下 CLI 会自行向下找到 src-tauri/tauri.conf.json（已实测）。
-      # windows 平台 conf 显式再传一次，与 matrix 口径一致（多个 --config 按给出顺序合并）。
-      #
-      # 🔴 命令是 `tauri build`，**不是 `cargo tauri build`**（2026-08-05 修，该步此前从未被执行过）：
-      #    上一步的 `tauri-apps/tauri-action` 装的是 **npm 全局包** —— macos 腿成功日志逐字记录
-      #    `running npm [ 'install', '-g', '@tauri-apps/cli@v2' ]`，而 `@tauri-apps/cli` 的
-      #    `bin` 只有 `{"tauri": "./tauri.js"}` 一个入口，**不产出 `cargo-tauri` 二进制**；
-      #    `cargo <sub>` 严格按 PATH 上有没有 `cargo-<sub>` 决议，workflow 里也没有
-      #    `cargo install tauri-cli`。本机实测（同样无 `cargo-tauri`）复现将会出现的错误：
-      #      $ cargo tauri build
-      #      error: no such command: `tauri`   （exit 101）
-      #    改用全局 `tauri` 还顺带保证两次打包用**同一个 CLI 版本**（都是 tauri-action 装的那份），
-      #    比另装一个 `cargo install tauri-cli` 少一个版本漂移面。
-      - name: Build Windows offline installer
-        if: runner.os == 'Windows'
-        run: tauri build --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.offline.conf.json
-
-      - name: Stash offline installer
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $setup = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
-          if (-not $setup) { throw "no *-setup.exe in target/release/bundle/nsis" }
-          $name = $setup.Name -replace '-setup\.exe$', '-offline-setup.exe'
-          Move-Item $setup.FullName "dist-win/$name"
-          Write-Host "offline -> dist-win/$name"
+          Write-Host "installer -> dist-win/$name"
 
       # ── Windows portable（§I-Q4，zip 解压即用）──
       # Tauri 2 NSIS 无原生 portable；从 release exe + resources/ 打成 zip（解压即用，绕过安装器）。
@@ -902,9 +864,7 @@ jobs:
       # 产物命名 ↔ updater 选包规则的机器断言（与 github.rs::find_suitable_update_asset 同口径）：
       # dist-win/ 下「`.exe` 且名含 `win`」必须**恰好一个**且含 `setup`。
       # 0 个 = 用户永远收不到更新且静默；>1 个 = 选哪个取决于 release 资产顺序，不确定。
-      # 同一步还跑**体积门**（U2），射程 = bootstrapper + 便携 zip（zip 现打进 dist-win/，见上）。
-      # `*-offline-setup.exe`（约 240 MiB）**不在**射程：名字里没有 `win`，updater 结构性选不到它，
-      # 把它一并卡掉只会让门第一次跑就假红。
+      # 同一步还跑**体积门**（U2），射程 = installer + 便携 zip（zip 现打进 dist-win/，见上）。
       # 本步还断言便携 zip 在 dist-win/ 下恰有一个 —— 射程里有它，就得有人保证它在场，
       # 否则体积门是一条恒为空的断言。
       - name: Verify Windows update-asset naming and size contract
@@ -915,9 +875,8 @@ jobs:
       # ── 上传产物 ── 每平台一个 artifact；mac 分架构后 label 为 macos-arm64 / macos-x64，故不撞名。
       # 路径以**仓库根 target/** 为准（cargo workspace 根在仓库根，见 Build installers 注释）。
       # 传了 --target 的 mac job 多一层 triple 目录，故 dmg 用 `target/*/release/...` 覆盖。
-      # Windows 三件交付物一律从 dist-win/ 取（两个安装器已带 win / offline 标记且互不覆盖，
-      # 便携 zip 自 2026-08-17 起也打进该目录，好让本 job 的 assets 门量得到它的体积）；
-      # **不再上传 nsis/ 下的裸 `*-setup.exe`** —— 它是第二次 build 的残留，与 offline 版字节相同。
+      # Windows 两件交付物一律从 dist-win/ 取（安装器带 win 标记；便携 zip 自 2026-08-17 起也
+      # 打进该目录，好让本 job 的 assets 门量得到它的体积）；不再上传 nsis/ 下的裸 `*-setup.exe`。
       # 副作用（无害，如实记）：windows 腿命中的文件从此全在 dist-win/ 下，upload-artifact v7 按
       # **实际命中文件的最近公共祖先**建树 ⇒ 该 artifact 由「保留 dist-win/ 一层」变成平铺。
       # 下游只用 `find -type f` + basename，不假设层级（见 release job 的 Download 注释）。
@@ -1006,8 +965,8 @@ jobs:
       # 故「生成步骤静默失败」（没跑 / 漏了某个平台的资产 / 写出个空文件）在 release 建出来之前就红。
       # 一个静默不产出的生成步骤与一个产出正确的生成步骤，在 CI 日志里长得一模一样 —— 门是唯一的分辨器。
       #
-      # 覆盖面 = dist-release 下**除本文件外的全部文件**，不止 updater 目标：手动下载离线版 / 便携版的
-      # 用户同样要校验，且门那侧是**双向**覆盖判据（少一条、多一条都红），两边口径必须逐字一致。
+      # 覆盖面 = dist-release 下**除本文件外的全部文件**，不止 updater 目标：便携版用户同样要校验，
+      # 且门那侧是**双向**覆盖判据（少一条、多一条都红），两边口径必须逐字一致。
       #
       # 🔴 诚实边界（不夸大，两条）：
       #    ① `SHA256SUMS` 与安装包走**同一 HTTPS 通道、同一 release、同一发布账号**，能替换安装包的人

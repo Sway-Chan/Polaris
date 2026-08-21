@@ -10,9 +10,9 @@
  * 三个模式（各自独立、都可在任意平台的开发机上跑）：
  *
  *   node scripts/verify-packaging.mjs confs
- *     纯静态：只读 5 个 conf + core-manifest.json + package.yml。不需要构建产物。
+ *     纯静态：只读 4 个平台 conf + core-manifest.json + package.yml。不需要构建产物。
  *     守：公共资源不丢 / 每个 conf 恰含一个平台内核 / base 不含任何平台内核 /
- *         每个 conf 都被 workflow 显式引用（改名即红）/ offline conf 不越权覆盖 base。
+ *         每个 conf 都被 workflow 显式引用（改名即红）。
  *
  *   node scripts/verify-packaging.mjs payload --label <label> --root <bundle 根>
  *     构建后：`--root` 收 **bundle 根**（`target/release/bundle`，传了 --target 时
@@ -33,7 +33,8 @@
  *         过滤；此前两个形态共用同一候选集 ⇒ 便携用户恒被发 NSIS 安装器（#72 形态错配本体，
  *         2026-07-22 修）。故这里两条规则各自断言，只镜像一半就等于没守住便携形态。
  *     `--label release` 是**聚合口径**（四 job 产物汇进同一 release 后跑）：断言两个架构的 dmg
- *     各恰一个 + win setup 恰一个 + offline setup 恰一个 + 便携 zip 恰一个 + linux 双形态各恰一个，
+ *     各恰一个 + win setup 恰一个 + 便携 zip 恰一个 + linux 双形态各恰一个（6 个平台交付物，
+ *     聚合 release 另含 SHA256SUMS），
  *     且便携候选与安装态候选不相交。per-job 口径断言「不得出现另一架构」，
  *     聚合侧两架构本就都在，故必须分开，不能复用。
  *
@@ -262,7 +263,7 @@ function checkConfs() {
   const errorsBefore = errors.length;
   const manifest = readJson(
     join(SRC_TAURI, 'core-manifest.json'),
-    '平台集合无真值来源 ⇒ conf 模式的全部不变量（A/B/C/D + offline）都无从断言'
+    '平台集合无真值来源 ⇒ conf 模式的全部不变量（A/B/C/D）都无从断言'
   );
   const platforms = Object.keys(manifest.coreArchiveSha256 ?? {});
   if (platforms.length === 0) {
@@ -344,10 +345,8 @@ function checkConfs() {
 
     // per-platform conf 的**顶层键白名单**：只准 `$schema` + `bundle`，`bundle` 下只准 `resources`。
     //
-    // 与 offline conf 那段（见下方）是**同一个失败面**：`--config` 传入的键按 RFC 7396 合并，
-    // **覆盖 base**。§10.2 记了它真发生过一次 —— offline conf 硬编码 version 覆盖 base，
-    // base 版本号一升，离线安装包仍被打成旧版本号。四份 per-platform conf 走的是同一条
-    // `--config` 通路，此前却只校验 `bundle.resources`，覆盖不对称：实测变异 M10
+    // `--config` 传入的键按 RFC 7396 合并并**覆盖 base**。四份 per-platform conf 走的是同一条
+    // 通路，因此不能把 version / productName 等职责混进来：实测变异 M10
     // （`tauri.linux.conf.json` 加 `"version": "9.9.9"` + `"productName": "Bogus"`）旧实现 exit 0。
     const confTopKeys = Object.keys(conf).filter((k) => k !== '$schema');
     if (confTopKeys.length !== 1 || confTopKeys[0] !== 'bundle') {
@@ -435,35 +434,6 @@ function checkConfs() {
   for (const l of Object.keys(LABEL_TO_CORE)) {
     if (legs !== null && legs.length > 0 && !legByLabel.has(l)) {
       fail(`.github/workflows/package.yml: matrix include 缺 label '${l}' 的腿`);
-    }
-  }
-
-  // offline conf：只准携带 webviewInstallMode。
-  // 曾经复制了 productName/version/identifier —— 其中 version 在合并顺序上**覆盖 base**
-  // （已实测：`--config` 传 version 会顶掉 tauri.conf.json 的值），base 版本号一升，
-  // 离线安装包仍被打成旧版本号。
-  const offlinePath = join(SRC_TAURI, 'tauri.offline.conf.json');
-  if (!existsSync(offlinePath)) {
-    fail('src-tauri/tauri.offline.conf.json 缺失');
-  } else {
-    const offline = readJson(offlinePath, 'offline conf「不越权覆盖 base」无从断言');
-    const topKeys = Object.keys(offline).filter((k) => k !== '$schema');
-    if (topKeys.length !== 1 || topKeys[0] !== 'bundle') {
-      fail(`tauri.offline.conf.json: 顶层只应有 bundle（+$schema），实为 ${JSON.stringify(topKeys)} —— 冗余键会覆盖 base（version 尤其危险）`);
-    }
-    const bundleKeys = Object.keys(offline.bundle ?? {});
-    if (bundleKeys.length !== 1 || bundleKeys[0] !== 'windows') {
-      fail(`tauri.offline.conf.json: bundle 下只应有 windows，实为 ${JSON.stringify(bundleKeys)}`);
-    }
-    const winKeys = Object.keys(offline.bundle?.windows ?? {});
-    if (winKeys.length !== 1 || winKeys[0] !== 'webviewInstallMode') {
-      fail(`tauri.offline.conf.json: bundle.windows 下只应有 webviewInstallMode，实为 ${JSON.stringify(winKeys)}`);
-    }
-    // Tauri 2 的枚举是 camelCase；v1 的 PascalCase `OfflineInstaller` 会被 schema 拒收
-    // （实测：`is not valid under any of the schemas listed in the 'oneOf' keyword`）。
-    const mode = offline.bundle?.windows?.webviewInstallMode?.type;
-    if (mode !== 'offlineInstaller') {
-      fail(`tauri.offline.conf.json: webviewInstallMode.type 应为 'offlineInstaller'（Tauri 2 camelCase），实为 ${JSON.stringify(mode)}`);
     }
   }
 
@@ -1004,8 +974,7 @@ function updaterLinuxCandidates(names, ext) {
  * 取 **200 MiB ≈ 实测最大值（122.58 MiB，linux AppImage）的 1.63 倍**：
  *  - 常规增长（内核/cronet/dashboard 版本迭代，每次几 MiB）撞不到，不会假红；
  *  - 已知的两类**阶跃式**回潮仍落在门外：四平台内核死重（§10.2，约 210 MiB）、
- *    误把 WebView2 离线负载打进主安装包（离线版实测 251,392,830 B；主包将 ≥ ~277 MiB）；
- *    `*-offline-setup.exe` 资产本身（239.75 MiB）不在射程内，见下。
+ *    误把 WebView2 Runtime 打进安装包（历史实测负载会令主包达到约 277 MiB）；
  *  - 比客户端绝对闸早 2.56 倍触发 —— 它才是「早警」的那一份。
  *
  * # 二次定标纪要（2026-08-18；首轮数据不是陈旧噪声，是缺口被实测关闭的记录）
@@ -1020,12 +989,6 @@ function updaterLinuxCandidates(names, ext) {
  * 代价如实登记：mac/win 腿的检测余量从 1.86 倍放宽到 3.86 倍，那两条腿上「多打进一份
  * ~60 MiB 级死资源」的失误本门不再抓，只能靠 payload 门（单文件口径）兜大头。
  * 真红时先看输出里印的实际字节数再决定是「产物真涨了」还是「门定紧了」，别直接调门。
- *
- * # 射程：只覆盖 updater 会命中的资产
- *
- * `*-offline-setup.exe`（239.75 MiB）**故意不在射程内** —— 它是 LTSC/内网的**手动下载**变体，
- * 名字里没有 `win`，`find_suitable_update_asset` 结构性选不到它，自动更新腿永远不会去下它。
- * 把它一并卡掉只会让这道门在第一次跑的时候就假红。
  *
  * # 改这个值 = 改两处
  *
@@ -1106,7 +1069,7 @@ function checkUpdateAssetSizes(label, targets, pathOf) {
           `  定门时的实测基线是 ${mib(MEASURED_MAX_UPDATE_ASSET_BYTES)}（linux AppImage），本次相当于它的 ` +
           `${(size / MEASURED_MAX_UPDATE_ASSET_BYTES).toFixed(2)} 倍 —— 先据此判是常规漂移还是阶跃回潮。\n` +
           `  这道门是**早警**，不是客户端能力上限：客户端绝对写入闸是 512 MiB，走到那儿才炸就等于没警。\n` +
-          `  先判定是「产物真的涨了」（查 payload：内核 / cronet / dashboard / 是否误把离线负载打进主包）\n` +
+          `  先判定是「产物真的涨了」（查 payload：内核 / cronet / dashboard / 是否误把 WebView2 Runtime 打进主包）\n` +
           `  还是「上限定紧了」；确属预期增长再同步改两处常量（本文件 MAX_UPDATE_ASSET_BYTES +\n` +
           `  src-tauri/src/commands/updater.rs 测试模块的 PACKAGING_MAX_UPDATE_ASSET_MIB），否则一致性测试会红。`
       );
@@ -1337,7 +1300,7 @@ function checkAssets(label, dir, namesOnly = false) {
     if (win.length !== 1) {
       fail(
         `release 契约：「.exe 且名含 win」应恰有 1 个，实为 ${win.length} 个 ${JSON.stringify(win)}。\n` +
-          `  离线版故意不含 'win'（手动下载变体，不该被自动更新选中）——出现 >1 个说明该纪律被破坏。`
+          `  0 个 ⇒ Windows 安装态选不到更新；>1 个 ⇒ updater 取首个命中，选谁取决于资产顺序。`
       );
     } else if (!win[0].includes('setup')) {
       fail(`release 契约：唯一 win 候选 '${win[0]}' 不含 'setup'，安装态用户会被判成非安装器产物`);
@@ -1363,18 +1326,8 @@ function checkAssets(label, dir, namesOnly = false) {
       }
     }
 
-    // Windows 的另外两件交付物：updater 选不到它们（离线版故意不含 `win`；portable 不是 .exe），
-    // 故上面的 updater 口径断言**一个都盖不到**——掉了照样全绿。它们是 README「Windows 双安装器」
-    // 一节明写的交付物（离线版 = LTSC/内网场景的唯一出路），必须各自单独断言。
-    const offline = names.filter((n) => n.endsWith('-offline-setup.exe'));
-    if (offline.length !== 1) {
-      fail(
-        `release 契约：\`*-offline-setup.exe\`（WebView2 离线安装器）应恰有 1 个，实为 ${offline.length} 个 ${JSON.stringify(offline)}。\n` +
-          `  0 个 ⇒ LTSC / 内网 / 无 WebView2 的用户没有可用安装包（bootstrapper 装不上）；\n` +
-          `  >1 个 ⇒ 命名纪律已破，用户不知道该下哪个。`
-      );
-    }
-    // 便携 zip：口径**就是 updater 的 loose 形态选包规则**（`updaterPortableCandidates`），
+    // 便携 zip 不属于 `.exe` 候选，必须按 loose 形态选包规则单独断言。
+    // 口径**就是 updater 的 loose 形态选包规则**（`updaterPortableCandidates`），
     // 不再是一条只问「有没有这个文件」的独立正则。两者今天等价，但把断言挂在 updater 口径上，
     // 选包判据一改这里就跟着改，不会出现「门还在绿、选包器已经选不到它」。
     //

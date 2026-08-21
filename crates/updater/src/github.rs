@@ -304,12 +304,11 @@ pub fn check_app_update(
 ///
 /// ## Windows 为什么按形态分成两条**独立**规则（2026-07-22 修 #72 形态错配本体）
 ///
-/// 本仓 Windows 的三件交付物分属**两个不相交的命名空间**（核对于 `package.yml` 的实际产物名）：
+/// 本仓 Windows 的两件交付物分属**两个不相交的命名空间**（核对于 `package.yml` 的实际产物名）：
 ///
 /// | 形态 | 产物 | 谁选它 |
 /// |---|---|---|
-/// | installed | `*-win-setup.exe`（NSIS bootstrapper） | `.exe` 且名含 `win` |
-/// | installed（手动） | `*-offline-setup.exe`（**故意不含 `win`**） | **永不被本函数选中**，是有意的 |
+/// | installed | `*-win-setup.exe`（NSIS downloadBootstrapper） | `.exe` 且名含 `win` |
 /// | loose | `polaris-portable-*.zip`（`Compress-Archive` 打的免安装 zip） | `polaris-portable-` 前缀 + `.zip` |
 ///
 /// 便携产物是 **zip**，结构性进不了「`.exe` 且名含 `win`」这道过滤。此前 loose 分支与 installed
@@ -321,7 +320,7 @@ pub fn check_app_update(
 /// ——**宁可不更新，也不发错形态包**。回落到安装器不是「降级但可用」，而是制造第二份安装。
 ///
 /// 两条规则的判据不相交（`.zip` vs `.exe`），故各自无歧义，`.exe && contains("win")`
-/// 这条命名契约**一字未动**，离线版仍然永不被选中。
+/// 这条命名契约**一字未动**。
 ///
 /// ## 为什么 Windows / Linux 的 installed 侧仍保留回落（别按对称性「顺手修」）
 ///
@@ -599,7 +598,7 @@ mod tests {
 
     // ── App 安装包资产选择真值表（findSuitableUpdateAsset）────────────────────
 
-    /// 一个 release 的**真实资产集**（7 个，= README「各恰好一个」那张表 + `package.yml` 的实际产物名）。
+    /// 一个 release 的**真实资产集**（6 个，= README「各恰好一个」那张表 + `package.yml` 的实际产物名）。
     ///
     /// 🔴 用真产物名，不用理想化名字：本函数此前的 Windows 测试用的是
     /// `Polaris-0.2.0-win-x64-portable.exe` —— 一个**打包链从未产出过**的名字（便携产物是 zip）。
@@ -607,7 +606,6 @@ mod tests {
     fn release_assets() -> Vec<GithubAsset> {
         vec![
             asset("Polaris_0.2.0_x64-win-setup.exe", 100),
-            asset("Polaris_0.2.0_x64-offline-setup.exe", 127_000),
             asset("polaris-portable-v0.2.0.zip", 90),
             asset("Polaris_0.2.0_aarch64-mac-arm64.dmg", 110),
             asset("Polaris_0.2.0_x64-mac-x64.dmg", 111),
@@ -627,7 +625,7 @@ mod tests {
     fn update_asset_windows_loose_picks_portable_zip_never_an_installer() {
         let assets = release_assets();
 
-        // ① 便携形态：拿到 zip，**不是**两个 setup 中的任何一个。
+        // ① 便携形态：拿到 zip，**不是** setup。
         let loose =
             find_suitable_update_asset(&assets, AssetPlatform::Windows, AssetArch::X64, true)
                 .expect("便携形态必须能选到 polaris-portable-*.zip");
@@ -645,10 +643,10 @@ mod tests {
         assert!(
             find_suitable_update_asset(&no_zip, AssetPlatform::Windows, AssetArch::X64, true)
                 .is_none(),
-            "便携形态选不到 zip 时必须返回 None，不得回落 NSIS setup / offline setup"
+            "便携形态选不到 zip 时必须返回 None，不得回落 NSIS setup"
         );
 
-        // ③ 安装形态：仍然是 bootstrapper，**不是** offline、**不是** zip（命名契约一字未动）。
+        // ③ 安装形态：仍然是 downloadBootstrapper 安装器，**不是** zip（命名契约一字未动）。
         let installed =
             find_suitable_update_asset(&assets, AssetPlatform::Windows, AssetArch::X64, false)
                 .expect("安装形态必须能选到 bootstrapper");
@@ -671,28 +669,6 @@ mod tests {
             find_suitable_update_asset(&clobber_dupe, AssetPlatform::Windows, AssetArch::X64, true)
                 .is_none(),
             "`.zip.1` 不是可用产物，不得被便携规则命中"
-        );
-    }
-
-    /// 离线安装器**永不被 updater 选中**是有意的（README「Windows 双安装器」明写）：
-    /// 它不含 `win` ⇒ 结构性进不了安装态候选集；它是 `.exe` ⇒ 结构性进不了便携规则。
-    #[test]
-    fn update_asset_windows_offline_installer_is_never_selectable() {
-        let only_offline = vec![asset("Polaris_0.2.0_x64-offline-setup.exe", 127_000)];
-        assert!(
-            find_suitable_update_asset(
-                &only_offline,
-                AssetPlatform::Windows,
-                AssetArch::X64,
-                false
-            )
-            .is_none(),
-            "离线版故意不含 'win' ⇒ 安装态候选集为空 ⇒ None（手动下载变体，不该被自动更新选中）"
-        );
-        assert!(
-            find_suitable_update_asset(&only_offline, AssetPlatform::Windows, AssetArch::X64, true)
-                .is_none(),
-            "离线版是 .exe ⇒ 便携规则也不该命中它"
         );
     }
 
@@ -1051,7 +1027,6 @@ mod tests {
         let json = r#"[{"tag_name":"v0.2.0","prerelease":false,"published_at":"2024-05-01T00:00:00Z",
           "assets":[
             {"name":"Polaris_0.2.0_x64-win-setup.exe","browser_download_url":"https://x/win","size":1},
-            {"name":"Polaris_0.2.0_x64-offline-setup.exe","browser_download_url":"https://x/off","size":2},
             {"name":"polaris-portable-v0.2.0.zip","browser_download_url":"https://x/zip","size":3}]}]"#;
 
         let loose = check_app_update(

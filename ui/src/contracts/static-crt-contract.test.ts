@@ -4,7 +4,7 @@
  * # 背景（2026-08-19 真机实测的缺陷）
  *
  * 零 VC++ 运行库的干净机器上首装：`polaris.exe` 缺 `MSVcp140` 起不来、helper 缺
- * `VCRUNTIME140` 同病——「干净机器装完即起」的验收闭包被打破（offline-setup 变体同样中招）。
+ * `VCRUNTIME140` 同病——「干净机器装完即起」的验收闭包被打破。
  * 修法 = `.cargo/config.toml` 给 msvc 目标开 `+crt-static`（所有自家 exe 不再依赖系统
  * VC++ 运行库；helper 是 SYSTEM 服务、无法靠 app-local DLL 兜底，静态链接是唯一双侧治法）。
  *
