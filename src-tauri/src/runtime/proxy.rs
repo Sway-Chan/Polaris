@@ -1354,6 +1354,12 @@ pub struct ProxyRuntime {
     /// API（`record_restart`/`reset_if_past_cooldown`）在本运行时不被生产调用，仅由 stats-engine 自测覆盖。
     /// std `Mutex`：慢起轴更新同步、绝不跨 await 持锁。
     diagnostics: Mutex<DiagnosticCounters>,
+    /// 单测同步屏障：记录就绪探测已经真实失败并进入 `on_retry` 的次数。
+    ///
+    /// 不能用固定 sleep 代替：Windows hosted runner 上 PowerShell 占位核启动/任务调度可能超过监听延时，
+    /// 使监听器先上线、首探即成功，原本要验证的重试接线因此偶发读到 0。生产不携带该字段。
+    #[cfg(test)]
+    ready_retry_count: Arc<AtomicU32>,
     /// stale-core 清扫**禁用**开关（仅单测置位，用于跳过 `/proc` / `ps` 扫描聚焦被测腿）。
     ///
     /// **原先是「一会话只清一次」的门闩，已废——那个前提是错的**：它假设「孤儿只来自上个 app
@@ -1990,6 +1996,8 @@ impl ProxyRuntime {
             restart_deferred: AtomicBool::new(false),
             crash_recovery: Mutex::new(CrashRecoveryMachine::default()),
             diagnostics: Mutex::new(DiagnosticCounters::new()),
+            #[cfg(test)]
+            ready_retry_count: Arc::new(AtomicU32::new(0)),
             stale_sweep_disabled: AtomicBool::new(false),
             stale_sweep_runs: AtomicUsize::new(0),
             custom_rule_files_degraded: AtomicBool::new(false),
@@ -4170,6 +4178,8 @@ impl ProxyRuntime {
         // 慢起轴：本次 start 的就绪重试累计句柄（begin_start → on_retry 累计 → 成功 finish_start 落库）。
         let attempt = Arc::new(Mutex::new(self.diag_lock().begin_start()));
         let attempt_cb = Arc::clone(&attempt);
+        #[cfg(test)]
+        let ready_retry_count = Arc::clone(&self.ready_retry_count);
         let deps = CoreReadyDeps {
             // 子进程存活：直起走 try_wait 非阻塞收割（Ok(None)=仍在跑；child 被 stop 取走→不活）；
             // helper 核走 pid 探活（kill(pid,0)，root 核跨用户 EPERM 亦判活）。
@@ -4222,6 +4232,8 @@ impl ProxyRuntime {
                 if let Ok(mut a) = attempt_cb.lock() {
                     a.record_retry();
                 }
+                #[cfg(test)]
+                ready_retry_count.fetch_add(1, Ordering::SeqCst);
             })),
         };
         let outcome = wait_for_core_ready(
@@ -13913,7 +13925,7 @@ mod tests {
     /// 组合面·慢起轴：真起就绪门（带重试）→ 慢起轴真被喂 → 报告读到非零「就绪重试」行。
     ///
     /// 不经真核（无需 sing-box 二进制）：放一个真·存活子进程（`sleep`）满足 `is_alive`，
-    /// 管理 API 端口**延迟**监听 → 就绪探测头几轮失败（真实重试）→ 监听起来后 `Ready`。
+    /// 管理 API 端口在观测到首轮真实失败后才监听 → 至少一次真实重试 → 监听起来后 `Ready`。
     /// 全程仅 127.0.0.1，不触碰宿主网络。**变异门**：去掉 `on_retry`→record_retry 接线 → 慢起轴恒 0 → 本测转红。
     #[tokio::test(flavor = "multi_thread")]
     async fn diagnostic_slow_start_axis_fed_and_rendered() {
@@ -13934,18 +13946,40 @@ mod tests {
         let child = cmd.spawn().expect("spawn 占位核");
         *rt.child.lock().unwrap() = Some(child);
 
-        // 管理 API 端口：先占一个空闲口，延迟 ~700ms 再真正监听 → 头几轮就绪探测真失败（真实重试）。
+        // 管理 API 端口：先取空闲口但不监听。把 wait_ready 放到独立任务中，等其 `on_retry` 屏障
+        // 明确证明首探已经失败后才 bind。固定 700ms 在 Windows hosted runner 上并不构成先后关系：
+        // 占位 PowerShell/任务调度可能更慢，监听器会抢先上线，首探即成功而假红。
         let port = free_port();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(700)).await;
-            // 监听但不 accept：TcpStream::connect 成功即「就绪」。持有到测试结束。
-            let _l = tokio::net::TcpListener::bind(("127.0.0.1", port))
-                .await
-                .unwrap();
-            tokio::time::sleep(Duration::from_secs(10)).await;
-        });
+        rt.ready_retry_count.store(0, Ordering::SeqCst);
+        let wait_rt = Arc::clone(&rt);
+        let mut waiter = tokio::spawn(async move { wait_rt.wait_ready(port, my_gen).await });
 
-        let outcome = rt.wait_ready(port, my_gen).await;
+        let retry_barrier = async {
+            while rt.ready_retry_count.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        };
+        tokio::pin!(retry_barrier);
+        let ended_before_retry = tokio::select! {
+            () = &mut retry_barrier => None,
+            early = &mut waiter => Some(early.expect("wait_ready 任务不应 panic")),
+        };
+        if let Some(early) = ended_before_retry {
+            rt.kill_core().await;
+            panic!("监听器尚未创建，wait_ready 不应先结束：{early:?}");
+        }
+
+        // 监听但不 accept：TcpStream::connect 成功即「就绪」。持有到 wait_ready 返回。
+        let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+            Ok(listener) => listener,
+            Err(e) => {
+                rt.kill_core().await;
+                panic!("首轮失败后监听管理端口应成功：{e}");
+            }
+        };
+
+        let outcome = waiter.await.expect("wait_ready 任务不应 panic");
+        drop(listener);
         assert_eq!(outcome, CoreReadyOutcome::Ready, "延迟监听后必最终就绪");
 
         let counters = rt.diagnostic_counters();
