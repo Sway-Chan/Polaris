@@ -61,7 +61,7 @@ pub trait ConnectionStream: Send {
 
 // ===== std IO 适配：把 Read+Write 包装成 ConnectionStream =====
 
-/// 把任意 `Read + Write + Send` 适配为 [`ConnectionStream`]（分块读单行 + 超时）。
+/// 把任意 `Read + Write + Send` 适配为 [`ConnectionStream`]（逐字节读单行 + 超时）。
 ///
 /// 生产侧的 `UnixStream` / pipe 句柄可经此包装注入。超时由 `set_read_timeout` 决定
 ///（生产侧在 connect 后调 `set_read_timeout(Some(READ_TIMEOUT))`）。
@@ -92,20 +92,24 @@ where
     S: Write,
 {
     fn read_until_timeout(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        // helper 每连接只回一行。Windows 命名管道若按字节 `ReadFile`，服务端的
-        // `FlushFileBuffers` 会等客户端把整条响应取走；十几次内核往返在真机负载下可把 TUN 起核
-        // 平白拖长 3–6s。一次最多读 1KiB（协议响应远小于此），若底层短读则由上层继续调用。
-        let mut chunk = [0u8; 1024];
-        let n = self.inner.read(&mut chunk)?;
-        if n == 0 {
-            return Ok(0);
+        // Windows byte-mode named pipe 的服务端回包后会 FlushFileBuffers，直到 client 取完响应才返回。
+        // 真机 A/B：一次申请 1KiB 会让 start 在 child 已创建后额外阻塞约 4–5s；ReadByte 同配置、
+        // 同日志、同 ppid 的完整往返约 0.4s。响应本就是一条很短的行协议，逐字节读到换行既不依赖
+        // server disconnect，也不会把下一条数据吞进本请求（每连接一次请求）。
+        let mut byte = [0u8; 1];
+        let mut total = 0;
+        loop {
+            let n = self.inner.read(&mut byte)?;
+            if n == 0 {
+                break;
+            }
+            buf.push(byte[0]);
+            total += 1;
+            if byte[0] == b'\n' {
+                break;
+            }
         }
-        let take = chunk[..n]
-            .iter()
-            .position(|&byte| byte == b'\n')
-            .map_or(n, |newline| newline + 1);
-        buf.extend_from_slice(&chunk[..take]);
-        Ok(take)
+        Ok(total)
     }
 
     fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
@@ -269,13 +273,35 @@ mod tests {
     }
 
     #[test]
-    fn io_adapter_reads_a_complete_line_in_one_bounded_chunk() {
-        // 即使底层同批还带了后续字节，也只交回协议中的第一行。
-        let read_only = std::io::Cursor::new(b"OK stopped\nignored".to_vec());
-        let mut adapter = IoAdapter::new(read_only);
+    fn io_adapter_requests_one_byte_at_a_time_until_newline() {
+        struct PipeLike {
+            inner: std::io::Cursor<Vec<u8>>,
+            requested: Vec<usize>,
+        }
+        impl Read for PipeLike {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                self.requested.push(buf.len());
+                self.inner.read(buf)
+            }
+        }
+        impl Write for PipeLike {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut adapter = IoAdapter::new(PipeLike {
+            inner: std::io::Cursor::new(b"OK stopped\nignored".to_vec()),
+            requested: Vec::new(),
+        });
         let mut buf = Vec::new();
         let total = adapter.read_until_timeout(&mut buf).unwrap();
         assert_eq!(buf, b"OK stopped\n");
         assert_eq!(total, b"OK stopped\n".len());
+        assert!(adapter.inner().requested.iter().all(|&size| size == 1));
+        assert_eq!(adapter.inner().requested.len(), total);
     }
 }
