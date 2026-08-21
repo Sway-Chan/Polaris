@@ -61,7 +61,7 @@ pub trait ConnectionStream: Send {
 
 // ===== std IO 适配：把 Read+Write 包装成 ConnectionStream =====
 
-/// 把任意 `Read + Write + Send` 适配为 [`ConnectionStream`]（逐行读 + 超时）。
+/// 把任意 `Read + Write + Send` 适配为 [`ConnectionStream`]（分块读单行 + 超时）。
 ///
 /// 生产侧的 `UnixStream` / pipe 句柄可经此包装注入。超时由 `set_read_timeout` 决定
 ///（生产侧在 connect 后调 `set_read_timeout(Some(READ_TIMEOUT))`）。
@@ -92,23 +92,20 @@ where
     S: Write,
 {
     fn read_until_timeout(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        // 逐字节读到 `\n` —— 行协议每行以 `\n` 结尾（helper-proto::codec::frame_to_bytes）。
-        // 逐字节读对 line-based 协议最简（无需手搓 BufRead 跨缓冲拆行），且超时由底层流控制。
-        let mut byte = [0u8; 1];
-        let mut total = 0;
-        loop {
-            let n = self.inner.read(&mut byte)?;
-            if n == 0 {
-                // EOF
-                break;
-            }
-            buf.push(byte[0]);
-            total += 1;
-            if byte[0] == b'\n' {
-                break;
-            }
+        // helper 每连接只回一行。Windows 命名管道若按字节 `ReadFile`，服务端的
+        // `FlushFileBuffers` 会等客户端把整条响应取走；十几次内核往返在真机负载下可把 TUN 起核
+        // 平白拖长 3–6s。一次最多读 1KiB（协议响应远小于此），若底层短读则由上层继续调用。
+        let mut chunk = [0u8; 1024];
+        let n = self.inner.read(&mut chunk)?;
+        if n == 0 {
+            return Ok(0);
         }
-        Ok(total)
+        let take = chunk[..n]
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .map_or(n, |newline| newline + 1);
+        buf.extend_from_slice(&chunk[..take]);
+        Ok(take)
     }
 
     fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
@@ -272,26 +269,13 @@ mod tests {
     }
 
     #[test]
-    fn io_adapter_reads_line_by_byte() {
-        // IoAdapter 把 Vec<u8>（Read+Write）适配成 ConnectionStream
-        let backing = std::io::Cursor::new(b"OK stopped\n".to_vec());
-        // Cursor 只读，无法 Write —— 这里用可写的内存流测试读路径
-        let read_only = std::io::Cursor::new(b"OK stopped\n".to_vec());
+    fn io_adapter_reads_a_complete_line_in_one_bounded_chunk() {
+        // 即使底层同批还带了后续字节，也只交回协议中的第一行。
+        let read_only = std::io::Cursor::new(b"OK stopped\nignored".to_vec());
         let mut adapter = IoAdapter::new(read_only);
         let mut buf = Vec::new();
-        let mut total = 0;
-        loop {
-            let n = adapter.read_until_timeout(&mut buf).unwrap();
-            if n == 0 {
-                break;
-            }
-            total += n;
-            if buf.last() == Some(&b'\n') {
-                break;
-            }
-        }
+        let total = adapter.read_until_timeout(&mut buf).unwrap();
         assert_eq!(buf, b"OK stopped\n");
-        let _ = total;
-        let _ = backing;
+        assert_eq!(total, b"OK stopped\n".len());
     }
 }
