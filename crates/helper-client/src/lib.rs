@@ -18,7 +18,8 @@
 //!    （[`transport::MockStream`]），不触碰宿主。
 //! 2. **复用 helper-proto codec**：[`polaris_helper_proto::codec::encode`] + [`polaris_helper_proto::Response::parse`]，
 //!    与已部署 helper 协议强一致（wire drift 编译期消灭）。
-//! 3. **`forbid(unsafe_code)`**：无裸 syscall。
+//! 3. **unsafe 默认禁用**：crate 根 `deny(unsafe_code)`；仅 Windows 命名管道 FFI 模块局部
+//!    `allow(unsafe_code)`，并逐处写明句柄、缓冲和生命周期不变量（与 helper 服务端同一规范）。
 //! 4. **不 commit git**。
 //!
 //! ## 模块布局
@@ -29,7 +30,7 @@
 //! - [`manager`]：[`manager::HelperManager`]（生命周期 + [`manager::SysOps`] trait）。
 //! - [`privilege`]：提权回退纯逻辑（argv 构造 + 取消判定）。
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![cfg_attr(not(test), allow(dead_code))]
 
 pub mod client;
@@ -38,6 +39,8 @@ pub mod manager;
 pub mod privilege;
 pub mod token;
 pub mod transport;
+#[cfg(windows)]
+mod windows_pipe;
 
 // 顶层便利重导出：让 `polaris_helper_client::HelperClient` 无需钻模块路径（主进程主用类型）。
 pub use client::{ClientError, Connector, HelperClient};

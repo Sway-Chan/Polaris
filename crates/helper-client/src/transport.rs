@@ -4,7 +4,7 @@
 //!
 //! Polaris 主进程经 **Unix socket**（mac/linux）或 **命名管道**（win）连 helper（`HelperManager.ts:435` 的
 //! `net.connect(SOCKET_PATH)`；`helper-win` 经 `\\.\pipe\...`）。这两种 IO 在 Rust 是不同类型
-//! （`std::os::unix::net::UnixStream` vs `std::fs::File`/`tokio` 管道），但 wire 协议一致：
+//! （`std::os::unix::net::UnixStream` vs 原生 Win32 同步管道），但 wire 协议一致：
 //! **行文本帧**（`token\ncmd\n[args...]\n`，见 `helper-proto::codec`）。
 //!
 //! 把「读字节 / 写字节」抽成 [`ConnectionStream`]，让 [`HelperClient`](crate::client::HelperClient)
@@ -14,7 +14,7 @@
 //! ## 移植纪律
 //!
 //! - 复用 `helper-proto::codec`（`encode`/`Response::parse`），不重写帧逻辑。
-//! - `forbid(unsafe_code)`：无裸 syscall。
+//! - 本模块无裸 syscall；Windows FFI 只存在于 `windows_pipe` 平台模块。
 //! - 不触碰宿主：[`MockStream`] 是纯内存环形缓冲，不开真 socket。
 //!
 //! 对应 Polaris：`HelperManager.ts` 的 `net.connect(SOCKET_PATH)` + `sock.end(...)` + `sock.on('data')`。
@@ -63,8 +63,7 @@ pub trait ConnectionStream: Send {
 
 /// 把任意 `Read + Write + Send` 适配为 [`ConnectionStream`]（逐字节读单行 + 超时）。
 ///
-/// 生产侧的 `UnixStream` / pipe 句柄可经此包装注入。超时由 `set_read_timeout` 决定
-///（生产侧在 connect 后调 `set_read_timeout(Some(READ_TIMEOUT))`）。
+/// 泛型测试流可经此包装注入；生产 Unix/Windows 连接各自实现平台所需的关闭/超时语义。
 pub struct IoAdapter<S> {
     inner: S,
 }
@@ -92,10 +91,8 @@ where
     S: Write,
 {
     fn read_until_timeout(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        // Windows helper 在回包后用 FlushFileBuffers 等 client 取完响应。真机 A/B 确认：
-        // 同步 pipe 逐字节读取约 0.2s；overlapped 逐字节会叠加 APC 调度成本，而大缓冲
-        // ReadFileEx 会与 helper flush 形成数秒等待。响应是短单行且一连接一请求，
-        // 故安全同步流按 1 byte 读到换行是这个 wire 契约的确定边界。
+        // 响应是短单行且一连接一请求；按 1 byte 读到换行是 wire 契约的确定边界。
+        // Windows 生产流在 windows_pipe 内用同步 ReadFile 单独实现同一语义。
         let mut byte = [0u8; 1];
         let mut total = 0;
         loop {

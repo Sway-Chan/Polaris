@@ -12,6 +12,16 @@ thiserror = "2"
 # log = 连接 / 重连 / 装卸事件 facade（生产侧由 host 接管；测试侧 no-op）。
 log = "0.4"
 
+[target.'cfg(windows)'.dependencies]
+# Windows 命名管道客户端必须与 helper 服务端使用同一组同步 Win32 原语；std::fs::File
+# 在真机上会把 start 响应额外拖住数秒。依赖面只覆盖句柄生命周期与文件 IO。
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+] }
+
 [dev-dependencies]
 # tempfile = token 文件 / 脚本落盘的临时目录（token.rs / manager.rs 测试）。
 tempfile = "3"
