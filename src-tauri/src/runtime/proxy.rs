@@ -98,7 +98,7 @@ use polaris_system_integration::route_ops::SystemRouteOps;
 use polaris_system_integration::route_ops::{
     verify_exit_captured, ExitCaptureOutcome, PROBE_IP as ROUTE_PROBE_IP,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
@@ -161,6 +161,107 @@ const STALE_KILL_GRACE: Duration = Duration::from_millis(1_500);
 /// **C6-5**：helper 起核时 daemon 侧 sing-box 早期 stdout/stderr 重定向的日志文件名（app 无法捕获 root
 /// 受管核的管道，故经 helper 落文件；对齐 上游 `singbox_startup.log`）。落 `<configDir>/`。
 const SINGBOX_STARTUP_LOG: &str = "singbox-startup.log";
+/// `sing-box check` 成功缓存。只缓存“同一核二进制 + 除运行期随机端口外完全相同的生成配置”；
+/// 任一结构字段或核身份变化都重新真跑 check。
+const KERNEL_GATE_CACHE_FILE: &str = "singbox-check-cache.json";
+const KERNEL_GATE_CACHE_SCHEMA: u32 = 1;
+
+/// 一次已成功 `sing-box check` 的可持久身份。
+///
+/// 缓存是纯性能提示，不是信任根：缺失、损坏、元数据读不到一律 miss；真正起核仍保留既有
+/// readiness / FATAL / 出口自证链。`config_sha256` 来自**最终生成配置**，只抹去每轮必变、但不改变
+/// schema 接受性的本地随机端口，避免用过宽的用户配置投影冒充内核实际收下的 JSON。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KernelGateCacheRecord {
+    schema: u32,
+    binary_path: String,
+    binary_len: u64,
+    binary_modified_ns: u64,
+    config_sha256: String,
+}
+
+/// 抹去每轮起核必重新分配的本地端口；其余字段（含用户 mixed 端口、节点、规则、路径、secret）全保留。
+fn normalize_kernel_gate_config(value: &mut Value) {
+    if let Some(inbounds) = value.get_mut("inbounds").and_then(Value::as_array_mut) {
+        for inbound in inbounds {
+            let dynamic = inbound
+                .get("tag")
+                .and_then(Value::as_str)
+                .is_some_and(|tag| tag == "update-in" || tag.starts_with("probe-in-"));
+            if dynamic {
+                if let Some(obj) = inbound.as_object_mut() {
+                    obj.insert("listen_port".into(), Value::from(0));
+                }
+            }
+        }
+    }
+    if let Some(services) = value.get_mut("services").and_then(Value::as_array_mut) {
+        for service in services {
+            if service.get("type").and_then(Value::as_str) == Some("api") {
+                if let Some(obj) = service.as_object_mut() {
+                    obj.insert("listen_port".into(), Value::from(0));
+                }
+            }
+        }
+    }
+    if let Some(servers) = value
+        .get_mut("dns")
+        .and_then(|dns| dns.get_mut("servers"))
+        .and_then(Value::as_array_mut)
+    {
+        for server in servers {
+            if server.get("tag").and_then(Value::as_str) == Some("dns-node-race") {
+                if let Some(obj) = server.as_object_mut() {
+                    obj.insert("server_port".into(), Value::from(0));
+                }
+            }
+        }
+    }
+}
+
+fn kernel_gate_cache_record(
+    binary: &Path,
+    config: &SingBoxConfig,
+) -> Option<KernelGateCacheRecord> {
+    let metadata = std::fs::metadata(binary).ok()?;
+    let modified = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    let modified_ns = u64::try_from(modified.as_nanos()).ok()?;
+    let binary_path = binary
+        .canonicalize()
+        .unwrap_or_else(|_| binary.to_path_buf())
+        .to_string_lossy()
+        .into_owned();
+    let mut normalized = serde_json::to_value(config).ok()?;
+    normalize_kernel_gate_config(&mut normalized);
+    let normalized = serde_json::to_vec(&normalized).ok()?;
+    Some(KernelGateCacheRecord {
+        schema: KERNEL_GATE_CACHE_SCHEMA,
+        binary_path,
+        binary_len: metadata.len(),
+        binary_modified_ns: modified_ns,
+        config_sha256: polaris_updater::verify::sha256_hex(&normalized),
+    })
+}
+
+fn load_kernel_gate_cache(path: &Path) -> Option<KernelGateCacheRecord> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let record: KernelGateCacheRecord = serde_json::from_str(&raw).ok()?;
+    (record.schema == KERNEL_GATE_CACHE_SCHEMA).then_some(record)
+}
+
+fn persist_kernel_gate_cache(path: &Path, record: &KernelGateCacheRecord) -> Result<(), String> {
+    let content = serde_json::to_string(record)
+        .map_err(|e| format!("序列化 sing-box check 缓存失败: {e}"))?;
+    let suffix = polaris_store::fs::random_tmp_suffix();
+    polaris_store::atomic_write_plan(path, &suffix, &content)
+        .execute(&polaris_store::StdFs)
+        .map_err(|e| format!("持久化 sing-box check 缓存失败 {}: {e}", path.display()))
+}
 
 /// **§15 主核测速探测池槽数 K**（上游 `shared/speed-test.ts PROBE_POOL_SIZE`，单一真值）。
 ///
@@ -1387,6 +1488,12 @@ pub struct ProxyRuntime {
     /// API（`record_restart`/`reset_if_past_cooldown`）在本运行时不被生产调用，仅由 stats-engine 自测覆盖。
     /// std `Mutex`：慢起轴更新同步、绝不跨 await 持锁。
     diagnostics: Mutex<DiagnosticCounters>,
+    /// 上一份已被同一内核真实 `check` 接受的生成配置身份。
+    ///
+    /// 持久化是为了让 app 重启后的第一次连接也能复用；内存态则避免每次连接都重读小文件。
+    /// 它是 fail-open 的性能提示而非信任根：未命中或损坏只会多跑一次 check；真起核后的
+    /// readiness / FATAL / 出口自证不依赖此字段。
+    kernel_gate_cache: Mutex<Option<KernelGateCacheRecord>>,
     /// 单测同步屏障：记录就绪探测已经真实失败并进入 `on_retry` 的次数。
     ///
     /// 不能用固定 sleep 代替：Windows hosted runner 上 PowerShell 占位核启动/任务调度可能超过监听延时，
@@ -2006,6 +2113,7 @@ impl ProxyRuntime {
             .join(polaris_system_integration::DNS_MARKER_FILENAME)
             .to_string_lossy()
             .into_owned();
+        let kernel_gate_cache = load_kernel_gate_cache(&config.dir().join(KERNEL_GATE_CACHE_FILE));
         Self {
             config,
             helper,
@@ -2029,6 +2137,7 @@ impl ProxyRuntime {
             restart_deferred: AtomicBool::new(false),
             crash_recovery: Mutex::new(CrashRecoveryMachine::default()),
             diagnostics: Mutex::new(DiagnosticCounters::new()),
+            kernel_gate_cache: Mutex::new(kernel_gate_cache),
             #[cfg(test)]
             ready_retry_count: Arc::new(AtomicU32::new(0)),
             stale_sweep_disabled: AtomicBool::new(false),
@@ -3082,8 +3191,8 @@ impl ProxyRuntime {
         );
         let mut attempt: u32 = 0;
         // 内核闸门累计剥掉的节点 id。**必须在重试循环之外**：内核对某个节点的拒收是确定性的
-        //（同一节点、同一个核，判定不会变），第 2 腿起沿用即可 ⇒ 重试腿恒只付 1 次 check，
-        // 而不是每腿把同一批坏节点重新发现一遍。
+        //（同一节点、同一个核，判定不会变），第 2 腿起沿用即可；再叠加已接受配置缓存后，
+        // 同一核/配置的就绪重试腿连确认 check 也无需重复起进程。
         let mut kernel_peeled: BTreeMap<String, InvalidNode> = BTreeMap::new();
         // C-tun-conflict：起核**前**抓「应走代理的公网目的」出口 baseline（仅 TUN 模式；post-flight 差分锚点）。
         // 必须在任何 spawn 之前 —— 我方 utun 尚未上线，此刻查到的是「Polaris 起核前」的出口（物理网卡或
@@ -3160,7 +3269,7 @@ impl ProxyRuntime {
             // emit 之后才在下面 `?`。每尝试解析（字面路径，成本极低）；解析不到 = 终态，不重试（非竞态失败）。
             let binary_res = self.core_binary_for_start();
             // 起核前的内核闸门：生成 → 写盘 → check → 剥掉内核点名拒收的节点 → 重来，直到内核收下。
-            // 健康路径恒 1 次 check（随包核实测生产形状 26–29ms），见 `generate_and_gate` 文档。
+            // 首次/结构变更仍真跑 check；同一核 + 同一最终生成配置命中已接受身份时为 0 次。
             let gate = match self
                 .generate_and_gate(
                     &user_config,
@@ -8150,6 +8259,33 @@ impl ProxyRuntime {
         }
     }
 
+    fn kernel_gate_cache_hit(&self, record: &KernelGateCacheRecord) -> bool {
+        self.kernel_gate_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            == Some(record)
+    }
+
+    /// 只在真实 `check` 返回 Accepted 后调用。先更新内存态，再原子落盘；落盘失败只影响
+    /// 下次 app 重启后的命中率，不能把本次已通过的起核变成失败。
+    fn remember_kernel_gate_cache(&self, record: KernelGateCacheRecord) {
+        {
+            let mut cache = self
+                .kernel_gate_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if cache.as_ref() == Some(&record) {
+                return;
+            }
+            *cache = Some(record.clone());
+        }
+        let path = self.config.dir().join(KERNEL_GATE_CACHE_FILE);
+        if let Err(error) = persist_kernel_gate_cache(&path, &record) {
+            log::warn!("{error}");
+        }
+    }
+
     /// 生成配置 → 写盘 → **内核闸门**（`sing-box check`），把内核点名拒收的节点剥掉后重来一轮，
     /// 直到内核收下这份配置（或按 fail-open 停下来）。返回**已落盘的那一份**。
     ///
@@ -8198,13 +8334,26 @@ impl ProxyRuntime {
                     gen_out, effective, peeled, checks_run, None,
                 ));
             };
+            let cache_record = kernel_gate_cache_record(bin, &gen_out.config);
+            if cache_record
+                .as_ref()
+                .is_some_and(|record| self.kernel_gate_cache_hit(record))
+            {
+                log::info!("起核内核闸门命中已接受的核/配置身份，跳过重复 sing-box check");
+                return Ok(GateOutcome::assemble(
+                    gen_out, effective, peeled, checks_run, None,
+                ));
+            }
             checks_run += 1;
             let verdict = run_config_check(bin, config_path).await;
             let rejection = match decide_peel(&verdict, started.elapsed(), PEEL_TIME_BUDGET) {
                 PeelStep::Proceed => {
+                    if let Some(record) = cache_record {
+                        self.remember_kernel_gate_cache(record);
+                    }
                     return Ok(GateOutcome::assemble(
                         gen_out, effective, peeled, checks_run, None,
-                    ))
+                    ));
                 }
                 PeelStep::Stop(why) => {
                     log::warn!("起核内核闸门停止剥离（放行到 spawn，由内核自己报错）：{why}");
@@ -8308,7 +8457,8 @@ struct GateOutcome {
     pruned_rule_set_tags: Vec<String>,
     /// 生成侧 gate 剔除的 ∪ 内核闸门剥掉的（走同一条 `EVENT_PROXY_INVALID_NODES` 通道）。
     invalid_nodes: Vec<InvalidNode>,
-    /// 本次真跑了几次 `sing-box check`（健康路径恒 1；日志用，不参与判定）。
+    /// 本次真跑了几次 `sing-box check`（缓存命中 0、首次健康 1、剥除腿可 >1）；
+    /// 只用于日志和测试，不参与判定。
     checks_run: u32,
     /// `Some` = 被内核拒收的正是用户选中的节点（附内核原话）→ 调用方落终态错误，不 spawn。
     blocked: Option<(InvalidNode, String)>,
@@ -10742,8 +10892,7 @@ mod tests {
     ///
     /// 系统代理清理收口器用**真实生产控制器** + 临时目录 marker 路径（无 marker → 门控 1 即返、零系统
     /// 调用 → 本机安全）。不预置 config.json —— 首次 `current()` 自会建默认配置。
-    fn test_runtime() -> (Arc<ProxyRuntime>, PathBuf) {
-        let dir = fresh_test_dir();
+    fn test_runtime_in(dir: PathBuf) -> Arc<ProxyRuntime> {
         let config = Arc::new(ConfigManager::new(dir.clone()));
         // 替身 helper（恒未装）：见 `HelperRuntime::never_installed_for_tests` —— 用 `new` 会让
         // 下面所有 helper 门的绿取决于跑测机器装没装过 Polaris，且装了会真连特权 daemon。
@@ -10755,16 +10904,18 @@ mod tests {
                     .to_string_lossy()
                     .into_owned(),
             ));
-        (
-            Arc::new(ProxyRuntime::new(
-                config,
-                helper,
-                mesh,
-                clearer,
-                Arc::new(NoNetworkDoh),
-            )),
-            dir,
-        )
+        Arc::new(ProxyRuntime::new(
+            config,
+            helper,
+            mesh,
+            clearer,
+            Arc::new(NoNetworkDoh),
+        ))
+    }
+
+    fn test_runtime() -> (Arc<ProxyRuntime>, PathBuf) {
+        let dir = fresh_test_dir();
+        (test_runtime_in(dir.clone()), dir)
     }
 
     /// row33：DNS 热插拔重灌门控——仅「当前 TUN + 用户未关接管开关 + 有接管 marker」三条同时成立才放行。
@@ -20703,6 +20854,83 @@ mod tests {
         })
     }
 
+    #[test]
+    fn kernel_gate_cache_normalizes_only_known_runtime_ports() {
+        let original = serde_json::json!({
+            "inbounds": [
+                { "tag": "probe-in-0", "listen_port": 21001 },
+                { "tag": "update-in", "listen_port": 21002 },
+                { "tag": "mixed-in", "listen_port": 17890 }
+            ],
+            "services": [
+                { "type": "api", "listen_port": 21003 },
+                { "type": "other", "listen_port": 21004 }
+            ],
+            "dns": { "servers": [
+                { "tag": "dns-node-race", "server_port": 21005 },
+                { "tag": "dns-user", "server_port": 53 }
+            ]},
+            "secret": "stable-secret"
+        });
+        let mut different_runtime_ports = original.clone();
+        different_runtime_ports["inbounds"][0]["listen_port"] = Value::from(31001);
+        different_runtime_ports["inbounds"][1]["listen_port"] = Value::from(31002);
+        different_runtime_ports["services"][0]["listen_port"] = Value::from(31003);
+        different_runtime_ports["dns"]["servers"][0]["server_port"] = Value::from(31005);
+
+        let mut normalized_original = original.clone();
+        normalize_kernel_gate_config(&mut normalized_original);
+        normalize_kernel_gate_config(&mut different_runtime_ports);
+        assert_eq!(
+            normalized_original, different_runtime_ports,
+            "只有已知的每轮随机端口变化时应复用 check 结果"
+        );
+
+        let mut changed_mixed = original.clone();
+        changed_mixed["inbounds"][2]["listen_port"] = Value::from(17891);
+        let mut changed_secret = original;
+        changed_secret["secret"] = Value::from("changed-secret");
+        for (path, mut changed) in [
+            ("用户 mixed 端口", changed_mixed),
+            ("管理 API secret", changed_secret),
+        ] {
+            normalize_kernel_gate_config(&mut changed);
+            assert_ne!(normalized_original, changed, "{path} 改变必须 cache miss");
+        }
+    }
+
+    #[test]
+    fn kernel_gate_cache_round_trips_atomically_and_corruption_is_a_miss() {
+        let dir = fresh_test_dir();
+        let path = dir.join(KERNEL_GATE_CACHE_FILE);
+        let record = KernelGateCacheRecord {
+            schema: KERNEL_GATE_CACHE_SCHEMA,
+            binary_path: dir.join("sing-box").to_string_lossy().into_owned(),
+            binary_len: 42,
+            binary_modified_ns: 123,
+            config_sha256: "a".repeat(64),
+        };
+        persist_kernel_gate_cache(&path, &record).expect("原子落盘应成功");
+        assert_eq!(load_kernel_gate_cache(&path), Some(record.clone()));
+
+        std::fs::write(&path, b"{broken").unwrap();
+        assert_eq!(
+            load_kernel_gate_cache(&path),
+            None,
+            "损坏缓存必须 fail miss"
+        );
+
+        let mut stale = record;
+        stale.schema += 1;
+        std::fs::write(&path, serde_json::to_vec(&stale).unwrap()).unwrap();
+        assert_eq!(
+            load_kernel_gate_cache(&path),
+            None,
+            "旧 schema 必须 fail miss"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 假核（**闸门腿**）：第一次 `check` 吐一条点名 `outbounds[<idx>]` 的 FATAL 并 rc=1，
     /// 之后的 `check` 一律 rc=0（模拟「坏节点被剥掉后配置就合法了」）。`run` 直接退出（本门不 spawn）。
     ///
@@ -20726,6 +20954,111 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         p
+    }
+
+    /// 恒接受 `check` 的假核，并把真实进程启动次数累计到文件。
+    #[cfg(unix)]
+    fn write_fake_accepting_core(dir: &std::path::Path) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let binary = dir.join("fake-accepting-sing-box");
+        let counter = dir.join("gate-check-count");
+        std::fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\ncase \" $* \" in *\" check \"*)\n\
+                 n=0\n[ -f {counter} ] && n=$(sed -n '1p' {counter})\n\
+                 n=$((n + 1))\nprintf '%s\\n' \"$n\" > {counter}\nexit 0;;\nesac\nexit 1\n",
+                counter = counter.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (binary, counter)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn accepted_kernel_config_cache_survives_runtime_restart_and_misses_on_structure_change()
+    {
+        let dir = fresh_test_dir();
+        let (binary, counter) = write_fake_accepting_core(&dir);
+        let cfg = gate_two_node_config();
+        let user_config: UserConfig = serde_json::from_value(cfg.clone()).unwrap();
+        let path = dir.join("gate-cache.json");
+
+        let rt = test_runtime_in(dir.clone());
+        let deps = rt.generate_deps(0, 0, &[], &cfg);
+        let mut peeled = BTreeMap::new();
+        let first = rt
+            .generate_and_gate(&user_config, &deps, &path, Some(&binary), &mut peeled)
+            .await
+            .unwrap();
+        assert_eq!(first.checks_run, 1, "首次必须真跑 check");
+        assert_eq!(std::fs::read_to_string(&counter).unwrap().trim(), "1");
+
+        let second = rt
+            .generate_and_gate(&user_config, &deps, &path, Some(&binary), &mut peeled)
+            .await
+            .unwrap();
+        assert_eq!(second.checks_run, 0, "同运行时的相同核/配置应命中");
+        assert_eq!(std::fs::read_to_string(&counter).unwrap().trim(), "1");
+        drop(deps);
+        drop(rt);
+
+        let restarted = test_runtime_in(dir.clone());
+        let restarted_deps = restarted.generate_deps(0, 0, &[], &cfg);
+        let after_restart = restarted
+            .generate_and_gate(
+                &user_config,
+                &restarted_deps,
+                &path,
+                Some(&binary),
+                &mut peeled,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            after_restart.checks_run, 0,
+            "app 重启后应从持久缓存命中，否则 Windows 首次连接仍白付约 2s"
+        );
+
+        use std::io::Write as _;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&binary)
+            .unwrap()
+            .write_all(b"# changed kernel identity\n")
+            .unwrap();
+        let changed_binary = restarted
+            .generate_and_gate(
+                &user_config,
+                &restarted_deps,
+                &path,
+                Some(&binary),
+                &mut peeled,
+            )
+            .await
+            .unwrap();
+        assert_eq!(changed_binary.checks_run, 1, "内核文件变化必须重验");
+        assert_eq!(std::fs::read_to_string(&counter).unwrap().trim(), "2");
+
+        let mut changed_cfg = cfg;
+        changed_cfg["mixedPort"] = Value::from(17891);
+        let changed_user: UserConfig = serde_json::from_value(changed_cfg.clone()).unwrap();
+        let changed_deps = restarted.generate_deps(0, 0, &[], &changed_cfg);
+        let changed = restarted
+            .generate_and_gate(
+                &changed_user,
+                &changed_deps,
+                &path,
+                Some(&binary),
+                &mut BTreeMap::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(changed.checks_run, 1, "用户端口等结构变化必须重验");
+        assert_eq!(std::fs::read_to_string(&counter).unwrap().trim(), "3");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 🔴 **整环门：内核点名 → 真的重新生成 → 坏节点从落盘配置里消失 → 走既有通道上报**。
