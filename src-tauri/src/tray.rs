@@ -776,6 +776,15 @@ fn build_overlay(app: &AppHandle, generation: u64) -> Option<tauri::WebviewWindo
         .skip_taskbar(true)
         .visible(false);
 
+    // non-activating 浮层会在 Polaris 不是前台 app 时接收用户的第一次点击。Wry 的 WKWebView 默认
+    // `acceptsFirstMouse:` 为 false，于是 macOS 会把这一下只当作“激活窗口”而不下发给按钮：主窗已关闭 /
+    // 轻量模式时表现为先点一下菜单才开始响应 hover，退出等动作要点第二次。用 Wry/Tauri 已有的
+    // `accept_first_mouse` 开关让首击直接进入 WebView；不需要恢复 `set_focus()`，因此也不会重新激活主窗。
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.accept_first_mouse(true);
+    }
+
     // mac/win：透明窗 + **关系统窗口阴影**。阴影沿的是**窗口矩形**（不是卡片圆角），透明窗上就成了卡片外
     // 那圈灰边/「波纹」——真机实拍确认，故恒关。无箭头「面板风」质感改由前端承担：卡片 1px 边框定边 +
     // 贴菜单栏 native 间隙（`tray-overlay.css`），**不再画 CSS box-shadow**（defect#2「不该有的阴影」——
@@ -2153,6 +2162,11 @@ mod overlay_lifecycle_gate {
 
     #[test]
     fn mac_overlay_contract_is_nonactivating_and_never_uses_tauri_focus() {
+        let build = crate::commands::guard_scan::top_level_fn_body(TRAY_RS, "fn build_overlay(");
+        assert!(
+            build.contains("builder.accept_first_mouse(true)"),
+            "mac 托盘 WebView 必须接收非前台 app 的首击，不能把第一次点击吃成窗口激活"
+        );
         let configure = crate::commands::guard_scan::top_level_fn_body(
             TRAY_RS,
             "fn configure_nonactivating_overlay(",
