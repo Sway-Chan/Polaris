@@ -777,9 +777,9 @@ fn build_overlay(app: &AppHandle, generation: u64) -> Option<tauri::WebviewWindo
         .visible(false);
 
     // non-activating 浮层会在 Polaris 不是前台 app 时接收用户的第一次点击。Wry 的 WKWebView 默认
-    // `acceptsFirstMouse:` 为 false，于是 macOS 会把这一下只当作“激活窗口”而不下发给按钮：主窗已关闭 /
-    // 轻量模式时表现为先点一下菜单才开始响应 hover，退出等动作要点第二次。用 Wry/Tauri 已有的
-    // `accept_first_mouse` 开关让首击直接进入 WebView；不需要恢复 `set_focus()`，因此也不会重新激活主窗。
+    // `acceptsFirstMouse:` 为 false，因此这里复用 Tauri 开关把首击交给 WebView。注意：它只管“首击是否
+    // click-through”，不负责 AppKit first responder；后者在 `configure_nonactivating_overlay` 改 style mask
+    // 后按 Tao 自身的同一不变式恢复。仍不调用 `set_focus()`，因此不会顺带激活 Polaris 主窗。
     #[cfg(target_os = "macos")]
     {
         builder = builder.accept_first_mouse(true);
@@ -1182,16 +1182,24 @@ fn destroy_overlay(app: &AppHandle) -> bool {
 /// app 保持不变。若配置失败，本代窗口宁可不展示，也不退回会抢焦点的旧语义。
 #[cfg(target_os = "macos")]
 fn configure_nonactivating_overlay(win: &tauri::WebviewWindow) -> Result<(), String> {
-    use objc2_app_kit::{NSWindow, NSWindowStyleMask};
+    use objc2_app_kit::{NSView, NSWindow, NSWindowStyleMask};
 
-    let raw = win.ns_window().map_err(|e| e.to_string())?;
-    if raw.is_null() {
+    let raw_window = win.ns_window().map_err(|e| e.to_string())?;
+    if raw_window.is_null() {
         return Err("NSWindow handle is null".to_string());
     }
+    let raw_view = win.ns_view().map_err(|e| e.to_string())?;
+    if raw_view.is_null() {
+        return Err("NSView handle is null".to_string());
+    }
     // SAFETY: Tauri 的 `ns_window()` 返回该 WebviewWindow 持有、且当前主线程有效的 NSWindow 指针；
-    // 本函数只在 build() 紧接着的主线程调用，不越过窗口生命周期保存引用。
-    let ns_window = unsafe { &*raw.cast::<NSWindow>() };
+    // `ns_view()` 同理返回它的内容视图。本函数只在 build() 紧接着的主线程调用，不越过窗口生命周期
+    // 保存引用。Tao 0.35.3 的 `set_style_mask` 在改 mask 后也立即把同一 ns_view 设回 first responder；
+    // 它明确说明漏掉这一步会让 key handling 一直坏到窗口再次被点击，正与非前台托盘首击复现同形。
+    let ns_window = unsafe { &*raw_window.cast::<NSWindow>() };
+    let ns_view = unsafe { &*raw_view.cast::<NSView>() };
     ns_window.setStyleMask(ns_window.styleMask() | NSWindowStyleMask::NonactivatingPanel);
+    ns_window.makeFirstResponder(Some(ns_view));
     Ok(())
 }
 
@@ -2173,8 +2181,10 @@ mod overlay_lifecycle_gate {
         );
         assert!(
             configure.contains("NSWindowStyleMask::NonactivatingPanel")
-                && configure.contains("setStyleMask("),
-            "mac 托盘宿主必须在展示前补 AppKit non-activating mask"
+                && configure.contains("setStyleMask(")
+                && configure.contains("win.ns_view()")
+                && configure.contains("makeFirstResponder(Some(ns_view))"),
+            "mac 托盘宿主改 non-activating mask 后必须按 Tao 不变式恢复 WebView first responder"
         );
         let focus = crate::commands::guard_scan::top_level_fn_body(TRAY_RS, "fn focus_overlay(");
         assert!(
