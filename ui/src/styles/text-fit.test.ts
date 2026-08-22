@@ -713,6 +713,18 @@ const trayNoteFont = px(decl('../tray/tray-overlay.css', '.tray-menu .tray-note'
 /** S10 = 卡内宽 − 8×2(margin) − 8×2(padding)。带 `word-break:break-word` ⇒ 横向不可能溢出，只钉行数。 */
 const TRAY_NOTE_AVAIL = trayInner - trayNoteMarginX - trayNotePadX;
 
+const trayUpdateResultMax = px(
+  decl('../tray/tray-overlay.css', '.tray-menu .tray-update-result', 'max-width'),
+);
+const trayUpdateResultPadX = padX(
+  decl('../tray/tray-overlay.css', '.tray-menu .tray-update-result', 'padding'),
+);
+const trayUpdateResultFont = px(
+  decl('../tray/tray-overlay.css', '.tray-menu .tray-update-result', 'font-size'),
+);
+/** S10b = 检查更新按钮右侧短结果徽标；max-width 含横向 padding（全局 border-box）。 */
+const TRAY_UPDATE_RESULT_AVAIL = trayUpdateResultMax - trayUpdateResultPadX;
+
 /** 更新弹窗：窗宽由 Rust `POPUP_WIDTH` 定。 */
 const POPUP_W = (() => {
   const rs = readFileSync(
@@ -1193,7 +1205,10 @@ describe('④ 主窗连接表：colgroup 定宽且长表头有完整 tooltip 兜
  * 未登记的键落 `ROW`（最保守的那档：带右侧勾/箭头时只剩 161px）。下面那条穷尽性断言保证
  * **新增 `tray.*` 键必须在这里表态**——否则转红，不会有键悄悄溜进「反正默认能过」的缝里。
  */
-const TRAY_SLOT: Record<string, 'ROW' | 'GROUP_H' | 'STATUS_TITLE' | 'STATUS_SUB' | 'NOTE'> = {
+const TRAY_SLOT: Record<
+  string,
+  'ROW' | 'GROUP_H' | 'STATUS_TITLE' | 'STATUS_SUB' | 'NOTE' | 'BADGE'
+> = {
   // `.tray-group-h`（10px + .06em 字距 + uppercase）
   'tray.nodesRecent': 'GROUP_H',
   'tray.nodes': 'GROUP_H',
@@ -1212,8 +1227,9 @@ const TRAY_SLOT: Record<string, 'ROW' | 'GROUP_H' | 'STATUS_TITLE' | 'STATUS_SUB
   'tray.fakeIpAutoEnabled': 'NOTE',
   'tray.noTestableNodes': 'NOTE',
   'tray.checkingUpdate': 'NOTE',
-  'tray.upToDate': 'NOTE',
-  'tray.updateCheckFailed': 'NOTE',
+  // 检查结果不再占 tray-note 新行，而是检查更新按钮右侧的固定宽短徽标。
+  'tray.upToDate': 'BADGE',
+  'tray.updateCheckFailed': 'BADGE',
   // W14 动作失败回执（`t(key, vars)` 插值形态）：量的是模板串；真实 detail 可变长，
   // NOTE 槽 6 行预算 + `tray_resize` 的 [80,720] 夹取共同兜住极端长错误串。
   'tray.actionFailed': 'NOTE',
@@ -1279,6 +1295,14 @@ describe('⑤ 托盘浮层（独立 webview，五语种）', () => {
        * `t('zh','en')`，而 FakeIP 这条是跨行写的），不是「把 4 放宽成 6」。
        */
       maxLines: 6,
+    },
+    BADGE: {
+      where: 'S10b 托盘检查更新结果徽标',
+      avail: TRAY_UPDATE_RESULT_AVAIL,
+      type: { fontSize: trayUpdateResultFont },
+      wrap: false,
+      breakAnywhere: false,
+      maxLines: 1,
     },
   };
   const slotsOf = (key: string): Box[] =>

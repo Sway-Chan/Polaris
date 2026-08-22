@@ -82,6 +82,16 @@ describe('托盘卡片随系统栏边缘贴合', () => {
     expect(MENU).toMatch(/parseFloat\(style\.borderTopWidth/);
     expect(MENU).toMatch(/parseFloat\(style\.borderBottomWidth/);
   });
+
+  it('配置加载后的主视图高度按 WebView 代次固化，节点折叠/展开只走内部滚动', () => {
+    expect(MENU).toContain('const fixedMenuHeightRef = useRef<number | null>(null)');
+    expect(MENU).toMatch(
+      /fixedMenuHeightRef\.current === null\s*&&\s*config\s*&&\s*view === 'main'/,
+    );
+    expect(MENU).toContain('const fixedHeight = fixedMenuHeightRef.current ?? measuredHeight');
+    expect(MENU).toContain('TRAY_RESIZE, { height: fixedHeight }');
+    expect(OVERLAY_RAW).toMatch(/\.tray-menu\s*{[^}]*height:\s*calc\(100vh\s*-\s*12px\);/s);
+  });
 });
 
 describe('状态卡超长出口 IP：默认截断，悬停或聚焦时才滚动', () => {
@@ -132,16 +142,28 @@ describe('A1：托盘缺的两项入口真实存在且真实接线', () => {
   });
 
   it('检查失败不得显示成「已是最新」（B5 反伪造）', () => {
-    // 结构判据：catch 分支里出现的必须是失败文案，不能是 up-to-date 文案。
-    // 文案 2026-07-31 起走 i18n 键（浮层接入 5 语种），故按**键**断言而非按英文字面量。
+    // 结构判据：catch 分支必须写失败态，不能写 latest；渲染层再把两个稳定状态分别映射到 i18n 键。
     const start = MENU.indexOf('const checkUpdate');
     expect(start).toBeGreaterThan(-1);
     const body = MENU.slice(start, MENU.indexOf('\n  };', start));
     const catchIdx = body.indexOf('} catch {');
     expect(catchIdx).toBeGreaterThan(-1);
     const catchBody = body.slice(catchIdx);
-    expect(catchBody).toContain('tray.updateCheckFailed');
-    expect(catchBody, 'catch 腿里不得出现「已是最新」').not.toContain('tray.upToDate');
+    expect(catchBody).toContain("setUpdateResult('failed')");
+    expect(catchBody, 'catch 腿里不得写成 latest').not.toContain("setUpdateResult('latest')");
+    expect(MENU).toMatch(/updateResult === 'latest'[\s\S]{0,120}t\('tray\.upToDate'\)/);
+    expect(MENU).toMatch(/:\s*t\('tray\.updateCheckFailed'\)/);
+  });
+
+  it('检查结果留在按钮右侧，不得再用提示条撑高菜单', () => {
+    const start = MENU.indexOf('const checkUpdate');
+    const body = MENU.slice(start, MENU.indexOf('\n  };', start));
+    expect(body).not.toContain("setNotice(t('tray.checkingUpdate'))");
+    expect(body).not.toContain("setNotice(t('tray.upToDate'))");
+    expect(body).not.toContain("setNotice(t('tray.updateCheckFailed'))");
+    expect(MENU).toContain('className={`tray-update-result');
+    expect(MENU).toContain("aria-label={checking ? t('tray.checkingUpdate') : undefined}");
+    expect(OVERLAY_RAW).toMatch(/\.tray-menu \.tray-update-result\s*{[^}]*max-width:\s*90px;/s);
   });
 });
 

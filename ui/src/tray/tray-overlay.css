@@ -42,6 +42,9 @@ body {
   margin: 2px 11px 10px;
   width: auto;
   max-width: none;
+  /* 宿主高由 TrayMenu 在主视图 hydrate 后锁定；卡片本身也必须铺满宿主减去 12px 外边距，
+   * 否则只有透明窗口高度固定，折叠节点时用户看见的卡片仍会缩短。 */
+  height: calc(100vh - 12px);
   /* 有界高度：按**当前宿主视口**扣掉两侧外边距，而不是写死 704。Windows 底部任务栏真机上宿主
    * 高度上限为 700px、近侧 margin=0/远侧=12；超长二级节点视图必须在卡片内滚，不能让宿主为了
    * 旧的固定上限多留一段透明尾部，把可见卡片额外抬高。其余边缘的外边距总量同样是 12px。 */
@@ -92,6 +95,36 @@ body {
 }
 .tray-menu .tray-sep {
   margin: 4px 6px;
+}
+
+/* 检查更新结果是该动作的行内回执，不占 `.tray-note` 的新行：菜单高度已受平台工作区上限夹取，
+ * 顶部多一条提示会把固定的退出项推入滚动区。主标签允许在极长语种下省略，结果徽标保持完整；
+ * aria-live 仍会播报本地化结果。徽标含 padding 后不高于既有 16px 图标，故按钮行高不变。 */
+.tray-menu .tray-update-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tray-menu .tray-update-result {
+  flex: none;
+  margin-left: auto;
+  max-width: 90px;
+  padding: 2px 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tray-menu .tray-update-result.ok {
+  color: hsl(var(--ok));
+  background: hsl(var(--ok) / 0.12);
+}
+.tray-menu .tray-update-result.err {
+  color: hsl(var(--err));
+  background: hsl(var(--err) / 0.12);
 }
 
 /* 状态副标题：正常态维持基线 ellipsis；只有 TrayMenu 实测 scrollWidth 超出且存在出口 IP 时才加

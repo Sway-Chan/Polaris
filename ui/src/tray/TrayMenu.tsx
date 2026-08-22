@@ -135,6 +135,9 @@ export default function TrayMenu() {
   const [notice, setNotice] = useState('');
   // 「检查更新」在飞（互斥闸：连点会并发发多次 GitHub 请求）。
   const [checking, setChecking] = useState(false);
+  // 检查结果属于「检查更新」这一行自身，不进上方 tray-note：提示条会改变自然高，受平台高度上限
+  // 夹取后把底部的轻量模式/退出挤进滚动区。短结果徽标只占用按钮现有行高，不改变菜单纵向布局。
+  const [updateResult, setUpdateResult] = useState<'latest' | 'failed' | null>(null);
   // 浮层语言（A3）：`labels.ts` 的模块状态**可变**，但改了不会自己触发 React 重渲染 →
   // 用一个 state 作渲染依赖，`refreshTrayLang()` 之后 setState 一次，`t()` 在那次渲染里就取到新语言。
   const [lang, setLang] = useState(trayLang);
@@ -150,6 +153,9 @@ export default function TrayMenu() {
   // 托盘直接读本 store —— 无需后端排序 command（纯渲染端视图偏好，同源 webview 天然共享）。
   const sortByLatency = useNodeSortStore((s) => s.sortByLatency);
   const menuRef = useRef<HTMLDivElement>(null);
+  // 每代 WebView 在配置 hydrate 完成后的主视图自然高只记一次。节点视图的折叠/展开只应改变
+  // 卡片内部滚动内容，不应让外层菜单忽高忽低；冷态回收后 ref 随 WebView 销毁，下一代会按新 DPI/语言重量。
+  const fixedMenuHeightRef = useRef<number | null>(null);
   // 最近一次已知的 config.uiTheme（hydrate 写）。onFocus / matchMedia 监听是**挂载一次**的闭包，
   // 直接读 config state 会捕获到过期值 → 用 ref 拿最新 uiTheme，主题折算才跟得上配置变更。
   const uiThemeRef = useRef<UserConfig['uiTheme']>(undefined);
@@ -247,6 +253,7 @@ export default function TrayMenu() {
       // 每次弹出获焦时同步重解析一次 —— 与主题校正同款「同步先校正、再异步 hydrate 拉真值」。
       setLang(refreshTrayLang());
       setNotice(''); // 上次弹出留下的提示不该跨次显示
+      setUpdateResult(null); // 检查结果只属于上次展开会话，不跨次残留
       // 复位到主视图（原型 `openTray:4009` 的 `trayView(false)`）：同一代托盘窗在保温期内**复用不重建**，
       // 上次停在「全部节点」二级视图，下次点托盘图标仍停在那里 —— 用户点图标要的是主视图。
       setView('main');
@@ -316,7 +323,8 @@ export default function TrayMenu() {
   // TrayMenu 是托盘窗的根组件、生命周期即窗口生命周期 ⇒ 这里就是本窗的「顶层持久位置」。
   useEffect(() => subscribeLatencyEvents(), []);
 
-  // 自适应高：内容尺寸变化 → 回报浮层窗高（tray 模块设窗高 + 重定位，宽固定）。
+  // 首次自适应、随后固高：配置 hydrate 完成前允许宿主随主视图自然高收敛；完成后锁住该高度。
+  // 节点视图再长也只在卡片内部滚动，全部折叠也不会把整个自绘菜单缩成一截。
   useLayoutEffect(() => {
     const report = () => {
       // 不能只报 `rect.bottom`：初始宿主只有 420px，`.tray-menu` 又以 `100vh` 为 max-height，rect 已被
@@ -334,14 +342,19 @@ export default function TrayMenu() {
         const mb = parseFloat(style.marginBottom || '0');
         h = rect.top + Math.max(rect.height, naturalMenuHeight) + mb;
       }
-      void invoke(IPC_CHANNELS.TRAY_RESIZE, { height: Math.ceil(h) }).catch(() => {});
+      const measuredHeight = Math.ceil(h);
+      if (fixedMenuHeightRef.current === null && config && view === 'main') {
+        fixedMenuHeightRef.current = measuredHeight;
+      }
+      const fixedHeight = fixedMenuHeightRef.current ?? measuredHeight;
+      void invoke(IPC_CHANNELS.TRAY_RESIZE, { height: fixedHeight }).catch(() => {});
     };
     report();
     const ro = new ResizeObserver(report);
     if (menuRef.current) ro.observe(menuRef.current);
     ro.observe(document.body);
     return () => ro.disconnect();
-  }, []);
+  }, [config, view]);
 
   const hide = () => void invoke(IPC_CHANNELS.TRAY_HIDE).catch(() => {});
 
@@ -563,16 +576,16 @@ export default function TrayMenu() {
   const checkUpdate = async () => {
     if (checking) return;
     setChecking(true);
-    setNotice(t('tray.checkingUpdate'));
+    setUpdateResult(null);
     try {
       const hasUpdate = await invoke<boolean>(IPC_CHANNELS.TRAY_CHECK_UPDATE);
       if (hasUpdate) {
         hide(); // 提醒窗已弹出，浮层让位
         return;
       }
-      setNotice(t('tray.upToDate'));
+      setUpdateResult('latest');
     } catch {
-      setNotice(t('tray.updateCheckFailed'));
+      setUpdateResult('failed');
     } finally {
       setChecking(false);
     }
@@ -911,17 +924,33 @@ export default function TrayMenu() {
               </svg>
               <span>{t('tray.openSettings')}</span>
             </button>
-            {/* 检查更新（A1，上游 TrayManager.ts:425 的 trayCheckUpdates）：有更新弹 mini 提醒窗，
-                无更新/失败落 notice 行。在飞则置灰（连点会并发发多次 GitHub 请求）。 */}
-            <button className="tray-i" onClick={() => void checkUpdate()} disabled={checking}>
+            {/* 检查更新（A1，上游 TrayManager.ts:425 的 trayCheckUpdates）：有更新弹 mini 提醒窗；
+                无更新/失败落本按钮右侧的紧凑结果，不再撑高菜单把退出项挤进滚动区。
+                在飞则置灰（连点会并发发多次 GitHub 请求）。 */}
+            <button
+              className="tray-i"
+              onClick={() => void checkUpdate()}
+              disabled={checking}
+              aria-label={checking ? t('tray.checkingUpdate') : undefined}
+            >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                 <path d="M12 20a8 8 0 10-7.6-5.5" strokeLinecap="round" />
                 <path d="M4 9V4.5M4 9h4.5" strokeLinecap="round" strokeLinejoin="round" />
                 <path d="M12 8v4.5l3 1.8" strokeLinecap="round" />
               </svg>
-              <span>
+              <span className="tray-update-label">
                 {checking ? t('tray.checking') : t('tray.checkUpdate')}
               </span>
+              {!checking && updateResult && (
+                <span
+                  className={`tray-update-result ${updateResult === 'latest' ? 'ok' : 'err'}`}
+                  aria-live="polite"
+                >
+                  {updateResult === 'latest'
+                    ? t('tray.upToDate')
+                    : t('tray.updateCheckFailed')}
+                </span>
+              )}
             </button>
             {/* 立即锁定（原型 tray-lock L2927，锁图标）：进隐私态，主窗遮罩靠 enterPrivacyMode 事件收敛。 */}
             <button className="tray-i" onClick={() => void lockNow()}>

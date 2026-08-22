@@ -183,6 +183,15 @@ const REGISTRY: readonly Row[] = [
       '不要求复位：`\'start\' | \'stop\' | null` 是本窗发起的在飞启停**方向**，静息值就是 null，' +
       '由启停结果自己收敛（不是层级视图）。登记在此是为了「它哪天变成视图态时门会说话」。',
   },
+  {
+    file: 'tray/TrayMenu.tsx',
+    name: 'updateResult',
+    role: 'transient',
+    reset: 'wired',
+    note:
+      '`latest | failed | null` 是单次展开会话里的检查更新回执，不是层级视图；`onFocus` 通过 ' +
+      '`setUpdateResult(null)` 明确清掉上一轮结果，避免 warm WebView 下次展开仍展示陈旧结论。',
+  },
 ] as const;
 
 // ── 断言 ────────────────────────────────────────────────────────────────────
