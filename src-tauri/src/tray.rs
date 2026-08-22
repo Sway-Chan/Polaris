@@ -1182,24 +1182,32 @@ fn destroy_overlay(app: &AppHandle) -> bool {
 /// app 保持不变。若配置失败，本代窗口宁可不展示，也不退回会抢焦点的旧语义。
 #[cfg(target_os = "macos")]
 fn configure_nonactivating_overlay(win: &tauri::WebviewWindow) -> Result<(), String> {
-    use objc2_app_kit::{NSView, NSWindow, NSWindowStyleMask};
+    use objc2_app_kit::NSWindowStyleMask;
 
     let raw_window = win.ns_window().map_err(|e| e.to_string())?;
     if raw_window.is_null() {
         return Err("NSWindow handle is null".to_string());
     }
-    let raw_view = win.ns_view().map_err(|e| e.to_string())?;
-    if raw_view.is_null() {
-        return Err("NSView handle is null".to_string());
-    }
     // SAFETY: Tauri 的 `ns_window()` 返回该 WebviewWindow 持有、且当前主线程有效的 NSWindow 指针；
-    // `ns_view()` 同理返回它的内容视图。本函数只在 build() 紧接着的主线程调用，不越过窗口生命周期
-    // 保存引用。Tao 0.35.3 的 `set_style_mask` 在改 mask 后也立即把同一 ns_view 设回 first responder；
-    // 它明确说明漏掉这一步会让 key handling 一直坏到窗口再次被点击，正与非前台托盘首击复现同形。
-    let ns_window = unsafe { &*raw_window.cast::<NSWindow>() };
-    let ns_view = unsafe { &*raw_view.cast::<NSView>() };
+    // 本函数只在 build() 紧接着的主线程调用，不越过窗口生命周期保存引用。
+    let ns_window = unsafe { &*raw_window.cast::<objc2_app_kit::NSWindow>() };
     ns_window.setStyleMask(ns_window.styleMask() | NSWindowStyleMask::NonactivatingPanel);
-    ns_window.makeFirstResponder(Some(ns_view));
+
+    // Wry 0.55.1 的非 child WebView 层级固定为：
+    //   NSWindow.contentView = WryWebViewParent；parent.subviews[0] = WryWebView(WKWebView)。
+    // `win.ns_view()` 只会拿到前者。把 parent 设成 first responder 会覆盖 Wry 构建时对真实
+    // WKWebView 的设置，真机表现正是「第一下只激活浮层、第二下按钮才执行」。style mask 修改后须同步
+    // 恢复**实际 WebView**，而不是照搬 Tao 针对纯窗口的 content-view 恢复逻辑。
+    let content_view = ns_window
+        .contentView()
+        .ok_or_else(|| "tray NSWindow content view is missing".to_string())?;
+    let webview = content_view
+        .subviews()
+        .firstObject()
+        .ok_or_else(|| "tray WKWebView is missing from content view".to_string())?;
+    if !ns_window.makeFirstResponder(Some(&webview)) {
+        return Err("tray WKWebView rejected first responder".to_string());
+    }
     Ok(())
 }
 
@@ -2182,9 +2190,12 @@ mod overlay_lifecycle_gate {
         assert!(
             configure.contains("NSWindowStyleMask::NonactivatingPanel")
                 && configure.contains("setStyleMask(")
-                && configure.contains("win.ns_view()")
-                && configure.contains("makeFirstResponder(Some(ns_view))"),
-            "mac 托盘宿主改 non-activating mask 后必须按 Tao 不变式恢复 WebView first responder"
+                && configure.contains("contentView()")
+                && configure.contains("subviews()")
+                && configure.contains("firstObject()")
+                && configure.contains("makeFirstResponder(Some(&webview))")
+                && !configure.contains("win.ns_view()"),
+            "mac 托盘宿主改 non-activating mask 后必须恢复实际 WKWebView，而非 Wry parent first responder"
         );
         let focus = crate::commands::guard_scan::top_level_fn_body(TRAY_RS, "fn focus_overlay(");
         assert!(
