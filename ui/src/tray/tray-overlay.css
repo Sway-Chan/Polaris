@@ -112,19 +112,23 @@ body {
   max-width: 90px;
   padding: 2px 5px;
   overflow: hidden;
+  border: 1px solid transparent;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: 10.5px;
+  font-weight: 650;
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .tray-menu .tray-update-result.ok {
   color: hsl(var(--ok));
-  background: hsl(var(--ok) / 0.12);
+  background: hsl(var(--ok) / 0.18);
+  border-color: hsl(var(--ok) / 0.32);
 }
 .tray-menu .tray-update-result.err {
   color: hsl(var(--err));
-  background: hsl(var(--err) / 0.12);
+  background: hsl(var(--err) / 0.18);
+  border-color: hsl(var(--err) / 0.32);
 }
 
 /* 状态副标题：正常态维持基线 ellipsis；只有 TrayMenu 实测 scrollWidth 超出且存在出口 IP 时才加

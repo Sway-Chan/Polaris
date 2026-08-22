@@ -165,6 +165,25 @@ describe('A1：托盘缺的两项入口真实存在且真实接线', () => {
     expect(MENU).toContain("aria-label={checking ? t('tray.checkingUpdate') : undefined}");
     expect(OVERLAY_RAW).toMatch(/\.tray-menu \.tray-update-result\s*{[^}]*max-width:\s*90px;/s);
   });
+
+  it('检查结果徽标使用语义 token，并以可读字号、字重和边界承载浅色主题', () => {
+    const base = OVERLAY_RAW.match(/\.tray-menu \.tray-update-result\s*{([^}]*)}/s)?.[1] ?? '';
+    expect(base).toMatch(/font-size:\s*10\.5px/);
+    expect(base).toMatch(/font-weight:\s*650/);
+    expect(base).toMatch(/border:\s*1px solid transparent/);
+    for (const [tone, token] of [
+      ['ok', 'ok'],
+      ['err', 'err'],
+    ] as const) {
+      const body =
+        OVERLAY_RAW.match(
+          new RegExp(`\\.tray-menu \\.tray-update-result\\.${tone}\\s*\\{([^}]*)}`, 's'),
+        )?.[1] ?? '';
+      expect(body).toContain(`color: hsl(var(--${token}))`);
+      expect(body).toContain(`background: hsl(var(--${token}) / 0.18)`);
+      expect(body).toContain(`border-color: hsl(var(--${token}) / 0.32)`);
+    }
+  });
 });
 
 describe('A3：浮层语言必须 live（warm WebView 存活期间不重载）', () => {
