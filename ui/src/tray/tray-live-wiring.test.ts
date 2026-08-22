@@ -94,6 +94,35 @@ describe('托盘卡片随系统栏边缘贴合', () => {
   });
 });
 
+describe('macOS 非前台托盘 hover 桥接', () => {
+  it('只把原生 client 坐标映射为既有菜单行的视觉 class，不合成事件或改变焦点', () => {
+    expect(MENU).toContain('__POLARIS_NATIVE_HOVER__');
+    expect(MENU).toMatch(/document\.elementFromPoint\(clientX,\s*clientY\)/);
+    expect(MENU).toContain("closest<HTMLElement>(NATIVE_HOVER_TARGET)");
+    expect(MENU).toContain("classList.add('tray-native-hover')");
+    expect(MENU).not.toContain('dispatchEvent(');
+    expect(MENU).not.toContain('new MouseEvent(');
+    expect(MENU).not.toMatch(/\.focus\([^)]*tray-native-hover/);
+  });
+
+  it('真实 mousemove 与卸载都会清桥接态，避免 warm WebView 跨次残留', () => {
+    expect(MENU).toMatch(
+      /document\.addEventListener\('mousemove',\s*clearNativeHover,\s*\{\s*passive:\s*true\s*\}\)/,
+    );
+    expect(MENU).toContain("document.removeEventListener('mousemove', clearNativeHover)");
+    expect(MENU).toContain('delete window.__POLARIS_NATIVE_HOVER__');
+  });
+
+  it('桥接态复用现有 hover token，并维持 danger/disabled/selected 语义', () => {
+    expect(OVERLAY_RAW).toMatch(
+      /\.tray-i\.tray-native-hover:not\(\.on\):not\(:disabled\):not\(\.disabled\)\s*\{[^}]*background:\s*hsl\(var\(--surface-2\)\);[^}]*color:\s*hsl\(var\(--fg\)\);/s,
+    );
+    expect(OVERLAY_RAW).toMatch(
+      /\.tray-i\.danger\.tray-native-hover:not\(:disabled\):not\(\.disabled\)\s*\{[^}]*background:\s*hsl\(var\(--err-weak\)\);[^}]*color:\s*hsl\(var\(--err\)\);/s,
+    );
+  });
+});
+
 describe('状态卡超长出口 IP：默认截断，悬停或聚焦时才滚动', () => {
   it('溢出由真实布局量测，且没有 IP 时长节点名仍保持静态', () => {
     expect(MENU).toMatch(/el\.scrollWidth\s*-\s*el\.clientWidth/);

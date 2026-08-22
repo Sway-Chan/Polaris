@@ -96,7 +96,30 @@ declare global {
   interface Window {
     /** 主进程冷建浮层时注入；ready 回执必须携同一代次，旧 WebView 的迟到消息才不能展示新窗。 */
     __POLARIS_TRAY_GENERATION__?: number;
+    /** macOS 非激活托盘窗的指针坐标桥；仅补 WebKit 丢掉的 hover，不参与点击/焦点。 */
+    __POLARIS_NATIVE_HOVER__?: (clientX: number, clientY: number) => void;
   }
+}
+
+const NATIVE_HOVER_TARGET = [
+  '.tray-i:not(:disabled):not(.disabled)',
+  '.tray-back:not(:disabled)',
+  '.tray-grp-t:not(:disabled)',
+].join(',');
+
+/**
+ * 非激活 WKWebView 不派发 mousemove 时，由 AppKit 传 client 坐标补一枚纯视觉 class。
+ * 命中仍复用现有可操作行的 class/disabled 语义；不合成 MouseEvent，避免触发业务 handler 或改变焦点。
+ */
+function applyNativeTrayHover(clientX: number, clientY: number): void {
+  const next =
+    Number.isFinite(clientX) && Number.isFinite(clientY)
+      ? document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>(NATIVE_HOVER_TARGET) ?? null
+      : null;
+  document.querySelectorAll<HTMLElement>('.tray-native-hover').forEach((element) => {
+    if (element !== next) element.classList.remove('tray-native-hover');
+  });
+  next?.classList.add('tray-native-hover');
 }
 
 export default function TrayMenu() {
@@ -178,6 +201,19 @@ export default function TrayMenu() {
     // preventScroll 必须：容器 `.tray-menu` 顶部留有 margin-top（贴菜单栏的 native 间隙），默认 focus
     // 会把它 scrollIntoView → 把该间隙滚出窗口上沿。
     menuRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  // W32：主窗口不在前台时 WebKit 会丢掉 hover 事件，但 accept_first_mouse 已能让点击直达。
+  // 这里只注册主进程的坐标桥；一旦 WebKit 恢复真实 mousemove，立即清桥接 class，让原生 :hover 接管。
+  useLayoutEffect(() => {
+    window.__POLARIS_NATIVE_HOVER__ = applyNativeTrayHover;
+    const clearNativeHover = () => applyNativeTrayHover(Number.NaN, Number.NaN);
+    document.addEventListener('mousemove', clearNativeHover, { passive: true });
+    return () => {
+      document.removeEventListener('mousemove', clearNativeHover);
+      clearNativeHover();
+      delete window.__POLARIS_NATIVE_HOVER__;
+    };
   }, []);
 
   const hydrate = useCallback(async () => {

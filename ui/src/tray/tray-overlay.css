@@ -168,6 +168,22 @@ body {
   outline: none;
 }
 
+/* macOS 非激活 WKWebView 不计算 CSS :hover（W32）：主进程只桥接 client 坐标，前端命中既有菜单行后
+ * 临时加此 class。声明逐项复用现有 `.tray-i/.tray-back/.tray-grp-t:hover` 的 token，不另造视觉轴；
+ * 选中节点 `.on` 保持常驻 flow-weak，disabled 仍不响应。真实 mousemove 恢复时 class 会立即清掉。 */
+.tray-menu .tray-i.tray-native-hover:not(.on):not(:disabled):not(.disabled) {
+  background: hsl(var(--surface-2));
+  color: hsl(var(--fg));
+}
+.tray-menu .tray-i.danger.tray-native-hover:not(:disabled):not(.disabled) {
+  background: hsl(var(--err-weak));
+  color: hsl(var(--err));
+}
+.tray-menu .tray-back.tray-native-hover,
+.tray-menu .tray-grp-t.tray-native-hover {
+  background: hsl(var(--surface-2));
+}
+
 /* 连接按钮在无节点/无配置时置灰不可点（避免 proxy.start 无节点必失败）；测速在测时同样置灰（互斥闸）。 */
 .tray-i:disabled {
   opacity: 0.45;
