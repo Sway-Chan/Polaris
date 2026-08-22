@@ -12,11 +12,12 @@ use crate::platform::windows::logic::{
     local_port_from_net_order, AF_INET, AF_INET6, MIB_TCP_STATE_LISTEN,
     TCP_TABLE_OWNER_PID_LISTENER,
 };
-use crate::platform::windows::ops::{NetTableOps, ProcOps};
+use crate::platform::windows::ops::{CoreStart, NetTableOps, ProcOps};
 use crate::platform::windows::selfuninstall::self_uninstall_cmd_line;
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::process::CommandExt;
+use std::time::Instant;
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, BOOL, ERROR_INVALID_PARAMETER, FALSE, HANDLE, INVALID_HANDLE_VALUE,
 };
@@ -73,6 +74,11 @@ struct MibTcp6RowOwnerPid {
 /// STILL_ACTIVE（`winproc.go:141`，GetExitCodeProcess 的活跃码 = 259）。
 const STILL_ACTIVE_CODE: u32 = 259;
 
+#[inline]
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
 /// Windows FFI 生产实现（对应 Go `winproc.go` 全部原语）。
 #[derive(Debug)]
 pub struct WinProcOps {
@@ -93,7 +99,11 @@ impl Default for WinProcOps {
 impl WinProcOps {
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        let ops = Self::default();
+        // Job Object 与核心内容无关，helper 服务启动时即可准备。start 路径仍会调用 ensure_job，
+        // 因而此处瞬时失败不会丢掉后续重试机会；正常冷启则不再让用户请求承担创建成本。
+        let _ = ops.ensure_job();
+        ops
     }
 }
 
@@ -231,11 +241,14 @@ impl ProcOps for WinProcOps {
         cfg: &str,
         log_path: &str,
         fwd: bool,
-    ) -> std::io::Result<u32> {
+    ) -> std::io::Result<CoreStart> {
         // winproc.go:21-49 startSingbox + winproc.go:414-427 enableIPForwarding。
+        let total_started = Instant::now();
+        let forwarding_started = Instant::now();
         if fwd {
             self.enable_ip_forwarding();
         }
+        let forwarding_ms = elapsed_ms(forwarding_started);
         // B3/W26：改用 std Command 的 pipe，不再把 child 直接绑到一个永不重开的 append handle。
         // shared writer 才能在本次 child 存活期间关闭 current → rename → 重开，形成跨平台硬上限。
         let mut cmd = std::process::Command::new(singbox_bin);
@@ -261,23 +274,47 @@ impl ProcOps for WinProcOps {
             cmd.current_dir(cwd);
         }
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+        let process_started = Instant::now();
         let mut child = cmd.spawn()?;
+        let process_ms = elapsed_ms(process_started);
         let pid = child.id();
-        if !log_path.is_empty() {
-            polaris_log_budget::spawn_pipe_loggers(
-                child.stdout.take(),
-                child.stderr.take(),
-                log_path,
-                polaris_log_budget::DEFAULT_GENERATION_BYTES,
-            );
-        }
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
         // 生命周期仍由 Job Object + pid 收割链管理；drop Child 只关闭父侧 process handle，不杀进程。
         drop(child);
         // ensureJob + assignToJob（winproc.go:40-47）：best-effort 防孤儿安全网。失败不阻断 start。
+        let job_started = Instant::now();
         if let Some(h_job) = self.ensure_job() {
             self.assign_to_job(h_job, pid);
         }
-        Ok(pid)
+        let job_ms = elapsed_ms(job_started);
+
+        // 有界日志 writer 的旧文件裁剪/轮转是磁盘 IO，不属于「child 已受 Job 保护后才能回 PID」的
+        // 正确性关键路径。把两条 pipe 连同所有权交给后台线程：主程序可立即开始管理端口就绪探测；
+        // pipe 在接线完成前仍由该线程持有，不会因父侧提前 drop 而给核心制造 broken pipe。
+        let log_handoff_started = Instant::now();
+        if !log_path.is_empty() {
+            let owned_log_path = log_path.to_owned();
+            std::thread::spawn(move || {
+                polaris_log_budget::spawn_pipe_loggers(
+                    stdout,
+                    stderr,
+                    owned_log_path,
+                    polaris_log_budget::DEFAULT_GENERATION_BYTES,
+                );
+            });
+        }
+        let log_handoff_ms = elapsed_ms(log_handoff_started);
+        Ok(CoreStart {
+            pid,
+            timing: polaris_helper_proto::StartTiming {
+                forwarding_ms,
+                process_ms,
+                job_ms,
+                log_handoff_ms,
+                total_ms: elapsed_ms(total_started),
+            },
+        })
     }
 
     fn reap_child(&self, pid: u32) {

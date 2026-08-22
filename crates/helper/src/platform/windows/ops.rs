@@ -14,6 +14,14 @@
 //! 大多是 best-effort（失败不阻断主流程），trait 方法返回 `Result` 但调用方据场景决定是否忽略。
 
 use crate::platform::windows::logic::{self, ListenEntry};
+use polaris_helper_proto::StartTiming;
+
+/// Windows helper 已创建的核心及其关键路径耗时。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoreStart {
+    pub pid: u32,
+    pub timing: StartTiming,
+}
 
 /// 进程操作抽象（对应 `winproc.go` 的进程/Job/freeport-kill/singbox-spawn/旁路 spawn 原语）。
 ///
@@ -41,7 +49,7 @@ pub trait ProcOps: Send + Sync {
 
     /// 启动 sing-box 子进程（`winproc.go:21-49` `startSingbox`）。
     ///
-    /// 返回子进程 pid（Go 返回 `*exec.Cmd`，本 trait 只需 pid + 可终止语义）。
+    /// 返回子进程 pid 与 helper 内部阶段耗时（Go 返回 `*exec.Cmd`，本 trait 只需 pid + 可终止语义）。
     /// `log_path` 非空 → 子进程 stdout/stderr 经 shared 有界 writer 写入两代文件（早期启动诊断）。
     /// `fwd`（allowLan）= true → 启动前 best-effort 开 IP 转发（`enableIPForwarding`）。
     fn start_singbox(
@@ -50,7 +58,7 @@ pub trait ProcOps: Send + Sync {
         cfg: &str,
         log_path: &str,
         fwd: bool,
-    ) -> std::io::Result<u32>;
+    ) -> std::io::Result<CoreStart>;
 
     /// 优雅停信号 → 等宽限 → 硬杀（`helper.go:111-123` `terminateChild` 的等价物）。
     ///
@@ -307,7 +315,7 @@ impl ProcOps for MockProcOps {
         _cfg: &str,
         _log_path: &str,
         fwd: bool,
-    ) -> std::io::Result<u32> {
+    ) -> std::io::Result<CoreStart> {
         self.inner
             .start_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -318,10 +326,19 @@ impl ProcOps for MockProcOps {
         if let Some(e) = self.inner.start_error.lock().unwrap().take() {
             return Err(e);
         }
-        Ok(self
-            .inner
-            .next_pid
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+        Ok(CoreStart {
+            pid: self
+                .inner
+                .next_pid
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+            timing: StartTiming {
+                forwarding_ms: 0,
+                process_ms: 0,
+                job_ms: 0,
+                log_handoff_ms: 0,
+                total_ms: 0,
+            },
+        })
     }
 
     fn reap_child(&self, pid: u32) {
@@ -418,10 +435,10 @@ mod tests {
         let ops = MockProcOps::new();
         assert!(ops.process_alive(1234)); // 默认存活（宁漏勿误）
         let snap = ops.snapshot();
-        let pid = ops
+        let started = ops
             .start_singbox("/x/sing-box", "/c/cfg.json", "", false)
             .unwrap();
-        assert_eq!(pid, 1000);
+        assert_eq!(started.pid, 1000);
         assert_eq!(ops.snapshot().start_calls, snap.start_calls + 1);
         ops.reap_child(1000);
         assert_eq!(ops.last_reaped_pid(), 1000);

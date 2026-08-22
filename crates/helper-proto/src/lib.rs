@@ -53,7 +53,9 @@ pub use request::{
     parse_stop_pid, stop_pid_matches, InstallCoreParams, LinuxStartParams, Request, RouteParams,
     StartParams,
 };
-pub use response::{FlushDns, FreePort, Pong, Response, ResponseKind, Start, Status, Stop};
+pub use response::{
+    FlushDns, FreePort, Pong, Response, ResponseKind, Start, StartTiming, Status, Stop,
+};
 
 /// 协议版本（**三平台统一**，单一常量 —— 见 crate 级文档「protoVersion 三平台统一为 1」）。
 pub mod proto_version {

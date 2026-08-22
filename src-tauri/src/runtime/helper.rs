@@ -590,6 +590,17 @@ impl HelperRuntime {
             .send_with_timeout(&req, HELPER_START_TIMEOUT)
             .map_err(|e| format!("helper 起核通信失败：{e}"))?;
         match resp {
+            Response::Ok(ResponseKind::Start(Start::StartedTimed { pid, timing })) => {
+                log::info!(
+                    "helper core start timing: forwarding={}ms process={}ms job={}ms log_handoff={}ms total={}ms",
+                    timing.forwarding_ms,
+                    timing.process_ms,
+                    timing.job_ms,
+                    timing.log_handoff_ms,
+                    timing.total_ms
+                );
+                Ok(pid)
+            }
             Response::Ok(ResponseKind::Start(Start::Started { pid } | Start::Already { pid })) => {
                 Ok(pid)
             }

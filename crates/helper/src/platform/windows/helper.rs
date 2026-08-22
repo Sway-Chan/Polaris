@@ -230,7 +230,7 @@ where
     /// child_mu（`is_current`/`on_parent_dead`），持锁调用即自死锁。
     fn handle_start(&self, p: &polaris_helper_proto::StartParams) -> HandleOutcome {
         // ===== 全程持锁的临界区：check → start → record pid =====
-        let started_pid = {
+        let (started_pid, start_timing) = {
             let mut state = self.child_mu.lock().unwrap();
             // Go helper.go:345-348: child 已在跑 → OK already <pid>
             if let Some(pid) = state.pid {
@@ -271,10 +271,10 @@ where
                 .proc
                 .start_singbox(&self.singbox_bin, &p.cfg, &p.log, p.fwd)
             {
-                Ok(pid) => {
+                Ok(started) => {
                     // Go helper.go:374-385: child = c（收割/Wait goroutine 由生产侧 ProcOps 承载）。
-                    state.pid = Some(pid);
-                    pid
+                    state.pid = Some(started.pid);
+                    (started.pid, started.timing)
                 }
                 Err(e) => {
                     return HandleOutcome::Respond(Response::Err(
@@ -317,7 +317,10 @@ where
 
         // Go helper.go:390: OK started <pid>
         HandleOutcome::Respond(Response::Ok(ResponseKind::Start(
-            polaris_helper_proto::Start::Started { pid: started_pid },
+            polaris_helper_proto::Start::StartedTimed {
+                pid: started_pid,
+                timing: start_timing,
+            },
         )))
     }
 
@@ -641,13 +644,15 @@ mod tests {
             }),
         );
         let HandleOutcome::Respond(Response::Ok(ResponseKind::Start(
-            polaris_helper_proto::Start::Started { pid },
+            polaris_helper_proto::Start::StartedTimed { pid, timing },
         ))) = out
         else {
             panic!("{out:?}");
         };
-        assert_eq!(pid, 1000); // mock next_pid
-                               // status 应反映 running
+        // mock next_pid + mock 阶段耗时。
+        assert_eq!(pid, 1000);
+        assert_eq!(timing.total_ms, 0);
+        // status 应反映 running
         let out2 = h.handle("real-token", Request::Status);
         assert!(matches!(
             out2,

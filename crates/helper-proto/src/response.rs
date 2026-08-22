@@ -74,11 +74,33 @@ pub enum Stop {
     Mismatch { want: u32, current: u32 },
 }
 
+/// Windows helper 起核关键路径耗时（毫秒）。
+///
+/// 这些字段是 `OK started <pid>` 后的**可选、向后兼容** token：旧 app 只读取 pid，会忽略尾部；
+/// 新 app 遇到旧 helper 时仍解析为 [`Start::Started`]。因此不需要提升协议大版本。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartTiming {
+    /// allow-LAN 所需 IP forwarding 准备耗时。
+    pub forwarding_ms: u64,
+    /// Windows `CreateProcess`（Rust `Command::spawn`）耗时。
+    pub process_ms: u64,
+    /// 把 child 纳入预创建 Job Object 的耗时。
+    pub job_ms: u64,
+    /// 把 stdout/stderr 日志接线移交后台线程的耗时。
+    pub log_handoff_ms: u64,
+    /// helper `start_singbox` 整段耗时。
+    pub total_ms: u64,
+}
+
 /// `start` 响应载荷（三平台，`helper.go:522,579` 等）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Start {
     /// `OK started <pid>` —— 新起了 child sing-box。
     Started { pid: u32 },
+    /// `OK started <pid> forwarding_ms=… process_ms=… job_ms=… log_handoff_ms=… total_ms=…`。
+    ///
+    /// Windows Rust helper 才发；独立变体让 macOS/Linux 与旧 helper 的既有形态保持不变。
+    StartedTimed { pid: u32, timing: StartTiming },
     /// `OK already <pid>` —— 已有 child 在跑，复用（不重启）。
     Already { pid: u32 },
 }
@@ -215,6 +237,14 @@ fn ok_kind_to_wire(kind: &ResponseKind) -> String {
             format!("OK stop-mismatch {want} {current}")
         }
         ResponseKind::Start(Start::Started { pid }) => format!("OK started {pid}"),
+        ResponseKind::Start(Start::StartedTimed { pid, timing }) => format!(
+            "OK started {pid} forwarding_ms={} process_ms={} job_ms={} log_handoff_ms={} total_ms={}",
+            timing.forwarding_ms,
+            timing.process_ms,
+            timing.job_ms,
+            timing.log_handoff_ms,
+            timing.total_ms
+        ),
         ResponseKind::Start(Start::Already { pid }) => format!("OK already {pid}"),
         ResponseKind::Cleaned => "OK cleaned".to_owned(),
         ResponseKind::Route => "OK route".to_owned(),
@@ -291,9 +321,14 @@ fn parse_ok(rest: &str) -> ResponseKind {
                 current: parse_pid(rest),
             })
         }
-        "started" => ResponseKind::Start(Start::Started {
-            pid: parse_pid(tail),
-        }),
+        "started" => {
+            let (pid_token, metrics) = parse_first_token(tail);
+            let pid = pid_token.parse().unwrap_or(0);
+            match parse_start_timing(metrics) {
+                Some(timing) => ResponseKind::Start(Start::StartedTimed { pid, timing }),
+                None => ResponseKind::Start(Start::Started { pid }),
+            }
+        }
         "already" => ResponseKind::Start(Start::Already {
             pid: parse_pid(tail),
         }),
@@ -362,6 +397,36 @@ fn parse_pong(tail: &str) -> Pong {
 fn parse_pid(tail: &str) -> u32 {
     let (tok, _) = parse_first_token(tail);
     tok.parse().unwrap_or(0)
+}
+
+/// 解析 Windows helper 追加的完整 timing token 集。
+///
+/// 只要有字段缺失/非法就整体降级为旧 [`Start::Started`]，避免用默认 0 伪造阶段耗时。
+fn parse_start_timing(tail: &str) -> Option<StartTiming> {
+    let mut forwarding_ms = None;
+    let mut process_ms = None;
+    let mut job_ms = None;
+    let mut log_handoff_ms = None;
+    let mut total_ms = None;
+    for field in tail.split_whitespace() {
+        let (key, value) = field.split_once('=')?;
+        let parsed = value.parse::<u64>().ok()?;
+        match key {
+            "forwarding_ms" => forwarding_ms = Some(parsed),
+            "process_ms" => process_ms = Some(parsed),
+            "job_ms" => job_ms = Some(parsed),
+            "log_handoff_ms" => log_handoff_ms = Some(parsed),
+            "total_ms" => total_ms = Some(parsed),
+            _ => continue,
+        }
+    }
+    Some(StartTiming {
+        forwarding_ms: forwarding_ms?,
+        process_ms: process_ms?,
+        job_ms: job_ms?,
+        log_handoff_ms: log_handoff_ms?,
+        total_ms: total_ms?,
+    })
 }
 
 /// 解析 `pid,pid,pid` → Vec<u32>（Go `strings.Join(killed, ",")` 的逆）。
@@ -505,6 +570,27 @@ mod tests {
     }
 
     #[test]
+    fn timed_start_is_additive_and_incomplete_metrics_fall_back() {
+        let line =
+            "OK started 42 forwarding_ms=3 process_ms=1200 job_ms=2 log_handoff_ms=1 total_ms=1206";
+        let r = Response::parse(line);
+        let Response::Ok(ResponseKind::Start(Start::StartedTimed { pid, timing })) = r else {
+            panic!("{r:?}");
+        };
+        assert_eq!(pid, 42);
+        assert_eq!(timing.process_ms, 1200);
+        assert_eq!(r.to_wire_line(), line);
+
+        // 旧客户端只取 `started` 后首个 pid，尾 token 不改变既有 wire 前缀；新客户端遇到残缺字段
+        // 则诚实降级为无 timing 的旧响应，绝不补 0 冒充实测。
+        let fallback = Response::parse("OK started 42 process_ms=1200");
+        assert_eq!(
+            fallback,
+            Response::Ok(ResponseKind::Start(Start::Started { pid: 42 }))
+        );
+    }
+
+    #[test]
     fn parse_freeport_variants() {
         // helper.go:370,391,393
         let Response::Ok(ResponseKind::FreePort(FreePort::Free)) = Response::parse("OK free")
@@ -636,6 +722,19 @@ mod tests {
                 "OK started 7",
             ),
             (
+                Response::Ok(ResponseKind::Start(Start::StartedTimed {
+                    pid: 9,
+                    timing: StartTiming {
+                        forwarding_ms: 1,
+                        process_ms: 2,
+                        job_ms: 3,
+                        log_handoff_ms: 4,
+                        total_ms: 10,
+                    },
+                })),
+                "OK started 9 forwarding_ms=1 process_ms=2 job_ms=3 log_handoff_ms=4 total_ms=10",
+            ),
+            (
                 Response::Ok(ResponseKind::Start(Start::Already { pid: 8 })),
                 "OK already 8",
             ),
@@ -702,6 +801,16 @@ mod tests {
                 current: 9001,
             })),
             Response::Ok(ResponseKind::Start(Start::Started { pid: 2 })),
+            Response::Ok(ResponseKind::Start(Start::StartedTimed {
+                pid: 4,
+                timing: StartTiming {
+                    forwarding_ms: 1,
+                    process_ms: 2,
+                    job_ms: 3,
+                    log_handoff_ms: 4,
+                    total_ms: 10,
+                },
+            })),
             Response::Ok(ResponseKind::Start(Start::Already { pid: 3 })),
             Response::Ok(ResponseKind::Cleaned),
             Response::Ok(ResponseKind::Route),
